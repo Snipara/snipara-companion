@@ -92,12 +92,13 @@ The MCP server advertises different tool surfaces depending on the `SNIPARA_EXPO
 npx -y snipara-companion@1.4.0 --version
 npx -y snipara-companion@1.4.0 git summary
 
+# or with Yarn 2+
+yarn dlx snipara-companion@1.4.0 --version
+
 # or install globally
 npm install -g snipara-companion
 # or
 pnpm add -g snipara-companion
-# or
-yarn global add snipara-companion
 ```
 
 ## Installed Command
