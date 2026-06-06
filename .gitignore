@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.turbo/
+.DS_Store
+*.log
+*.tgz
+.env
+.env.*
+!.env.example
+.snipara/
