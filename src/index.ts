@@ -44,6 +44,7 @@ import {
 } from "./commands/automations";
 import { projectIntelligenceBriefCommand } from "./commands/intelligence";
 import { referencesIngestCommand, referencesScanCommand } from "./commands/references";
+import { gitSummaryCommand } from "./commands/git";
 import { verifyCommand } from "./commands/verify";
 import {
   agenticHandoffCommand,
@@ -123,6 +124,10 @@ export {
   normalizeGuardTag,
   runMemoryGuardCheck,
 } from "./commands/memory-guard";
+export {
+  buildGitCompanionSummary,
+  gitSummaryCommand,
+} from "./commands/git";
 export {
   buildProjectIntelligenceBrief,
   projectIntelligenceBriefCommand,
@@ -321,6 +326,20 @@ program
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await agenticStatusCommand({ json: Boolean(options.json) });
+  });
+
+const git = program.command("git").description("Local Git companion commands");
+
+git
+  .command("summary")
+  .description("Show a local Git summary for agent handoff and review")
+  .option("--recent <number>", "Recent commit count", "5")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await gitSummaryCommand({
+      recent: parseInt(options.recent, 10),
+      json: Boolean(options.json),
+    });
   });
 
 program

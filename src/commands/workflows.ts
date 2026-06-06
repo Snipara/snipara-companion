@@ -39,6 +39,7 @@ import {
 } from "../runtime/orchestrator-handoff";
 import { buildCanonicalEvent } from "./events";
 import { appendJournalCheckpoint, type JournalWriteResult } from "./journal";
+import { loadLocalSessionMemories, recallLocalMemory } from "./local-memory";
 import { memoryGuardCheckCommand } from "./memory-guard";
 import {
   autoArchiveTeamSyncState,
@@ -59,6 +60,8 @@ const FINAL_COMMIT_TIMEOUT_MS = 90_000;
 const FINAL_COMMIT_RETRY_TIMEOUT_MS = 45_000;
 const FINAL_COMMIT_SUMMARY_MAX_CHARS = 1_200;
 const FINAL_COMMIT_RETRY_SUMMARY_MAX_CHARS = 600;
+const HOSTED_UNLOCK_MESSAGE =
+  "Run `snipara-companion login` or `npx -y snipara-companion@latest init` to enable hosted memory, Project Intelligence, What Changed, MCP context, and cloud code graph.";
 const SHARED_CONTEXT_INTENT_PATTERN =
   /\b(standard|standards|convention|conventions|guideline|guidelines|best practice|best practices|policy|policies|compliance|compliant|security rules|team rules|style guide|playbook|checklist)\b/i;
 type SyncDocumentKind = "DOC" | "BINARY";
@@ -428,7 +431,11 @@ export interface OnboardFolderManifest {
 
 function ensureConfigured(): void {
   if (!isConfigured()) {
-    console.log("Not configured. Run 'npx -y snipara-companion@latest init' first.");
+    console.log("Hosted Snipara is not connected.");
+    console.log(HOSTED_UNLOCK_MESSAGE);
+    console.log(
+      "Local OSS commands still work without an account: status, timeline, workflow state, team-sync handoff, and code sync."
+    );
     process.exit(1);
   }
 }
@@ -2976,7 +2983,9 @@ function printLoadDocumentResult(path: string, result: unknown): void {
 }
 
 function printRecallResult(result: RecallResult): void {
-  printKeyValue("Tool:", "snipara_recall");
+  const provider = isRecord(result) && typeof result.provider === "string" ? result.provider : "hosted";
+  printKeyValue("Provider:", provider === "snipara-memory" ? "snipara-memory local" : "Hosted Snipara");
+  printKeyValue("Tool:", provider === "snipara-memory" ? "memory_recall" : "snipara_recall");
   printKeyValue("Query:", result.query);
   printKeyValue("Memories:", result.memories.length);
   printKeyValue("Searched:", result.total_searched);
@@ -3022,7 +3031,60 @@ export async function queryCommand(options: {
   json?: boolean;
   followRecommendation?: boolean;
 }): Promise<void> {
-  ensureConfigured();
+  if (!isConfigured()) {
+    let result: RecallResult;
+    try {
+      result = await recallLocalMemory({
+        query: options.query,
+        limit: 8,
+        includeArchived: true,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const payload = hostedSkippedResult({
+        action: "query",
+        summary: options.query,
+        message:
+          "Hosted MCP context skipped because Snipara is not connected, and local snipara-memory is unavailable.",
+        extra: {
+          local_memory: {
+            status: "unavailable",
+            error: message,
+            install: "pip install snipara-memory",
+          },
+        },
+      });
+      if (options.json) {
+        printJson(payload);
+        return;
+      }
+      printUnavailableLocalMemory("Local Memory Query", message);
+      return;
+    }
+    if (options.json) {
+      printJson({
+        version: "snipara.local_query.v1",
+        provider: "snipara-memory",
+        query: options.query,
+        memories: result.memories,
+        warnings: result.warnings,
+        total_searched: result.total_searched,
+        timing_ms: result.timing_ms,
+        hosted: {
+          status: "skipped",
+          reason: "not_configured",
+          unlock: HOSTED_UNLOCK_MESSAGE,
+        },
+      });
+      return;
+    }
+
+    console.log(chalk.bold("Local Memory Query"));
+    console.log("Hosted MCP context skipped because Snipara is not connected.");
+    console.log("");
+    printRecallResult(result);
+    return;
+  }
 
   const client = createClient(15000);
   const result = await client.queryContext(options.query, options.maxTokens || 8000);
@@ -5334,7 +5396,6 @@ export async function workflowResumeCommand(options: {
   json?: boolean;
 }): Promise<void> {
   const state = readRequiredWorkflowState();
-  ensureConfigured();
 
   const resolvedContextTokens =
     options.maxContextTokens !== undefined
@@ -5342,11 +5403,27 @@ export async function workflowResumeCommand(options: {
       : options.includeSessionContext
         ? DEFAULT_SESSION_CONTEXT_TOKENS
         : DEFAULT_SESSION_CONTEXT_TOKENS;
-  const client = createClient(15000);
-  const bootstrap = await client.getSessionMemories(
-    options.maxCriticalTokens ?? DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS,
-    resolvedContextTokens
-  );
+  let bootstrap: SessionMemoriesResult | null = null;
+  let localMemoryError: string | undefined;
+  const hostedConfigured = isConfigured();
+
+  if (hostedConfigured) {
+    const client = createClient(15000);
+    bootstrap = await client.getSessionMemories(
+      options.maxCriticalTokens ?? DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS,
+      resolvedContextTokens
+    );
+  } else {
+    try {
+      bootstrap = await loadLocalSessionMemories({
+        criticalLimit: options.maxCriticalTokens ?? DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS,
+        dailyLimit: resolvedContextTokens > 0 ? resolvedContextTokens : 0,
+      });
+    } catch (error) {
+      localMemoryError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
   const teamSyncResume = await loadWorkflowTeamSyncResume(state);
   const runtimeResume = await loadWorkflowRuntimeResumePlan(state);
 
@@ -5354,6 +5431,10 @@ export async function workflowResumeCommand(options: {
     printJson({
       workflow: state,
       session_bootstrap: bootstrap,
+      local_memory_error: localMemoryError,
+      hosted: hostedConfigured
+        ? { status: "ok" }
+        : { status: "skipped", reason: "not_configured", unlock: HOSTED_UNLOCK_MESSAGE },
       team_sync_resume: teamSyncResume?.data ?? null,
       team_sync_resume_error: teamSyncResume?.error,
       runtime_resume: runtimeResume?.data ?? null,
@@ -5368,9 +5449,19 @@ export async function workflowResumeCommand(options: {
 
   console.log(chalk.bold("Workflow Resume"));
   printManagedWorkflowState(state);
-  printSessionBootstrap(bootstrap, {
-    includeSessionContext: resolvedContextTokens > 0,
-  });
+  if (bootstrap) {
+    printSessionBootstrap(bootstrap, {
+      includeSessionContext: resolvedContextTokens > 0,
+    });
+  } else {
+    console.log(chalk.bold("Memory"));
+    console.log("Hosted memory skipped because Snipara is not connected.");
+    if (localMemoryError) {
+      console.log(`Local snipara-memory unavailable: ${localMemoryError}`);
+    }
+    console.log(HOSTED_UNLOCK_MESSAGE);
+    console.log("");
+  }
   printWorkflowTeamSyncResume(teamSyncResume);
   printWorkflowRuntimeResumePlan(runtimeResume);
   printManagedWorkflowResumeBoundary();
@@ -5447,13 +5538,60 @@ function printWorkflowTeamSyncResume(
   }
 }
 
+function hostedSkippedResult(options: {
+  action: string;
+  summary?: string;
+  files?: string[];
+  message?: string;
+  extra?: Record<string, unknown>;
+}): Record<string, unknown> {
+  return {
+    provider: "local",
+    action: options.action,
+    status: "local_only",
+    stored: false,
+    skipped: true,
+    ...(options.summary ? { summary: options.summary } : {}),
+    files: options.files ?? [],
+    hosted: {
+      status: "skipped",
+      reason: "not_configured",
+      unlock: HOSTED_UNLOCK_MESSAGE,
+    },
+    message:
+      options.message ??
+      "Local state updated. Hosted memory was skipped because Snipara is not connected.",
+    ...(options.extra ?? {}),
+  };
+}
+
+function printUnavailableLocalMemory(action: string, error: string): void {
+  console.log(chalk.bold(action));
+  console.log("Hosted Snipara is not connected.");
+  console.log(`Local snipara-memory is unavailable: ${error}`);
+  console.log("Install local memory with: pip install snipara-memory");
+  console.log("");
+  console.log("Local OSS continuity commands still available:");
+  console.log("- snipara-companion status");
+  console.log("- snipara-companion timeline");
+  console.log("- snipara-companion team-sync handoff --summary '<summary>' --next '<next>'");
+  console.log("- snipara-companion code sync --working-tree");
+  console.log("");
+}
+
 async function commitTaskMemory(options: {
   summary: string;
   category?: string;
   outcome?: TaskCommitOutcome;
   files?: string[];
 }): Promise<Record<string, unknown>> {
-  ensureConfigured();
+  if (!isConfigured()) {
+    return hostedSkippedResult({
+      action: "task-commit",
+      summary: options.summary,
+      files: options.files,
+    });
+  }
 
   const client = createClient(TASK_COMMIT_TIMEOUT_MS);
   return client.endOfTaskCommit({
@@ -5504,9 +5642,26 @@ async function commitFinalTaskMemory(options: {
   outcome: TaskCommitOutcome;
   files?: string[];
 }): Promise<Record<string, unknown>> {
-  ensureConfigured();
-
   const category = normalizeFinalCommitCategory(options.category);
+  if (!isConfigured()) {
+    const localHandoff = recordLocalFinalCommitHandoff({
+      summary: options.summary,
+      outcome: options.outcome,
+      files: options.files,
+      error: "hosted_not_configured",
+    });
+    return hostedSkippedResult({
+      action: "final-commit",
+      summary: options.summary,
+      files: options.files,
+      message:
+        "Local workflow state closed and Team Sync handoff created. Hosted final-commit was skipped because Snipara is not connected.",
+      extra: {
+        team_sync_handoff: localHandoff,
+      },
+    });
+  }
+
   const attempts: Array<{ summary_chars: number; error?: string }> = [];
   const primarySummary = buildHostedFinalCommitSummary({
     workflowId: options.workflowId,
@@ -5604,11 +5759,13 @@ export async function workflowPhaseCommitCommand(options: {
   const outcome = options.outcome ?? "completed";
   const files = options.files && options.files.length > 0 ? options.files : phase.files;
 
-  await memoryGuardCheckCommand({
-    trigger: "commit",
-    files,
-    strict: true,
-  });
+  if (isConfigured()) {
+    await memoryGuardCheckCommand({
+      trigger: "commit",
+      files,
+      strict: true,
+    });
+  }
 
   const durableSummary = buildWorkflowPhaseCommitSummary({
     workflowId: state.workflowId,
@@ -5675,11 +5832,13 @@ export async function finalCommitCommand(options: {
   files?: string[];
   json?: boolean;
 }): Promise<void> {
-  await memoryGuardCheckCommand({
-    trigger: "pre-final",
-    files: options.files,
-    strict: true,
-  });
+  if (isConfigured()) {
+    await memoryGuardCheckCommand({
+      trigger: "pre-final",
+      files: options.files,
+      strict: true,
+    });
+  }
 
   const state = readWorkflowState();
   const outcome = options.outcome ?? "completed";
@@ -5745,22 +5904,52 @@ export async function sessionBootstrapCommand(options: {
   includeSessionContext?: boolean;
   json?: boolean;
 }): Promise<void> {
-  ensureConfigured();
-
   const resolvedContextTokens =
     options.maxContextTokens !== undefined
       ? options.maxContextTokens
       : options.includeSessionContext
         ? DEFAULT_SESSION_CONTEXT_TOKENS
         : 0;
-  const client = createClient(15000);
-  const result = await client.getSessionMemories(options.maxCriticalTokens, resolvedContextTokens);
-  const config = loadConfig();
-  const warmSnapshot = createLocalQueryCache({
-    cwd: process.cwd(),
-    projectId: config.projectId,
-    sessionId: config.sessionId,
-  }).storeWarmSnapshot(result);
+  let result: SessionMemoriesResult;
+  let warmSnapshot = { storedEntries: 0 };
+
+  if (isConfigured()) {
+    const client = createClient(15000);
+    result = await client.getSessionMemories(options.maxCriticalTokens, resolvedContextTokens);
+    const config = loadConfig();
+    warmSnapshot = createLocalQueryCache({
+      cwd: process.cwd(),
+      projectId: config.projectId,
+      sessionId: config.sessionId,
+    }).storeWarmSnapshot(result);
+  } else {
+    try {
+      result = await loadLocalSessionMemories({
+        criticalLimit: options.maxCriticalTokens,
+        dailyLimit: resolvedContextTokens,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const payload = hostedSkippedResult({
+        action: "session-bootstrap",
+        message:
+          "Hosted memory skipped because Snipara is not connected, and local snipara-memory is unavailable.",
+        extra: {
+          local_memory: {
+            status: "unavailable",
+            error: message,
+            install: "pip install snipara-memory",
+          },
+        },
+      });
+      if (options.json) {
+        printJson(payload);
+        return;
+      }
+      printUnavailableLocalMemory("Session Bootstrap", message);
+      return;
+    }
+  }
 
   if (options.json) {
     printJson({
@@ -5798,18 +5987,50 @@ export async function recallCommand(options: {
   warningThreshold?: number;
   json?: boolean;
 }): Promise<void> {
-  ensureConfigured();
-
-  const client = createClient(15000);
-  const result = await client.recallMemories(options.query, {
-    type: options.type,
-    scope: options.scope,
-    category: options.category,
-    limit: options.limit,
-    minRelevance: options.minRelevance,
-    includeInactive: options.includeInactive,
-    warningThreshold: options.warningThreshold,
-  });
+  let result: RecallResult;
+  if (isConfigured()) {
+    const client = createClient(15000);
+    result = await client.recallMemories(options.query, {
+      type: options.type,
+      scope: options.scope,
+      category: options.category,
+      limit: options.limit,
+      minRelevance: options.minRelevance,
+      includeInactive: options.includeInactive,
+      warningThreshold: options.warningThreshold,
+    });
+  } else {
+    try {
+      result = await recallLocalMemory({
+        query: options.query,
+        limit: options.limit,
+        minConfidence: options.minRelevance,
+        includeArchived: options.includeInactive,
+        types: options.type ? [options.type] : undefined,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const payload = hostedSkippedResult({
+        action: "recall",
+        summary: options.query,
+        message:
+          "Hosted recall skipped because Snipara is not connected, and local snipara-memory is unavailable.",
+        extra: {
+          local_memory: {
+            status: "unavailable",
+            error: message,
+            install: "pip install snipara-memory",
+          },
+        },
+      });
+      if (options.json) {
+        printJson(payload);
+        return;
+      }
+      printUnavailableLocalMemory("Recall", message);
+      return;
+    }
+  }
   if (options.json) {
     printJson(result);
     return;
@@ -5824,21 +6045,30 @@ export async function taskCommitCommand(options: {
   files?: string[];
   json?: boolean;
 }): Promise<void> {
-  ensureConfigured();
+  let result: Record<string, unknown>;
+  if (isConfigured()) {
+    await memoryGuardCheckCommand({
+      trigger: "commit",
+      files: options.files,
+      strict: true,
+    });
 
-  await memoryGuardCheckCommand({
-    trigger: "commit",
-    files: options.files,
-    strict: true,
-  });
-
-  const client = createClient(30000);
-  const result = await client.endOfTaskCommit({
-    summary: options.summary,
-    category: options.category,
-    outcome: options.outcome,
-    filesTouched: options.files,
-  });
+    const client = createClient(30000);
+    result = await client.endOfTaskCommit({
+      summary: options.summary,
+      category: options.category,
+      outcome: options.outcome,
+      filesTouched: options.files,
+    });
+  } else {
+    result = hostedSkippedResult({
+      action: "task-commit",
+      summary: options.summary,
+      files: options.files,
+      message:
+        "Hosted task-commit skipped because Snipara is not connected. Use team-sync handoff for local OSS continuity.",
+    });
+  }
   if (options.json) {
     printJson(result);
     return;

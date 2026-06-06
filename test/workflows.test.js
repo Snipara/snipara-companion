@@ -343,6 +343,29 @@ test("top-level timeline reads local workflow and Team Sync state", () => {
   assert.equal(payload.events[0].kind, "team-sync-handoff");
 });
 
+test("git summary reports local git state without hosted config", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-git-summary-"));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-home-git-summary-"));
+  spawnSync("git", ["init", "-q"], { cwd: dir });
+  fs.writeFileSync(path.join(dir, "README.md"), "# demo\n", "utf8");
+  spawnSync("git", ["add", "README.md"], { cwd: dir });
+  fs.writeFileSync(path.join(dir, "TODO.md"), "next\n", "utf8");
+
+  const result = runCli(["git", "summary", "--json"], {
+    cwd: dir,
+    env: { HOME: home },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.version, "snipara.git_companion.v1");
+  assert.equal(payload.hosted.status, "not_required");
+  assert.equal(payload.status.total, 2);
+  assert.deepEqual(payload.status.staged, ["README.md"]);
+  assert.deepEqual(payload.status.untracked, ["TODO.md"]);
+  assert.ok(payload.suggestedCommands.includes("snipara-companion code sync --working-tree"));
+});
+
 test("journal checkpoint helper formats workflow context without durable-memory fields", () => {
   const entry = buildJournalCheckpointEntry({
     action: "workflow:phase-commit",
@@ -598,6 +621,40 @@ test("workflow phase-commit appends a journal checkpoint alongside durable memor
   ]);
 });
 
+test("workflow phase-commit updates local workflow state without hosted config", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-local-phase-"));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-home-local-phase-"));
+  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+  writeWorkflowState(dir);
+
+  const result = runCli(
+    [
+      "workflow",
+      "phase-commit",
+      "verify",
+      "--summary",
+      "Verified local workflow continuity",
+      "--json",
+    ],
+    {
+      cwd: dir,
+      env: { HOME: home },
+    }
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.commit.hosted.status, "skipped");
+  assert.equal(payload.commit.status, "local_only");
+  assert.equal(payload.journal.status, "skipped");
+
+  const current = JSON.parse(
+    fs.readFileSync(path.join(dir, ".snipara", "workflow", "current.json"), "utf8")
+  );
+  assert.equal(current.phases[1].status, "completed");
+  assert.equal(current.lastCommit.summary, "Verified local workflow continuity");
+});
+
 test("final-commit surfaces the backend Team Sync handoff invariant", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-final-commit-"));
   fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
@@ -651,6 +708,46 @@ test("final-commit surfaces the backend Team Sync handoff invariant", () => {
   assert.deepEqual(logged[0].persist_types, []);
   assert.ok(logged[0].summary.length <= 1200);
   assert.deepEqual(logged[0].files_touched, ["packages/cli/src/commands/workflows.ts"]);
+});
+
+test("final-commit closes local workflow and creates local handoff without hosted config", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-local-final-"));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-home-local-final-"));
+  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+  writeWorkflowState(dir);
+
+  const result = runCli(
+    [
+      "final-commit",
+      "--summary",
+      "Closed local OSS workflow",
+      "--files",
+      "src/commands/workflows.ts",
+      "--json",
+    ],
+    {
+      cwd: dir,
+      env: { HOME: home },
+    }
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.commit.hosted.status, "skipped");
+  assert.equal(payload.commit.team_sync_handoff.status, "local_fallback");
+  assert.equal(payload.journal.status, "skipped");
+
+  const current = JSON.parse(
+    fs.readFileSync(path.join(dir, ".snipara", "workflow", "current.json"), "utf8")
+  );
+  assert.equal(current.status, "completed");
+  assert.equal(current.lastCommit.category, "final-commit");
+
+  const teamSyncState = JSON.parse(
+    fs.readFileSync(path.join(dir, ".snipara", "team-sync", "session.json"), "utf8")
+  );
+  assert.equal(teamSyncState.handoffs.length, 1);
+  assert.equal(teamSyncState.handoffs[0].summary, "Closed local OSS workflow");
 });
 
 test("final-commit keeps custom categories on the final handoff-only path", () => {

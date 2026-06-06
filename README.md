@@ -27,12 +27,26 @@ flowchart LR
 
 ## Open Source Boundary
 
+`snipara-companion` is local-first. It should be useful on a repository even
+when the user has no Snipara account.
+
+| Mode | What works |
+| --- | --- |
+| Local only | `status`, `git summary`, `timeline`, workflow state, `phase-commit`, `final-commit`, local Team Sync handoffs, `code sync`, local code overlay |
+| Local + `snipara-memory` | local `recall`, `query`, `session-bootstrap`, and local memory in `brief` |
+| Snipara Cloud connected | all local features plus hosted memory, Project Intelligence context, What Changed, MCP context, code graph impact, symbol cards, dashboards, and operations |
+
+Cloud wins when connected: if the workspace has a valid Snipara API key and
+project binding, hosted commands use Cloud surfaces. Local fallbacks only run
+when Cloud is not configured.
+
 Open source in this repo:
 
 - local workflow files under `.snipara/`
-- status, timeline, handoff, resume, and phase-commit commands
+- status, git summary, timeline, handoff, resume, phase-commit, and final-commit commands
 - local hook/install helpers for supported AI coding clients
 - diagnostic and verification-plan facades
+- optional `snipara-memory` local fallback for memory recall/session context
 - optional calls to Hosted Snipara when project auth is configured
 
 Hosted Snipara:
@@ -145,6 +159,7 @@ session with `snipara-companion`:
 
 ```bash
 snipara-companion status
+snipara-companion git summary
 snipara-companion brief --task "ship auth hardening" --changed-files src/auth.ts
 snipara-companion timeline
 snipara-companion workflow phase-commit build --summary "tests green"
@@ -155,6 +170,8 @@ snipara-companion workflow resume --include-session-context
 
 - `status` is the Git-style local work status: workflow phase, latest phase
   commit, git dirtiness, Team Sync handoffs, local risks, and next action.
+- `git summary` is a local-only Git companion view: branch, HEAD, upstream
+  ahead/behind, dirty files, recent commits, and suggested next commands.
 - `brief` is the short alias for `intelligence brief`.
 - `timeline` is the Git-style log for workflow starts, phase starts, phase
   commits, final commits, and Team Sync handoffs.
@@ -179,9 +196,11 @@ The mental model is intentionally close to Git:
 API only for the final Team Sync handoff. The CLI sends a compact summary with a
 longer timeout, retries once with a shorter summary on transient hosted failures,
 and then records a local fallback handoff in `.snipara/team-sync/session.json`
-if the hosted call still times out. A hosted final-commit timeout does not modify
-Git state. Custom final-commit categories are namespaced under `final-commit`
-before the hosted call so they stay on the handoff-only path.
+if the hosted call still times out. Without Cloud config, `final-commit` closes
+the local workflow and writes the local handoff directly. A hosted final-commit
+timeout does not modify Git state. Custom final-commit categories are namespaced
+under `final-commit` before the hosted call so they stay on the handoff-only
+path.
 
 ## Verification Plans
 
@@ -672,6 +691,7 @@ Semantics:
 - `snipara-companion workflow run --mode orchestrate` = explicit hosted orchestrator flow for deeper multi-step exploration; use the Python `snipara-orchestrator` package for production gates and htasks
 - `snipara-companion workflow run` = suggests Snipara Sandbox when the query calls for validation, execution, data transforms, or heavier FULL/orchestrated work
 - `snipara-companion status` = top-level agentic work status across local workflow state, git dirtiness, and Team Sync carryover
+- `snipara-companion git summary` = local-only Git companion summary with branch, HEAD, upstream ahead/behind, dirty files, recent commits, and handoff-oriented next commands
 - `snipara-companion brief` = short alias for `snipara-companion intelligence brief`
 - `snipara-companion timeline` = local timeline of workflow starts, phase starts, phase commits, final commits, and Team Sync handoffs
 - `snipara-companion handoff` = top-level agent-ready Markdown/JSON handoff artifact plus the same local/hosted Team Sync handoff persistence
@@ -680,15 +700,15 @@ Semantics:
 - `snipara-companion workflow scaffold --preset project-intelligence-continuity-layer` = creates a four-phase managed plan for memory authority, code impact, continuity summaries, and release/docs surfaces
 - `snipara-companion workflow phase-start` = marks the current phase and prints the required Snipara context gate plus code-impact / symbol-card gates; runtime-marked phases also get a stable Snipara Sandbox session binding
 - `snipara-companion workflow runtime-checkpoint` = captures a resume-ready Snipara Sandbox checkpoint for one phase using local workflow state plus a hosted automation event when configured
-- `snipara-companion workflow phase-commit` = calls hosted `snipara_end_of_task_commit` for that phase, updates local state, and advances the next phase
-- `snipara-companion workflow resume` = reloads local workflow state plus hosted durable/session memory after compaction or resume, then appends the latest hosted Team Sync handoff/checkpoint context when available; runtime-bound phases also print a Snipara Sandbox reattach or rehydrate plan; rerun `workflow phase-start` before editing again
+- `snipara-companion workflow phase-commit` = updates local workflow state and advances the next phase; when Cloud is connected it also calls hosted `snipara_end_of_task_commit`
+- `snipara-companion workflow resume` = reloads local workflow state plus hosted durable/session memory when Cloud is connected, or local `snipara-memory` session context when available; runtime-bound phases also print a Snipara Sandbox reattach or rehydrate plan; rerun `workflow phase-start` before editing again
 - `snipara-companion workflow resume` does not snapshot or exactly restore a live Snipara Sandbox process; exact process restore remains a roadmap item
 - `snipara-companion team-sync start-work` = keeps the local session file and fetches the hosted Start Work Brief when the workspace has project auth
 - `snipara-companion team-sync handoff` = keeps the local handoff record and publishes the hosted handoff capsule when project auth is available
 - `snipara-companion team-sync what-changed` = prints the local state summary and the hosted What Changed For Me response when configured
 - `snipara-companion team-sync sweep` = archives stale local work items after an inactivity threshold; default is 14 days and `--dry-run` previews the cleanup
 - `snipara-companion team-sync resume` = reloads local carryover plus the hosted latest handoff and checkpoint-aware resume guidance when available
-- `snipara-companion final-commit` / `workflow final-commit` = final hosted commit for the managed workflow
+- `snipara-companion final-commit` / `workflow final-commit` = closes the managed workflow locally; when Cloud is connected it also persists the final hosted handoff, otherwise it writes a local Team Sync handoff
 - `snipara-companion code symbol-card` = direct paid Context `snipara_code_symbol_card` for an important symbol before editing, with an agent guidance summary before raw JSON
 - `snipara-companion code impact` = direct paid Context `snipara_code_impact` for changed files, a file, or a symbol before risky changes, with risk/actions/gaps summarized before raw JSON
 - `snipara-companion doctor` = local readiness check for Snipara auth, deterministic hosted tool catalog access, Snipara Sandbox, Snipara Sandbox MCP wiring, provider keys, and Docker
@@ -705,9 +725,10 @@ Semantics:
 - `snipara-companion memory compact` = hosted compaction preview only; it always calls `snipara_memory_compact` with `dry_run=true` and never mutates memory
 - `snipara-companion reindex` = trigger or poll hosted `snipara_reindex`; use after uploads when immediate chunk availability matters
 - `snipara-companion code *` = direct access to the code graph tools without routing through `snipara_context_query`
-- `snipara-companion recall` = direct durable memory lookup for decisions, learnings, preferences, and carryover
-- `snipara-companion session-bootstrap` = durable memory first, optional weak session carryover second
-- `snipara-companion task-commit` = durable task/phase/workflow outcomes only, not a mechanical mirror of every Git commit
+- `snipara-companion recall` = Cloud durable memory lookup when connected; otherwise local `snipara-memory` recall when installed
+- `snipara-companion query` = Cloud MCP context query when connected; otherwise local `snipara-memory` recall-style query when installed
+- `snipara-companion session-bootstrap` = Cloud durable/session memory when connected; otherwise local `snipara-memory` session bundle when installed
+- `snipara-companion task-commit` = hosted durable task/phase/workflow outcomes when connected; without Cloud, use local `team-sync handoff` or `final-commit` for OSS continuity
 - `snipara-companion memory-guard check` = forced memory/context recall before retries, commits, or finalization when a command failed or a publishable package surface is touched
 - `snipara-companion memory-guard check --intent "<action>" --destructive --strict` = contradiction check before irreversible actions; blocks until the user explicitly confirms when memory/context disagrees or the action is destructive
 - `snipara-companion memory-guard remember --guard-tag pre-commit --text "..."` = create a project/team memory in a guard category such as `pre-commit`, `commit`, `failure`, `pre-final`, or `workflow-policy`

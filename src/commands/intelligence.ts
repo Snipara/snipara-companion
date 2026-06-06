@@ -1,6 +1,8 @@
 import { execFileSync } from "node:child_process";
 import chalk from "chalk";
-import { createClient } from "../api/client";
+import { createClient, type RecallResult } from "../api/client";
+import { isConfigured } from "../config/store";
+import { recallLocalMemory } from "./local-memory";
 
 export interface ProjectIntelligenceBriefOptions {
   task?: string;
@@ -17,6 +19,7 @@ export interface ProjectIntelligenceBriefOptions {
 export interface ProjectIntelligenceBrief {
   version: "project-intelligence-brief-v1";
   generatedAt: string;
+  provider: "hosted" | "local";
   branch?: string;
   task?: string;
   changedFiles: string[];
@@ -24,6 +27,8 @@ export interface ProjectIntelligenceBrief {
   resumeContext?: Record<string, unknown>;
   memoryHealth?: Record<string, unknown>;
   codeImpact?: Record<string, unknown>;
+  localMemory?: RecallResult;
+  hosted?: Record<string, unknown>;
   errors: Array<{ surface: string; message: string }>;
   suggestedCommands: string[];
 }
@@ -113,10 +118,11 @@ function buildSuggestedCommands(args: {
   task?: string;
   changedFiles: string[];
   diffSummary?: string;
+  hosted: boolean;
 }): string[] {
   const commands = [
-    "snipara-companion team-sync what-changed",
-    "snipara-companion workflow resume --include-session-context",
+    "snipara-companion status",
+    "snipara-companion timeline",
   ];
 
   if (args.task) {
@@ -127,7 +133,15 @@ function buildSuggestedCommands(args: {
     );
   }
 
-  if (args.changedFiles.length > 0) {
+  if (args.hosted) {
+    commands.push("snipara-companion team-sync what-changed");
+    commands.push("snipara-companion workflow resume --include-session-context");
+  } else {
+    commands.push("snipara-companion git summary");
+    commands.push("snipara-companion code sync --working-tree");
+  }
+
+  if (args.hosted && args.changedFiles.length > 0) {
     commands.push(
       `snipara-companion code impact --changed-files ${args.changedFiles.join(" ")} --diff-summary ${JSON.stringify(
         args.diffSummary ?? args.task ?? "project intelligence change"
@@ -135,7 +149,9 @@ function buildSuggestedCommands(args: {
     );
   }
 
-  commands.push("snipara-companion code symbol-card --qualified-name '<symbol>'");
+  if (args.hosted) {
+    commands.push("snipara-companion code symbol-card --qualified-name '<symbol>'");
+  }
   commands.push("snipara-companion final-commit --summary '<final summary>' --files <files...>");
   return commands;
 }
@@ -146,23 +162,49 @@ export async function buildProjectIntelligenceBrief(
   const changedFiles = normalizeStringList(options.changedFiles);
   const recentFiles = normalizeStringList(options.recentFiles);
   const branch = options.branch ?? detectGitBranch();
-  const client = createClient(30000);
+  const hostedConfigured = isConfigured();
+  const client = hostedConfigured ? createClient(30000) : null;
   const errors: ProjectIntelligenceBrief["errors"] = [];
 
   const brief: ProjectIntelligenceBrief = {
     version: "project-intelligence-brief-v1",
     generatedAt: new Date().toISOString(),
+    provider: hostedConfigured ? "hosted" : "local",
     ...(branch ? { branch } : {}),
     ...(options.task ? { task: options.task } : {}),
     changedFiles,
     recentFiles,
+    hosted: hostedConfigured
+      ? { status: "connected" }
+      : {
+          status: "skipped",
+          reason: "not_configured",
+          cloudOnly: ["Project Intelligence context", "What Changed", "MCP context", "code graph"],
+        },
     errors,
     suggestedCommands: buildSuggestedCommands({
       task: options.task,
       changedFiles,
       diffSummary: options.diffSummary,
+      hosted: hostedConfigured,
     }),
   };
+
+  if (!client) {
+    try {
+      brief.localMemory = await recallLocalMemory({
+        query: options.task ?? "project continuity decisions handoff verification",
+        limit: 8,
+        includeArchived: true,
+      });
+    } catch (error) {
+      errors.push({
+        surface: "local_memory",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return brief;
+  }
 
   try {
     brief.resumeContext = await client.callTool<Record<string, unknown>>("snipara_resume_context", {
@@ -326,6 +368,7 @@ export async function projectIntelligenceBriefCommand(
   }
 
   console.log(chalk.bold("Project Intelligence Brief"));
+  console.log(`Provider: ${brief.provider === "hosted" ? "Hosted Snipara" : "Local OSS"}`);
   if (brief.branch) {
     console.log(`Branch: ${brief.branch}`);
   }
@@ -339,6 +382,15 @@ export async function projectIntelligenceBriefCommand(
 
   console.log(chalk.bold("Continuity"));
   printResumeContext(brief.resumeContext);
+  if (brief.localMemory) {
+    console.log("");
+    console.log(chalk.bold("Local Memory"));
+    console.log("Provider: snipara-memory");
+    console.log(`Matches: ${brief.localMemory.memories.length}`);
+    for (const memory of brief.localMemory.memories.slice(0, 5)) {
+      console.log(`- ${preview(memory.content, 180)}`);
+    }
+  }
   console.log("");
 
   console.log(chalk.bold("Memory Authority And Health"));
