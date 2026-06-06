@@ -1,6 +1,10 @@
 # snipara-companion
 
+[![npm version](https://img.shields.io/npm/v/snipara-companion.svg)](https://www.npmjs.com/package/snipara-companion)
+
 **Workflow continuity for AI coding agents. Start work, commit phases, resume anywhere.**
+
+Current npm release: `1.4.0`
 
 `snipara-companion` is the local workflow layer for agentic coding work. It gives
 AI coding agents Git-style continuity commands: status, briefs, timelines, phase
@@ -85,6 +89,10 @@ The MCP server advertises different tool surfaces depending on the `SNIPARA_EXPO
 ## Installation
 
 ```bash
+npx -y snipara-companion@1.4.0 --version
+npx -y snipara-companion@1.4.0 git summary
+
+# or install globally
 npm install -g snipara-companion
 # or
 pnpm add -g snipara-companion
@@ -111,6 +119,18 @@ pnpm pack:smoke
 This standalone repository is mirrored from the Snipara monorepo package source
 while the public repo is being bootstrapped. The npm package is
 `snipara-companion`.
+
+## New In 1.4.0
+
+- Adds local-first no-account behavior for workflow state, timeline, local Team
+  Sync handoffs, `phase-commit`, `final-commit`, code sync/overlay, and
+  `git summary`.
+- Adds optional `snipara-memory` fallback for local `recall`, `query`,
+  `session-bootstrap`, and local memory in `brief`.
+- Keeps Hosted Snipara authoritative when connected: hosted memory, Project
+  Intelligence context, What Changed, MCP context, code graph impact, and symbol
+  cards still use Cloud surfaces.
+- Keeps code graph impact chains and symbol cards Cloud-only.
 
 ## New In 1.3.7
 
