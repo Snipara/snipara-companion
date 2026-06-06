@@ -1,6 +1,6 @@
 {
   "name": "snipara-companion",
-  "version": "1.3.8",
+  "version": "1.4.0",
   "description": "Workflow continuity for AI coding agents. Start work, commit phases, resume anywhere.",
   "main": "dist/index.js",
   "bin": {
