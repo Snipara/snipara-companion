@@ -84,6 +84,7 @@ export interface CodeStatusCommandOptions {
 export interface CodeSyncCommandOptions extends CodeStatusCommandOptions {
   commit?: string;
   workingTree?: boolean;
+  onlyIfHead?: string;
 }
 
 export interface CodeUploadCommandOptions extends CodeStatusCommandOptions {
@@ -120,6 +121,8 @@ export interface CodeHooksInstallCommandOptions {
   dir?: string;
   maxFiles?: number;
   requestReindex?: boolean;
+  reindexDelaySeconds?: number;
+  synchronous?: boolean;
   dryRun?: boolean;
   json?: boolean;
 }
@@ -207,6 +210,7 @@ const SUPPORTED_EXTENSIONS = new Map<string, LocalCodeOverlayFile["language"]>([
 const DEFAULT_MAX_FILES = 2000;
 const DEFAULT_MAX_FILE_BYTES = 1024 * 1024;
 const DEFAULT_HOSTED_OVERLAY_TTL_HOURS = 48;
+const DEFAULT_HOOK_REINDEX_DELAY_SECONDS = 5;
 const CACHE_RELATIVE_PATH = path.join(".snipara", "code-overlay", "latest.json");
 const PROMOTION_RELATIVE_PATH = path.join(".snipara", "code-overlay", "promotion.json");
 const HOOK_BLOCK_PREFIX = "snipara:code-overlay";
@@ -262,6 +266,10 @@ function ensureTrailingNewline(content: string): string {
 
 function positiveInteger(value: number | undefined, fallback: number): number {
   return Number.isFinite(value) && value !== undefined && value > 0 ? Math.floor(value) : fallback;
+}
+
+function nonNegativeInteger(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) && value !== undefined && value >= 0 ? Math.floor(value) : fallback;
 }
 
 function runGit(args: string[], cwd: string): string | null {
@@ -1001,14 +1009,42 @@ export function buildCodeStatusResult(options: CodeStatusCommandOptions): Record
 }
 
 export function buildCodeSyncResult(options: CodeSyncCommandOptions): Record<string, unknown> {
+  const repoRoot = resolveRepoRoot(options.dir ?? process.cwd());
   const mode: LocalCodeOverlayMode =
     options.commit && !options.workingTree ? "local_commit" : "working_tree";
+  const expectedHeadSha = options.onlyIfHead
+    ? resolveCommitSha(repoRoot, options.onlyIfHead)
+    : null;
+  const currentHeadBefore = readHeadSha(repoRoot);
+
+  if (expectedHeadSha && currentHeadBefore && currentHeadBefore !== expectedHeadSha) {
+    return {
+      skipped: true,
+      skipReason: "head_changed",
+      expectedHeadSha,
+      currentHeadSha: currentHeadBefore,
+      cachePath: getLocalCodeOverlayCachePath(repoRoot),
+    };
+  }
+
   const manifest = buildLocalCodeOverlay({
-    cwd: options.dir,
+    cwd: repoRoot,
     mode,
     commit: options.commit ?? "HEAD",
     maxFiles: options.maxFiles,
   });
+  const currentHeadAfter = readHeadSha(repoRoot);
+
+  if (expectedHeadSha && currentHeadAfter && currentHeadAfter !== expectedHeadSha) {
+    return {
+      skipped: true,
+      skipReason: "head_changed",
+      expectedHeadSha,
+      currentHeadSha: currentHeadAfter,
+      cachePath: getLocalCodeOverlayCachePath(repoRoot),
+    };
+  }
+
   const cachePath = writeLocalCodeOverlayCache(manifest);
   return options.includeGraph
     ? { ...manifest, cachePath }
@@ -1171,22 +1207,37 @@ export function buildLocalImpactResult(
   }
 
   const edges = buildLocalFileEdges(manifest);
-  const changedFiles = [...selectedFiles].filter((filePath) =>
-    manifest.files.some((file) => file.path === filePath)
-  );
+  const manifestFiles = new Set(manifest.files.map((file) => file.path));
+  const requestedFiles = [...selectedFiles].sort();
+  const changedFiles = requestedFiles.filter((filePath) => manifestFiles.has(filePath));
+  const missingTargetFiles = requestedFiles.filter((filePath) => !manifestFiles.has(filePath));
   const incoming = edges.filter((edge) => selectedFiles.has(edge.to));
   const outgoing = edges.filter((edge) => selectedFiles.has(edge.from));
   const impactedFiles = [
     ...new Set([...incoming.map((edge) => edge.from), ...outgoing.map((edge) => edge.to)]),
   ].sort();
+  const warnings =
+    missingTargetFiles.length > 0
+      ? [
+          {
+            code: "local_impact_targets_missing",
+            severity: "warning",
+            message:
+              "One or more requested impact targets are not present in the selected local overlay. Rebuild without --cached or rerun code sync with a larger --max-files value.",
+            files: missingTargetFiles,
+          },
+        ]
+      : [];
 
   return {
     title: "Local impact",
     caveat:
       "Local impact currently reports file-level import neighbors in the local overlay; hosted snipara_code_impact remains the canonical richer impact model after push/index.",
     scope: summarizeLocalCodeOverlay(manifest),
-    target: symbol ? compactSymbol(symbol) : { changedFiles },
+    target: symbol ? compactSymbol(symbol) : { changedFiles, missingTargetFiles },
     changedFiles,
+    missingTargetFiles,
+    warnings,
     symbols: manifest.symbols.filter((item) => selectedFiles.has(item.filePath)).map(compactSymbol),
     incoming,
     outgoing,
@@ -1250,6 +1301,14 @@ export async function codeSyncCommand(options: CodeSyncCommandOptions): Promise<
     return;
   }
 
+  if (result.skipped) {
+    console.log(chalk.bold("Local Code Overlay"));
+    console.log(`Skipped: ${String(result.skipReason ?? "unknown")}`);
+    console.log(`Expected HEAD: ${String(result.expectedHeadSha ?? "unknown")}`);
+    console.log(`Current HEAD: ${String(result.currentHeadSha ?? "unknown")}`);
+    return;
+  }
+
   const mode: LocalCodeOverlayMode =
     options.commit && !options.workingTree ? "local_commit" : "working_tree";
   const manifest = buildLocalCodeOverlay({
@@ -1293,20 +1352,49 @@ function buildGitHookBlock(
   options: CodeHooksInstallCommandOptions
 ): string {
   const maxFiles = positiveInteger(options.maxFiles, DEFAULT_MAX_FILES);
+  const reindexDelaySeconds = nonNegativeInteger(
+    options.reindexDelaySeconds,
+    DEFAULT_HOOK_REINDEX_DELAY_SECONDS
+  );
+  const requestReindex = options.requestReindex !== false;
+  const syncWithHeadGuard =
+    'snipara-companion code sync --commit "$SNIPARA_CODE_OVERLAY_HEAD" --only-if-head "$SNIPARA_CODE_OVERLAY_HEAD" --max-files "$SNIPARA_CODE_OVERLAY_MAX_FILES" --json';
+  const syncFallback =
+    'snipara-companion code sync --commit "$SNIPARA_CODE_OVERLAY_HEAD" --max-files "$SNIPARA_CODE_OVERLAY_MAX_FILES" --json';
+  const syncCommand = `${syncWithHeadGuard} || ${syncFallback}`;
+  const promoteCommand = [
+    'snipara-companion code promote --from-hook pre-push --max-files "$SNIPARA_CODE_OVERLAY_MAX_FILES"',
+    requestReindex ? "--request-reindex" : "",
+    "--json",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   const command =
     hookName === "post-commit"
-      ? 'snipara-companion code sync --commit HEAD --max-files "$SNIPARA_CODE_OVERLAY_MAX_FILES" --json >/dev/null 2>&1 || true'
-      : [
-          'snipara-companion code promote --from-hook pre-push --max-files "$SNIPARA_CODE_OVERLAY_MAX_FILES"',
-          options.requestReindex === false ? "" : "--request-reindex",
-          "--json >/dev/null 2>&1 || true",
-        ]
-          .filter(Boolean)
-          .join(" ");
+      ? options.synchronous
+        ? `SNIPARA_CODE_OVERLAY_HEAD="$(git rev-parse --verify HEAD 2>/dev/null || true)"\n  if [ -n "$SNIPARA_CODE_OVERLAY_HEAD" ]; then\n    ${syncCommand} >/dev/null 2>&1 || true\n  fi`
+        : `SNIPARA_CODE_OVERLAY_HEAD="$(git rev-parse --verify HEAD 2>/dev/null || true)"\n  if [ -n "$SNIPARA_CODE_OVERLAY_HEAD" ]; then\n    ( ${syncCommand} ) >/dev/null 2>&1 &\n  fi`
+      : options.synchronous
+        ? `${promoteCommand} >/dev/null 2>&1 || true`
+        : [
+            'SNIPARA_CODE_OVERLAY_PRE_PUSH_INPUT="$(cat)"',
+            requestReindex
+              ? `SNIPARA_CODE_OVERLAY_REINDEX_DELAY_SECONDS="\${SNIPARA_CODE_OVERLAY_REINDEX_DELAY_SECONDS:-${reindexDelaySeconds}}"`
+              : "",
+            "(",
+            requestReindex
+              ? '  if [ "$SNIPARA_CODE_OVERLAY_REINDEX_DELAY_SECONDS" != "0" ]; then\n      sleep "$SNIPARA_CODE_OVERLAY_REINDEX_DELAY_SECONDS"\n    fi'
+              : "",
+            `  printf "%s\\n" "$SNIPARA_CODE_OVERLAY_PRE_PUSH_INPUT" | ${promoteCommand}`,
+            ") >/dev/null 2>&1 &",
+          ]
+            .filter(Boolean)
+            .join("\n  ");
 
   return [
     hookBlockMarker(hookName, "start"),
-    "# Keep local code graph overlays fresh for any agent before hosted push/index catches up.",
+    "# Keep local code graph overlays fresh without blocking normal Git commands.",
     "if command -v snipara-companion >/dev/null 2>&1; then",
     `  SNIPARA_CODE_OVERLAY_MAX_FILES="\${SNIPARA_CODE_OVERLAY_MAX_FILES:-${maxFiles}}"`,
     `  ${command}`,
@@ -1391,6 +1479,11 @@ export function buildCodeHooksInstallPlan(
     })),
     dryRun: Boolean(options.dryRun),
     requestReindex: options.requestReindex !== false,
+    execution: options.synchronous ? "foreground" : "background",
+    reindexDelaySeconds: nonNegativeInteger(
+      options.reindexDelaySeconds,
+      DEFAULT_HOOK_REINDEX_DELAY_SECONDS
+    ),
     maxFiles: positiveInteger(options.maxFiles, DEFAULT_MAX_FILES),
   };
 }
@@ -1408,6 +1501,7 @@ export async function codeHooksInstallCommand(
   for (const hook of result.hooks as Array<{ hook: string; path: string; action: string }>) {
     console.log(`${hook.hook}: ${hook.action} (${hook.path})`);
   }
+  console.log(`Execution: ${String(result.execution)}`);
 }
 
 async function readOptionalProcessStdin(): Promise<string> {

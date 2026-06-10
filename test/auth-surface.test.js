@@ -260,8 +260,14 @@ for (const commandCase of projectAuthCommandCases) {
         "utf8"
       );
       const prePushHook = fs.readFileSync(path.join(dir, ".git", "hooks", "pre-push"), "utf8");
-      assert.match(postCommitHook, /snipara-companion code sync --commit HEAD/);
+      assert.match(
+        postCommitHook,
+        /snipara-companion code sync --commit "\$SNIPARA_CODE_OVERLAY_HEAD"/
+      );
+      assert.match(postCommitHook, /--only-if-head "\$SNIPARA_CODE_OVERLAY_HEAD"/);
+      assert.match(postCommitHook, /&/);
       assert.match(prePushHook, /snipara-companion code promote --from-hook pre-push/);
+      assert.match(prePushHook, /SNIPARA_CODE_OVERLAY_PRE_PUSH_INPUT="\$\(cat\)"/);
     }
 
     const workspaceConfig = JSON.parse(
@@ -500,10 +506,12 @@ test("init with an API key and multiple projects requires an explicit project ch
 
 test("configured-only commands do not start hidden browser auth when auth is missing", () => {
   const commandCases = [
+    ["query", "--query", "auth middleware", "--max-tokens", "100"],
     ["shared-context", "--categories", "MANDATORY"],
     ["automations", "install", "--client", "claude-code"],
     ["automations", "diff", "--client", "claude-code"],
     ["workflow", "run", "--mode", "standard", "--query", "auth middleware"],
+    ["recall", "--query", "auth decisions"],
   ];
 
   for (const args of commandCases) {
@@ -525,41 +533,6 @@ test("configured-only commands do not start hidden browser auth when auth is mis
     assert.doesNotMatch(output, /Opening browser to authorize/);
     assert.doesNotMatch(output, /Verification URL/);
     assert.match(output, /npx -y snipara-companion@latest init/);
-
-    const calls = readFetchCalls(callsPath);
-    assert.equal(
-      calls.some((call) => call.url.includes("/api/oauth/device/code")),
-      false,
-      `${args.join(" ")} unexpectedly started browser auth`
-    );
-  }
-});
-
-test("local-capable memory commands do not start hidden browser auth when auth is missing", () => {
-  const commandCases = [
-    ["query", "--query", "auth middleware", "--max-tokens", "100"],
-    ["recall", "--query", "auth decisions"],
-  ];
-
-  for (const args of commandCases) {
-    const { dir, home } = makeTempWorkspace(`snipara-auth-local-${args[0]}`, {
-      projectSlug: false,
-      gitRemote: false,
-    });
-    const binDir = makeNoopBrowserBin(dir);
-    const { preloadPath, callsPath } = writeAuthPreload(dir);
-
-    const result = runCli(args, {
-      cwd: dir,
-      env: { HOME: home, PATH: `${binDir}${path.delimiter}${process.env.PATH}` },
-      nodeArgs: ["-r", preloadPath],
-    });
-    const output = `${result.stdout}\n${result.stderr}`;
-
-    assert.equal(result.status, 0, `${args.join(" ")} should degrade locally:\n${output}`);
-    assert.doesNotMatch(output, /Opening browser to authorize/);
-    assert.doesNotMatch(output, /Verification URL/);
-    assert.match(output, /Local|snipara-memory|Hosted Snipara is not connected/);
 
     const calls = readFetchCalls(callsPath);
     assert.equal(

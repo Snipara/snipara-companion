@@ -741,6 +741,143 @@ export interface TeamSyncResumeResponse {
   caveats: string[];
 }
 
+export type CollaborationActorType = "HUMAN" | "AGENT" | "SYSTEM";
+export type CollaborationResourceKind =
+  | "FILE"
+  | "ROUTE"
+  | "SYMBOL"
+  | "SCHEMA"
+  | "PACKAGE"
+  | "DEPLOY"
+  | "SURFACE"
+  | "CUSTOM";
+export type CollaborationLeaseMode =
+  | "WATCH"
+  | "ADVISORY"
+  | "REQUIRES_ACK"
+  | "EXCLUSIVE"
+  | "HARD_BLOCK";
+export type CollaborationLeaseStatus = "ACTIVE" | "RELEASED" | "EXPIRED" | "OVERRIDDEN";
+export type CollaborationConflictSeverity = "INFO" | "WATCH" | "WARNING" | "CRITICAL";
+export type CollaborationGuardDecision =
+  | "CLEAR"
+  | "WATCH"
+  | "REVIEW_REQUIRED"
+  | "REQUIRES_ACK"
+  | "BLOCKED";
+
+export interface CollaborationResource {
+  kind: CollaborationResourceKind;
+  id: string;
+  label?: string;
+  sourcePath?: string;
+}
+
+export interface CollaborationActorPayload {
+  actorId?: string;
+  actorType?: CollaborationActorType;
+  actorLabel?: string;
+  sessionId?: string;
+}
+
+export interface CollaborationSessionSummary {
+  id: string;
+  actorId: string;
+  actorType: CollaborationActorType;
+  actorLabel?: string | null;
+  sessionId?: string | null;
+  swarmId?: string | null;
+  client?: string | null;
+  repository?: string | null;
+  branch?: string | null;
+  worktree?: string | null;
+  task?: string | null;
+  status: string;
+  dirtyFiles?: string[];
+  startedAt?: string;
+  lastHeartbeatAt?: string;
+  heartbeatTtlSeconds?: number | null;
+  [key: string]: unknown;
+}
+
+export interface CollaborationLeaseSummary {
+  id: string;
+  workSessionId?: string | null;
+  swarmId?: string | null;
+  resourceKind: CollaborationResourceKind;
+  resourceId: string;
+  resourceLabel?: string | null;
+  mode: CollaborationLeaseMode;
+  status: CollaborationLeaseStatus;
+  claimedByActorId: string;
+  claimedByActorType: CollaborationActorType;
+  claimedByLabel?: string | null;
+  reason?: string | null;
+  claimedAt?: string;
+  heartbeatAt?: string;
+  expiresAt?: string | null;
+  [key: string]: unknown;
+}
+
+export interface CollaborationConflict {
+  code: string;
+  decision: CollaborationGuardDecision;
+  severity: CollaborationConflictSeverity;
+  resource: CollaborationResource;
+  conflictingActor: {
+    actorId: string;
+    actorType: CollaborationActorType;
+    actorLabel?: string | null;
+    sessionId?: string | null;
+  };
+  reason: string;
+  recommendedAction: string;
+  leaseId?: string | null;
+  workSessionId?: string | null;
+}
+
+export interface CollaborationGuardEvaluation {
+  decision: CollaborationGuardDecision;
+  severity: CollaborationConflictSeverity;
+  evaluatedAt: string;
+  resources: CollaborationResource[];
+  conflicts: CollaborationConflict[];
+  recommendedActions: string[];
+}
+
+export interface CollaborationStateResponse {
+  project: TeamSyncProjectSummary;
+  sessions: CollaborationSessionSummary[];
+  leases: CollaborationLeaseSummary[];
+  events?: Array<Record<string, unknown>>;
+  sessionSnapshots: unknown[];
+  leaseSnapshots: unknown[];
+}
+
+export interface CollaborationSessionResponse {
+  project: TeamSyncProjectSummary;
+  session: CollaborationSessionSummary;
+  resources: CollaborationResource[];
+}
+
+export interface CollaborationLeaseResponse {
+  project: TeamSyncProjectSummary;
+  resources: CollaborationResource[];
+  leases: CollaborationLeaseSummary[];
+}
+
+export interface CollaborationLeaseUpdateResponse {
+  project: TeamSyncProjectSummary;
+  lease: CollaborationLeaseSummary;
+}
+
+export interface CollaborationGuardResponse {
+  project: TeamSyncProjectSummary;
+  resources: CollaborationResource[];
+  evaluation: CollaborationGuardEvaluation;
+  guardEvent: Record<string, unknown> | null;
+}
+
 export interface ApiKeyProjectSummary {
   id: string;
   name: string;
@@ -981,6 +1118,62 @@ export class RLMClient {
     }
 
     return retryResponse;
+  }
+
+  private async dashboardProjectRequest<T>(
+    pathSuffix: string,
+    init: {
+      method: string;
+      body?: unknown;
+    },
+    options: {
+      invalidMessage: string;
+      validate?: (data: T) => boolean;
+    }
+  ): Promise<T> {
+    if (!this.config.apiKey) {
+      throw new Error("API key not configured. Run 'npx -y snipara-companion@latest init' first.");
+    }
+
+    const projectIdentifier = this.resolveProjectIdentifier();
+    const projectId = encodeURIComponent(projectIdentifier);
+    const url = `${this.dashboardApiUrl()}/api/projects/${projectId}${pathSuffix}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+
+    try {
+      const response = await this.fetchWithApiKeyRetry(
+        url,
+        {
+          method: init.method,
+          headers: {
+            "Content-Type": "application/json",
+          },
+          ...(init.body ? { body: JSON.stringify(init.body) } : {}),
+          signal: controller.signal,
+        },
+        projectIdentifier
+      );
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const envelope = (await response.json()) as {
+        success: boolean;
+        data?: T;
+      };
+
+      if (!envelope.success || !envelope.data || options.validate?.(envelope.data) === false) {
+        throw new Error(options.invalidMessage);
+      }
+
+      return envelope.data;
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   /**
@@ -1985,6 +2178,149 @@ export class RLMClient {
     } finally {
       clearTimeout(timeoutId);
     }
+  }
+
+  async getCollaborationState(): Promise<CollaborationStateResponse> {
+    return this.dashboardProjectRequest<CollaborationStateResponse>(
+      "/collaboration/sessions",
+      {
+        method: "GET",
+      },
+      {
+        invalidMessage: "Collaboration state response was invalid",
+        validate: (data) => Array.isArray(data.sessions) && Array.isArray(data.leases),
+      }
+    );
+  }
+
+  async startCollaborationSession(
+    args: CollaborationActorPayload & {
+      workSessionId?: string;
+      swarmId?: string;
+      client?: string;
+      repository?: string;
+      branch?: string;
+      worktree?: string;
+      task?: string;
+      heartbeatTtlSeconds?: number;
+      files?: string[];
+      dirtyFiles?: string[];
+      resources?: CollaborationResource[];
+      metadata?: Record<string, unknown>;
+    }
+  ): Promise<CollaborationSessionResponse> {
+    return this.dashboardProjectRequest<CollaborationSessionResponse>(
+      "/collaboration/sessions",
+      {
+        method: "POST",
+        body: args,
+      },
+      {
+        invalidMessage: "Collaboration session response was invalid",
+        validate: (data) => Boolean(data.session?.id) && Array.isArray(data.resources),
+      }
+    );
+  }
+
+  async updateCollaborationSession(
+    workSessionId: string,
+    args: CollaborationActorPayload & {
+      status?: "ACTIVE" | "STALE" | "COMPLETED" | "ABANDONED";
+      swarmId?: string;
+      client?: string;
+      repository?: string;
+      branch?: string;
+      worktree?: string;
+      task?: string;
+      heartbeatTtlSeconds?: number;
+      files?: string[];
+      dirtyFiles?: string[];
+      resources?: CollaborationResource[];
+      metadata?: Record<string, unknown>;
+    }
+  ): Promise<CollaborationSessionResponse> {
+    return this.dashboardProjectRequest<CollaborationSessionResponse>(
+      `/collaboration/sessions/${encodeURIComponent(workSessionId)}`,
+      {
+        method: "PATCH",
+        body: args,
+      },
+      {
+        invalidMessage: "Collaboration session update response was invalid",
+        validate: (data) => Boolean(data.session?.id) && Array.isArray(data.resources),
+      }
+    );
+  }
+
+  async createCollaborationLeases(
+    args: CollaborationActorPayload & {
+      workSessionId?: string;
+      swarmId?: string;
+      mode?: CollaborationLeaseMode;
+      reason?: string;
+      ttlSeconds?: number;
+      files?: string[];
+      resources?: CollaborationResource[];
+      metadata?: Record<string, unknown>;
+    }
+  ): Promise<CollaborationLeaseResponse> {
+    return this.dashboardProjectRequest<CollaborationLeaseResponse>(
+      "/collaboration/leases",
+      {
+        method: "POST",
+        body: args,
+      },
+      {
+        invalidMessage: "Collaboration lease response was invalid",
+        validate: (data) => Array.isArray(data.resources) && Array.isArray(data.leases),
+      }
+    );
+  }
+
+  async updateCollaborationLease(
+    leaseId: string,
+    args: {
+      action?: "heartbeat" | "release" | "override";
+      reason?: string;
+    }
+  ): Promise<CollaborationLeaseUpdateResponse> {
+    return this.dashboardProjectRequest<CollaborationLeaseUpdateResponse>(
+      `/collaboration/leases/${encodeURIComponent(leaseId)}`,
+      {
+        method: "PATCH",
+        body: args,
+      },
+      {
+        invalidMessage: "Collaboration lease update response was invalid",
+        validate: (data) => Boolean(data.lease?.id),
+      }
+    );
+  }
+
+  async evaluateCollaborationGuard(
+    args: CollaborationActorPayload & {
+      workSessionId?: string;
+      action?: string;
+      files?: string[];
+      resources?: CollaborationResource[];
+      persist?: boolean;
+      metadata?: Record<string, unknown>;
+    }
+  ): Promise<CollaborationGuardResponse> {
+    return this.dashboardProjectRequest<CollaborationGuardResponse>(
+      "/collaboration/guard",
+      {
+        method: "POST",
+        body: args,
+      },
+      {
+        invalidMessage: "Collaboration guard response was invalid",
+        validate: (data) =>
+          Array.isArray(data.resources) &&
+          Boolean(data.evaluation?.decision) &&
+          Array.isArray(data.evaluation.conflicts),
+      }
+    );
   }
 
   async plan(query: string, maxTokens?: number): Promise<Record<string, unknown>> {

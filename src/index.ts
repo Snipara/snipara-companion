@@ -20,6 +20,7 @@ import {
   memoryCompactCommand,
   memoryHealthCommand,
 } from "./commands/memory";
+import { evalExportCommand, evalRunCommand, memoryLocalCommand } from "./commands/local-stack";
 import { memoryGuardCheckCommand, rememberGuardMemoryCommand } from "./commands/memory-guard";
 import { doctorCommand } from "./commands/doctor";
 import {
@@ -44,7 +45,6 @@ import {
 } from "./commands/automations";
 import { projectIntelligenceBriefCommand } from "./commands/intelligence";
 import { referencesIngestCommand, referencesScanCommand } from "./commands/references";
-import { gitSummaryCommand } from "./commands/git";
 import { verifyCommand } from "./commands/verify";
 import {
   agenticHandoffCommand,
@@ -55,6 +55,16 @@ import {
   teamSyncSweepCommand,
   teamSyncWhatChangedCommand,
 } from "./commands/team-sync";
+import {
+  collaborationClaimCommand,
+  collaborationGuardCommand,
+  collaborationHooksInstallCommand,
+  collaborationIdeStatusCommand,
+  collaborationReleaseCommand,
+  collaborationStartCommand,
+  collaborationStatusCommand,
+  collaborationWatchCommand,
+} from "./commands/collaboration";
 import {
   agenticStatusCommand,
   businessHealthCommand,
@@ -125,10 +135,6 @@ export {
   runMemoryGuardCheck,
 } from "./commands/memory-guard";
 export {
-  buildGitCompanionSummary,
-  gitSummaryCommand,
-} from "./commands/git";
-export {
   buildProjectIntelligenceBrief,
   projectIntelligenceBriefCommand,
 } from "./commands/intelligence";
@@ -139,6 +145,12 @@ export {
   memoryCompactCommand,
   memoryHealthCommand,
 } from "./commands/memory";
+export {
+  buildEvalCaseArtifact,
+  evalExportCommand,
+  evalRunCommand,
+  memoryLocalCommand,
+} from "./commands/local-stack";
 export { buildVerificationPlan, verifyCommand } from "./commands/verify";
 export {
   buildCodeHooksInstallPlan,
@@ -206,6 +218,19 @@ export {
   teamSyncSweepCommand,
   TEAM_SYNC_STATE_RELATIVE_PATH,
 } from "./commands/team-sync";
+export {
+  buildCollaborationActor,
+  buildCollaborationHooksInstallPlan,
+  COLLABORATION_STATE_RELATIVE_PATH,
+  createEmptyCollaborationState,
+  deriveLocalCollaborationResourcesFromFiles,
+  getCollaborationStatePath,
+  loadCollaborationState,
+  normalizeCollaborationFiles,
+  parseCollaborationResources,
+  saveCollaborationState,
+  collaborationIdeStatusCommand,
+} from "./commands/collaboration";
 export { buildJournalCheckpointEntry } from "./commands/journal";
 export {
   detectRuntimeEnvironment,
@@ -326,20 +351,6 @@ program
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await agenticStatusCommand({ json: Boolean(options.json) });
-  });
-
-const git = program.command("git").description("Local Git companion commands");
-
-git
-  .command("summary")
-  .description("Show a local Git summary for agent handoff and review")
-  .option("--recent <number>", "Recent commit count", "5")
-  .option("--json", "Print raw JSON")
-  .action(async (options) => {
-    await gitSummaryCommand({
-      recent: parseInt(options.recent, 10),
-      json: Boolean(options.json),
-    });
   });
 
 program
@@ -1771,6 +1782,285 @@ teamSync
     });
   });
 
+const collaboration = program
+  .command("collaboration")
+  .alias("collab")
+  .description("Publish safe parallel-coding presence, claims, locks, and guard checks");
+
+collaboration
+  .command("start")
+  .description("Start or heartbeat a collaboration work session for this repo")
+  .option("-s, --summary <summary>", "Short work intent")
+  .option("-f, --files <files...>", "Files expected to change (defaults to dirty git files)")
+  .option("-r, --resource <resources...>", "Explicit resources in KIND:id format")
+  .option("--actor <actor>", "Developer or agent display name")
+  .option("--actor-id <actorId>", "Stable developer or agent id")
+  .option("--actor-type <actorType>", "HUMAN|AGENT|SYSTEM", "AGENT")
+  .option("--session-id <sessionId>", "Automation/session id")
+  .option("--work-session-id <workSessionId>", "Existing hosted work session id")
+  .option("--swarm-id <swarmId>", "Optional swarm id")
+  .option("--client <client>", "Client label", "snipara-companion")
+  .option("--repository <repository>", "Repository id")
+  .option("-b, --branch <branch>", "Current branch name")
+  .option("--worktree <worktree>", "Worktree path")
+  .option("--heartbeat-ttl-seconds <seconds>", "Heartbeat TTL in seconds")
+  .option("-d, --dir <directory>", "Repository directory (default: current)")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await collaborationStartCommand({
+      summary: options.summary,
+      files: options.files,
+      resources: options.resource,
+      actor: options.actor,
+      actorId: options.actorId,
+      actorType: options.actorType,
+      sessionId: options.sessionId,
+      workSessionId: options.workSessionId,
+      swarmId: options.swarmId,
+      client: options.client,
+      repository: options.repository,
+      branch: options.branch,
+      worktree: options.worktree,
+      heartbeatTtlSeconds: options.heartbeatTtlSeconds,
+      dir: options.dir,
+      json: options.json,
+    });
+  });
+
+collaboration
+  .command("watch")
+  .description("Continuously publish presence, heartbeat active leases, and auto-claim dirty files")
+  .option("-s, --summary <summary>", "Short work intent")
+  .option("-f, --files <files...>", "Files expected to change (defaults to dirty git files)")
+  .option("-r, --resource <resources...>", "Explicit resources in KIND:id format")
+  .option("-m, --mode <mode>", "WATCH|ADVISORY|REQUIRES_ACK|EXCLUSIVE|HARD_BLOCK", "WATCH")
+  .option("--reason <reason>", "Claim reason")
+  .option("--ttl-seconds <seconds>", "Lease TTL in seconds")
+  .option("--heartbeat-ttl-seconds <seconds>", "Session heartbeat TTL in seconds")
+  .option("--interval-seconds <seconds>", "Polling interval", "15")
+  .option("--max-files <number>", "Maximum files for local code resource expansion", "2000")
+  .option("--once", "Run one watch tick and exit")
+  .option("--no-auto-claim", "Publish presence without creating or heartbeating leases")
+  .option("--no-release-stale", "Keep local active leases even when files are no longer dirty")
+  .option("--actor <actor>", "Developer or agent display name")
+  .option("--actor-id <actorId>", "Stable developer or agent id")
+  .option("--actor-type <actorType>", "HUMAN|AGENT|SYSTEM", "AGENT")
+  .option("--session-id <sessionId>", "Automation/session id")
+  .option("--work-session-id <workSessionId>", "Existing hosted work session id")
+  .option("--swarm-id <swarmId>", "Optional swarm id")
+  .option("--client <client>", "Client label", "snipara-companion")
+  .option("--repository <repository>", "Repository id")
+  .option("-b, --branch <branch>", "Current branch name")
+  .option("--worktree <worktree>", "Worktree path")
+  .option("-d, --dir <directory>", "Repository directory (default: current)")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await collaborationWatchCommand({
+      summary: options.summary,
+      files: options.files,
+      resources: options.resource,
+      mode: options.mode,
+      reason: options.reason,
+      ttlSeconds: options.ttlSeconds,
+      heartbeatTtlSeconds: options.heartbeatTtlSeconds,
+      intervalSeconds: options.intervalSeconds,
+      maxFiles: options.maxFiles,
+      once: Boolean(options.once),
+      autoClaim: options.autoClaim !== false,
+      releaseStale: options.releaseStale !== false,
+      actor: options.actor,
+      actorId: options.actorId,
+      actorType: options.actorType,
+      sessionId: options.sessionId,
+      workSessionId: options.workSessionId,
+      swarmId: options.swarmId,
+      client: options.client,
+      repository: options.repository,
+      branch: options.branch,
+      worktree: options.worktree,
+      dir: options.dir,
+      json: options.json,
+    });
+  });
+
+collaboration
+  .command("claim")
+  .description("Claim or lock resources so other humans and agents can see overlap")
+  .option("-f, --files <files...>", "Files to claim")
+  .option("-r, --resource <resources...>", "Explicit resources in KIND:id format")
+  .option("-m, --mode <mode>", "WATCH|ADVISORY|REQUIRES_ACK|EXCLUSIVE|HARD_BLOCK", "ADVISORY")
+  .option("--reason <reason>", "Why the resource is claimed")
+  .option("--ttl-seconds <seconds>", "Lease TTL in seconds")
+  .option("--actor <actor>", "Developer or agent display name")
+  .option("--actor-id <actorId>", "Stable developer or agent id")
+  .option("--actor-type <actorType>", "HUMAN|AGENT|SYSTEM", "AGENT")
+  .option("--session-id <sessionId>", "Automation/session id")
+  .option("--work-session-id <workSessionId>", "Existing hosted work session id")
+  .option("--swarm-id <swarmId>", "Optional swarm id")
+  .option("--client <client>", "Client label", "snipara-companion")
+  .option("--repository <repository>", "Repository id")
+  .option("-b, --branch <branch>", "Current branch name")
+  .option("--worktree <worktree>", "Worktree path")
+  .option("-d, --dir <directory>", "Repository directory (default: current)")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await collaborationClaimCommand({
+      files: options.files,
+      resources: options.resource,
+      mode: options.mode,
+      reason: options.reason,
+      ttlSeconds: options.ttlSeconds,
+      actor: options.actor,
+      actorId: options.actorId,
+      actorType: options.actorType,
+      sessionId: options.sessionId,
+      workSessionId: options.workSessionId,
+      swarmId: options.swarmId,
+      client: options.client,
+      repository: options.repository,
+      branch: options.branch,
+      worktree: options.worktree,
+      dir: options.dir,
+      json: options.json,
+    });
+  });
+
+collaboration
+  .command("guard")
+  .description("Check files or resources against active collaboration sessions and locks")
+  .option("-f, --files <files...>", "Files to guard (defaults to dirty git files)")
+  .option("-r, --resource <resources...>", "Explicit resources in KIND:id format")
+  .option(
+    "--profile <profile>",
+    "edit|pre-commit|pre-push|pre-deploy|migration|schema|release-package",
+    "edit"
+  )
+  .option("-a, --action <action>", "Guarded action label", "edit")
+  .option("--actor <actor>", "Developer or agent display name")
+  .option("--actor-id <actorId>", "Stable developer or agent id")
+  .option("--actor-type <actorType>", "HUMAN|AGENT|SYSTEM", "AGENT")
+  .option("--session-id <sessionId>", "Automation/session id")
+  .option("--work-session-id <workSessionId>", "Existing hosted work session id")
+  .option("--client <client>", "Client label", "snipara-companion")
+  .option("--repository <repository>", "Repository id")
+  .option("-b, --branch <branch>", "Current branch name")
+  .option("--worktree <worktree>", "Worktree path")
+  .option("--no-persist", "Evaluate without storing a guard event")
+  .option("--enforce", "Exit non-zero for REVIEW_REQUIRED or REQUIRES_ACK, not only BLOCKED")
+  .option("-d, --dir <directory>", "Repository directory (default: current)")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await collaborationGuardCommand({
+      files: options.files,
+      resources: options.resource,
+      profile: options.profile,
+      action: options.action,
+      actor: options.actor,
+      actorId: options.actorId,
+      actorType: options.actorType,
+      sessionId: options.sessionId,
+      workSessionId: options.workSessionId,
+      client: options.client,
+      repository: options.repository,
+      branch: options.branch,
+      worktree: options.worktree,
+      persist: options.persist,
+      enforce: Boolean(options.enforce),
+      dir: options.dir,
+      json: options.json,
+    });
+  });
+
+collaboration
+  .command("hooks")
+  .description("Install blocking Git hooks that run the hosted collaboration guard")
+  .addCommand(
+    new Command("install")
+      .description("Install managed pre-commit and pre-push collaboration guard hooks")
+      .option("-d, --dir <directory>", "Repository directory (default: current)")
+      .option("--dry-run", "Preview hook writes without changing files")
+      .option("--json", "Print raw JSON")
+      .action(async (options) => {
+        await collaborationHooksInstallCommand({
+          dir: options.dir,
+          dryRun: Boolean(options.dryRun),
+          json: Boolean(options.json),
+        });
+      })
+  );
+
+collaboration
+  .command("release")
+  .description("Release a collaboration lease")
+  .option("--lease-id <leaseId>", "Lease id to release (defaults to latest active local lease)")
+  .option("--all", "Release all active local leases")
+  .option("--reason <reason>", "Release reason")
+  .option("--actor <actor>", "Developer or agent display name")
+  .option("--actor-id <actorId>", "Stable developer or agent id")
+  .option("--actor-type <actorType>", "HUMAN|AGENT|SYSTEM", "AGENT")
+  .option("--session-id <sessionId>", "Automation/session id")
+  .option("--client <client>", "Client label", "snipara-companion")
+  .option("-d, --dir <directory>", "Repository directory (default: current)")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await collaborationReleaseCommand({
+      leaseId: options.leaseId,
+      all: Boolean(options.all),
+      reason: options.reason,
+      actor: options.actor,
+      actorId: options.actorId,
+      actorType: options.actorType,
+      sessionId: options.sessionId,
+      client: options.client,
+      dir: options.dir,
+      json: options.json,
+    });
+  });
+
+collaboration
+  .command("status")
+  .description("Show local collaboration state and hosted active sessions/leases")
+  .option("--actor <actor>", "Developer or agent display name")
+  .option("--actor-id <actorId>", "Stable developer or agent id")
+  .option("--actor-type <actorType>", "HUMAN|AGENT|SYSTEM", "AGENT")
+  .option("--session-id <sessionId>", "Automation/session id")
+  .option("--client <client>", "Client label", "snipara-companion")
+  .option("-d, --dir <directory>", "Repository directory (default: current)")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await collaborationStatusCommand({
+      actor: options.actor,
+      actorId: options.actorId,
+      actorType: options.actorType,
+      sessionId: options.sessionId,
+      client: options.client,
+      dir: options.dir,
+      json: options.json,
+    });
+  });
+
+collaboration
+  .command("ide-status")
+  .description("Print compact JSON status for IDE extensions and editor integrations")
+  .option("--actor <actor>", "Developer or agent display name")
+  .option("--actor-id <actorId>", "Stable developer or agent id")
+  .option("--actor-type <actorType>", "HUMAN|AGENT|SYSTEM", "AGENT")
+  .option("--session-id <sessionId>", "Automation/session id")
+  .option("--client <client>", "Client label", "snipara-companion")
+  .option("-d, --dir <directory>", "Repository directory (default: current)")
+  .option("--no-json", "Print a compact text summary instead of JSON")
+  .action(async (options) => {
+    await collaborationIdeStatusCommand({
+      actor: options.actor,
+      actorId: options.actorId,
+      actorType: options.actorType,
+      sessionId: options.sessionId,
+      client: options.client,
+      dir: options.dir,
+      json: options.json,
+    });
+  });
+
 const code = program
   .command("code")
   .description("Direct hosted code graph queries and local overlay helpers");
@@ -1798,6 +2088,7 @@ code
       .option("-d, --dir <directory>", "Repository directory (default: current)")
       .option("--working-tree", "Index the current working tree")
       .option("--commit <commit>", "Index a local commit instead of the working tree")
+      .option("--only-if-head <sha>", "Skip cache writes if repository HEAD moved")
       .option("--max-files <number>", "Maximum supported code files to inspect", "2000")
       .option("--include-graph", "Include full files, symbols, and imports in JSON output")
       .option("--json", "Print raw JSON")
@@ -1806,6 +2097,7 @@ code
           dir: options.dir,
           workingTree: Boolean(options.workingTree),
           commit: options.commit,
+          onlyIfHead: options.onlyIfHead,
           maxFiles: parseInt(options.maxFiles, 10),
           includeGraph: Boolean(options.includeGraph),
           json: options.json,
@@ -1846,6 +2138,12 @@ code
           .description("Install managed post-commit and pre-push hooks for local code overlays")
           .option("-d, --dir <directory>", "Repository directory (default: current)")
           .option("--max-files <number>", "Maximum supported code files to inspect", "2000")
+          .option("--synchronous", "Run hook work in the foreground instead of background")
+          .option(
+            "--reindex-delay-seconds <number>",
+            "Background pre-push delay before requesting hosted reindex",
+            "5"
+          )
           .option(
             "--no-request-reindex",
             "Do not request hosted code reindex from the pre-push hook"
@@ -1856,6 +2154,8 @@ code
             await codeHooksInstallCommand({
               dir: options.dir,
               maxFiles: parseInt(options.maxFiles, 10),
+              synchronous: Boolean(options.synchronous),
+              reindexDelaySeconds: parseInt(options.reindexDelaySeconds, 10),
               requestReindex: options.requestReindex !== false,
               dryRun: Boolean(options.dryRun),
               json: Boolean(options.json),
@@ -2174,6 +2474,19 @@ program
   .command("memory")
   .description("Inspect memory health, cleanup candidates, and dry-run compaction")
   .addCommand(
+    new Command("local")
+      .description("Delegate to the local snipara-memory OSS engine")
+      .allowUnknownOption(true)
+      .option("--binary <command>", "snipara-memory binary to execute")
+      .argument("[args...]", "Arguments passed to snipara-memory")
+      .action(async (args, options) => {
+        await memoryLocalCommand({
+          binary: options.binary,
+          args,
+        });
+      })
+  )
+  .addCommand(
     new Command("audit")
       .description("Run memory health, cleanup candidates, and compaction dry-run together")
       .option("-s, --scope <scope>", "Memory scope (agent|project|team|user)")
@@ -2256,6 +2569,74 @@ program
               ? parseInt(options.archiveOlderThanDays, 10)
               : undefined,
           json: options.json,
+        });
+      })
+  );
+
+program
+  .command("eval")
+  .description("Export and run Mini Snipara Project Intelligence eval cases")
+  .addCommand(
+    new Command("export")
+      .description("Write a local snipara-evals case from companion workflow evidence")
+      .option("--id <id>", "Stable eval case id")
+      .option("--name <name>", "Human-readable case name")
+      .option("--description <description>", "Case description")
+      .option("--summary <summary>", "Observed answer or task summary")
+      .option("--context <text>", "Expected context fact; repeatable", collectOption, [])
+      .option("--decision <statement>", "Expected decision; repeatable", collectOption, [])
+      .option("--impact <target>", "Expected impact surface; repeatable", collectOption, [])
+      .option(
+        "--verification <check>",
+        "Expected verification check or command; repeatable",
+        collectOption,
+        []
+      )
+      .option(
+        "--continuity <handoff>",
+        "Expected continuity or handoff signal; repeatable",
+        collectOption,
+        []
+      )
+      .option("--files <files...>", "Observed changed files")
+      .option("--command-run <command>", "Observed command that ran; repeatable", collectOption, [])
+      .option("-o, --output <file>", "Output case file", ".snipara/evals/case.json")
+      .option("-d, --dir <directory>", "Project directory (default: current)")
+      .option("--json", "Print raw JSON")
+      .action(async (options) => {
+        await evalExportCommand({
+          id: options.id,
+          name: options.name,
+          description: options.description,
+          summary: options.summary,
+          context: options.context,
+          decision: options.decision,
+          impact: options.impact,
+          verification: options.verification,
+          continuity: options.continuity,
+          files: options.files,
+          commandRun: options.commandRun,
+          output: options.output,
+          dir: options.dir,
+          json: Boolean(options.json),
+        });
+      })
+  )
+  .addCommand(
+    new Command("run")
+      .description("Run snipara-evals on one or more local case files")
+      .argument("<cases...>", "snipara-evals case JSON files")
+      .option("--runner <command>", "Runner command (default: npx or SNIPARA_EVALS_RUNNER)")
+      .option("--package <spec>", "npm package spec", "snipara-evals@latest")
+      .option("--json", "Print raw JSON from snipara-evals")
+      .option("--strict", "Exit non-zero when thresholds fail")
+      .action(async (cases, options) => {
+        await evalRunCommand({
+          cases,
+          runner: options.runner,
+          packageSpec: options.package,
+          json: Boolean(options.json),
+          strict: Boolean(options.strict),
         });
       })
   );

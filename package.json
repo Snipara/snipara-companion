@@ -1,7 +1,7 @@
 {
   "name": "snipara-companion",
-  "version": "1.4.0",
-  "description": "Workflow continuity for AI coding agents. Start work, commit phases, resume anywhere.",
+  "version": "1.4.4",
+  "description": "Snipara Git-style companion CLI for local workflow continuity, hooks, hosted context, and Mini Snipara OSS workflows",
   "main": "dist/index.js",
   "bin": {
     "snipara-companion": "dist/index.js"

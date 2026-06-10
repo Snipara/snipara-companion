@@ -216,6 +216,8 @@ test("root help exposes workflow, intelligence, and code commands", () => {
   assert.match(result.stdout, /\bhandoff\b/);
   assert.match(result.stdout, /\bverify\b/);
   assert.match(result.stdout, /team-sync/);
+  assert.match(result.stdout, /collaboration/);
+  assert.match(result.stdout, /\beval\b/);
   assert.match(result.stdout, /\bcode\b/);
   assert.match(result.stdout, /sync-documents/);
   assert.match(result.stdout, /onboard-folder/);
@@ -1243,6 +1245,33 @@ test("team-sync handoff help exposes evidence-first attention wording", () => {
   assert.equal(result.status, 0);
   assert.match(result.stdout, /attention/);
   assert.match(result.stdout, /note\|watch\|review\|proof/);
+});
+
+test("collaboration help exposes safe parallel coding commands", () => {
+  const result = runCli(["collaboration", "--help"]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /presence, claims, locks, and guard checks/);
+  assert.match(result.stdout, /\bstart\b/);
+  assert.match(result.stdout, /\bwatch\b/);
+  assert.match(result.stdout, /\bclaim\b/);
+  assert.match(result.stdout, /\bguard\b/);
+  assert.match(result.stdout, /\bhooks\b/);
+  assert.match(result.stdout, /\brelease\b/);
+  assert.match(result.stdout, /\bstatus\b/);
+  assert.match(result.stdout, /ide-status/);
+});
+
+test("local Mini Snipara bridge help exposes memory local and eval commands", () => {
+  const memory = runCli(["memory", "--help"]);
+  assert.equal(memory.status, 0);
+  assert.match(memory.stdout, /\blocal\b/);
+  assert.match(memory.stdout, /snipara-memory/);
+
+  const evalHelp = runCli(["eval", "--help"]);
+  assert.equal(evalHelp.status, 0);
+  assert.match(evalHelp.stdout, /\bexport\b/);
+  assert.match(evalHelp.stdout, /\brun\b/);
+  assert.match(evalHelp.stdout, /snipara-evals/);
 });
 
 test("stuck-guard help exposes status, check, and simulate commands", () => {

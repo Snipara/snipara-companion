@@ -220,8 +220,11 @@ test("hosted overlay upload payload wraps cached non-canonical manifest", () => 
 
 test("code sync and status expose JSON for CLI-only agents", () => {
   const repo = makeTempRepo();
+  const head = runGit(repo, ["rev-parse", "HEAD"]);
 
-  const sync = runCli(["code", "sync", "--commit", "HEAD", "--json"], { cwd: repo });
+  const sync = runCli(["code", "sync", "--commit", "HEAD", "--only-if-head", head, "--json"], {
+    cwd: repo,
+  });
   assert.equal(sync.status, 0, sync.stderr);
   const syncPayload = JSON.parse(sync.stdout);
   assert.equal(syncPayload.mode, "local_commit");
@@ -233,6 +236,23 @@ test("code sync and status expose JSON for CLI-only agents", () => {
   const statusPayload = JSON.parse(status.stdout);
   assert.equal(statusPayload.current.version, "snipara.local_code_overlay.v1");
   assert.equal(statusPayload.cache.overlayKind, "local_commit");
+});
+
+test("code sync skips cache writes when guarded HEAD moved", () => {
+  const repo = makeTempRepo();
+  const oldHead = runGit(repo, ["rev-parse", "HEAD"]);
+  fs.writeFileSync(path.join(repo, "src", "new.ts"), "export const newer = true;\n", "utf8");
+  runGit(repo, ["add", "."]);
+  runGit(repo, ["commit", "-m", "newer"]);
+
+  const sync = runCli(["code", "sync", "--commit", oldHead, "--only-if-head", oldHead, "--json"], {
+    cwd: repo,
+  });
+  assert.equal(sync.status, 0, sync.stderr);
+  const payload = JSON.parse(sync.stdout);
+  assert.equal(payload.skipped, true);
+  assert.equal(payload.skipReason, "head_changed");
+  assert.equal(fs.existsSync(getLocalCodeOverlayCachePath(repo)), false);
 });
 
 test("code local commands query cached overlay imports and file-level paths", () => {
@@ -278,7 +298,26 @@ test("code local commands query cached overlay imports and file-level paths", ()
   assert.deepEqual(shortestPathPayload.path, ["src/index.ts", "src/helper.ts"]);
 });
 
-test("code hooks install writes managed Git hooks for local overlay sync and promotion", () => {
+test("code local impact warns when requested targets are absent from the selected overlay", () => {
+  const repo = makeTempRepo();
+
+  const sync = runCli(["code", "sync", "--working-tree", "--json"], { cwd: repo });
+  assert.equal(sync.status, 0, sync.stderr);
+
+  const impact = runCli(
+    ["code", "local", "impact", "--cached", "--changed-files", "src/missing.ts", "--json"],
+    { cwd: repo }
+  );
+  assert.equal(impact.status, 0, impact.stderr);
+  const payload = JSON.parse(impact.stdout);
+
+  assert.deepEqual(payload.changedFiles, []);
+  assert.deepEqual(payload.missingTargetFiles, ["src/missing.ts"]);
+  assert.equal(payload.warnings[0].code, "local_impact_targets_missing");
+  assert.match(payload.warnings[0].message, /Rebuild without --cached/);
+});
+
+test("code hooks install writes background Git hooks for local overlay sync and promotion", () => {
   const repo = makeTempRepo();
 
   const result = runCli(
@@ -288,6 +327,7 @@ test("code hooks install writes managed Git hooks for local overlay sync and pro
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.requestReindex, false);
+  assert.equal(payload.execution, "background");
   assert.equal(payload.maxFiles, 17);
   assert.deepEqual(
     payload.hooks.map((hook) => hook.action),
@@ -300,12 +340,43 @@ test("code hooks install writes managed Git hooks for local overlay sync and pro
   const prePushContent = fs.readFileSync(prePush, "utf8");
 
   assert.match(postCommitContent, /snipara:code-overlay post-commit:start/);
-  assert.match(postCommitContent, /snipara-companion code sync --commit HEAD/);
+  assert.match(postCommitContent, /SNIPARA_CODE_OVERLAY_HEAD="\$\(git rev-parse --verify HEAD/);
+  assert.match(
+    postCommitContent,
+    /snipara-companion code sync --commit "\$SNIPARA_CODE_OVERLAY_HEAD"/
+  );
+  assert.match(postCommitContent, /--only-if-head/);
+  assert.match(postCommitContent, /&/);
   assert.match(prePushContent, /snipara:code-overlay pre-push:start/);
+  assert.match(prePushContent, /SNIPARA_CODE_OVERLAY_PRE_PUSH_INPUT="\$\(cat\)"/);
   assert.match(prePushContent, /snipara-companion code promote --from-hook pre-push/);
   assert.doesNotMatch(prePushContent, /--request-reindex/);
+  assert.match(prePushContent, /&/);
   assert.ok(fs.statSync(postCommit).mode & 0o111);
   assert.ok(fs.statSync(prePush).mode & 0o111);
+});
+
+test("code hooks install can still write synchronous hooks explicitly", () => {
+  const repo = makeTempRepo();
+
+  const result = runCli(["code", "hooks", "install", "--synchronous", "--json"], { cwd: repo });
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.execution, "foreground");
+
+  const postCommitContent = fs.readFileSync(
+    path.join(repo, ".git", "hooks", "post-commit"),
+    "utf8"
+  );
+  const prePushContent = fs.readFileSync(path.join(repo, ".git", "hooks", "pre-push"), "utf8");
+
+  assert.match(
+    postCommitContent,
+    /snipara-companion code sync --commit "\$SNIPARA_CODE_OVERLAY_HEAD"/
+  );
+  assert.match(prePushContent, /snipara-companion code promote --from-hook pre-push/);
+  assert.doesNotMatch(postCommitContent, /\) >\/dev\/null 2>&1 &/);
+  assert.doesNotMatch(prePushContent, /SNIPARA_CODE_OVERLAY_PRE_PUSH_INPUT="\$\(cat\)"/);
 });
 
 test("code hooks install writes Husky user hooks when hooksPath points at .husky/_", () => {
@@ -329,7 +400,11 @@ test("code hooks install writes Husky user hooks when hooksPath points at .husky
 
   assert.equal(payload.hooks[0].path, postCommitPath);
   assert.match(userHookContent, /snipara:code-overlay post-commit:start/);
-  assert.match(userHookContent, /snipara-companion code sync --commit HEAD/);
+  assert.match(
+    userHookContent,
+    /snipara-companion code sync --commit "\$SNIPARA_CODE_OVERLAY_HEAD"/
+  );
+  assert.match(userHookContent, /--only-if-head/);
   assert.doesNotMatch(shimContent, /snipara:code-overlay/);
 });
 
