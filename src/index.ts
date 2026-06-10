@@ -211,6 +211,8 @@ export {
   buildTeamSyncHandoffRecord,
   buildTeamSyncStartWorkRecord,
   buildTeamSyncSummary,
+  completeTeamSyncStateFromEvidence,
+  completeTeamSyncWorkFromEvidence,
   createEmptyTeamSyncState,
   getTeamSyncStatePath,
   loadTeamSyncState,
@@ -220,8 +222,10 @@ export {
 } from "./commands/team-sync";
 export {
   buildCollaborationActor,
+  buildHostedGuardPayload,
   buildCollaborationHooksInstallPlan,
   COLLABORATION_STATE_RELATIVE_PATH,
+  compactHostedGuardResources,
   createEmptyCollaborationState,
   deriveLocalCollaborationResourcesFromFiles,
   getCollaborationStatePath,
@@ -1945,6 +1949,7 @@ collaboration
   .option("--repository <repository>", "Repository id")
   .option("-b, --branch <branch>", "Current branch name")
   .option("--worktree <worktree>", "Worktree path")
+  .option("--max-files <number>", "Maximum files for local code resource expansion", "2000")
   .option("--no-persist", "Evaluate without storing a guard event")
   .option("--enforce", "Exit non-zero for REVIEW_REQUIRED or REQUIRES_ACK, not only BLOCKED")
   .option("-d, --dir <directory>", "Repository directory (default: current)")
@@ -1964,6 +1969,7 @@ collaboration
       repository: options.repository,
       branch: options.branch,
       worktree: options.worktree,
+      maxFiles: options.maxFiles,
       persist: options.persist,
       enforce: Boolean(options.enforce),
       dir: options.dir,

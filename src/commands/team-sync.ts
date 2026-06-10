@@ -142,6 +142,15 @@ export interface TeamSyncSweepResult {
   summary: TeamSyncSummary;
 }
 
+export interface TeamSyncCompletionEvidenceOptions {
+  summary?: string;
+  workflowGoal?: string;
+  files?: string[];
+  reason?: string;
+  now?: Date;
+  dryRun?: boolean;
+}
+
 export interface AgenticHandoffArtifact {
   version: "snipara.agentic_handoff.v1";
   generatedAt: string;
@@ -270,6 +279,49 @@ export function archiveInactiveTeamSyncWork(
   }
 
   return candidates;
+}
+
+export function completeTeamSyncWorkFromEvidence(
+  state: TeamSyncState,
+  options: TeamSyncCompletionEvidenceOptions = {}
+): TeamSyncWorkRecord[] {
+  const now = options.now ?? new Date();
+  const nowIso = now.toISOString();
+  const workflowGoalText = normalizeCompletionText(options.workflowGoal);
+  const summaryText = normalizeCompletionText(options.summary);
+  const evidenceFiles = normalizeFiles(options.files);
+  const candidates = state.work.filter(
+    (item) =>
+      item.status === "active" &&
+      matchesCompletionEvidence(item, { workflowGoalText, summaryText, files: evidenceFiles })
+  );
+
+  if (!options.dryRun) {
+    for (const item of candidates) {
+      item.status = "completed";
+      item.updatedAt = nowIso;
+      item.completedAt = nowIso;
+      item.completionReason =
+        normalizeOptionalString(options.reason) ?? "Completed by workflow completion evidence";
+    }
+    if (candidates.length > 0) {
+      state.updatedAt = nowIso;
+    }
+  }
+
+  return candidates;
+}
+
+export function completeTeamSyncStateFromEvidence(
+  rootDir = process.cwd(),
+  options: TeamSyncCompletionEvidenceOptions = {}
+): TeamSyncWorkRecord[] {
+  const state = loadTeamSyncState(rootDir);
+  const completedWork = completeTeamSyncWorkFromEvidence(state, options);
+  if (!options.dryRun && completedWork.length > 0) {
+    saveTeamSyncState(state, rootDir);
+  }
+  return completedWork;
 }
 
 export function autoArchiveTeamSyncState(
@@ -1434,6 +1486,114 @@ function readHostedContext(rootDir: string): HostedTeamSyncContext {
 
 function resolveRootDir(dir?: string): string {
   return path.resolve(dir ?? process.cwd());
+}
+
+function matchesCompletionEvidence(
+  item: TeamSyncWorkRecord,
+  evidence: { workflowGoalText?: string; summaryText?: string; files: string[] }
+): boolean {
+  const itemText = normalizeCompletionText(item.summary);
+  if (!itemText) {
+    return false;
+  }
+
+  const evidenceTexts = [evidence.workflowGoalText, evidence.summaryText].filter(
+    (value): value is string => Boolean(value)
+  );
+  if (evidenceTexts.some((text) => completionTextsMatch(itemText, text))) {
+    return true;
+  }
+
+  if (evidence.workflowGoalText) {
+    return false;
+  }
+  if (!teamSyncFilesOverlap(item.files, evidence.files)) {
+    return false;
+  }
+
+  return Boolean(evidence.summaryText && significantTokenOverlap(itemText, evidence.summaryText));
+}
+
+function normalizeCompletionText(value: string | undefined): string | undefined {
+  const normalized = value
+    ?.toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalized || undefined;
+}
+
+function completionTextsMatch(left: string, right: string): boolean {
+  if (left === right) {
+    return true;
+  }
+  const shorter = left.length <= right.length ? left : right;
+  const longer = left.length > right.length ? left : right;
+  return shorter.length >= 16 && longer.includes(shorter);
+}
+
+function teamSyncFilesOverlap(leftFiles: string[], rightFiles: string[]): boolean {
+  if (leftFiles.length === 0 || rightFiles.length === 0) {
+    return false;
+  }
+
+  return leftFiles.some((left) =>
+    rightFiles.some((right) => normalizedFilePathOverlaps(left, right))
+  );
+}
+
+function normalizedFilePathOverlaps(left: string, right: string): boolean {
+  const leftPath = normalizeComparablePath(left);
+  const rightPath = normalizeComparablePath(right);
+  if (!leftPath || !rightPath) {
+    return false;
+  }
+  return (
+    leftPath === rightPath ||
+    leftPath.startsWith(`${rightPath}/`) ||
+    rightPath.startsWith(`${leftPath}/`)
+  );
+}
+
+function normalizeComparablePath(value: string): string {
+  return value.trim().replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
+}
+
+const COMPLETION_TOKEN_STOP_WORDS = new Set([
+  "and",
+  "api",
+  "app",
+  "dev",
+  "fix",
+  "for",
+  "from",
+  "into",
+  "main",
+  "prod",
+  "production",
+  "release",
+  "the",
+  "then",
+  "to",
+  "with",
+  "work",
+]);
+
+function significantTokenOverlap(left: string, right: string): boolean {
+  const leftTokens = completionTokens(left);
+  const rightTokens = completionTokens(right);
+  if (leftTokens.size === 0 || rightTokens.size === 0) {
+    return false;
+  }
+
+  const overlap = Array.from(leftTokens).filter((token) => rightTokens.has(token)).length;
+  return overlap >= 2 && overlap / Math.min(leftTokens.size, rightTokens.size) >= 0.25;
+}
+
+function completionTokens(value: string): Set<string> {
+  return new Set(
+    value.split(" ").filter((token) => token.length >= 3 && !COMPLETION_TOKEN_STOP_WORDS.has(token))
+  );
 }
 
 function requireSummary(summary: string): string {

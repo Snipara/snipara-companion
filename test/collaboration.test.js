@@ -7,7 +7,9 @@ const { spawnSync } = require("node:child_process");
 
 const {
   COLLABORATION_STATE_RELATIVE_PATH,
+  buildHostedGuardPayload,
   buildCollaborationHooksInstallPlan,
+  compactHostedGuardResources,
   createEmptyCollaborationState,
   getCollaborationStatePath,
   deriveLocalCollaborationResourcesFromFiles,
@@ -232,6 +234,40 @@ test("collaboration helpers derive route, package, schema, surface, and symbol r
   assert.ok(keys.includes("PACKAGE:snipara-web"));
   assert.ok(keys.includes("SYMBOL:module:apps/web/src/app/api/projects/[projectId]/guard/route"));
   assert.ok(keys.includes("SURFACE:tests:apps/web/src/app/api/projects/[projectId]/guard/route"));
+});
+
+test("collaboration guard payload caps hosted files and symbol resources", () => {
+  const files = Array.from({ length: 520 }, (_, index) => `src/file-${index}.ts`);
+  const resources = [
+    { kind: "DEPLOY", id: "production-deployment" },
+    { kind: "SURFACE", id: "deployment" },
+    ...Array.from({ length: 980 }, (_, index) => ({
+      kind: "SYMBOL",
+      id: `symbol:${index.toString().padStart(4, "0")}`,
+      sourcePath: `src/file-${index % 20}.ts`,
+    })),
+  ];
+
+  const payload = buildHostedGuardPayload(files, resources);
+  assert.equal(payload.files.length, 450);
+  assert.equal(payload.filesTruncated, true);
+  assert.equal(payload.resources.length <= 850, true);
+  assert.equal(payload.resourcesTruncated, true);
+  assert.equal(
+    payload.resources.some(
+      (resource) => resource.kind === "CUSTOM" && resource.id === "hosted-guard-resource-summary"
+    ),
+    true
+  );
+  assert.equal(
+    payload.resources.some(
+      (resource) => resource.kind === "DEPLOY" && resource.id === "production-deployment"
+    ),
+    true
+  );
+
+  const compactedResources = compactHostedGuardResources(resources);
+  assert.equal(compactedResources.length <= 850, true);
 });
 
 test("collaboration start publishes a hosted work session and stores local state", () => {
@@ -472,10 +508,7 @@ test("collaboration hooks install plan writes blocking managed hooks", () => {
   );
   const preCommitHook = fs.readFileSync(path.join(dir, ".git", "hooks", "pre-commit"), "utf8");
   assert.match(preCommitHook, /snipara-companion collaboration guard --profile pre-commit/);
-  assert.match(
-    preCommitHook,
-    /npx --yes snipara-companion@latest collaboration guard --profile pre-commit/
-  );
+  assert.doesNotMatch(preCommitHook, /snipara-companion@latest/);
   assert.match(preCommitHook, /SNIPARA_COLLABORATION_GUARD=0/);
   assert.match(preCommitHook, /exit 1/);
 });

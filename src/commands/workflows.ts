@@ -44,6 +44,7 @@ import {
   autoArchiveTeamSyncState,
   buildTeamSyncHandoffRecord,
   buildTeamSyncSummary,
+  completeTeamSyncStateFromEvidence,
   getTeamSyncStatePath,
   loadTeamSyncState,
   saveTeamSyncState,
@@ -5631,6 +5632,13 @@ function printJournalWarning(result?: JournalWriteResult): void {
   }
 }
 
+function printTeamSyncCompletionNotice(completedWork: TeamSyncWorkRecord[]): void {
+  if (completedWork.length === 0) {
+    return;
+  }
+  console.log(`Team Sync completed work: ${completedWork.map((item) => item.summary).join(", ")}`);
+}
+
 export async function workflowPhaseCommitCommand(options: {
   phaseId: string;
   summary: string;
@@ -5688,6 +5696,15 @@ export async function workflowPhaseCommitCommand(options: {
     committedAt: now,
   };
   writeWorkflowState(state);
+  const completedTeamSyncWork =
+    outcome === "completed" && state.status === "completed"
+      ? completeTeamSyncStateFromEvidence(process.cwd(), {
+          workflowGoal: state.goal,
+          summary: options.summary,
+          files,
+          reason: `Workflow ${state.workflowId} completed after phase ${phase.id} phase-commit.`,
+        })
+      : [];
   const journal = await appendJournalCheckpoint({
     action: "workflow:phase-commit",
     summary: options.summary,
@@ -5699,11 +5716,17 @@ export async function workflowPhaseCommitCommand(options: {
   });
 
   if (options.json) {
-    printJson({ workflow: state, commit: result, journal });
+    printJson({
+      workflow: state,
+      commit: result,
+      journal,
+      teamSyncCompletedWork: completedTeamSyncWork,
+    });
     return;
   }
   printTaskCommitResult(result);
   printJournalWarning(journal);
+  printTeamSyncCompletionNotice(completedTeamSyncWork);
   printManagedWorkflowState(state);
   printManagedWorkflowNextCommands(state);
 }
@@ -5745,6 +5768,17 @@ export async function finalCommitCommand(options: {
     };
     writeWorkflowState(state);
   }
+  const completedTeamSyncWork =
+    outcome === "completed"
+      ? completeTeamSyncStateFromEvidence(process.cwd(), {
+          workflowGoal: state?.goal,
+          summary: options.summary,
+          files: options.files,
+          reason: state?.workflowId
+            ? `Workflow ${state.workflowId} completed by final-commit.`
+            : "Completed by final-commit.",
+        })
+      : [];
   const journal = await appendJournalCheckpoint({
     action: "workflow:final-commit",
     summary: options.summary,
@@ -5754,11 +5788,17 @@ export async function finalCommitCommand(options: {
   });
 
   if (options.json) {
-    printJson({ workflow: state, commit: result, journal });
+    printJson({
+      workflow: state,
+      commit: result,
+      journal,
+      teamSyncCompletedWork: completedTeamSyncWork,
+    });
     return;
   }
   printTaskCommitResult(result);
   printJournalWarning(journal);
+  printTeamSyncCompletionNotice(completedTeamSyncWork);
   if (state) {
     printManagedWorkflowState(state);
   }

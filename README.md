@@ -105,6 +105,25 @@ pnpm pack:smoke
 This standalone repository mirrors the Snipara monorepo package source. The npm
 package is `snipara-companion`.
 
+## New In 1.4.6
+
+- Adds outcome-weighted next actions in Team Sync briefs when hosted context
+  returns prioritized follow-up actions.
+- Compacts large hosted collaboration guard payloads before sending them to the
+  API so large local diffs do not overflow request limits.
+- Keeps blocking collaboration hooks on the installed `snipara-companion`
+  binary instead of falling back to `npx @latest` inside Git hooks.
+
+## New In 1.4.5
+
+- `workflow phase-commit` and `workflow final-commit` now complete matching
+  local Team Sync work items when the workflow outcome is completed.
+- Matching stays conservative: workflow-goal text wins, and file/token fallback
+  is only used when no workflow goal is available, so deploy or promotion
+  threads are not closed from implementation evidence alone.
+- Text output now reports completed Team Sync work when workflow commits clean up
+  local active items.
+
 ## New In 1.4.4
 
 - Adds `snipara-companion memory local -- <args...>` as a thin bridge to the

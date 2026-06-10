@@ -675,6 +675,15 @@ export interface TeamSyncWhatChangedResult {
   }>;
   freshness: TeamSyncFreshness | null;
   sessionContext: TeamSyncSessionContext | null;
+  nextActions?: Array<{
+    id: string;
+    label: string;
+    source: string;
+    severity: string;
+    kind?: string;
+    priority?: string;
+    reason: string | null;
+  }>;
   recommendedActions: string[];
   caveats: string[];
 }

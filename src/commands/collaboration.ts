@@ -53,6 +53,9 @@ const LEASE_MODES = new Set<CollaborationLeaseMode>([
 const DEFAULT_WATCH_INTERVAL_SECONDS = 15;
 const DEFAULT_WATCH_HEARTBEAT_TTL_SECONDS = 300;
 const DEFAULT_LOCAL_CODE_MAX_FILES = 2000;
+const HOSTED_GUARD_MAX_FILES = 450;
+const HOSTED_GUARD_MAX_RESOURCES = 850;
+const HOSTED_GUARD_MAX_SYMBOL_RESOURCES = 160;
 const HOOK_BLOCK_PREFIX = "snipara:collaboration-guard";
 
 type CollaborationGuardProfile =
@@ -522,11 +525,12 @@ export async function collaborationGuardCommand(
   const files = resolveGuardFiles(context, options, profile);
   const resources = resolveCommandResources(context, files, options, profile);
   ensureFilesOrResources(files, resources, "guard");
+  const hostedPayload = buildHostedGuardPayload(files, resources);
   const hosted = await maybeEvaluateHostedGuard(context, {
     workSessionId: options.workSessionId ?? state.workSessionId,
     action: normalizeOptionalString(options.action) ?? profile,
-    files,
-    resources,
+    files: hostedPayload.files,
+    resources: hostedPayload.resources,
     persist: options.persist !== false,
   });
   const evaluation = hosted.status === "ok" ? hosted.data?.evaluation : undefined;
@@ -1511,8 +1515,6 @@ function buildCollaborationGitHookBlock(hookName: "pre-commit" | "pre-push"): st
     '  echo "Snipara collaboration guard bypassed by SNIPARA_COLLABORATION_GUARD=0" >&2',
     "elif command -v snipara-companion >/dev/null 2>&1; then",
     `  snipara-companion collaboration guard --profile ${profile} --action ${profile} --enforce --json >/dev/null`,
-    "elif command -v npx >/dev/null 2>&1; then",
-    `  npx --yes snipara-companion@latest collaboration guard --profile ${profile} --action ${profile} --enforce --json >/dev/null`,
     "else",
     '  echo "snipara-companion is required for the Snipara collaboration guard. Install it or set SNIPARA_COLLABORATION_GUARD=0 for an explicit emergency bypass." >&2',
     "  exit 1",
@@ -1735,6 +1737,58 @@ function getCollaborationHeading(action: string): string {
     return "Collaboration watch";
   }
   return `Collaboration ${action}`;
+}
+
+export interface HostedGuardPayload {
+  files: string[];
+  resources: CollaborationResource[];
+  fileCount: number;
+  resourceCount: number;
+  filesTruncated: boolean;
+  resourcesTruncated: boolean;
+}
+
+export function buildHostedGuardPayload(
+  files: string[],
+  resources: CollaborationResource[]
+): HostedGuardPayload {
+  const hostedFiles = files.slice(0, HOSTED_GUARD_MAX_FILES);
+  const hostedResources = compactHostedGuardResources(resources);
+  return {
+    files: hostedFiles,
+    resources: hostedResources,
+    fileCount: files.length,
+    resourceCount: resources.length,
+    filesTruncated: hostedFiles.length < files.length,
+    resourcesTruncated: hostedResources.length < normalizeResources(resources).length,
+  };
+}
+
+export function compactHostedGuardResources(
+  resources: CollaborationResource[]
+): CollaborationResource[] {
+  const normalized = normalizeResources(resources);
+  if (normalized.length <= HOSTED_GUARD_MAX_RESOURCES) {
+    return normalized;
+  }
+
+  const reservedSlots = HOSTED_GUARD_MAX_RESOURCES - 1;
+  const nonSymbolResources = normalized.filter((resource) => resource.kind !== "SYMBOL");
+  const symbolResources = normalized.filter((resource) => resource.kind === "SYMBOL");
+  const selected = nonSymbolResources.slice(0, reservedSlots);
+  const symbolSlots = Math.min(
+    HOSTED_GUARD_MAX_SYMBOL_RESOURCES,
+    Math.max(0, reservedSlots - selected.length)
+  );
+  selected.push(...symbolResources.slice(0, symbolSlots));
+
+  const omittedCount = normalized.length - selected.length;
+  selected.push({
+    kind: "CUSTOM",
+    id: "hosted-guard-resource-summary",
+    label: `${omittedCount} guard resources omitted from hosted request`,
+  });
+  return normalizeResources(selected);
 }
 
 function ensureFilesOrResources(

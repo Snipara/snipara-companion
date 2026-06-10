@@ -11,6 +11,7 @@ const {
   buildTeamSyncHandoffRecord,
   buildTeamSyncStartWorkRecord,
   buildTeamSyncSummary,
+  completeTeamSyncWorkFromEvidence,
   createEmptyTeamSyncState,
   getTeamSyncStatePath,
   loadTeamSyncState,
@@ -505,6 +506,38 @@ test("team sync archives active work after the inactivity threshold", () => {
   assert.equal(summary.staleWorkCount, 0);
   assert.equal(summary.archivedWorkCount, 1);
   assert.equal(summary.latestArchivedWork.summary, "Investigate old release thread");
+});
+
+test("team sync completes active work from workflow completion evidence", () => {
+  const state = createEmptyTeamSyncState(new Date("2026-05-17T12:00:00.000Z"));
+  state.work.push(
+    buildTeamSyncStartWorkRecord({
+      summary: "Implement Outcome Loop RFC in executable phase commits",
+      files: ["docs/planning/OUTCOME_LOOP_RFC.md", "apps/web/src/lib/jobs"],
+      now: new Date("2026-05-17T10:00:00.000Z"),
+    }),
+    buildTeamSyncStartWorkRecord({
+      summary: "Promote and deploy Outcome Loop release from dev to production",
+      files: ["docs/planning/OUTCOME_LOOP_RFC.md"],
+      now: new Date("2026-05-17T10:05:00.000Z"),
+    })
+  );
+
+  const completed = completeTeamSyncWorkFromEvidence(state, {
+    workflowGoal: "Implement Outcome Loop RFC in executable phase commits",
+    summary: "All Outcome Loop implementation phases completed",
+    files: ["docs/planning/OUTCOME_LOOP_RFC.md"],
+    reason: "Workflow outcome-loop completed.",
+    now: new Date("2026-05-17T12:00:00.000Z"),
+  });
+  const summary = buildTeamSyncSummary(state, undefined, new Date("2026-05-17T12:00:00.000Z"));
+
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0].status, "completed");
+  assert.equal(completed[0].completionReason, "Workflow outcome-loop completed.");
+  assert.equal(state.work[1].status, "active");
+  assert.equal(summary.activeWorkCount, 1);
+  assert.equal(summary.completedWorkCount, 1);
 });
 
 test("team sync sweep previews and archives inactive work", () => {

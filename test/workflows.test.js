@@ -5,9 +5,11 @@ const {
   buildJournalCheckpointEntry,
   buildAgenticTimeline,
   buildAgenticWorkStatus,
+  buildTeamSyncStartWorkRecord,
   buildOrchestratorHandoff,
   buildWorkflowPlanScaffold,
   buildWorkflowPhaseCommitSummary,
+  createEmptyTeamSyncState,
   createClient,
   detectReleaseSurfacesFromFiles,
   formatOrchestratorRecommendationReason,
@@ -17,6 +19,7 @@ const {
   ORCHESTRATOR_HANDOFF_RELATIVE_PATH,
   normalizeWorkflowPlanInput,
   runMemoryGuardCheck,
+  saveTeamSyncState,
   WORKFLOW_PLANS_RELATIVE_DIR,
   WORKFLOW_STATE_RELATIVE_PATH,
   writeOrchestratorHandoff,
@@ -631,6 +634,15 @@ test("workflow phase-commit advances local state when hosted commit times out", 
   );
   const preloadPath = writeWorkflowPreload(dir);
   const journalLog = path.join(dir, "workflow-journal.jsonl");
+  const teamSyncState = createEmptyTeamSyncState(new Date("2026-05-29T08:00:00.000Z"));
+  teamSyncState.work.push(
+    buildTeamSyncStartWorkRecord({
+      summary: "Keep local workflow moving",
+      files: ["packages/cli/src/commands/workflows.ts"],
+      now: new Date("2026-05-29T08:05:00.000Z"),
+    })
+  );
+  saveTeamSyncState(teamSyncState, dir);
 
   const result = runCli(
     [
@@ -660,6 +672,8 @@ test("workflow phase-commit advances local state when hosted commit times out", 
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.commit.hosted_phase_commit.status, "error");
   assert.equal(payload.commit.local_phase_commit.status, "local_fallback");
+  assert.equal(payload.teamSyncCompletedWork.length, 1);
+  assert.equal(payload.teamSyncCompletedWork[0].summary, "Keep local workflow moving");
 
   const current = JSON.parse(
     fs.readFileSync(path.join(dir, ".snipara", "workflow", "current.json"), "utf8")
@@ -667,6 +681,14 @@ test("workflow phase-commit advances local state when hosted commit times out", 
   assert.equal(current.status, "completed");
   assert.equal(current.phases[0].status, "completed");
   assert.equal(current.lastCommit.category, "workflow-phase");
+  const teamSyncStateAfter = JSON.parse(
+    fs.readFileSync(path.join(dir, ".snipara", "team-sync", "session.json"), "utf8")
+  );
+  assert.equal(teamSyncStateAfter.work[0].status, "completed");
+  assert.match(
+    teamSyncStateAfter.work[0].completionReason,
+    /Workflow companion-phase-fallback completed after phase verify phase-commit/
+  );
 
   const logged = fs
     .readFileSync(journalLog, "utf8")
@@ -731,6 +753,59 @@ test("final-commit surfaces the backend Team Sync handoff invariant", () => {
   assert.deepEqual(logged[0].persist_types, []);
   assert.ok(logged[0].summary.length <= 1200);
   assert.deepEqual(logged[0].files_touched, ["packages/cli/src/commands/workflows.ts"]);
+});
+
+test("final-commit completes the matching local Team Sync work item", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-final-team-sync-"));
+  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+  writeWorkflowState(dir);
+  const teamSyncState = createEmptyTeamSyncState(new Date("2026-05-31T10:00:00.000Z"));
+  teamSyncState.work.push(
+    buildTeamSyncStartWorkRecord({
+      summary: "Ship companion continuity commands",
+      files: ["packages/cli/src/commands/workflows.ts"],
+      now: new Date("2026-05-31T10:05:00.000Z"),
+    }),
+    buildTeamSyncStartWorkRecord({
+      summary: "Promote unrelated frontend release",
+      files: ["apps/web/src/app/page.tsx"],
+      now: new Date("2026-05-31T10:06:00.000Z"),
+    })
+  );
+  saveTeamSyncState(teamSyncState, dir);
+  const preloadPath = writeWorkflowPreload(dir);
+
+  const result = runCli(
+    [
+      "final-commit",
+      "--summary",
+      "Closed the managed workflow",
+      "--files",
+      "packages/cli/src/commands/workflows.ts",
+      "--json",
+    ],
+    {
+      cwd: dir,
+      env: {
+        SNIPARA_API_KEY: "snp-test",
+        SNIPARA_PROJECT_ID: "project_1",
+        SNIPARA_API_URL: "https://api.snipara.com",
+      },
+      nodeArgs: ["-r", preloadPath],
+    }
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.teamSyncCompletedWork.length, 1);
+  assert.equal(payload.teamSyncCompletedWork[0].summary, "Ship companion continuity commands");
+
+  const loaded = JSON.parse(
+    fs.readFileSync(path.join(dir, ".snipara", "team-sync", "session.json"), "utf8")
+  );
+  assert.equal(loaded.work[0].status, "completed");
+  assert.match(loaded.work[0].completionReason, /Workflow agentic-work completed by final-commit/);
+  assert.equal(loaded.work[1].status, "active");
 });
 
 test("final-commit keeps custom categories on the final handoff-only path", () => {
