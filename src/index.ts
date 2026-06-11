@@ -94,6 +94,7 @@ import {
   syncDocumentsCommand,
   taskCommitCommand,
   uploadCommand,
+  workflowImpactGateCommand,
   workflowPhaseCommitCommand,
   workflowPhaseStartCommand,
   workflowRuntimeCheckpointCommand,
@@ -182,6 +183,7 @@ export {
 export {
   buildAgenticTimeline,
   buildAgenticWorkStatus,
+  buildWorkflowImpactGate,
   buildWorkflowPhaseCommitSummary,
   buildWorkflowPlanScaffold,
   buildOnboardFolderManifest,
@@ -1451,6 +1453,20 @@ workflow
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await workflowStatusCommand({ json: options.json });
+  });
+
+workflow
+  .command("impact-gate")
+  .description("Audit committed local workflow phases that have not been pushed yet")
+  .option("--base <ref>", "Base ref to compare against (default: upstream branch)")
+  .option("--max-files <number>", "Maximum supported code files to inspect", "2000")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await workflowImpactGateCommand({
+      base: options.base,
+      maxFiles: parseInt(options.maxFiles, 10),
+      json: options.json,
+    });
   });
 
 workflow

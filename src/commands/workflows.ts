@@ -39,6 +39,7 @@ import {
 } from "../runtime/orchestrator-handoff";
 import { buildCanonicalEvent } from "./events";
 import { appendJournalCheckpoint, type JournalWriteResult } from "./journal";
+import { buildLocalImpactResult } from "./code";
 import { memoryGuardCheckCommand } from "./memory-guard";
 import {
   autoArchiveTeamSyncState,
@@ -306,6 +307,65 @@ export interface AgenticTimeline {
   generatedAt: string;
   events: AgenticTimelineEvent[];
   limit: number;
+}
+
+export interface WorkflowImpactGateCommit {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  author?: string;
+  authoredAt?: string;
+}
+
+export interface WorkflowImpactGatePhase {
+  id: string;
+  title: string;
+  summary?: string;
+  outcome?: TaskCommitOutcome;
+  completedAt?: string;
+  files: string[];
+  filesInUnpushedDiff: string[];
+}
+
+export interface WorkflowImpactGateResult {
+  version: "snipara.workflow_impact_gate.v1";
+  generatedAt: string;
+  gate: {
+    status: "pass" | "attention";
+    reasonCodes: string[];
+  };
+  repo: {
+    root: string;
+    branch?: string;
+    upstream: string;
+    baseSha?: string;
+    headSha?: string;
+  };
+  unpushed: {
+    commitCount: number;
+    commits: WorkflowImpactGateCommit[];
+    changedFiles: string[];
+    codeChangedFiles: string[];
+    nonCodeChangedFiles: string[];
+  };
+  dirtyWorkingTree: {
+    fileCount: number;
+    statusLines: string[];
+    files: string[];
+    includedInLocalImpact: false;
+  };
+  workflow: {
+    id?: string;
+    goal?: string;
+    status?: ManagedWorkflowStatus;
+    completedPhases: WorkflowImpactGatePhase[];
+    changedFilesWithoutPhase: string[];
+    phaseFilesOutsideUnpushedDiff: string[];
+  };
+  localImpact: Record<string, unknown> | null;
+  recommendedActions: string[];
+  caveats: string[];
+  hostedFollowUpCommand?: string;
 }
 
 export interface WorkflowPlanScaffoldResult {
@@ -1911,6 +1971,396 @@ function readCurrentGitBranch(cwd: string = process.cwd()): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function runGitText(
+  args: string[],
+  cwd: string = process.cwd(),
+  timeout: number = 3000
+): string | undefined {
+  try {
+    return execFileSync("git", args, {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout,
+    }).trim();
+  } catch {
+    return undefined;
+  }
+}
+
+function readGitNulList(args: string[], cwd: string): string[] {
+  const output = runGitText(args, cwd);
+  if (!output) {
+    return [];
+  }
+  return output
+    .split("\0")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function readGitRepoRoot(cwd: string = process.cwd()): string {
+  return path.resolve(runGitText(["rev-parse", "--show-toplevel"], cwd) ?? cwd);
+}
+
+function normalizeRepoFilePath(value: string): string {
+  return value.split(path.sep).join("/").replace(/^\/+/, "");
+}
+
+function resolveWorkflowImpactBaseRef(repoRoot: string, base?: string): string {
+  const explicitBase = base?.trim();
+  if (explicitBase) {
+    const sha = runGitText(["rev-parse", "--verify", explicitBase], repoRoot);
+    if (!sha) {
+      throw new Error(`Unable to resolve workflow impact base ref '${explicitBase}'.`);
+    }
+    return explicitBase;
+  }
+
+  const upstream = runGitText(
+    ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    repoRoot
+  );
+  if (upstream) {
+    return upstream;
+  }
+
+  const branch = readCurrentGitBranch(repoRoot);
+  const originBranch = branch ? `origin/${branch}` : undefined;
+  if (originBranch && runGitText(["rev-parse", "--verify", originBranch], repoRoot)) {
+    return originBranch;
+  }
+
+  throw new Error(
+    "Unable to resolve an upstream branch for workflow impact gate. Pass --base <ref>."
+  );
+}
+
+function readUnpushedCommits(repoRoot: string, baseRef: string): WorkflowImpactGateCommit[] {
+  const output = runGitText(
+    ["log", "--format=%H%x1f%s%x1f%an%x1f%aI%x1e", `${baseRef}..HEAD`],
+    repoRoot,
+    5000
+  );
+  if (!output) {
+    return [];
+  }
+
+  return output
+    .split("\x1e")
+    .map((record) => record.trim())
+    .filter(Boolean)
+    .map((record) => {
+      const [sha = "", subject = "", author, authoredAt] = record.split("\x1f");
+      return {
+        sha,
+        shortSha: shortCommit(sha),
+        subject,
+        ...(author ? { author } : {}),
+        ...(authoredAt ? { authoredAt } : {}),
+      };
+    });
+}
+
+function readUnpushedChangedFiles(repoRoot: string, baseRef: string): string[] {
+  return readGitNulList(["diff", "--name-only", "-z", `${baseRef}..HEAD`, "--"], repoRoot)
+    .map(normalizeRepoFilePath)
+    .sort();
+}
+
+function parseDirtyFileFromStatusLine(line: string): string | undefined {
+  const rawPath = line.slice(2).trim();
+  if (!rawPath) {
+    return undefined;
+  }
+  const renamedPath = rawPath.includes(" -> ") ? rawPath.split(" -> ").pop() : rawPath;
+  return renamedPath ? normalizeRepoFilePath(renamedPath.replace(/^"|"$/g, "")) : undefined;
+}
+
+function isLocalImpactCodeFile(filePath: string): boolean {
+  return [".ts", ".tsx", ".mts", ".cts", ".py", ".pyi", ".go"].includes(path.extname(filePath));
+}
+
+function completedWorkflowPhasesForImpact(
+  state: ManagedWorkflowState | undefined,
+  changedFiles: string[]
+): WorkflowImpactGatePhase[] {
+  const changedFileSet = new Set(changedFiles);
+  return (state?.phases ?? [])
+    .filter((phase) => phase.status === "completed" && phase.completedAt)
+    .map((phase) => {
+      const files = uniqueStringList((phase.files ?? []).map(normalizeRepoFilePath)) ?? [];
+      return {
+        id: phase.id,
+        title: phase.title,
+        summary: phase.summary,
+        outcome: phase.outcome,
+        completedAt: phase.completedAt,
+        files,
+        filesInUnpushedDiff: files.filter((file) => changedFileSet.has(file)),
+      };
+    })
+    .sort((left, right) =>
+      String(left.completedAt ?? "").localeCompare(String(right.completedAt ?? ""))
+    );
+}
+
+function buildHostedImpactFollowUpCommand(changedFiles: string[]): string | undefined {
+  if (changedFiles.length === 0) {
+    return undefined;
+  }
+  const files = changedFiles.map(shellQuote).join(" ");
+  return `snipara-companion code impact --changed-files ${files} --diff-summary 'unpushed workflow phases after push/index'`;
+}
+
+function compactLocalImpactForWorkflowGate(
+  impact: Record<string, unknown>
+): Record<string, unknown> {
+  const symbols = Array.isArray(impact.symbols) ? impact.symbols : [];
+  const incoming = Array.isArray(impact.incoming) ? impact.incoming : [];
+  const outgoing = Array.isArray(impact.outgoing) ? impact.outgoing : [];
+  const impactedFiles = Array.isArray(impact.impactedFiles) ? impact.impactedFiles : [];
+  return {
+    title: impact.title,
+    caveat: impact.caveat,
+    scope: impact.scope,
+    target: impact.target,
+    changedFiles: impact.changedFiles,
+    missingTargetFiles: impact.missingTargetFiles,
+    warnings: impact.warnings,
+    counts: {
+      symbols: symbols.length,
+      incoming: incoming.length,
+      outgoing: outgoing.length,
+      impactedFiles: impactedFiles.length,
+    },
+    symbols: symbols.slice(0, 40),
+    incoming: incoming.slice(0, 40),
+    outgoing: outgoing.slice(0, 40),
+    impactedFiles,
+    truncated: {
+      symbols: Math.max(0, symbols.length - 40),
+      incoming: Math.max(0, incoming.length - 40),
+      outgoing: Math.max(0, outgoing.length - 40),
+    },
+  };
+}
+
+export function buildWorkflowImpactGate(
+  options: {
+    cwd?: string;
+    base?: string;
+    maxFiles?: number;
+  } = {}
+): WorkflowImpactGateResult {
+  const repoRoot = readGitRepoRoot(options.cwd);
+  const branch = readCurrentGitBranch(repoRoot);
+  const upstream = resolveWorkflowImpactBaseRef(repoRoot, options.base);
+  const baseSha = runGitText(["rev-parse", "--verify", upstream], repoRoot);
+  const headSha = runGitText(["rev-parse", "--verify", "HEAD"], repoRoot);
+  const changedFiles = readUnpushedChangedFiles(repoRoot, upstream);
+  const codeChangedFiles = changedFiles.filter(isLocalImpactCodeFile);
+  const nonCodeChangedFiles = changedFiles.filter((file) => !isLocalImpactCodeFile(file));
+  const commits = readUnpushedCommits(repoRoot, upstream);
+  const dirtyStatusLines = readLocalGitState(repoRoot).statusLines ?? [];
+  const dirtyFiles = dirtyStatusLines
+    .map(parseDirtyFileFromStatusLine)
+    .filter((file): file is string => Boolean(file));
+  const state = readWorkflowState(repoRoot);
+  const completedPhases = completedWorkflowPhasesForImpact(state, changedFiles);
+  const phaseFileSet = new Set(completedPhases.flatMap((phase) => phase.files));
+  const changedFilesWithoutPhase = changedFiles.filter((file) => !phaseFileSet.has(file));
+  const changedFileSet = new Set(changedFiles);
+  const phaseFilesOutsideUnpushedDiff = [...phaseFileSet]
+    .filter((file) => !changedFileSet.has(file))
+    .sort();
+  const localImpact =
+    codeChangedFiles.length > 0
+      ? compactLocalImpactForWorkflowGate(
+          buildLocalImpactResult({
+            dir: repoRoot,
+            mode: "local_commit",
+            commit: "HEAD",
+            changedFiles: codeChangedFiles,
+            maxFiles: options.maxFiles,
+          })
+        )
+      : null;
+  const reasonCodes = [
+    dirtyFiles.length > 0 ? "dirty_working_tree_not_included" : undefined,
+    commits.length === 0 ? "no_unpushed_commits" : undefined,
+    changedFilesWithoutPhase.length > 0 ? "changed_files_without_phase_commit" : undefined,
+    phaseFilesOutsideUnpushedDiff.length > 0 ? "phase_files_outside_unpushed_diff" : undefined,
+  ].filter((item): item is string => Boolean(item));
+  const recommendedActions = [
+    dirtyFiles.length > 0
+      ? "Review dirty working-tree files separately; they are not included in this committed-phase impact gate."
+      : undefined,
+    changedFilesWithoutPhase.length > 0
+      ? "Check changed files without matching completed workflow phase metadata before final commit."
+      : undefined,
+    codeChangedFiles.length > 0
+      ? "Run the targeted tests for the changed code files listed by the local impact result."
+      : undefined,
+    commits.length > 0
+      ? "After push and hosted code reindex, run hosted snipara_code_impact for the canonical graph-backed impact model."
+      : undefined,
+  ].filter((item): item is string => Boolean(item));
+
+  return {
+    version: "snipara.workflow_impact_gate.v1",
+    generatedAt: new Date().toISOString(),
+    gate: {
+      status: reasonCodes.length > 0 ? "attention" : "pass",
+      reasonCodes,
+    },
+    repo: {
+      root: repoRoot,
+      ...(branch ? { branch } : {}),
+      upstream,
+      ...(baseSha ? { baseSha } : {}),
+      ...(headSha ? { headSha } : {}),
+    },
+    unpushed: {
+      commitCount: commits.length,
+      commits,
+      changedFiles,
+      codeChangedFiles,
+      nonCodeChangedFiles,
+    },
+    dirtyWorkingTree: {
+      fileCount: dirtyFiles.length,
+      statusLines: dirtyStatusLines,
+      files: dirtyFiles,
+      includedInLocalImpact: false,
+    },
+    workflow: {
+      ...(state
+        ? {
+            id: state.workflowId,
+            goal: state.goal,
+            status: state.status,
+          }
+        : {}),
+      completedPhases,
+      changedFilesWithoutPhase,
+      phaseFilesOutsideUnpushedDiff,
+    },
+    localImpact,
+    recommendedActions,
+    caveats: [
+      "This is a local committed-phase gate for upstream..HEAD; it does not push and does not update hosted code graph state.",
+      "Workflow phase commits are local workflow checkpoints, not Git commit SHAs, so phase-to-Git mapping is file-based.",
+      "Local impact is file-level import analysis from the selected local commit; hosted snipara_code_impact remains canonical after push/index.",
+    ],
+    ...(buildHostedImpactFollowUpCommand(changedFiles)
+      ? { hostedFollowUpCommand: buildHostedImpactFollowUpCommand(changedFiles) }
+      : {}),
+  };
+}
+
+function printWorkflowImpactGate(result: WorkflowImpactGateResult): void {
+  console.log(chalk.bold("Workflow Impact Gate"));
+  printKeyValue("Status:", result.gate.status);
+  printKeyValue("Branch:", result.repo.branch ?? "unknown");
+  printKeyValue("Upstream:", result.repo.upstream);
+  printKeyValue("Unpushed commits:", result.unpushed.commitCount);
+  printKeyValue("Changed files:", result.unpushed.changedFiles.length);
+  printKeyValue("Code files:", result.unpushed.codeChangedFiles.length);
+  printKeyValue("Dirty files not included:", result.dirtyWorkingTree.fileCount);
+  console.log("");
+
+  if (result.unpushed.commits.length > 0) {
+    console.log(chalk.bold("Unpushed Commits"));
+    for (const commit of result.unpushed.commits.slice(0, 12)) {
+      console.log(`- ${commit.shortSha} ${commit.subject}`);
+    }
+    if (result.unpushed.commits.length > 12) {
+      console.log(chalk.gray(`... ${result.unpushed.commits.length - 12} more`));
+    }
+    console.log("");
+  }
+
+  if (result.workflow.completedPhases.length > 0) {
+    console.log(chalk.bold("Completed Workflow Phases"));
+    for (const phase of result.workflow.completedPhases) {
+      const fileText =
+        phase.filesInUnpushedDiff.length > 0
+          ? `${phase.filesInUnpushedDiff.length} file(s) in unpushed diff`
+          : "no files in unpushed diff";
+      console.log(`- ${phase.id}: ${phase.title} (${fileText})`);
+      if (phase.summary) {
+        console.log(`  ${toPreview(phase.summary, 140)}`);
+      }
+    }
+    console.log("");
+  }
+
+  const localImpact = result.localImpact;
+  if (isRecord(localImpact)) {
+    const impactedFiles = Array.isArray(localImpact.impactedFiles) ? localImpact.impactedFiles : [];
+    const incoming = Array.isArray(localImpact.incoming) ? localImpact.incoming : [];
+    const outgoing = Array.isArray(localImpact.outgoing) ? localImpact.outgoing : [];
+    console.log(chalk.bold("Local Impact"));
+    printKeyValue("Impacted files:", impactedFiles.length);
+    printKeyValue("Incoming edges:", incoming.length);
+    printKeyValue("Outgoing edges:", outgoing.length);
+    const warnings = recordArrayField(localImpact, "warnings");
+    if (warnings.length > 0) {
+      console.log(`Warnings: ${warnings.map((warning) => toPreview(warning.code)).join(", ")}`);
+    }
+    console.log("");
+  }
+
+  if (result.dirtyWorkingTree.statusLines.length > 0) {
+    console.log(chalk.bold("Dirty Working Tree"));
+    for (const line of result.dirtyWorkingTree.statusLines.slice(0, 8)) {
+      console.log(`- ${line}`);
+    }
+    if (result.dirtyWorkingTree.statusLines.length > 8) {
+      console.log(chalk.gray(`... ${result.dirtyWorkingTree.statusLines.length - 8} more`));
+    }
+    console.log("");
+  }
+
+  if (result.gate.reasonCodes.length > 0) {
+    console.log(chalk.bold("Reason Codes"));
+    for (const code of result.gate.reasonCodes) {
+      console.log(`- ${code}`);
+    }
+    console.log("");
+  }
+
+  if (result.recommendedActions.length > 0) {
+    console.log(chalk.bold("Recommended Actions"));
+    for (const action of result.recommendedActions) {
+      console.log(`- ${action}`);
+    }
+    console.log("");
+  }
+
+  if (result.hostedFollowUpCommand) {
+    printKeyValue("Hosted follow-up:", result.hostedFollowUpCommand);
+    console.log("");
+  }
+}
+
+export async function workflowImpactGateCommand(options: {
+  base?: string;
+  maxFiles?: number;
+  json?: boolean;
+}): Promise<void> {
+  const result = buildWorkflowImpactGate({
+    base: options.base,
+    maxFiles: options.maxFiles,
+  });
+  if (options.json) {
+    printJson(result);
+    return;
+  }
+  printWorkflowImpactGate(result);
 }
 
 function shortCommit(value: string): string {

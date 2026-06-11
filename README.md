@@ -105,6 +105,14 @@ pnpm pack:smoke
 This standalone repository mirrors the Snipara monorepo package source. The npm
 package is `snipara-companion`.
 
+## New In 1.4.7
+
+- Adds `snipara-companion workflow impact-gate` for committed local workflow
+  phases that are ahead of upstream but not pushed yet. It compares
+  `upstream..HEAD`, separates dirty working-tree files, runs local code-overlay
+  impact on the committed code files, and maps the result back to completed
+  workflow phases.
+
 ## New In 1.4.6
 
 - Adds outcome-weighted next actions in Team Sync briefs when hosted context
@@ -208,6 +216,7 @@ snipara-companion status
 snipara-companion brief --task "ship auth hardening" --changed-files src/auth.ts
 snipara-companion timeline
 snipara-companion workflow phase-commit build --summary "tests green"
+snipara-companion workflow impact-gate
 snipara-companion verify --changed-files src/auth.ts --diff-summary "auth hardening"
 snipara-companion handoff --summary "status command shipped" --next "publish package"
 snipara-companion workflow resume --include-session-context
@@ -218,6 +227,9 @@ snipara-companion workflow resume --include-session-context
 - `brief` is the short alias for `intelligence brief`.
 - `timeline` is the Git-style log for workflow starts, phase starts, phase
   commits, final commits, and Team Sync handoffs.
+- `workflow impact-gate` audits committed local workflow phases that are ahead
+  of upstream but not pushed. It does not push, and dirty working-tree files are
+  reported separately from the committed diff.
 - `verify` builds a transparent verification plan from `snipara_code_impact`
   signals plus local package scripts. It recommends checks; it does not claim to
   execute them.
@@ -226,14 +238,15 @@ snipara-companion workflow resume --include-session-context
 
 The mental model is intentionally close to Git:
 
-| Git habit          | Companion command                         |
-| ------------------ | ----------------------------------------- |
-| `git status`       | `snipara-companion status`                |
-| `git show`         | `snipara-companion brief`                 |
-| `git commit`       | `snipara-companion workflow phase-commit` |
-| `git log`          | `snipara-companion timeline`              |
-| `git format-patch` | `snipara-companion handoff`               |
-| `git checkout`     | `snipara-companion workflow resume`       |
+| Git habit             | Companion command                         |
+| --------------------- | ----------------------------------------- |
+| `git status`          | `snipara-companion status`                |
+| `git show`            | `snipara-companion brief`                 |
+| `git commit`          | `snipara-companion workflow phase-commit` |
+| `git diff @{u}..HEAD` | `snipara-companion workflow impact-gate`  |
+| `git log`             | `snipara-companion timeline`              |
+| `git format-patch`    | `snipara-companion handoff`               |
+| `git checkout`        | `snipara-companion workflow resume`       |
 
 `snipara-companion final-commit` closes the local workflow and asks the hosted
 API only for the final Team Sync handoff. The CLI sends a compact summary with a
@@ -546,6 +559,7 @@ snipara-companion intelligence brief --task "ship auth hardening" --changed-file
 snipara-companion workflow scaffold --preset project-intelligence-continuity-layer --output .snipara/workflow/plans/project-intelligence-plan.json
 snipara-companion workflow start --goal "ship auth hardening" --plan-file ./plan.json
 snipara-companion workflow status
+snipara-companion workflow impact-gate
 snipara-companion timeline
 snipara-companion workflow phase-start context
 snipara-companion workflow run --mode standard --query "who imports src.mcp_transport"
@@ -751,6 +765,7 @@ Semantics:
 - `snipara-companion workflow phase-start` = marks the current phase and prints the required Snipara context gate plus code-impact / symbol-card gates; runtime-marked phases also get a stable Snipara Sandbox session binding
 - `snipara-companion workflow runtime-checkpoint` = captures a resume-ready Snipara Sandbox checkpoint for one phase using local workflow state plus a hosted automation event when configured
 - `snipara-companion workflow phase-commit` = calls hosted `snipara_end_of_task_commit` for that phase, updates local state, and advances the next phase; if the hosted commit times out or hits a transient network failure, local workflow state still advances with an explicit local fallback record
+- `snipara-companion workflow impact-gate` = local pre-push gate for completed workflow phases in `upstream..HEAD`; it keeps dirty files out of the committed impact analysis and reports phase/file coverage before hosted reindex catches up
 - `snipara-companion workflow resume` = reloads local workflow state plus hosted durable/session memory after compaction or resume, then appends the latest hosted Team Sync handoff/checkpoint context when available; runtime-bound phases also print a Snipara Sandbox reattach or rehydrate plan; rerun `workflow phase-start` before editing again
 - `snipara-companion workflow resume` does not snapshot or exactly restore a live Snipara Sandbox process; exact process restore remains a roadmap item
 - `snipara-companion team-sync start-work` = keeps the local session file and fetches the hosted Start Work Brief when the workspace has project auth
@@ -761,6 +776,7 @@ Semantics:
 - `snipara-companion final-commit` / `workflow final-commit` = final hosted commit for the managed workflow
 - `snipara-companion code symbol-card` = direct paid Context `snipara_code_symbol_card` for an important symbol before editing, with an agent guidance summary before raw JSON
 - `snipara-companion code impact` = direct paid Context `snipara_code_impact` for changed files, a file, or a symbol before risky changes, with risk/actions/gaps summarized before raw JSON
+- `snipara-companion code local impact` = repository-local file-level import impact from the local code overlay; use this for a selected local file set, and use `workflow impact-gate` when the file set should come from unpushed workflow commits
 - `snipara-companion doctor` = local readiness check for Snipara auth, deterministic hosted tool catalog access, Snipara Sandbox, Snipara Sandbox MCP wiring, provider keys, and Docker
 - `snipara-companion upload --metadata/--metadata-file` = single-file upload with the same business/client metadata fields supported by bulk sync
 - `snipara-companion business-collections` = manage reusable Team Business Context collections (Business Response Playbook, Business Library, Offer Templates, Company Presentations, Reference Diagrams)

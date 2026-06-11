@@ -6,6 +6,7 @@ const {
   buildAgenticTimeline,
   buildAgenticWorkStatus,
   buildTeamSyncStartWorkRecord,
+  buildWorkflowImpactGate,
   buildOrchestratorHandoff,
   buildWorkflowPlanScaffold,
   buildWorkflowPhaseCommitSummary,
@@ -60,6 +61,12 @@ function runCli(args, options = {}) {
     cwd: options.cwd,
     env,
   });
+}
+
+function runGit(cwd, args) {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  return result.stdout.trim();
 }
 
 function writeWorkflowPreload(dir) {
@@ -345,6 +352,99 @@ test("top-level timeline reads local workflow and Team Sync state", () => {
   assert.equal(payload.version, "snipara.agentic_timeline.v1");
   assert.equal(payload.events.length, 3);
   assert.equal(payload.events[0].kind, "team-sync-handoff");
+});
+
+test("workflow impact gate audits unpushed committed phases without dirty files", () => {
+  const remote = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-impact-remote-"));
+  runGit(remote, ["init", "--bare"]);
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-impact-local-"));
+  runGit(dir, ["init"]);
+  runGit(dir, ["config", "user.email", "agent@example.com"]);
+  runGit(dir, ["config", "user.name", "Agent"]);
+  fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+  fs.writeFileSync(path.join(dir, ".gitignore"), ".snipara/\n", "utf8");
+  fs.writeFileSync(path.join(dir, "src", "base.ts"), "export const base = 1;\n", "utf8");
+  runGit(dir, ["add", "."]);
+  runGit(dir, ["commit", "-m", "initial"]);
+  runGit(dir, ["branch", "-M", "dev"]);
+  runGit(dir, ["remote", "add", "origin", remote]);
+  runGit(dir, ["push", "-u", "origin", "dev"]);
+
+  fs.writeFileSync(path.join(dir, "src", "base.ts"), "export const base = 2;\n", "utf8");
+  fs.writeFileSync(
+    path.join(dir, "src", "feature.ts"),
+    "import { base } from './base';\nexport const feature = base;\n",
+    "utf8"
+  );
+  fs.mkdirSync(path.join(dir, "docs"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "docs", "note.md"), "# Note\n", "utf8");
+  runGit(dir, ["add", "."]);
+  runGit(dir, ["commit", "-m", "phase code"]);
+  const workflowDir = path.join(dir, ".snipara", "workflow");
+  fs.mkdirSync(workflowDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(workflowDir, "current.json"),
+    JSON.stringify(
+      {
+        schemaVersion: "snipara.workflow.v2",
+        workflowId: "unpushed-impact",
+        goal: "Ship unpushed local impact gate",
+        status: "active",
+        currentPhaseId: "verify",
+        planSource: "inline",
+        createdAt: "2026-06-12T09:00:00.000Z",
+        updatedAt: "2026-06-12T09:30:00.000Z",
+        phases: [
+          {
+            id: "build",
+            title: "Build gate",
+            query: "Build gate",
+            status: "completed",
+            startedAt: "2026-06-12T09:05:00.000Z",
+            completedAt: "2026-06-12T09:20:00.000Z",
+            summary: "Implemented local impact gate",
+            outcome: "completed",
+            files: ["src/base.ts", "src/feature.ts"],
+          },
+          {
+            id: "verify",
+            title: "Verify gate",
+            query: "Verify gate",
+            status: "pending",
+          },
+        ],
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+  fs.writeFileSync(path.join(dir, "scratch.tmp"), "dirty\n", "utf8");
+
+  const result = buildWorkflowImpactGate({ cwd: dir });
+
+  assert.equal(result.version, "snipara.workflow_impact_gate.v1");
+  assert.equal(result.repo.upstream, "origin/dev");
+  assert.equal(result.unpushed.commitCount, 1);
+  assert.deepEqual(result.unpushed.codeChangedFiles.sort(), ["src/base.ts", "src/feature.ts"]);
+  assert.deepEqual(result.unpushed.nonCodeChangedFiles, ["docs/note.md"]);
+  assert.equal(result.dirtyWorkingTree.includedInLocalImpact, false);
+  assert.deepEqual(result.dirtyWorkingTree.files, ["scratch.tmp"]);
+  assert.ok(result.workflow.completedPhases.some((phase) => phase.id === "build"));
+  assert.deepEqual(result.workflow.completedPhases[0].filesInUnpushedDiff.sort(), [
+    "src/base.ts",
+    "src/feature.ts",
+  ]);
+  assert.ok(result.workflow.changedFilesWithoutPhase.includes("docs/note.md"));
+  assert.equal(result.gate.status, "attention");
+  assert.ok(result.localImpact);
+
+  const cli = runCli(["workflow", "impact-gate", "--json"], { cwd: dir });
+  assert.equal(cli.status, 0, cli.stderr);
+  const payload = JSON.parse(cli.stdout);
+  assert.equal(payload.unpushed.commitCount, 1);
+  assert.equal(payload.dirtyWorkingTree.includedInLocalImpact, false);
 });
 
 test("journal checkpoint helper formats workflow context without durable-memory fields", () => {

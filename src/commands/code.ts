@@ -97,6 +97,8 @@ export interface CodeUploadCommandOptions extends CodeStatusCommandOptions {
 
 export interface LocalCodeQueryCommandOptions extends CodeStatusCommandOptions {
   cached?: boolean;
+  mode?: LocalCodeOverlayMode;
+  commit?: string;
   qualifiedName?: string;
   symbolKey?: string;
   filePath?: string;
@@ -900,7 +902,8 @@ function loadQueryManifest(options: LocalCodeQueryCommandOptions): LocalCodeOver
   }
   return buildLocalCodeOverlay({
     cwd: options.dir,
-    mode: "working_tree",
+    mode: options.mode ?? "working_tree",
+    commit: options.commit,
     maxFiles: options.maxFiles,
   });
 }
