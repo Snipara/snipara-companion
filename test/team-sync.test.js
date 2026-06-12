@@ -660,6 +660,12 @@ test("team-sync start-work keeps local state and prints hosted brief when config
   );
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Start Work Brief status: loaded/);
+  assert.match(
+    result.stdout,
+    /What Changed loaded: 1 changes, 1 decisions, 0 stale assumptions, 1 overlaps, 1 next actions\./
+  );
+  assert.match(result.stdout, /First next action: Verify ownership guard before route edits\./);
   assert.match(result.stdout, /Hosted Start Work Brief/);
   assert.match(result.stdout, /Likely files: apps\/web\/src\/lib\/auth\/permissions\.ts/);
   assert.match(result.stdout, /Decisions: Invited users keep personal API keys/);
@@ -708,6 +714,21 @@ test("team-sync start-work appends a hosted journal checkpoint when configured",
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const payload = JSON.parse(result.stdout);
+  assert.deepEqual(payload.startWorkBriefStatus, {
+    status: "loaded",
+    hostedStatus: "ok",
+    message: "hosted Start Work Brief and What Changed context are loaded",
+    whatChangedLoaded: true,
+    generatedAt: "2026-05-25T12:45:00.000Z",
+    evidenceLevel: "clear",
+    changeCount: 1,
+    decisionCount: 1,
+    staleAssumptionCount: 0,
+    failedJobCount: 0,
+    overlapCount: 1,
+    nextActionCount: 1,
+    firstNextAction: "Verify ownership guard before route edits.",
+  });
   assert.equal(payload.journal.status, "ok");
   const logged = fs
     .readFileSync(journalLog, "utf8")

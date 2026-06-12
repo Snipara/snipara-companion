@@ -120,6 +120,22 @@ interface HostedTeamSyncContext {
   client?: string;
 }
 
+interface StartWorkBriefStatus {
+  status: "loaded" | "skipped" | "error";
+  hostedStatus: HostedAttempt<TeamSyncWorkBriefResponse>["status"];
+  message: string;
+  whatChangedLoaded: boolean;
+  generatedAt?: string;
+  evidenceLevel?: string;
+  changeCount?: number;
+  decisionCount?: number;
+  staleAssumptionCount?: number;
+  failedJobCount?: number;
+  overlapCount?: number;
+  nextActionCount?: number;
+  firstNextAction?: string;
+}
+
 interface TeamSyncHandoffPayload {
   action: "handoff";
   record: TeamSyncHandoffRecord;
@@ -385,6 +401,7 @@ export async function teamSyncStartWorkCommand(options: TeamSyncCommandOptions):
     changedFiles: record.files,
     recentFiles: record.files,
   });
+  const startWorkBriefStatus = buildStartWorkBriefStatus(hosted);
   const shouldEmitOrchestratorHandoff =
     options.emitOrchestratorHandoff || options.autoRouteOrchestrator;
   const orchestratorRecommendation = buildTeamSyncOrchestratorRecommendation(
@@ -427,6 +444,7 @@ export async function teamSyncStartWorkCommand(options: TeamSyncCommandOptions):
       statePath: getTeamSyncStatePath(rootDir),
       summary,
       hosted,
+      startWorkBriefStatus,
       orchestratorRecommendation,
       orchestratorHandoff,
     },
@@ -979,6 +997,9 @@ function printTeamSyncResult(payload: Record<string, unknown>, json?: boolean): 
   if (journal?.status === "error" && journal.error) {
     console.log(`Journal checkpoint: ${journal.error}`);
   }
+  if (action === "start-work") {
+    printStartWorkBriefStatus(payload.startWorkBriefStatus as StartWorkBriefStatus | undefined);
+  }
 
   const hosted = payload.hosted as
     | HostedAttempt<
@@ -1098,6 +1119,25 @@ function printHostedWorkBrief(brief: TeamSyncWorkBriefResponse["brief"]): void {
   }
   if (brief.caveats.length > 0) {
     console.log(`Caveats: ${formatList(brief.caveats, 3)}`);
+  }
+}
+
+function printStartWorkBriefStatus(status?: StartWorkBriefStatus): void {
+  if (!status) {
+    return;
+  }
+
+  console.log("");
+  console.log(`Start Work Brief status: ${status.status} - ${status.message}`);
+  if (status.status !== "loaded") {
+    return;
+  }
+
+  console.log(
+    `What Changed loaded: ${status.changeCount ?? 0} changes, ${status.decisionCount ?? 0} decisions, ${status.staleAssumptionCount ?? 0} stale assumptions, ${status.overlapCount ?? 0} overlaps, ${status.nextActionCount ?? 0} next actions.`
+  );
+  if (status.firstNextAction) {
+    console.log(`First next action: ${status.firstNextAction}`);
   }
 }
 
@@ -1372,6 +1412,56 @@ async function maybeCreateHostedWorkBrief(
   } catch (error) {
     return { status: "error", error: formatError(error) };
   }
+}
+
+function buildStartWorkBriefStatus(
+  hosted: HostedAttempt<TeamSyncWorkBriefResponse>
+): StartWorkBriefStatus {
+  if (hosted.status === "skipped") {
+    return {
+      status: "skipped",
+      hostedStatus: hosted.status,
+      message: "hosted project auth is not configured; only local Team Sync state was recorded",
+      whatChangedLoaded: false,
+    };
+  }
+
+  if (hosted.status === "error") {
+    return {
+      status: "error",
+      hostedStatus: hosted.status,
+      message: hosted.error ?? "hosted Start Work Brief could not be loaded",
+      whatChangedLoaded: false,
+    };
+  }
+
+  if (!hosted.data) {
+    return {
+      status: "error",
+      hostedStatus: hosted.status,
+      message: "hosted Start Work Brief response was empty",
+      whatChangedLoaded: false,
+    };
+  }
+
+  const { brief, whatChanged } = hosted.data;
+  const nextActions = whatChanged.nextActions ?? [];
+  return {
+    status: "loaded",
+    hostedStatus: hosted.status,
+    message: "hosted Start Work Brief and What Changed context are loaded",
+    whatChangedLoaded: true,
+    generatedAt: brief.generatedAt,
+    evidenceLevel: brief.evidenceLevel,
+    changeCount: whatChanged.summary.changeCount,
+    decisionCount: whatChanged.summary.decisionChanges,
+    staleAssumptionCount: whatChanged.summary.staleAssumptions,
+    failedJobCount: whatChanged.summary.failedJobs,
+    overlapCount: whatChanged.summary.overlapClusters,
+    nextActionCount: nextActions.length || whatChanged.recommendedActions.length,
+    firstNextAction:
+      nextActions[0]?.label ?? whatChanged.recommendedActions[0] ?? brief.recommendedActions[0],
+  };
 }
 
 async function maybeCreateHostedHandoff(

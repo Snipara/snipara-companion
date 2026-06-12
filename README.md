@@ -39,6 +39,20 @@ single-machine continuity and CI artifacts, but they cannot prove what another
 human or agent is doing on a different machine unless the hosted collaboration
 backend is configured.
 
+## Operating Modes
+
+`snipara-companion` is designed to remain useful at three levels:
+
+| Mode | Account required | What works |
+| ---- | ---------------- | ---------- |
+| Standalone local | No | Workflow files, timeline, handoffs, local status, hooks, smoke checks, and CI-friendly artifacts |
+| Local memory stack | No | Everything above plus `snipara-companion memory local -- <args...>` through `snipara-memory` |
+| Snipara SaaS | Yes | Hosted context, reviewed memory, Team Sync, collaboration guards, shared claims, dashboards, and cloud code graph |
+
+The CLI should not require Snipara SaaS for local continuity. Hosted calls should
+enrich local workflows when credentials are present and degrade to local records
+when they are not.
+
 ## Local vs Hosted Capabilities
 
 | Capability                                   | Local/open stack                   | Hosted Snipara                              |
@@ -104,6 +118,15 @@ pnpm pack:smoke
 
 This standalone repository mirrors the Snipara monorepo package source. The npm
 package is `snipara-companion`.
+
+## New In 1.4.9
+
+- `snipara-companion team-sync start-work` now reports whether the hosted Start
+  Work Brief loaded, so local-only runs stay clear and SaaS-enriched runs show
+  their hosted context status.
+- Keeps Team Sync local-first: without hosted credentials, start-work still
+  records local intent; with `snipara-memory`, local memory workflows remain
+  available; with Snipara SaaS, hosted briefs enrich the same local workflow.
 
 ## New In 1.4.8
 
@@ -658,7 +681,7 @@ hosted response.
 `.snipara/team-sync/session.json`. When the workspace is configured with a
 project API key, the same commands also call the hosted Team Sync surfaces:
 
-- `team-sync start-work` records local intent and fetches the hosted Start Work Brief.
+- `team-sync start-work` records local intent, reports whether the hosted Start Work Brief loaded, and fetches the brief when project auth is configured.
 - `team-sync handoff` records the local handoff and publishes the hosted handoff capsule.
 - `team-sync what-changed` keeps local counters but also loads the hosted What Changed For Me surface.
 - `team-sync resume` and `workflow resume` append the latest hosted handoff plus checkpoint-aware resume context when available.
@@ -780,7 +803,7 @@ Semantics:
 - `snipara-companion workflow impact-gate` = local pre-push gate for completed workflow phases in `upstream..HEAD`; it keeps dirty files out of the committed impact analysis and reports phase/file coverage before hosted reindex catches up
 - `snipara-companion workflow resume` = reloads local workflow state plus hosted durable/session memory after compaction or resume, then appends the latest hosted Team Sync handoff/checkpoint context when available; runtime-bound phases also print a Snipara Sandbox reattach or rehydrate plan; rerun `workflow phase-start` before editing again
 - `snipara-companion workflow resume` does not snapshot or exactly restore a live Snipara Sandbox process; exact process restore remains a roadmap item
-- `snipara-companion team-sync start-work` = keeps the local session file and fetches the hosted Start Work Brief when the workspace has project auth
+- `snipara-companion team-sync start-work` = keeps the local session file, reports Start Work Brief status, and fetches the hosted brief when the workspace has project auth
 - `snipara-companion team-sync handoff` = keeps the local handoff record and publishes the hosted handoff capsule when project auth is available
 - `snipara-companion team-sync what-changed` = prints the local state summary and the hosted What Changed For Me response when configured
 - `snipara-companion team-sync sweep` = archives stale local work items after an inactivity threshold; default is 14 days and `--dry-run` previews the cleanup
