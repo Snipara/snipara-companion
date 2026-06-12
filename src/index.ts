@@ -1968,6 +1968,10 @@ collaboration
   .option("--max-files <number>", "Maximum files for local code resource expansion", "2000")
   .option("--no-persist", "Evaluate without storing a guard event")
   .option("--enforce", "Exit non-zero for REVIEW_REQUIRED or REQUIRES_ACK, not only BLOCKED")
+  .option(
+    "--ack-review-only",
+    "Under --enforce, acknowledge review-only stale-state and decision-consistency warnings"
+  )
   .option("-d, --dir <directory>", "Repository directory (default: current)")
   .option("--json", "Print raw JSON")
   .action(async (options) => {
@@ -1988,6 +1992,7 @@ collaboration
       maxFiles: options.maxFiles,
       persist: options.persist,
       enforce: Boolean(options.enforce),
+      ackReviewOnly: Boolean(options.ackReviewOnly),
       dir: options.dir,
       json: options.json,
     });

@@ -105,6 +105,18 @@ pnpm pack:smoke
 This standalone repository mirrors the Snipara monorepo package source. The npm
 package is `snipara-companion`.
 
+## New In 1.4.8
+
+- Adds `snipara-companion collaboration guard --ack-review-only` so enforced
+  release guards can acknowledge review-only stale-state and
+  decision-consistency warnings without requiring
+  `SNIPARA_COLLABORATION_GUARD=0`. The hosted `REVIEW_REQUIRED` verdict stays
+  visible in the guard payload; `BLOCKED`, `REQUIRES_ACK`, active-session
+  conflicts and blocking leases still fail.
+- Updates the Infomaniak deploy guard to use the review-only ack path for
+  release UX false positives while keeping the emergency env bypass reserved for
+  true guard outages.
+
 ## New In 1.4.7
 
 - Adds `snipara-companion workflow impact-gate` for committed local workflow

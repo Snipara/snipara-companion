@@ -178,6 +178,78 @@ function writeHostedCollaborationPreload(dir) {
   return preloadPath;
 }
 
+function writeHostedReviewOnlyGuardPreload(dir) {
+  const preloadPath = path.join(dir, "collaboration-review-only-preload.js");
+  fs.writeFileSync(
+    preloadPath,
+    [
+      "const fs = require('node:fs');",
+      "globalThis.fetch = async (url, init = {}) => {",
+      "  const parsedUrl = new URL(String(url));",
+      "  const path = parsedUrl.pathname;",
+      "  const body = init.body ? JSON.parse(init.body) : {};",
+      "  const logPath = process.env.SNIPARA_TEST_COLLAB_LOG;",
+      "  if (logPath) fs.appendFileSync(logPath, `${JSON.stringify({ path, method: init.method, body })}\\n`, 'utf8');",
+      "  const project = { id: 'project_1', name: 'App', slug: 'app' };",
+      "  if (path.endsWith('/collaboration/guard') && init.method === 'POST') {",
+      "    const resources = [",
+      "      ...(body.resources || []),",
+      "      ...(body.files || []).map((file) => ({ kind: 'FILE', id: file, sourcePath: file })),",
+      "    ];",
+      "    return ok({",
+      "      project,",
+      "      resources,",
+      "      evaluation: {",
+      "        decision: 'REVIEW_REQUIRED',",
+      "        severity: 'WARNING',",
+      "        evaluatedAt: '2026-06-09T12:02:00.000Z',",
+      "        resources,",
+      "        conflicts: [",
+      "          {",
+      "            code: 'stale_session_overlap',",
+      "            decision: 'WATCH',",
+      "            severity: 'WATCH',",
+      "            resource: resources[0],",
+      "            conflictingActor: { actorId: body.actorId || 'agent_1', actorType: 'AGENT', actorLabel: 'Codex' },",
+      "            reason: 'Codex has stale activity on snipara-web.',",
+      "            recommendedAction: 'Refresh collaboration state before treating this resource as free.',",
+      "            workSessionId: body.workSessionId || 'work_1',",
+      "          },",
+      "          {",
+      "            code: 'decision_consistency_review',",
+      "            decision: 'REVIEW_REQUIRED',",
+      "            severity: 'WARNING',",
+      "            resource: resources[0],",
+      "            conflictingActor: { actorId: 'memory', actorType: 'SYSTEM', actorLabel: 'Decision Consistency' },",
+      "            reason: 'Change touches approved decision mem_1; review consistency before proceeding.',",
+      "            recommendedAction: 'Review the recorded decision and update or supersede it if this change is intentional.',",
+      "          },",
+      "        ],",
+      "        recommendedActions: [",
+      "          'Refresh collaboration state before treating this resource as free.',",
+      "          'Review the recorded decision and update or supersede it if this change is intentional.',",
+      "        ],",
+      "      },",
+      "      guardEvent: { id: 'guard_1' },",
+      "    });",
+      "  }",
+      "  return ok({});",
+      "};",
+      "function ok(data, status = 200) {",
+      "  return {",
+      "    ok: true,",
+      "    status,",
+      "    statusText: 'OK',",
+      "    json: async () => ({ success: true, data }),",
+      "  };",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  return preloadPath;
+}
+
 function hostedEnv(extra = {}) {
   return {
     SNIPARA_API_KEY: "snp-test",
@@ -423,6 +495,66 @@ test("collaboration guard exits non-zero for hosted blocking conflicts", () => {
   assert.equal(payload.hosted.data.evaluation.decision, "BLOCKED");
   assert.equal(payload.state.lastGuard.decision, "BLOCKED");
   assert.equal(loadCollaborationState(dir).lastGuard.conflictCount, 1);
+});
+
+test("collaboration guard can acknowledge review-only release warnings", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-collaboration-review-only-"));
+  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+  const preloadPath = writeHostedReviewOnlyGuardPreload(dir);
+
+  const blocked = runCli(
+    [
+      "collaboration",
+      "guard",
+      "--profile",
+      "pre-deploy",
+      "--action",
+      "pre-deploy",
+      "--actor-id",
+      "agent_1",
+      "--enforce",
+      "--json",
+    ],
+    {
+      cwd: dir,
+      env: hostedEnv(),
+      nodeArgs: ["-r", preloadPath],
+    }
+  );
+
+  assert.equal(blocked.status, 2, blocked.stderr || blocked.stdout);
+  const blockedPayload = JSON.parse(blocked.stdout);
+  assert.equal(blockedPayload.hosted.data.evaluation.decision, "REVIEW_REQUIRED");
+  assert.equal(blockedPayload.enforcement.reviewOnlyAcknowledged, false);
+
+  const acknowledged = runCli(
+    [
+      "collaboration",
+      "guard",
+      "--profile",
+      "pre-deploy",
+      "--action",
+      "pre-deploy",
+      "--actor-id",
+      "agent_1",
+      "--enforce",
+      "--ack-review-only",
+      "--json",
+    ],
+    {
+      cwd: dir,
+      env: hostedEnv(),
+      nodeArgs: ["-r", preloadPath],
+    }
+  );
+
+  assert.equal(acknowledged.status, 0, acknowledged.stderr || acknowledged.stdout);
+  const payload = JSON.parse(acknowledged.stdout);
+  assert.equal(payload.hosted.data.evaluation.decision, "REVIEW_REQUIRED");
+  assert.equal(payload.enforcement.reviewOnlyAcknowledged, true);
+  assert.equal(payload.enforcement.failed, false);
+  assert.equal(payload.state.lastGuard.decision, "REVIEW_REQUIRED");
+  assert.equal(loadCollaborationState(dir).lastGuard.conflictCount, 2);
 });
 
 test("collaboration guard profile expands blocking deployment resources", () => {

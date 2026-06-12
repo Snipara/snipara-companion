@@ -13,6 +13,7 @@ import {
   type CollaborationActorPayload,
   type CollaborationActorType,
   type CollaborationGuardDecision,
+  type CollaborationGuardEvaluation,
   type CollaborationGuardResponse,
   type CollaborationLeaseMode,
   type CollaborationLeaseResponse,
@@ -157,6 +158,7 @@ interface CollaborationCommandOptions {
   releaseStale?: boolean;
   persist?: boolean;
   enforce?: boolean;
+  ackReviewOnly?: boolean;
   dir?: string;
   json?: boolean;
 }
@@ -550,7 +552,15 @@ export async function collaborationGuardCommand(
     saveCollaborationState(state, context.rootDir);
   }
 
-  if (hosted.status !== "ok" || shouldFailGuard(evaluation?.decision, Boolean(options.enforce))) {
+  const reviewOnlyAcknowledged =
+    Boolean(options.enforce) &&
+    Boolean(options.ackReviewOnly) &&
+    isReviewOnlyGuardEvaluation(evaluation);
+  const guardFailed =
+    hosted.status !== "ok" ||
+    shouldFailGuard(evaluation, Boolean(options.enforce), Boolean(options.ackReviewOnly));
+
+  if (guardFailed) {
     process.exitCode = 2;
   }
 
@@ -560,6 +570,12 @@ export async function collaborationGuardCommand(
       statePath: getCollaborationStatePath(context.rootDir),
       state,
       hosted,
+      enforcement: {
+        enforced: Boolean(options.enforce),
+        ackReviewOnly: Boolean(options.ackReviewOnly),
+        reviewOnlyAcknowledged,
+        failed: guardFailed,
+      },
     },
     options.json
   );
@@ -1667,6 +1683,9 @@ function printCollaborationResult(payload: Record<string, unknown>, json?: boole
   } else if (hosted?.status === "ok") {
     printHostedCollaboration(action, hosted.data);
   }
+  if (action === "guard") {
+    printGuardEnforcementSummary(payload);
+  }
 }
 
 function printHostedCollaboration(
@@ -1802,16 +1821,77 @@ function ensureFilesOrResources(
 }
 
 function shouldFailGuard(
-  decision: CollaborationGuardDecision | undefined,
-  enforce: boolean
+  evaluation: CollaborationGuardEvaluation | undefined,
+  enforce: boolean,
+  ackReviewOnly: boolean
 ): boolean {
-  if (!decision) {
+  if (!evaluation) {
     return true;
   }
+  const decision = evaluation.decision;
   if (decision === "BLOCKED") {
     return true;
   }
-  return enforce && (decision === "REQUIRES_ACK" || decision === "REVIEW_REQUIRED");
+  if (decision === "REQUIRES_ACK") {
+    return enforce;
+  }
+  if (decision === "REVIEW_REQUIRED" && enforce) {
+    return !(ackReviewOnly && isReviewOnlyGuardEvaluation(evaluation));
+  }
+  return false;
+}
+
+const REVIEW_ONLY_ACK_CONFLICT_CODES = new Set([
+  "decision_consistency_review",
+  "stale_session_overlap",
+  "stale_lease_overlap",
+]);
+
+function isReviewOnlyGuardEvaluation(
+  evaluation: CollaborationGuardEvaluation | undefined
+): boolean {
+  if (!evaluation || evaluation.decision !== "REVIEW_REQUIRED") {
+    return false;
+  }
+  if (evaluation.conflicts.length === 0) {
+    return false;
+  }
+  return evaluation.conflicts.every((conflict) => {
+    if (!REVIEW_ONLY_ACK_CONFLICT_CODES.has(conflict.code)) {
+      return false;
+    }
+    return conflict.decision === "REVIEW_REQUIRED" || conflict.decision === "WATCH";
+  });
+}
+
+interface CollaborationGuardEnforcementSummary {
+  enforced?: boolean;
+  ackReviewOnly?: boolean;
+  reviewOnlyAcknowledged?: boolean;
+  failed?: boolean;
+}
+
+function formatReviewOnlyAckMessage(): string {
+  return [
+    "Review-only guard acknowledged:",
+    "stale collaboration state and approved-decision review warnings remain visible;",
+    "blocking leases, active-session conflicts, required acknowledgements and hard blocks still fail.",
+  ].join(" ");
+}
+
+function isGuardEnforcementSummary(value: unknown): value is CollaborationGuardEnforcementSummary {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  return true;
+}
+
+function printGuardEnforcementSummary(payload: Record<string, unknown>): void {
+  const enforcement = payload.enforcement;
+  if (!isGuardEnforcementSummary(enforcement) || !enforcement.reviewOnlyAcknowledged) {
+    return;
+  }
+  console.log(formatReviewOnlyAckMessage());
 }
 
 function buildLocalSessionId(
