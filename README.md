@@ -119,6 +119,14 @@ pnpm pack:smoke
 This standalone repository mirrors the Snipara monorepo package source. The npm
 package is `snipara-companion`.
 
+## New In 1.4.12
+
+- Publishes the open-source `1.4.11` sync as a new npm patch because npm cannot
+  republish an existing `1.4.11` tarball.
+- Keeps `snipara-companion code impact` SaaS-only in the open-source package, so
+  product judgment, risk, actions, and coverage gaps come from hosted
+  `snipara_code_impact`.
+
 ## New In 1.4.11
 
 - Adds unified `snipara-companion code callers/imports/neighbors/shortest-path`
