@@ -50,7 +50,7 @@ export function buildCanonicalEvent(options: CanonicalEventOptions) {
 
 export async function emitCanonicalEvent(
   options: CanonicalEventOptions,
-  { silent = true }: { silent?: boolean } = {}
+  { silent = true, timeoutMs = 10000 }: { silent?: boolean; timeoutMs?: number } = {}
 ): Promise<boolean> {
   if (!isConfigured()) {
     if (!silent) {
@@ -60,7 +60,7 @@ export async function emitCanonicalEvent(
   }
 
   try {
-    const client = createClient(10000);
+    const client = createClient(timeoutMs);
     await client.emitEvent(buildCanonicalEvent(options));
     return true;
   } catch (error) {

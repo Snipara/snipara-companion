@@ -6,7 +6,8 @@ import type { AddressInfo } from "net";
 import path from "path";
 import chalk from "chalk";
 import { createClient } from "../api/client";
-import { findWorkspaceRoot, loadConfig } from "../config/store";
+import { findWorkspaceRoot, isConfigured, loadConfig } from "../config/store";
+import { emitCanonicalEvent } from "./events";
 
 export type LocalCodeOverlayMode = "working_tree" | "local_commit";
 export type LocalCodeOverlayKind = "none" | "local_commit" | "working_tree" | "mixed";
@@ -106,6 +107,55 @@ export interface LocalCodeQueryCommandOptions extends CodeStatusCommandOptions {
   from?: string;
   to?: string;
   maxHops?: number;
+}
+
+export type CodeGraphSource = "auto" | "hosted" | "local";
+export type ResolvedCodeGraphSource = "hosted_graph" | "local_overlay";
+export type CodeGraphVerb = "callers" | "imports" | "neighbors" | "shortest-path" | "impact";
+
+export interface CodeGraphAutoSourceOptions extends LocalCodeQueryCommandOptions {
+  source?: CodeGraphSource;
+  depth?: number;
+  direction?: "in" | "out";
+  includeFileNodes?: boolean;
+  edgeKinds?: string[];
+  diffSummary?: string;
+  limit?: number;
+}
+
+export interface CodeGraphSourceSelection {
+  requested: CodeGraphSource;
+  selected: ResolvedCodeGraphSource;
+  reason: string;
+  repositoryId: string;
+  branch: string | null;
+  localHeadSha: string | null;
+  baseSha: string | null;
+  aheadCount: number | null;
+  dirtyFileCount: number;
+  dirtyFilesSample: string[];
+  localOverlay?: {
+    indexedAt: string;
+    overlayKind: LocalCodeOverlayKind;
+    dirtyTreeHash: string | null;
+    currentWorkingTreeVisible: boolean;
+    fileCount: number;
+    symbolCount: number;
+    importCount: number;
+    warnings: LocalCodeOverlayManifest["warnings"];
+  };
+  hosted?: {
+    configured: boolean;
+    indexFreshness?: unknown;
+    contextScope?: unknown;
+  };
+  limitations: string[];
+}
+
+export interface CodeGraphAutoSourceResult {
+  title: string;
+  sourceSelection: CodeGraphSourceSelection;
+  result: unknown;
 }
 
 export type LocalCodeServeTransport = "http" | "mcp-stdio";
@@ -348,7 +398,38 @@ function readBaseSha(repoRoot: string, branch: string | null): string | null {
 }
 
 function readGitStatus(repoRoot: string): string {
-  return runGit(["status", "--porcelain"], repoRoot) ?? "";
+  try {
+    return execFileSync("git", ["status", "--porcelain"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).replace(/\r?\n$/, "");
+  } catch {
+    return "";
+  }
+}
+
+function readAheadCount(repoRoot: string): number | null {
+  const upstream = runGit(["rev-parse", "--verify", "@{u}"], repoRoot);
+  if (!upstream) {
+    return null;
+  }
+  const count = runGit(["rev-list", "--count", "@{u}..HEAD"], repoRoot);
+  return count ? parseInt(count, 10) : null;
+}
+
+function parseDirtyFiles(status: string): string[] {
+  return status
+    .split(/\r?\n/)
+    .filter((line) => line.trim().length > 0)
+    .map((line) => {
+      const renamed = line.match(/^.. (.+) -> (.+)$/);
+      if (renamed) {
+        return normalizeRepoPath(renamed[2]);
+      }
+      return normalizeRepoPath(line.slice(3).trim());
+    })
+    .filter(Boolean);
 }
 
 function languageForFile(filePath: string): LocalCodeOverlayFile["language"] | null {
@@ -989,6 +1070,324 @@ function printLocalQueryResult(result: Record<string, unknown>, json?: boolean):
   }
   console.log(chalk.bold(String(result.title ?? "Local code overlay query")));
   console.log(JSON.stringify(result, null, 2));
+}
+
+function localOverlaySelection(
+  requested: CodeGraphSource,
+  reason: string,
+  manifest: LocalCodeOverlayManifest,
+  aheadCount: number | null,
+  dirtyFiles: string[]
+): CodeGraphSourceSelection {
+  return {
+    requested,
+    selected: "local_overlay",
+    reason,
+    repositoryId: manifest.repositoryId,
+    branch: manifest.branch,
+    localHeadSha: manifest.localHeadSha,
+    baseSha: manifest.baseSha,
+    aheadCount,
+    dirtyFileCount: dirtyFiles.length,
+    dirtyFilesSample: dirtyFiles.slice(0, 12),
+    localOverlay: {
+      indexedAt: manifest.indexedAt,
+      overlayKind: manifest.overlayKind,
+      dirtyTreeHash: manifest.dirtyTreeHash,
+      currentWorkingTreeVisible: manifest.currentWorkingTreeVisible,
+      fileCount: manifest.files.length,
+      symbolCount: manifest.symbols.length,
+      importCount: manifest.imports.length,
+      warnings: manifest.warnings,
+    },
+    hosted: {
+      configured: isConfigured({ cwd: manifest.repoRoot }),
+    },
+    limitations: [
+      "local_overlay_file_import_model",
+      "local structural queries are file-level import analysis, not canonical hosted graph traversal",
+    ],
+  };
+}
+
+function hostedSelection(
+  requested: CodeGraphSource,
+  reason: string,
+  repoRoot: string,
+  result: unknown
+): CodeGraphSourceSelection {
+  const branch = readBranch(repoRoot);
+  const localHeadSha = readHeadSha(repoRoot);
+  const baseSha = readBaseSha(repoRoot, branch);
+  const dirtyStatus = readGitStatus(repoRoot);
+  const dirtyFiles = parseDirtyFiles(dirtyStatus);
+  const record = result && typeof result === "object" ? (result as Record<string, unknown>) : {};
+  return {
+    requested,
+    selected: "hosted_graph",
+    reason,
+    repositoryId: readRemoteRepositoryId(repoRoot),
+    branch,
+    localHeadSha,
+    baseSha,
+    aheadCount: readAheadCount(repoRoot),
+    dirtyFileCount: dirtyFiles.length,
+    dirtyFilesSample: dirtyFiles.slice(0, 12),
+    hosted: {
+      configured: true,
+      indexFreshness: record.index_freshness,
+      contextScope: record.context_scope,
+    },
+    limitations: dirtyFiles.length
+      ? ["hosted graph is indexed canonical code and does not include current uncommitted edits"]
+      : [],
+  };
+}
+
+function shouldUseLocalOverlay(args: {
+  requested: CodeGraphSource;
+  repoRoot: string;
+  dirtyFiles: string[];
+  aheadCount: number | null;
+}): { useLocal: boolean; reason: string } {
+  if (args.requested === "local") {
+    return { useLocal: true, reason: "source_forced_local" };
+  }
+  if (args.requested === "hosted") {
+    return { useLocal: false, reason: "source_forced_hosted" };
+  }
+  if (args.dirtyFiles.length > 0) {
+    return { useLocal: true, reason: "working_tree_dirty" };
+  }
+  if ((args.aheadCount ?? 0) > 0) {
+    return { useLocal: true, reason: "local_head_ahead_of_upstream" };
+  }
+  if (!isConfigured({ cwd: args.repoRoot })) {
+    return { useLocal: true, reason: "hosted_not_configured" };
+  }
+  return { useLocal: false, reason: "hosted_configured_and_worktree_clean" };
+}
+
+function buildLocalResultForVerb(
+  verb: CodeGraphVerb,
+  options: CodeGraphAutoSourceOptions
+): Record<string, unknown> {
+  switch (verb) {
+    case "callers":
+      return buildLocalCallersResult(options);
+    case "imports":
+      return buildLocalImportsResult(options);
+    case "neighbors":
+      return buildLocalNeighborsResult(options);
+    case "shortest-path":
+      return buildLocalShortestPathResult(options);
+    case "impact":
+      return buildLocalImpactResult(options);
+  }
+}
+
+async function callHostedCodeTool(
+  verb: CodeGraphVerb,
+  options: CodeGraphAutoSourceOptions
+): Promise<unknown> {
+  const client = createClient(verb === "impact" ? 30000 : 15000, {
+    cwd: options.dir,
+  });
+
+  switch (verb) {
+    case "callers": {
+      if (!options.qualifiedName && !options.symbolKey) {
+        throw new Error("Provide --qualified-name or --symbol-key");
+      }
+      return client.codeCallers(options.qualifiedName ?? "", {
+        symbolKey: options.symbolKey,
+        depth: options.depth,
+        limit: options.limit,
+      });
+    }
+    case "imports": {
+      if (!options.qualifiedName && !options.symbolKey && !options.filePath) {
+        throw new Error("Provide --qualified-name, --symbol-key, or --file-path");
+      }
+      return client.codeImports({
+        qualifiedName: options.qualifiedName,
+        symbolKey: options.symbolKey,
+        filePath: options.filePath,
+        direction: options.direction,
+        includeFileNodes: options.includeFileNodes,
+        limit: options.limit,
+      });
+    }
+    case "neighbors": {
+      if (!options.qualifiedName && !options.symbolKey) {
+        throw new Error("Provide --qualified-name or --symbol-key");
+      }
+      return client.codeNeighbors(options.qualifiedName ?? "", {
+        symbolKey: options.symbolKey,
+        depth: options.depth,
+        edgeKinds: options.edgeKinds,
+        limit: options.limit,
+      });
+    }
+    case "shortest-path": {
+      if (!options.from || !options.to) {
+        throw new Error("Provide --from and --to");
+      }
+      return client.codeShortestPath(options.from, options.to, {
+        edgeKinds: options.edgeKinds,
+        maxHops: options.maxHops,
+      });
+    }
+    case "impact": {
+      if (
+        !options.qualifiedName &&
+        !options.symbolKey &&
+        !options.filePath &&
+        (!options.changedFiles || options.changedFiles.length === 0)
+      ) {
+        throw new Error("Provide --qualified-name, --symbol-key, --file-path, or --changed-files");
+      }
+      return client.codeImpact({
+        qualifiedName: options.qualifiedName,
+        symbolKey: options.symbolKey,
+        filePath: options.filePath,
+        changedFiles: options.changedFiles,
+        diffSummary: options.diffSummary,
+        limit: options.limit,
+      });
+    }
+  }
+}
+
+function printCodeGraphAutoSourceResult(result: CodeGraphAutoSourceResult, json?: boolean): void {
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(chalk.bold(result.title));
+  console.log(`Source: ${result.sourceSelection.selected}`);
+  console.log(`Reason: ${result.sourceSelection.reason}`);
+  console.log(`Repo: ${result.sourceSelection.repositoryId}`);
+  console.log(`Branch: ${result.sourceSelection.branch ?? "unknown"}`);
+  console.log(`HEAD: ${result.sourceSelection.localHeadSha ?? "unknown"}`);
+  if (result.sourceSelection.aheadCount !== null) {
+    console.log(`Ahead of upstream: ${result.sourceSelection.aheadCount}`);
+  }
+  console.log(`Dirty files: ${result.sourceSelection.dirtyFileCount}`);
+  if (result.sourceSelection.localOverlay) {
+    console.log(`Overlay indexed: ${result.sourceSelection.localOverlay.indexedAt}`);
+    console.log(`Overlay kind: ${result.sourceSelection.localOverlay.overlayKind}`);
+  }
+  if (result.sourceSelection.limitations.length > 0) {
+    console.log(`Limitations: ${result.sourceSelection.limitations.join("; ")}`);
+  }
+  console.log("");
+  console.log(JSON.stringify(result.result, null, 2));
+}
+
+function emitCodeSourceTelemetry(
+  verb: CodeGraphVerb,
+  selection: CodeGraphSourceSelection,
+  latencyMs: number
+): void {
+  // Best-effort adoption telemetry. Metadata only: never file paths, symbols, or query args.
+  try {
+    void emitCanonicalEvent(
+      {
+        eventType: "tool_call",
+        privacyLevel: "standard",
+        payload: {
+          kind: "code_graph_source_resolution",
+          verb,
+          requested_source: selection.requested,
+          selected_source: selection.selected,
+          reason: selection.reason,
+          dirty_file_count: selection.dirtyFileCount,
+          ahead_count: selection.aheadCount,
+          has_local_overlay: Boolean(selection.localOverlay),
+          overlay_kind: selection.localOverlay?.overlayKind ?? null,
+          working_tree_visible: selection.localOverlay?.currentWorkingTreeVisible ?? null,
+          hosted_configured: selection.hosted?.configured ?? null,
+          limitation_count: selection.limitations.length,
+          latency_ms: latencyMs,
+        },
+      },
+      { timeoutMs: 1500 }
+    ).catch(() => undefined);
+  } catch {
+    // Telemetry must never affect the command outcome.
+  }
+}
+
+export async function codeGraphAutoSourceCommand(
+  verb: CodeGraphVerb,
+  options: CodeGraphAutoSourceOptions
+): Promise<void> {
+  const startedAt = Date.now();
+  const requested = options.source ?? "auto";
+  if (verb === "impact" && requested === "local") {
+    throw new Error(
+      "`snipara-companion code impact` is SaaS-only in the open-source companion. Configure hosted Snipara credentials, or use `code local impact` only as an explicit low-level import overlay."
+    );
+  }
+  const repoRoot = resolveRepoRoot(options.dir ?? process.cwd());
+  const dirtyStatus = readGitStatus(repoRoot);
+  const dirtyFiles = parseDirtyFiles(dirtyStatus);
+  const aheadCount = readAheadCount(repoRoot);
+  const decision =
+    verb === "impact"
+      ? {
+          useLocal: false,
+          reason: requested === "hosted" ? "source_forced_hosted" : "impact_judgment_saas_only",
+        }
+      : shouldUseLocalOverlay({
+          requested,
+          repoRoot,
+          dirtyFiles,
+          aheadCount,
+        });
+
+  let autoResult: CodeGraphAutoSourceResult;
+  if (decision.useLocal) {
+    const manifest = loadQueryManifest({
+      ...options,
+      dir: repoRoot,
+      mode: options.mode ?? "working_tree",
+    });
+    writeLocalCodeOverlayCache(manifest);
+    const localOptions = { ...options, dir: repoRoot, cached: true };
+    const result = buildLocalResultForVerb(verb, localOptions);
+    autoResult = {
+      title: `Code ${verb}`,
+      sourceSelection: localOverlaySelection(
+        requested,
+        decision.reason,
+        manifest,
+        aheadCount,
+        dirtyFiles
+      ),
+      result,
+    };
+  } else {
+    if (!isConfigured({ cwd: repoRoot })) {
+      const hint =
+        verb === "impact"
+          ? "Hosted Snipara is not configured. `snipara-companion code impact` is SaaS-only in the open-source companion; configure hosted Snipara credentials."
+          : "Hosted Snipara is not configured. Use --source local or run snipara-companion code sync.";
+      throw new Error(hint);
+    }
+
+    const hostedResult = await callHostedCodeTool(verb, { ...options, dir: repoRoot });
+    autoResult = {
+      title: `Code ${verb}`,
+      sourceSelection: hostedSelection(requested, decision.reason, repoRoot, hostedResult),
+      result: hostedResult,
+    };
+  }
+
+  printCodeGraphAutoSourceResult(autoResult, options.json);
+  emitCodeSourceTelemetry(verb, autoResult.sourceSelection, Date.now() - startedAt);
 }
 
 export function buildCodeStatusResult(options: CodeStatusCommandOptions): Record<string, unknown> {

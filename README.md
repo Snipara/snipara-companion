@@ -64,7 +64,7 @@ when they are not.
 | Presence across machines and agents          | No                                 | Yes                                         |
 | Shared claims/locks and stale lease handling | Local only is advisory             | Yes                                         |
 | GitHub checks and dashboard live views       | No                                 | Yes                                         |
-| Code graph impact and symbol cards           | Local overlay only where available | Cloud code graph                            |
+| Code graph impact and symbol cards           | No local judgment; hosted only     | Cloud code graph                            |
 
 ## When To Use It
 
@@ -118,6 +118,19 @@ pnpm pack:smoke
 
 This standalone repository mirrors the Snipara monorepo package source. The npm
 package is `snipara-companion`.
+
+## New In 1.4.11
+
+- Adds unified `snipara-companion code callers/imports/neighbors/shortest-path`
+  commands with `--source auto|hosted|local`. Clean configured checkouts use the
+  hosted graph, while dirty or ahead local worktrees can use the local structural
+  overlay and report `sourceSelection`.
+- Keeps `snipara-companion code impact` SaaS-only in this open-source repo. It
+  calls hosted `snipara_code_impact` for judgment, risk, actions, and coverage
+  gaps; it does not fall back to local overlay judgment.
+- Keeps explicit `snipara-companion code local impact` as a low-level
+  file-import overlay for debugging and pre-push continuity, not as the
+  canonical product judgment.
 
 ## New In 1.4.9
 
@@ -809,9 +822,10 @@ Semantics:
 - `snipara-companion team-sync sweep` = archives stale local work items after an inactivity threshold; default is 14 days and `--dry-run` previews the cleanup
 - `snipara-companion team-sync resume` = reloads local carryover plus the hosted latest handoff and checkpoint-aware resume guidance when available
 - `snipara-companion final-commit` / `workflow final-commit` = final hosted commit for the managed workflow
+- `snipara-companion code callers/imports/neighbors/shortest-path` = structural code graph commands with `--source auto` by default; clean configured checkouts use hosted MCP, while dirty/ahead worktrees can use the local structural overlay and every response reports `sourceSelection`
 - `snipara-companion code symbol-card` = direct paid Context `snipara_code_symbol_card` for an important symbol before editing, with an agent guidance summary before raw JSON
-- `snipara-companion code impact` = direct paid Context `snipara_code_impact` for changed files, a file, or a symbol before risky changes, with risk/actions/gaps summarized before raw JSON
-- `snipara-companion code local impact` = repository-local file-level import impact from the local code overlay; use this for a selected local file set, and use `workflow impact-gate` when the file set should come from unpushed workflow commits
+- `snipara-companion code impact` = SaaS-only paid Context `snipara_code_impact` for changed files, a file, or a symbol before risky changes, with risk/actions/gaps summarized before raw JSON
+- `snipara-companion code local impact` = explicit repository-local file-level import overlay for debugging and continuity only; product judgment stays on hosted `snipara_code_impact`
 - `snipara-companion doctor` = local readiness check for Snipara auth, deterministic hosted tool catalog access, Snipara Sandbox, Snipara Sandbox MCP wiring, provider keys, and Docker
 - `snipara-companion upload --metadata/--metadata-file` = single-file upload with the same business/client metadata fields supported by bulk sync
 - `snipara-companion business-collections` = manage reusable Team Business Context collections (Business Response Playbook, Business Library, Offer Templates, Company Presentations, Reference Diagrams)

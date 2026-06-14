@@ -24,6 +24,7 @@ import { evalExportCommand, evalRunCommand, memoryLocalCommand } from "./command
 import { memoryGuardCheckCommand, rememberGuardMemoryCommand } from "./commands/memory-guard";
 import { doctorCommand } from "./commands/doctor";
 import {
+  codeGraphAutoSourceCommand,
   codeHooksInstallCommand,
   codeLocalImpactCommand,
   codeLocalCallersCommand,
@@ -74,11 +75,6 @@ import {
   chunkGetCommand,
   clientProjectCreateCommand,
   clientProjectsListCommand,
-  codeCallersCommand,
-  codeImpactCommand,
-  codeImportsCommand,
-  codeNeighborsCommand,
-  codeShortestPathCommand,
   codeSymbolCardCommand,
   finalCommitCommand,
   loadDocumentCommand,
@@ -2374,72 +2370,104 @@ code
   )
   .addCommand(
     new Command("callers")
-      .description("List callers for a symbol")
-      .requiredOption("-q, --qualified-name <qualifiedName>", "Qualified symbol name")
+      .description("Find who calls a symbol; auto-select hosted graph or local overlay")
+      .option("-q, --qualified-name <qualifiedName>", "Qualified symbol name")
+      .option("--symbol-key <symbolKey>", "Stable graph or local overlay symbol key")
       .option("-d, --depth <number>", "Traversal depth", "1")
       .option("-l, --limit <number>", "Maximum callers", "50")
+      .option("--source <source>", "auto|hosted|local", "auto")
+      .option("--cached", "When local is selected, use the cached overlay if present")
+      .option("--max-files <number>", "Maximum supported code files for local overlay", "2000")
       .option("--json", "Print raw JSON")
       .action(async (options) => {
-        await codeCallersCommand({
+        await codeGraphAutoSourceCommand("callers", {
           qualifiedName: options.qualifiedName,
+          symbolKey: options.symbolKey,
           depth: parseInt(options.depth, 10),
           limit: parseInt(options.limit, 10),
+          source: options.source,
+          cached: Boolean(options.cached),
+          maxFiles: parseInt(options.maxFiles, 10),
           json: options.json,
         });
       })
   )
   .addCommand(
     new Command("imports")
-      .description("List imports for a symbol or file")
+      .description(
+        "Find imports/importers for a symbol or file; auto-select hosted graph or local overlay"
+      )
       .option("-q, --qualified-name <qualifiedName>", "Qualified symbol name")
+      .option("--symbol-key <symbolKey>", "Stable graph or local overlay symbol key")
       .option("-f, --file-path <filePath>", "File path to inspect")
       .option("-d, --direction <direction>", "in|out", "out")
       .option("--include-file-nodes", "Include all matched file nodes")
       .option("-l, --limit <number>", "Maximum imports", "50")
+      .option("--source <source>", "auto|hosted|local", "auto")
+      .option("--cached", "When local is selected, use the cached overlay if present")
+      .option("--max-files <number>", "Maximum supported code files for local overlay", "2000")
       .option("--json", "Print raw JSON")
       .action(async (options) => {
-        await codeImportsCommand({
+        await codeGraphAutoSourceCommand("imports", {
           qualifiedName: options.qualifiedName,
+          symbolKey: options.symbolKey,
           filePath: options.filePath,
           direction: options.direction,
           includeFileNodes: Boolean(options.includeFileNodes),
           limit: parseInt(options.limit, 10),
+          source: options.source,
+          cached: Boolean(options.cached),
+          maxFiles: parseInt(options.maxFiles, 10),
           json: options.json,
         });
       })
   )
   .addCommand(
     new Command("neighbors")
-      .description("Fetch a local neighborhood subgraph for a symbol")
-      .requiredOption("-q, --qualified-name <qualifiedName>", "Qualified symbol name")
+      .description("Get a symbol neighborhood; auto-select hosted graph or local overlay")
+      .option("-q, --qualified-name <qualifiedName>", "Qualified symbol name")
+      .option("--symbol-key <symbolKey>", "Stable graph or local overlay symbol key")
       .option("-d, --depth <number>", "Traversal depth", "2")
       .option("-e, --edge-kinds <edgeKinds...>", "Edge kinds to include")
       .option("-l, --limit <number>", "Maximum nodes", "200")
+      .option("--source <source>", "auto|hosted|local", "auto")
+      .option("--cached", "When local is selected, use the cached overlay if present")
+      .option("--max-files <number>", "Maximum supported code files for local overlay", "2000")
       .option("--json", "Print raw JSON")
       .action(async (options) => {
-        await codeNeighborsCommand({
+        await codeGraphAutoSourceCommand("neighbors", {
           qualifiedName: options.qualifiedName,
+          symbolKey: options.symbolKey,
           depth: parseInt(options.depth, 10),
           edgeKinds: options.edgeKinds,
           limit: parseInt(options.limit, 10),
+          source: options.source,
+          cached: Boolean(options.cached),
+          maxFiles: parseInt(options.maxFiles, 10),
           json: options.json,
         });
       })
   )
   .addCommand(
     new Command("shortest-path")
-      .description("Find the shortest structural path between two symbols")
+      .description("Find how two symbols connect; auto-select hosted graph or local overlay")
       .requiredOption("--from <from>", "Source qualified symbol name")
       .requiredOption("--to <to>", "Target qualified symbol name")
       .option("-e, --edge-kinds <edgeKinds...>", "Edge kinds to include")
       .option("--max-hops <number>", "Maximum hops", "6")
+      .option("--source <source>", "auto|hosted|local", "auto")
+      .option("--cached", "When local is selected, use the cached overlay if present")
+      .option("--max-files <number>", "Maximum supported code files for local overlay", "2000")
       .option("--json", "Print raw JSON")
       .action(async (options) => {
-        await codeShortestPathCommand({
+        await codeGraphAutoSourceCommand("shortest-path", {
           from: options.from,
           to: options.to,
           edgeKinds: options.edgeKinds,
           maxHops: parseInt(options.maxHops, 10),
+          source: options.source,
+          cached: Boolean(options.cached),
+          maxFiles: parseInt(options.maxFiles, 10),
           json: options.json,
         });
       })
@@ -2463,7 +2491,7 @@ code
   .addCommand(
     new Command("impact")
       .description(
-        "Run an agent-ready code impact gate for a symbol, file, changed files, routes/services/jobs, or missing-gap analysis"
+        "Run a hosted SaaS code impact gate for routes/services/jobs"
       )
       .option("-q, --qualified-name <qualifiedName>", "Qualified symbol name")
       .option("--symbol-key <symbolKey>", "Stable graph symbol key")
@@ -2473,7 +2501,7 @@ code
       .option("-l, --limit <number>", "Maximum impact entries", "50")
       .option("--json", "Print raw JSON")
       .action(async (options) => {
-        await codeImpactCommand({
+        await codeGraphAutoSourceCommand("impact", {
           qualifiedName: options.qualifiedName,
           symbolKey: options.symbolKey,
           filePath: options.filePath,

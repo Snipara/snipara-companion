@@ -298,6 +298,66 @@ test("code local commands query cached overlay imports and file-level paths", ()
   assert.deepEqual(shortestPathPayload.path, ["src/index.ts", "src/helper.ts"]);
 });
 
+test("code unified commands can force local overlay source", () => {
+  const repo = makeTempRepo();
+
+  const result = runCli(["code", "callers", "--source", "local", "-q", "helper", "--json"], {
+    cwd: repo,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(payload.sourceSelection.requested, "local");
+  assert.equal(payload.sourceSelection.selected, "local_overlay");
+  assert.equal(payload.sourceSelection.reason, "source_forced_local");
+  assert.equal(payload.result.target.name, "helper");
+  assert.ok(payload.result.callers.some((caller) => caller.filePath === "src/index.ts"));
+  assert.ok(payload.sourceSelection.limitations.includes("local_overlay_file_import_model"));
+});
+
+test("code unified commands auto-select local overlay for dirty worktrees", () => {
+  const repo = makeTempRepo();
+  fs.appendFileSync(path.join(repo, "src/helper.ts"), "\nexport const dirty = true;\n", "utf8");
+
+  const result = runCli(["code", "imports", "-q", "helper", "--json"], { cwd: repo });
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(payload.sourceSelection.requested, "auto");
+  assert.equal(payload.sourceSelection.selected, "local_overlay");
+  assert.equal(payload.sourceSelection.reason, "working_tree_dirty");
+  assert.equal(payload.sourceSelection.dirtyFileCount, 1);
+  assert.ok(payload.sourceSelection.dirtyFilesSample.includes("src/helper.ts"));
+  assert.equal(payload.result.target.name, "helper");
+});
+
+test("code unified commands fail clearly when hosted is forced without config", () => {
+  const repo = makeTempRepo();
+
+  const result = runCli(["code", "callers", "--source", "hosted", "-q", "helper", "--json"], {
+    cwd: repo,
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Hosted Snipara is not configured/);
+});
+
+test("code impact remains SaaS-only in the open-source companion", () => {
+  const repo = makeTempRepo();
+  fs.appendFileSync(path.join(repo, "src/helper.ts"), "\nexport const dirty = true;\n", "utf8");
+
+  const result = runCli(["code", "impact", "--changed-files", "src/helper.ts", "--json"], {
+    cwd: repo,
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /code impact` is SaaS-only/);
+
+  const forcedLocal = runCli(
+    ["code", "impact", "--source", "local", "--changed-files", "src/helper.ts", "--json"],
+    { cwd: repo }
+  );
+  assert.notEqual(forcedLocal.status, 0);
+});
+
 test("code local impact warns when requested targets are absent from the selected overlay", () => {
   const repo = makeTempRepo();
 

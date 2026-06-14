@@ -1154,11 +1154,11 @@ test("init writes one workspace companion config when reconfiguring codex", () =
   assert.match(workspaceConfig.sessionId, /^sess_/);
 });
 
-test("code help frames symbol-card and impact as agent-ready gates", () => {
+test("code help frames symbol-card and hosted impact gates", () => {
   const result = runCli(["code", "--help"]);
   assert.equal(result.status, 0);
   assert.match(result.stdout, /agent-ready symbol card/);
-  assert.match(result.stdout, /agent-ready code impact gate/);
+  assert.match(result.stdout, /hosted SaaS code impact gate/);
   assert.match(result.stdout, /routes\/services\/jobs/);
 });
 

@@ -1198,12 +1198,7 @@ function resolveGuardFiles(
     return ["deploy/infomaniak/deploy-zero-downtime.sh"];
   }
   if (profile === "migration" || profile === "schema") {
-    return [
-      "packages/database/prisma/schema.prisma",
-      "apps/mcp-server/prisma/schema.prisma",
-      "snipara-fastapi/prisma/schema.prisma",
-      "packages/create-snipara/snipara-server/prisma/schema.prisma",
-    ];
+    return ["packages/database/prisma/schema.prisma", "apps/mcp-server/prisma/schema.prisma"];
   }
   if (profile === "release-package") {
     return readGitChangedFiles(context.rootDir, ["diff", "--name-only", "HEAD~1..HEAD"]).filter(
