@@ -1,3 +1,13 @@
+/**
+ * `automations` commands — install dashboard-generated hook bundles.
+ *
+ * Fetches a project's automation bundle from hosted settings and installs it
+ * into client config files (Claude Code, Cursor, Codex, …). Mergeable
+ * instruction files (.cursorrules, AGENTS.md, CLAUDE.md, …) and JSON configs
+ * (.mcp.json, .claude/settings.json) are merged rather than overwritten. A
+ * local manifest (AUTOMATION_MANIFEST_RELATIVE_PATH) tracks installed files so
+ * `status`/`diff` detect drift and `update` can refresh safely.
+ */
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";

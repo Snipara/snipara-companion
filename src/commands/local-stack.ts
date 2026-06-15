@@ -1,3 +1,12 @@
+/**
+ * `eval` / `memory local` commands — open Mini Snipara stack bridges.
+ *
+ * Thin, no-account bridges to the open local stack: `memory local` proxies to
+ * the `snipara-memory` engine, while `eval export` writes a `snipara-evals`
+ * case from workflow / Team Sync / file / command / expected-signal inputs and
+ * `eval run` executes it via npx or a configured runner. These keep local
+ * continuity and evaluation usable without hosted Snipara.
+ */
 import * as fs from "fs";
 import * as path from "path";
 import { spawnSync } from "node:child_process";

@@ -1,3 +1,11 @@
+/**
+ * Journal checkpoints — append-only continuity log helpers.
+ *
+ * Builds and appends checkpoint entries (action, summary, outcome, phase,
+ * files, next step) used by workflow phase commits and Team Sync handoffs to
+ * record a durable, tagged trail of what happened. Pure formatting plus a
+ * fail-soft write that no-ops when the workspace is unconfigured.
+ */
 import { createClient } from "../api/client";
 import { isConfigured } from "../config/store";
 

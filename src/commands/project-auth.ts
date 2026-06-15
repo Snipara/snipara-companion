@@ -1,3 +1,11 @@
+/**
+ * Project authorization and binding helpers.
+ *
+ * Runs the project-scoped device-code OAuth flow, collects local project hints
+ * (to preselect a project), and writes the resolved project binding next to the
+ * companion config. Shared by `login` and `init` so project resolution behaves
+ * identically across both entry points.
+ */
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";

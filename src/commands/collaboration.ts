@@ -1,3 +1,13 @@
+/**
+ * `collaboration` commands — Safe Parallel Coding.
+ *
+ * Tracks who is working on which resources (files, routes, symbols, schemas,
+ * packages, deploys, surfaces) so humans and agents don't collide. Persists a
+ * local session at `.snipara/collaboration/session.json` and, when configured,
+ * calls the hosted API for cross-machine presence, advisory/exclusive leases,
+ * and guard decisions (go / review / block). Local-only state is advisory —
+ * only the hosted backend can prove what another machine is doing.
+ */
 import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";

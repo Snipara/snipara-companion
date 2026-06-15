@@ -1,5 +1,19 @@
+/**
+ * `memory` commands — hosted memory hygiene and lifecycle.
+ *
+ * Read-only hygiene (health, clean-candidates, audit) plus deliberately
+ * conservative lifecycle mutations: `compact` is dry-run only, while
+ * `invalidate` and `supersede` require explicit memory IDs. All operations
+ * target hosted Memory V2 through the API client; nothing here deletes memory
+ * implicitly.
+ */
 import chalk from "chalk";
-import { createClient, type MemoryScope } from "../api/client";
+import {
+  createClient,
+  type MemoryInvalidateResult,
+  type MemoryScope,
+  type MemorySupersedeResult,
+} from "../api/client";
 
 export interface MemoryHealthCommandOptions {
   scope?: MemoryScope;
@@ -28,6 +42,17 @@ export interface MemoryAuditCommandOptions
     MemoryHealthCommandOptions,
     MemoryCleanCandidatesCommandOptions,
     MemoryCompactCommandOptions {}
+
+export interface MemoryInvalidateCommandOptions {
+  reason?: string;
+  invalidatedAt?: string;
+  json?: boolean;
+}
+
+export interface MemorySupersedeCommandOptions {
+  reason?: string;
+  json?: boolean;
+}
 
 export interface MemoryAuditResult {
   version: "snipara.memory_audit.v1";
@@ -89,12 +114,18 @@ function buildCompactArgs(options: MemoryCompactCommandOptions): Record<string, 
   });
 }
 
-async function callMemoryTool(
+async function callMemoryTool<T = Record<string, unknown>>(
   toolName: string,
   args: Record<string, unknown>
-): Promise<Record<string, unknown>> {
+): Promise<T> {
   const client = createClient(30000);
-  return client.callTool<Record<string, unknown>>(toolName, args);
+  return client.callTool<T>(toolName, args);
+}
+
+function throwIfToolError(result: unknown): void {
+  if (isRecord(result) && typeof result.error === "string" && result.error.length > 0) {
+    throw new Error(result.error);
+  }
 }
 
 function printCounts(counts: unknown): void {
@@ -245,6 +276,35 @@ function printCompactDryRun(result: Record<string, unknown>): void {
   }
 }
 
+function printMemoryInvalidate(result: MemoryInvalidateResult): void {
+  console.log(chalk.bold("Memory Invalidated"));
+  console.log(`Memory: ${result.memory_id}`);
+  if (result.invalidated_at) {
+    console.log(`Invalidated at: ${result.invalidated_at}`);
+  }
+  if (result.reason) {
+    console.log(`Reason: ${result.reason}`);
+  }
+  if (result.message) {
+    console.log(result.message);
+  }
+}
+
+function printMemorySupersede(result: MemorySupersedeResult): void {
+  console.log(chalk.bold("Memory Superseded"));
+  console.log(`Old memory: ${result.old_memory_id}`);
+  console.log(`New memory: ${result.new_memory_id}`);
+  if (result.superseded_at) {
+    console.log(`Superseded at: ${result.superseded_at}`);
+  }
+  if (result.reason) {
+    console.log(`Reason: ${result.reason}`);
+  }
+  if (result.message) {
+    console.log(result.message);
+  }
+}
+
 export async function memoryHealthCommand(options: MemoryHealthCommandOptions): Promise<void> {
   const result = await callMemoryTool("snipara_memory_health", buildHealthArgs(options));
 
@@ -288,6 +348,51 @@ export async function memoryCompactCommand(options: MemoryCompactCommandOptions)
   console.log(
     'Before any destructive follow-up, run: snipara-companion memory-guard check --intent "apply memory cleanup" --destructive --strict'
   );
+}
+
+export async function memoryInvalidateCommand(
+  memoryId: string,
+  options: MemoryInvalidateCommandOptions
+): Promise<void> {
+  const result = await callMemoryTool<MemoryInvalidateResult>(
+    "snipara_memory_invalidate",
+    compactObject({
+      memory_id: memoryId,
+      reason: options.reason,
+      invalidated_at: options.invalidatedAt,
+    })
+  );
+  throwIfToolError(result);
+
+  if (options.json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  printMemoryInvalidate(result);
+}
+
+export async function memorySupersedeCommand(
+  oldMemoryId: string,
+  newMemoryId: string,
+  options: MemorySupersedeCommandOptions
+): Promise<void> {
+  const result = await callMemoryTool<MemorySupersedeResult>(
+    "snipara_memory_supersede",
+    compactObject({
+      old_memory_id: oldMemoryId,
+      new_memory_id: newMemoryId,
+      reason: options.reason,
+    })
+  );
+  throwIfToolError(result);
+
+  if (options.json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  printMemorySupersede(result);
 }
 
 export async function buildMemoryAudit(

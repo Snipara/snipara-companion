@@ -1,3 +1,11 @@
+/**
+ * `swarm` commands — hosted multi-agent swarm bridges.
+ *
+ * Thin wrappers over the hosted swarm API (`create`, `join`) for multi-agent
+ * coordination. Prefer snipara-orchestrator for shared task routing; these
+ * direct calls exist for scripting and diagnostics. Require a configured
+ * workspace.
+ */
 import { createClient } from "../api/client";
 import { isConfigured } from "../config/store";
 

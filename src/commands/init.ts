@@ -1,3 +1,12 @@
+/**
+ * `init` / `config` commands — set up companion configuration.
+ *
+ * Writes local companion config and, optionally, installs editor hooks and
+ * local code-overlay Git hooks for the chosen client (Claude Code, Cursor,
+ * Codex, …). Project binding is resolved through project-auth; most projects
+ * auto-resolve per workspace, so `init` is largely optional. Interactive by
+ * default, with flags for non-interactive / CI setup.
+ */
 import * as readline from "readline";
 import * as fs from "fs";
 import * as path from "path";
@@ -148,7 +157,7 @@ Claude Code should apply this workflow automatically for project-specific work; 
 - Use \`snipara_context_query\` for docs, business context, architecture notes, runbooks, and source truth. Use \`snipara_get_chunk\` for exact cited sections when references are returned.
 - For coding work, choose LITE or FULL before editing. Use FULL managed workflow for multi-file, risky, release/deploy, architectural, compaction-prone, or future-maintainer-sensitive work.
 - When a visible multi-phase plan exists, keep the machine plan in JSON and run \`snipara-companion workflow start --goal "<goal>" --plan-file <plan_json_file>\`. Use \`workflow phase-start\` / \`workflow phase-commit\` per phase, and after \`workflow resume\` rerun \`workflow phase-start\` before editing again.
-- Run \`snipara_code_impact\` before risky multi-file changes, PR reviews, routes, services, jobs, auth, billing, deployment, schema, migrations, or explicit "what is missing" assessments.
+- Run \`snipara-companion code impact\` before risky multi-file changes, PR reviews, routes, services, jobs, auth, billing, deployment, schema, migrations, or explicit "what is missing" assessments; it auto-selects local overlay for dirty/ahead worktrees. Use hosted \`snipara_code_impact\` only when companion is unavailable or after push/reindex for canonical graph impact.
 - For Project Intelligence briefs, run \`snipara-companion intelligence brief --task "<task>" --changed-files <files...>\` to combine resume context, memory health, and code impact before risky work. For roadmap-sized delivery, start with \`snipara-companion workflow scaffold --preset project-intelligence-continuity-layer\`.
 - Use local file reads, \`rg\`, git commands, and tests for exact edits and current working-tree state.
 - Use Snipara Sandbox only when sandboxed execution, repeatable validation, or isolated transformations materially help. For runtime-bound phases, capture compact rehydratable state with \`workflow runtime-checkpoint <phase_id> --summary "<state>" --rehydrate-file <state.json>\`. Then \`workflow resume\` restores workflow/memory continuity plus the recorded Sandbox binding and prints a reattach or rehydrate plan. It does not snapshot or exactly restore a live Snipara Sandbox / REPL process.
@@ -168,7 +177,7 @@ This workspace is bound to Snipara project \`${projectSlug}\` for ${formatClient
 - Use \`snipara_context_query\` for docs, business context, architecture notes, runbooks, and source truth. Use \`snipara_get_chunk\` for exact cited sections when references are returned.
 - For coding work, choose LITE or FULL before editing. Use FULL managed workflow for multi-file, risky, release/deploy, architectural, compaction-prone, or future-maintainer-sensitive work.
 - When a visible multi-phase plan exists, keep the machine plan in JSON and run \`snipara-companion workflow start --goal "<goal>" --plan-file <plan_json_file>\`. Use \`workflow phase-start\` / \`workflow phase-commit\` per phase, and after \`workflow resume\` rerun \`workflow phase-start\` before editing again.
-- Run \`snipara_code_impact\` before risky multi-file changes, PR reviews, routes, services, jobs, auth, billing, deployment, schema, migrations, or explicit "what is missing" assessments.
+- Run \`snipara-companion code impact\` before risky multi-file changes, PR reviews, routes, services, jobs, auth, billing, deployment, schema, migrations, or explicit "what is missing" assessments; it auto-selects local overlay for dirty/ahead worktrees. Use hosted \`snipara_code_impact\` only when companion is unavailable or after push/reindex for canonical graph impact.
 - For Project Intelligence briefs, run \`snipara-companion intelligence brief --task "<task>" --changed-files <files...>\` to combine resume context, memory health, and code impact before risky work. For roadmap-sized delivery, start with \`snipara-companion workflow scaffold --preset project-intelligence-continuity-layer\`.
 - Use local file reads, \`rg\`, git commands, and tests for exact edits and current working-tree state.
 - Use Snipara Sandbox only when sandboxed execution, repeatable validation, or isolated transformations materially help. For runtime-bound phases, capture compact rehydratable state with \`workflow runtime-checkpoint <phase_id> --summary "<state>" --rehydrate-file <state.json>\`. Then \`workflow resume\` restores workflow/memory continuity plus the recorded Sandbox binding and prints a reattach or rehydrate plan. It does not snapshot or exactly restore a live Snipara Sandbox / REPL process.

@@ -1,3 +1,11 @@
+/**
+ * Project identifier resolution.
+ *
+ * Resolves which Snipara project the current workspace maps to via a documented
+ * cascade (flag → env → .snipara/project → package.json#name → git remote → cwd
+ * basename); see `resolveProject` for the precise order. Returns both the
+ * identifier and which source won, for diagnostics and `init`.
+ */
 import * as fs from "fs";
 import * as path from "path";
 import { execSync } from "child_process";

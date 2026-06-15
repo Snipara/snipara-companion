@@ -1,3 +1,12 @@
+/**
+ * Orchestrator handoff artifact — build and persist.
+ *
+ * Serializes the current workflow into a handoff document
+ * (.snipara/orchestrator/handoff.json): workflow phases, runtime/sandbox
+ * phases, files, gates, and checkpoints. snipara-orchestrator (or another
+ * agent) reads this to resume multi-step work with full context. Pure builder
+ * (`buildOrchestratorHandoff`) plus a writer.
+ */
 import * as fs from "fs";
 import * as path from "path";
 import { execFileSync } from "child_process";

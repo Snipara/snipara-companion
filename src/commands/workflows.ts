@@ -1,3 +1,14 @@
+/**
+ * `workflow` commands — phase-based workflow continuity engine.
+ *
+ * Drives the managed workflow lifecycle: start, phase-start / phase-commit,
+ * runtime checkpoints, resume, final-commit, timeline, and impact gates. State
+ * persists under `.snipara/` (see WORKFLOW_STATE_RELATIVE_PATH and
+ * WORKFLOW_PLANS_RELATIVE_DIR) so progress survives context compaction. Phase
+ * commits reconcile with Team Sync work items and emit orchestrator handoffs.
+ * The many `build*` / `normalize*` helpers here are pure and unit-tested via
+ * the re-exports in index.ts.
+ */
 import * as fs from "fs";
 import * as path from "path";
 import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
@@ -1159,7 +1170,7 @@ function buildWorkflowPlanPresetDocument(
               "apps/mcp-server/tests",
               "apps/web/src/lib/services/github-pr-answer-pack-generator.ts",
             ],
-            gates: ["snipara_code_impact", "targeted regression tests"],
+            gates: ["snipara-companion code impact", "targeted regression tests"],
           },
           {
             id: "continuity-brief-and-graph-summary",
@@ -1215,7 +1226,7 @@ function buildWorkflowPlanPresetDocument(
               "apps/web/src/lib/services/github-memory.ts",
               "apps/web/src/lib/db/queries/context-graph.ts",
             ],
-            gates: ["snipara_context_query", "snipara_code_impact"],
+            gates: ["snipara_context_query", "snipara-companion code impact"],
           },
           {
             id: "v2-reader-writer-cutover",
@@ -1259,7 +1270,7 @@ function buildWorkflowPlanPresetDocument(
               "packages/cli/src/runtime/orchestrator-handoff.ts",
               "packages/agentic-orchestrator/src/snipara_orchestrator/orchestrator.py",
             ],
-            gates: ["snipara_code_impact", "proof-gated validation"],
+            gates: ["snipara-companion code impact", "proof-gated validation"],
             needs_runtime: true,
           },
         ],
@@ -2148,6 +2159,19 @@ function compactLocalImpactForWorkflowGate(
   };
 }
 
+/**
+ * Compute the impact gate for committed-but-unpushed workflow phases.
+ *
+ * Compares `upstream..HEAD`, separates unpushed code changes from non-code and
+ * dirty working-tree files, runs local code-overlay impact on the committed
+ * code files, and maps the result back to completed workflow phases. Surfaces
+ * reason codes such as `dirty_working_tree_not_included` and phase files that
+ * fall outside the unpushed diff, so a phase is not treated as verified on
+ * stale or partial evidence.
+ *
+ * @returns A `WorkflowImpactGateResult` with changed files, local impact,
+ *   matched phases, and reason codes.
+ */
 export function buildWorkflowImpactGate(
   options: {
     cwd?: string;

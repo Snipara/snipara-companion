@@ -1,3 +1,14 @@
+/**
+ * Runtime environment detection and orchestrator routing recommendation.
+ *
+ * Inspects the local environment — companion config, workspace root, and
+ * provider keys (OPENAI/ANTHROPIC, from process env or a project env-file) —
+ * and scores whether work should be routed to snipara-orchestrator. The
+ * recommendation level (suggest | confirm | auto) is derived from signals such
+ * as workflow mode, changed-file count, active collisions, and multi-agent
+ * intent. Pure logic: it reads state and returns a recommendation; it does not
+ * perform any routing itself.
+ */
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -154,6 +165,17 @@ export function shouldSuggestRuntimeForWorkflow(query: string, mode: WorkflowMod
   return mode === "full" || mode === "orchestrate" || RUNTIME_INTENT_PATTERN.test(query);
 }
 
+/**
+ * Recommend whether work should be routed to snipara-orchestrator.
+ *
+ * Scores intent signals from the query and workflow mode (orchestrate mode,
+ * production / proof / htask / multi-agent / parallel patterns) plus contextual
+ * signals (changed-file count, active Team Sync collisions, policy auto-route).
+ * The returned recommendation's level escalates with the accumulated score
+ * (suggest → confirm → auto).
+ *
+ * @returns A recommendation with its reasons, or `null` when no signal fires.
+ */
 export function getOrchestratorRecommendation(
   query: string,
   mode: WorkflowMode,

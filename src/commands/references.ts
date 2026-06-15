@@ -1,3 +1,12 @@
+/**
+ * `references` commands — capture external doc references with provenance.
+ *
+ * `scan` walks local docs for external URLs and writes a manifest
+ * (.snipara/references/manifest.json) with per-URL allow/deny status; `ingest`
+ * fetches the allowed ones into source-backed Markdown snapshots and can upload
+ * them to Snipara. Domain allow/deny lists gate every fetch, and snapshots keep
+ * provenance so retrieved context is traceable to its source.
+ */
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";

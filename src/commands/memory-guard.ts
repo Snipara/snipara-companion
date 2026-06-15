@@ -1,3 +1,12 @@
+/**
+ * `memory-guard` — recall guidance before risky actions.
+ *
+ * Before failed retries, commits, or finalization, this surfaces tagged memory
+ * and source context and flags release surfaces (npm/pypi), destructive intent,
+ * and contradictions. In strict mode it returns stable exit codes (see
+ * MEMORY_GUARD_EXIT_CODES): 20 = confirmation required, 21 = guidance
+ * unavailable, 22 = invalid options — so Git hooks can block or prompt.
+ */
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
@@ -648,6 +657,18 @@ function printMemoryGuardResult(result: MemoryGuardCheckResult): void {
   }
 }
 
+/**
+ * Recall and evaluate guard guidance before a risky action.
+ *
+ * Given a trigger (failure | pre-commit | commit | pre-final | manual) and
+ * optional touched files (or `--staged`), it detects release surfaces and
+ * destructive/contradictory intent, recalls tagged memory and source context,
+ * and returns findings plus whether the caller must stop or confirm. Honors an
+ * explicit `confirmedByUser` override so a reviewed destructive action can
+ * proceed. Backs the strict-mode exit codes used by Git hooks.
+ *
+ * @returns Findings, warnings, and a decision the caller can act on.
+ */
 export async function runMemoryGuardCheck(
   options: MemoryGuardCheckOptions = {}
 ): Promise<MemoryGuardCheckResult> {

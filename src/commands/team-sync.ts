@@ -1,3 +1,13 @@
+/**
+ * `team-sync` continuity — start-work, handoff, resume, and what-changed.
+ *
+ * Maintains a local Team Sync session at `.snipara/team-sync/session.json`,
+ * tracking work items through active -> completed -> archived. Items go stale
+ * after TEAM_SYNC_STALE_WORK_MS (48h) and auto-archive after
+ * TEAM_SYNC_AUTO_ARCHIVE_WORK_MS (14d). Handoffs also emit an orchestrator
+ * handoff artifact and a journal checkpoint so the next session or agent can
+ * resume with full context. Hosted calls enrich this state when configured.
+ */
 import * as fs from "fs";
 import * as path from "path";
 import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";

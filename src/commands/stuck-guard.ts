@@ -1,3 +1,12 @@
+/**
+ * `stuck-guard` — detect and break agent "stuck" loops.
+ *
+ * Normalizes tool calls/results into canonical events, classifies outcomes
+ * (success | failure | empty_result | timeout), and evaluates whether the agent
+ * is stuck (e.g. repeated failing searches) so a rescue hint can be injected.
+ * Tool input and results are scrubbed of secrets (see SECRET_PATTERNS) before
+ * any payload is built or sent.
+ */
 import * as fs from "node:fs";
 import { buildCanonicalEvent } from "./events";
 import {

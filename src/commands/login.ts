@@ -1,3 +1,13 @@
+/**
+ * `login` command — device-code OAuth authentication.
+ *
+ * Runs the OAuth device-code flow (grant type
+ * urn:ietf:params:oauth:grant-type:device_code): prints a verification URL and
+ * user code, polls for up to MAX_POLL_DURATION_MS (15 min) at the
+ * server-provided interval, then stores the resulting project (or legacy user)
+ * key. Project selection is delegated to project-auth; `--user-key` selects the
+ * legacy project-agnostic flow.
+ */
 import { saveConfig, loadConfig, getConfigPath } from "../config/store";
 import { execSync } from "child_process";
 import {

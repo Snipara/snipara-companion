@@ -1,3 +1,12 @@
+/**
+ * Hosted Snipara API client and shared response types.
+ *
+ * `createClient` builds the authenticated client every command uses to reach
+ * Snipara Hosted MCP / API (context query, memory, code graph, collaboration,
+ * Team Sync, automations, …). This module also defines the shared response
+ * type definitions those commands consume. Auth and base URL come from the
+ * companion config (see config/store).
+ */
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -325,17 +334,22 @@ export interface RememberMemoryResult {
 
 export interface MemoryInvalidateResult {
   memory_id: string;
-  status: MemoryStatus;
+  status?: MemoryStatus;
+  invalidated?: boolean;
   invalidated_at: string;
+  reason?: string;
   message: string;
+  error?: string;
 }
 
 export interface MemorySupersedeResult {
   old_memory_id: string;
   new_memory_id: string;
-  old_status: MemoryStatus;
-  new_status: MemoryStatus;
+  superseded?: boolean;
+  superseded_at?: string;
+  reason?: string;
   message: string;
+  error?: string;
 }
 
 export interface AutomationCheckpointSummary {
@@ -1561,31 +1575,17 @@ export class RLMClient {
   }
 
   /**
-   * Replace an existing memory with updated content.
+   * Mark an existing memory as superseded by another memory.
    */
   async supersedeMemory(
     oldMemoryId: string,
-    text: string,
-    options: {
-      type?: MemoryType;
-      scope?: MemoryScope;
-      category?: string;
-      ttlDays?: number;
-      relatedTo?: string[];
-      documentRefs?: string[];
-      reason?: string;
-    } = {}
+    newMemoryId: string,
+    reason?: string
   ): Promise<MemorySupersedeResult> {
     return this.mcpCall<MemorySupersedeResult>("snipara_memory_supersede", {
       old_memory_id: oldMemoryId,
-      text,
-      type: options.type ?? "fact",
-      scope: options.scope ?? "project",
-      category: options.category,
-      ttl_days: options.ttlDays,
-      related_to: options.relatedTo,
-      document_refs: options.documentRefs,
-      reason: options.reason,
+      new_memory_id: newMemoryId,
+      reason,
     });
   }
 

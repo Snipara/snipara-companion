@@ -1,3 +1,11 @@
+/**
+ * `doctor` command — environment diagnostics.
+ *
+ * Runs read-only probes and prints (or returns as JSON) a health report:
+ * runtime/companion configuration, Snipara authentication, and the hosted tool
+ * catalog (including htask/swarm completeness). Meant for debugging setup
+ * before filing issues — it changes nothing.
+ */
 import chalk from "chalk";
 import { createClient, type ConnectionProbeResult } from "../api/client";
 import { detectRuntimeEnvironment, type RuntimeDetectionReport } from "../runtime/detection";

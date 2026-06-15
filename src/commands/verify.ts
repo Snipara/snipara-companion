@@ -1,8 +1,16 @@
+/**
+ * `verify` command — build a transparent verification plan.
+ *
+ * Derives a checklist of verification steps (test, lint, type-check, build,
+ * inspection) for the current change by combining code-impact signals with the
+ * project's package scripts, and flags coverage gaps. `buildVerificationPlan`
+ * is the pure core; the command adds I/O and formatting. It plans checks — it
+ * does not run them.
+ */
 import fs from "fs";
 import path from "path";
 import chalk from "chalk";
-import { createClient } from "../api/client";
-import { isConfigured } from "../config/store";
+import { resolveCodeGraphAutoSourceResult, type CodeGraphSourceSelection } from "./code";
 
 export interface VerifyCommandOptions {
   task?: string;
@@ -54,12 +62,14 @@ export interface VerificationPlan {
   caveats: string[];
   suggestedCommands: string[];
   codeImpact?: Record<string, unknown>;
+  codeImpactSourceSelection?: CodeGraphSourceSelection;
   errors: Array<{ surface: string; message: string }>;
 }
 
 interface BuildVerificationPlanOptions extends VerifyCommandOptions {
   cwd?: string;
   codeImpact?: Record<string, unknown>;
+  codeImpactSourceSelection?: CodeGraphSourceSelection;
   errors?: Array<{ surface: string; message: string }>;
 }
 
@@ -441,6 +451,19 @@ function dedupeChecks(checks: VerificationCheck[]): VerificationCheck[] {
   });
 }
 
+/**
+ * Build a transparent verification plan for the current change.
+ *
+ * Combines code-impact signals (direct related tests, action checks, coverage
+ * gaps) with package scripts inferred from the impacted files, dedupes the
+ * resulting checks, and records explicit gaps (impact unavailable/skipped, no
+ * direct tests, no impacted files) so the plan is honest about what it can and
+ * cannot verify. Pure: it returns a plan and never executes any check.
+ *
+ * @param options Changed files / file path, optional code impact, cwd, and
+ *   `skipImpact`.
+ * @returns A plan of recommended checks plus a list of coverage gaps.
+ */
 export function buildVerificationPlan(options: BuildVerificationPlanOptions): VerificationPlan {
   const cwd = options.cwd ?? process.cwd();
   const changedFiles = unique(options.changedFiles ?? []);
@@ -496,6 +519,9 @@ export function buildVerificationPlan(options: BuildVerificationPlanOptions): Ve
     caveats: collectCaveats(options.codeImpact, errors),
     suggestedCommands: [],
     ...(options.codeImpact ? { codeImpact: options.codeImpact } : {}),
+    ...(options.codeImpactSourceSelection
+      ? { codeImpactSourceSelection: options.codeImpactSourceSelection }
+      : {}),
     errors,
   };
   plan.suggestedCommands = buildSuggestedCommands(plan);
@@ -512,17 +538,11 @@ function printGap(gap: VerificationGap): void {
   console.log(`- [${gap.severity}] ${gap.code}: ${gap.message}`);
 }
 
-function ensureConfiguredForImpact(): void {
-  if (!isConfigured()) {
-    console.log("Not configured. Run 'npx -y snipara-companion@latest init' first.");
-    process.exit(1);
-  }
-}
-
 export async function verifyCommand(options: VerifyCommandOptions): Promise<void> {
   const changedFiles = unique(options.changedFiles ?? []);
   const errors: VerificationPlan["errors"] = [];
   let codeImpact: Record<string, unknown> | undefined;
+  let codeImpactSourceSelection: CodeGraphSourceSelection | undefined;
 
   if (!options.skipImpact) {
     if (
@@ -534,10 +554,8 @@ export async function verifyCommand(options: VerifyCommandOptions): Promise<void
       throw new Error("Provide --changed-files, --file-path, --qualified-name, or --symbol-key");
     }
 
-    ensureConfiguredForImpact();
     try {
-      const client = createClient(30000);
-      codeImpact = await client.codeImpact({
+      const autoResult = await resolveCodeGraphAutoSourceResult("impact", {
         qualifiedName: options.qualifiedName,
         symbolKey: options.symbolKey,
         filePath: options.filePath,
@@ -545,6 +563,8 @@ export async function verifyCommand(options: VerifyCommandOptions): Promise<void
         diffSummary: options.diffSummary ?? options.task,
         limit: options.limit,
       });
+      codeImpact = autoResult.result as Record<string, unknown>;
+      codeImpactSourceSelection = autoResult.sourceSelection;
     } catch (error) {
       errors.push({
         surface: "code_impact",
@@ -557,6 +577,7 @@ export async function verifyCommand(options: VerifyCommandOptions): Promise<void
     ...options,
     changedFiles,
     codeImpact,
+    codeImpactSourceSelection,
     errors,
   });
 
@@ -572,6 +593,11 @@ export async function verifyCommand(options: VerifyCommandOptions): Promise<void
   console.log(
     `Risk: ${plan.risk.level}${plan.risk.score !== undefined ? ` (${plan.risk.score})` : ""}`
   );
+  if (plan.codeImpactSourceSelection) {
+    console.log(
+      `Code impact source: ${plan.codeImpactSourceSelection.selected} (${plan.codeImpactSourceSelection.reason})`
+    );
+  }
   console.log("");
 
   console.log(chalk.bold("Impacted Files"));

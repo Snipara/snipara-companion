@@ -1,3 +1,12 @@
+/**
+ * `pre-tool` command — PreToolUse hook context retrieval.
+ *
+ * Invoked by editor / Claude Code hooks before a tool runs. It extracts a query
+ * from the raw tool input (see QUERY_FIELDS), fetches relevant project context
+ * from hosted Snipara (served through a local query cache), and runs Stuck
+ * Guard. Designed to be fast and fail-soft: when unconfigured or offline it
+ * returns nothing rather than blocking the tool call.
+ */
 import { createClient, type ContextQueryResult } from "../api/client";
 import { isConfigured, loadConfig } from "../config/store";
 import { createLocalQueryCache } from "../cache/query-cache";

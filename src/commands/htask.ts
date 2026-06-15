@@ -1,3 +1,12 @@
+/**
+ * `htask` commands — hosted hierarchical task bridges.
+ *
+ * Thin wrappers over the hosted hierarchical-task API for multi-agent work
+ * across four levels (N0 initiative → N1 feature → N2 workstream → N3 task):
+ * `create`, `create-feature`, `next`, `tree`, `complete`. Prefer
+ * snipara-orchestrator for shared multi-agent queues; these direct calls exist
+ * for scripting and diagnostics. Require a configured workspace.
+ */
 import { createClient } from "../api/client";
 import { isConfigured } from "../config/store";
 

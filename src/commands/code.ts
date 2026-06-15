@@ -1,3 +1,12 @@
+/**
+ * `code` commands — local code graph overlay + hosted bridge.
+ *
+ * Builds a local code overlay (files, symbols, imports) over the working tree
+ * or a local commit and answers structural queries offline: impact, callers,
+ * imports, neighbors, and shortest path. Also installs Git hooks, serves a
+ * small MCP, and promotes/uploads the overlay to the hosted Cloud code graph.
+ * Local results are a best-effort overlay; the hosted graph is authoritative.
+ */
 import crypto from "crypto";
 import { execFileSync } from "child_process";
 import fs from "fs";
@@ -127,6 +136,7 @@ export interface CodeGraphSourceSelection {
   requested: CodeGraphSource;
   selected: ResolvedCodeGraphSource;
   reason: string;
+  guidance: string[];
   repositoryId: string;
   branch: string | null;
   localHeadSha: string | null;
@@ -717,6 +727,20 @@ export function getLocalCodePromotionStatePath(cwd: string = process.cwd()): str
   return path.join(resolveRepoRoot(cwd), PROMOTION_RELATIVE_PATH);
 }
 
+/**
+ * Build a local code graph overlay over the working tree or a local commit.
+ *
+ * Walks candidate files (working tree, or a commit when `mode` is
+ * "local_commit"), parses supported languages into files/symbols/imports, and
+ * records why files were excluded (ignored, unsupported language, too large,
+ * secret pattern, read error). Honors `.sniparaignore`, per-file size and file
+ * count caps (`maxFiles`, `maxFileBytes`), and adds warnings when limits are
+ * hit. This overlay backs the offline impact/callers/imports queries; it is
+ * best-effort, not authoritative.
+ *
+ * @returns A `LocalCodeOverlayManifest` with files, symbols, imports, excluded
+ *   samples, and warnings.
+ */
 export function buildLocalCodeOverlay(
   options: LocalCodeOverlayOptions = {}
 ): LocalCodeOverlayManifest {
@@ -1083,6 +1107,7 @@ function localOverlaySelection(
     requested,
     selected: "local_overlay",
     reason,
+    guidance: localOverlayGuidance(reason),
     repositoryId: manifest.repositoryId,
     branch: manifest.branch,
     localHeadSha: manifest.localHeadSha,
@@ -1105,7 +1130,7 @@ function localOverlaySelection(
     },
     limitations: [
       "local_overlay_file_import_model",
-      "local structural queries are file-level import analysis, not canonical hosted graph traversal",
+      "local callers and impact are file-level import analysis, not canonical hosted call-site/impact traversal",
     ],
   };
 }
@@ -1126,6 +1151,7 @@ function hostedSelection(
     requested,
     selected: "hosted_graph",
     reason,
+    guidance: hostedGraphGuidance(reason, dirtyFiles.length),
     repositoryId: readRemoteRepositoryId(repoRoot),
     branch,
     localHeadSha,
@@ -1142,6 +1168,38 @@ function hostedSelection(
       ? ["hosted graph is indexed canonical code and does not include current uncommitted edits"]
       : [],
   };
+}
+
+function localOverlayGuidance(reason: string): string[] {
+  const selectedBecause =
+    reason === "working_tree_dirty"
+      ? "Primary code impact source: local overlay selected because the working tree has uncommitted edits."
+      : reason === "local_head_ahead_of_upstream"
+        ? "Primary code impact source: local overlay selected because local commits are ahead of upstream."
+        : reason === "hosted_not_configured"
+          ? "Primary code impact source: local overlay selected because hosted MCP is not configured."
+          : "Primary code impact source: local overlay selected by request.";
+  return [
+    selectedBecause,
+    "Hosted snipara_code_impact is the fallback/canonical graph surface after push and hosted reindex.",
+  ];
+}
+
+function hostedGraphGuidance(reason: string, dirtyFileCount: number): string[] {
+  if (dirtyFileCount > 0) {
+    return [
+      "Hosted graph selected even though the working tree is dirty; this does not include uncommitted edits.",
+      "Rerun snipara-companion code impact with --source auto or --source local before relying on local-change impact.",
+    ];
+  }
+  if (reason === "source_forced_hosted") {
+    return [
+      "Hosted graph selected by request; use snipara-companion code impact with --source auto for local-change-aware impact.",
+    ];
+  }
+  return [
+    "Hosted graph selected because the checkout is clean and configured; use companion local overlay only when local commits or dirty files matter.",
+  ];
 }
 
 function shouldUseLocalOverlay(args: {
@@ -1268,6 +1326,9 @@ function printCodeGraphAutoSourceResult(result: CodeGraphAutoSourceResult, json?
   console.log(chalk.bold(result.title));
   console.log(`Source: ${result.sourceSelection.selected}`);
   console.log(`Reason: ${result.sourceSelection.reason}`);
+  for (const guidance of result.sourceSelection.guidance) {
+    console.log(`Guidance: ${guidance}`);
+  }
   console.log(`Repo: ${result.sourceSelection.repositoryId}`);
   console.log(`Branch: ${result.sourceSelection.branch ?? "unknown"}`);
   console.log(`HEAD: ${result.sourceSelection.localHeadSha ?? "unknown"}`);
@@ -1320,33 +1381,22 @@ function emitCodeSourceTelemetry(
   }
 }
 
-export async function codeGraphAutoSourceCommand(
+export async function resolveCodeGraphAutoSourceResult(
   verb: CodeGraphVerb,
   options: CodeGraphAutoSourceOptions
-): Promise<void> {
+): Promise<CodeGraphAutoSourceResult> {
   const startedAt = Date.now();
   const requested = options.source ?? "auto";
-  if (verb === "impact" && requested === "local") {
-    throw new Error(
-      "`snipara-companion code impact` is SaaS-only in the open-source companion. Configure hosted Snipara credentials, or use `code local impact` only as an explicit low-level import overlay."
-    );
-  }
   const repoRoot = resolveRepoRoot(options.dir ?? process.cwd());
   const dirtyStatus = readGitStatus(repoRoot);
   const dirtyFiles = parseDirtyFiles(dirtyStatus);
   const aheadCount = readAheadCount(repoRoot);
-  const decision =
-    verb === "impact"
-      ? {
-          useLocal: false,
-          reason: requested === "hosted" ? "source_forced_hosted" : "impact_judgment_saas_only",
-        }
-      : shouldUseLocalOverlay({
-          requested,
-          repoRoot,
-          dirtyFiles,
-          aheadCount,
-        });
+  const decision = shouldUseLocalOverlay({
+    requested,
+    repoRoot,
+    dirtyFiles,
+    aheadCount,
+  });
 
   let autoResult: CodeGraphAutoSourceResult;
   if (decision.useLocal) {
@@ -1371,11 +1421,9 @@ export async function codeGraphAutoSourceCommand(
     };
   } else {
     if (!isConfigured({ cwd: repoRoot })) {
-      const hint =
-        verb === "impact"
-          ? "Hosted Snipara is not configured. `snipara-companion code impact` is SaaS-only in the open-source companion; configure hosted Snipara credentials."
-          : "Hosted Snipara is not configured. Use --source local or run snipara-companion code sync.";
-      throw new Error(hint);
+      throw new Error(
+        "Hosted Snipara is not configured. Use --source local or run snipara-companion code sync."
+      );
     }
 
     const hostedResult = await callHostedCodeTool(verb, { ...options, dir: repoRoot });
@@ -1386,8 +1434,16 @@ export async function codeGraphAutoSourceCommand(
     };
   }
 
-  printCodeGraphAutoSourceResult(autoResult, options.json);
   emitCodeSourceTelemetry(verb, autoResult.sourceSelection, Date.now() - startedAt);
+  return autoResult;
+}
+
+export async function codeGraphAutoSourceCommand(
+  verb: CodeGraphVerb,
+  options: CodeGraphAutoSourceOptions
+): Promise<void> {
+  const autoResult = await resolveCodeGraphAutoSourceResult(verb, options);
+  printCodeGraphAutoSourceResult(autoResult, options.json);
 }
 
 export function buildCodeStatusResult(options: CodeStatusCommandOptions): Record<string, unknown> {

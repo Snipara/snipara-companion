@@ -1,3 +1,11 @@
+/**
+ * `post-tool` command — PostToolUse hook file/result tracking.
+ *
+ * Invoked by editor / Claude Code hooks after a tool runs. It extracts the
+ * accessed files from the (possibly nested) tool input, classifies the result
+ * (success / failure / timeout), emits a canonical automation event, and runs
+ * the memory guard. Fail-soft: tracking errors never break the host tool.
+ */
 import { createClient } from "../api/client";
 import { isConfigured } from "../config/store";
 import { emitCanonicalEvent } from "./events";

@@ -8,9 +8,28 @@ onboarding, local Mini Snipara bridges, and command-line access around Snipara
 Hosted MCP. It complements the hosted context and memory surface; it is not the
 primary runtime for agents.
 
-In this standalone repository, the source lives in `src`, and the installed executable is `snipara-companion`.
+In this repository, the source currently lives in `packages/cli`, and the installed executable is `snipara-companion`.
 
 This package complements `snipara-mcp`. It does not replace it.
+
+## Quickstart
+
+```bash
+# 1. Install
+npm install -g snipara-companion
+
+# 2. Point this workspace at a Snipara project (writes local .snipara/ config)
+snipara-companion init            # interactive; or: snipara-companion login
+
+# 3. Use it in your agent workflow
+snipara-companion brief           # what changed, why, impact, next action, safe-to-proceed
+snipara-companion status          # current work across workflow, git, and Team Sync
+snipara-companion handoff --summary "<what changed>" --next "<next step>"
+```
+
+Local continuity commands work without a Snipara account; commands that read
+hosted context or memory need `init`/`login` first. Run
+`snipara-companion --help` for the full command list.
 
 ```mermaid
 flowchart LR
@@ -39,20 +58,6 @@ single-machine continuity and CI artifacts, but they cannot prove what another
 human or agent is doing on a different machine unless the hosted collaboration
 backend is configured.
 
-## Operating Modes
-
-`snipara-companion` is designed to remain useful at three levels:
-
-| Mode | Account required | What works |
-| ---- | ---------------- | ---------- |
-| Standalone local | No | Workflow files, timeline, handoffs, local status, hooks, smoke checks, and CI-friendly artifacts |
-| Local memory stack | No | Everything above plus `snipara-companion memory local -- <args...>` through `snipara-memory` |
-| Snipara SaaS | Yes | Hosted context, reviewed memory, Team Sync, collaboration guards, shared claims, dashboards, and cloud code graph |
-
-The CLI should not require Snipara SaaS for local continuity. Hosted calls should
-enrich local workflows when credentials are present and degrade to local records
-when they are not.
-
 ## Local vs Hosted Capabilities
 
 | Capability                                   | Local/open stack                   | Hosted Snipara                              |
@@ -64,7 +69,7 @@ when they are not.
 | Presence across machines and agents          | No                                 | Yes                                         |
 | Shared claims/locks and stale lease handling | Local only is advisory             | Yes                                         |
 | GitHub checks and dashboard live views       | No                                 | Yes                                         |
-| Code graph impact and symbol cards           | No local judgment; hosted only     | Cloud code graph                            |
+| Code graph impact and symbol cards           | Local overlay only where available | Cloud code graph                            |
 
 ## When To Use It
 
@@ -106,160 +111,9 @@ yarn global add snipara-companion
 snipara-companion
 ```
 
-## Development
+## Changelog
 
-```bash
-pnpm install
-pnpm lint
-pnpm type-check
-pnpm test
-pnpm pack:smoke
-```
-
-This standalone repository mirrors the Snipara monorepo package source. The npm
-package is `snipara-companion`.
-
-## New In 1.4.12
-
-- Publishes the open-source `1.4.11` sync as a new npm patch because npm cannot
-  republish an existing `1.4.11` tarball.
-- Keeps `snipara-companion code impact` SaaS-only in the open-source package, so
-  product judgment, risk, actions, and coverage gaps come from hosted
-  `snipara_code_impact`.
-
-## New In 1.4.11
-
-- Adds unified `snipara-companion code callers/imports/neighbors/shortest-path`
-  commands with `--source auto|hosted|local`. Clean configured checkouts use the
-  hosted graph, while dirty or ahead local worktrees can use the local structural
-  overlay and report `sourceSelection`.
-- Keeps `snipara-companion code impact` SaaS-only in this open-source repo. It
-  calls hosted `snipara_code_impact` for judgment, risk, actions, and coverage
-  gaps; it does not fall back to local overlay judgment.
-- Keeps explicit `snipara-companion code local impact` as a low-level
-  file-import overlay for debugging and pre-push continuity, not as the
-  canonical product judgment.
-
-## New In 1.4.9
-
-- `snipara-companion team-sync start-work` now reports whether the hosted Start
-  Work Brief loaded, so local-only runs stay clear and SaaS-enriched runs show
-  their hosted context status.
-- Keeps Team Sync local-first: without hosted credentials, start-work still
-  records local intent; with `snipara-memory`, local memory workflows remain
-  available; with Snipara SaaS, hosted briefs enrich the same local workflow.
-
-## New In 1.4.8
-
-- Adds `snipara-companion collaboration guard --ack-review-only` so enforced
-  release guards can acknowledge review-only stale-state and
-  decision-consistency warnings without requiring
-  `SNIPARA_COLLABORATION_GUARD=0`. The hosted `REVIEW_REQUIRED` verdict stays
-  visible in the guard payload; `BLOCKED`, `REQUIRES_ACK`, active-session
-  conflicts and blocking leases still fail.
-- Updates the Infomaniak deploy guard to use the review-only ack path for
-  release UX false positives while keeping the emergency env bypass reserved for
-  true guard outages.
-
-## New In 1.4.7
-
-- Adds `snipara-companion workflow impact-gate` for committed local workflow
-  phases that are ahead of upstream but not pushed yet. It compares
-  `upstream..HEAD`, separates dirty working-tree files, runs local code-overlay
-  impact on the committed code files, and maps the result back to completed
-  workflow phases.
-
-## New In 1.4.6
-
-- Adds outcome-weighted next actions in Team Sync briefs when hosted context
-  returns prioritized follow-up actions.
-- Compacts large hosted collaboration guard payloads before sending them to the
-  API so large local diffs do not overflow request limits.
-- Keeps blocking collaboration hooks on the installed `snipara-companion`
-  binary instead of falling back to `npx @latest` inside Git hooks.
-
-## New In 1.4.5
-
-- `workflow phase-commit` and `workflow final-commit` now complete matching
-  local Team Sync work items when the workflow outcome is completed.
-- Matching stays conservative: workflow-goal text wins, and file/token fallback
-  is only used when no workflow goal is available, so deploy or promotion
-  threads are not closed from implementation evidence alone.
-- Text output now reports completed Team Sync work when workflow commits clean up
-  local active items.
-
-## New In 1.4.4
-
-- Adds `snipara-companion memory local -- <args...>` as a thin bridge to the
-  open `snipara-memory` engine for no-account local memory workflows.
-- Adds `snipara-companion eval export` to write a `snipara-evals` case from
-  local workflow, Team Sync, file, command, and expected-signal inputs.
-- Adds `snipara-companion eval run` to execute `snipara-evals` through `npx` or a
-  configured local runner.
-- Clarifies the open Mini Snipara stack boundary: local continuity and evals are
-  open, while team-wide presence, shared locks, GitHub checks, dashboards, and
-  Cloud code graph remain hosted Snipara capabilities.
-
-## New In 1.4.2
-
-- Adds `snipara-companion collaboration start|watch|claim|guard|release|status`
-  for safe parallel coding presence, auto-claims, advisory/exclusive resource
-  claims, hosted guard checks, and conflict alarms across humans and agents.
-- Adds `snipara-companion collaboration hooks install` plus guard profiles for
-  blocking pre-commit, pre-push, pre-deploy, schema/migration, and package
-  release checks.
-- Adds `snipara-companion collaboration ide-status` for editor extensions and
-  local companion UIs that need compact live collaboration state.
-- Hardens local code impact so stale or incomplete local overlay caches report
-  missing target files instead of silently returning an empty impact set.
-
-## New In 1.4.1
-
-- Makes local code overlay Git hooks background by default so `git commit` and
-  `git push` return quickly while Snipara refreshes local overlay state and
-  push-time promotion asynchronously.
-- Adds `snipara-companion code hooks install --synchronous` for teams that
-  intentionally want foreground hook work, plus a configurable background
-  reindex delay for pre-push promotion.
-
-## New In 1.3.7
-
-- Hardens `memory-guard check` with `--confirmed-by-user "<confirmation>"`
-  for explicit, auditable overrides after the user has reviewed destructive or
-  contradictory signals.
-- Adds stable guard exit codes in strict mode: `20` for confirmation required,
-  `21` for unavailable memory/context guidance, and `22` for invalid guard
-  options.
-- Validates destructive checks before hosted calls so vague commands such as
-  `--destructive` without `--intent` or `--command` fail fast.
-- Extends `snipara-companion init --with-hooks` so it also installs local code
-  overlay Git hooks (`post-commit` sync and `pre-push` promotion/reindex).
-
-## New In 1.3.6
-
-- Adds `snipara-companion memory audit` for a read-only memory hygiene pass that
-  combines hosted memory health, cleanup candidates, and compaction dry-run.
-- Adds `memory health`, `memory clean-candidates`, and `memory compact` as
-  direct companion maintenance commands. `memory compact` always sends
-  `dry_run=true` and does not mutate memory.
-- Extends `memory-guard check` with `--intent`, `--destructive`, and
-  `--require-confirmation` so agents can surface memory/context contradictions
-  and ask the user before irreversible actions.
-
-## New In 1.3.0
-
-- Adds top-level Git-style agent work commands: `status`, `brief`, `timeline`,
-  `verify`, `handoff`, and `workflow resume`.
-- Adds `snipara-companion verify` for transparent verification plans based on
-  `snipara_code_impact` plus local package scripts.
-- Reframes companion as the day-two continuity surface after
-  `npx create-snipara` installs the project.
-
-## New In 1.2.0
-
-- Adds `snipara-companion intelligence brief` for a local Project Intelligence brief that composes hosted resume context, memory health, and code impact into one agent-ready output.
-- Adds `workflow scaffold --preset project-intelligence-continuity-layer` for the full memory + code graph + workflow continuity roadmap.
-- Updates generated agent workflow instructions so new work can call the Project Intelligence brief before risky changes and scaffold the roadmap preset for multi-phase delivery.
+Release notes have moved to [CHANGELOG.md](./CHANGELOG.md).
 
 ## Agentic Work Commands
 
@@ -286,7 +140,7 @@ snipara-companion workflow resume --include-session-context
 - `workflow impact-gate` audits committed local workflow phases that are ahead
   of upstream but not pushed. It does not push, and dirty working-tree files are
   reported separately from the committed diff.
-- `verify` builds a transparent verification plan from `snipara_code_impact`
+- `verify` builds a transparent verification plan from companion code impact
   signals plus local package scripts. It recommends checks; it does not claim to
   execute them.
 - `handoff` writes an agent-ready handoff artifact while persisting the same
@@ -329,66 +183,6 @@ Output includes:
 - risk level and score when code impact is available
 - missing checks and caveats
 - suggested next commands
-
-## New In 1.1.15
-
-- Expands `init --client` to Claude Code, Cursor, Windsurf, Codex, Gemini, Mistral, ChatGPT, VS Code, Continue, and custom MCP clients.
-- Keeps Claude Code, Cursor, and Windsurf as hook-capable presets while treating Mistral, ChatGPT, VS Code, Continue, and custom clients as MCP-first setup presets.
-- Prints Codex TOML or HTTP MCP references for MCP-first clients instead of generating unsupported legacy hooks.
-
-## New In 1.1.14
-
-- Adds `npx -y snipara-companion@latest automations install/status/diff/update` for installing dashboard-generated automation hook bundles locally.
-- `init --with-hooks` now delegates hook installation to the hosted automation config bundle so Claude Code, Cursor, and Windsurf use the same templates as Project Automation.
-- Managed automation files are tracked in `.snipara/automations/manifest.json` and are not overwritten after local edits unless `--force` is used.
-- Automation REST calls now use `www.snipara.com` while MCP calls stay on `api.snipara.com`, avoiding FastAPI IP rate limits on Stuck Guard and generated hook installs.
-
-## New In 1.1.13
-
-- Adds `snipara-companion stuck-guard status/check/simulate` for hosted Memory Guard / Stuck Guard decisions.
-- `pre-tool` now emits canonical `tool_call` events and prints Rescue Packs when hosted Stuck Guard returns `inject` or `enforce`.
-- `post-tool` now emits canonical `tool_result` events with status, exit code, command, classification, and a redacted/truncated preview.
-
-## New In 1.1.12
-
-- Documents the GitHub PR Answer Packs boundary: use `create-snipara --github`
-  for the hosted GitHub App setup, and use `snipara-companion` only for local
-  planning, code impact checks, workflow state, and memory commits.
-
-## New In 1.1.10
-
-- Snipara Sandbox guidance now points existing projects to `npx create-snipara repair --with-runtime`
-- Managed workflow phases marked `needs_runtime` suggest Snipara Sandbox installation only when needed
-
-## New In 1.1.4
-
-- `snipara-companion onboard-folder` previews and applies dashboardless business-folder imports from local or LLM-materialized sources
-- `snipara-companion workflow start/status/resume/phase-start/phase-commit` keeps a visible LLM plan in `.snipara/workflow/current.json` and persists each phase through hosted memory so compacted agents can resume safely
-- `snipara-companion final-commit` persists the final workflow outcome with `snipara_end_of_task_commit`
-- `snipara-companion code symbol-card` and `snipara-companion code impact` expose paid Context safeguards directly from the companion CLI
-
-## New In 1.1.2
-
-- `snipara-companion doctor` and Snipara Sandbox hints detect provider keys from local `.env` files without printing secret values
-
-## New In 1.1.1
-
-- `snipara-companion doctor` diagnoses Snipara auth, Snipara Sandbox, Snipara Sandbox MCP, provider keys, and Docker
-- `workflow run` prints contextual Snipara Sandbox hints for full/orchestrated/execution-heavy work
-- `workflow run --no-runtime-hint` hides Snipara Sandbox guidance for scripted terminal output
-
-## New In 1.1.0
-
-- `business-collections` commands for Team Business Context presets and reusable business docs
-- `client-projects` commands for creating and listing project-scoped client context workspaces
-- `upload --metadata/--metadata-file` plus convenience metadata flags for single-file business/client uploads
-
-## New In 1.0.0
-
-- direct `snipara-companion code` access for `callers`, `imports`, `neighbors`, and `shortest-path`
-- `workflow run --mode lite|standard|full|orchestrate` for hosted-first workflow routing; `auto` remains a STANDARD compatibility alias
-- `snipara-companion shared-context` for project-linked standards and team guidance
-- automatic fallback to project token auth when a stale `SNIPARA_API_KEY` overrides a valid local login
 
 ## Supported Client Presets Today
 
@@ -661,6 +455,8 @@ snipara-companion memory audit --scope project --include-inactive
 snipara-companion memory health --scope project --json
 snipara-companion memory clean-candidates --scope project --limit-per-bucket 10
 snipara-companion memory compact --scope project --json
+snipara-companion memory invalidate mem_old --reason "obsolete runbook"
+snipara-companion memory supersede mem_old mem_new --reason "corrected decision"
 snipara-companion memory local -- version
 snipara-companion eval export \
   --summary "Implemented auth hardening and ran tests" \
@@ -781,10 +577,12 @@ snipara-companion intelligence brief \
   --diff-summary "workspace invite policy change"
 ```
 
-The command calls hosted `snipara_resume_context`, `snipara_memory_health`, and,
-when changed files are provided, `snipara_code_impact`. It prints continuity
-signals, memory health, risk and verification hints, degraded surfaces, and the
-next companion commands to keep the workflow resumable.
+The command calls hosted `snipara_resume_context` and `snipara_memory_health`.
+When changed files are provided, code impact uses companion auto-source
+selection, so dirty/ahead worktrees use the local overlay and clean configured
+checkouts use hosted graph impact. It prints continuity signals, memory health,
+risk and verification hints, degraded surfaces, and the next companion commands
+to keep the workflow resumable.
 
 For the full Project Intelligence and Continuity Layer roadmap, scaffold the
 built-in managed workflow plan:
@@ -830,10 +628,10 @@ Semantics:
 - `snipara-companion team-sync sweep` = archives stale local work items after an inactivity threshold; default is 14 days and `--dry-run` previews the cleanup
 - `snipara-companion team-sync resume` = reloads local carryover plus the hosted latest handoff and checkpoint-aware resume guidance when available
 - `snipara-companion final-commit` / `workflow final-commit` = final hosted commit for the managed workflow
-- `snipara-companion code callers/imports/neighbors/shortest-path` = structural code graph commands with `--source auto` by default; clean configured checkouts use hosted MCP, while dirty/ahead worktrees can use the local structural overlay and every response reports `sourceSelection`
+- `snipara-companion code callers/imports/neighbors/shortest-path/impact` = primary code graph surface for agents with shell access. These commands use `--source auto` by default; clean configured checkouts use hosted MCP, dirty/ahead worktrees use the local overlay, and every response reports `sourceSelection` plus agent guidance.
 - `snipara-companion code symbol-card` = direct paid Context `snipara_code_symbol_card` for an important symbol before editing, with an agent guidance summary before raw JSON
-- `snipara-companion code impact` = SaaS-only paid Context `snipara_code_impact` for changed files, a file, or a symbol before risky changes, with risk/actions/gaps summarized before raw JSON
-- `snipara-companion code local impact` = explicit repository-local file-level import overlay for debugging and continuity only; product judgment stays on hosted `snipara_code_impact`
+- `snipara-companion code impact --source hosted|local` = optional source override for debugging; normal agent instructions should leave `--source auto` in place. Hosted `snipara_code_impact` is the fallback when companion is unavailable or the canonical graph check after push/reindex.
+- `snipara-companion code local impact` = explicit repository-local file-level import impact from the local code overlay; keep this for power-user/debug workflows, and use `workflow impact-gate` when the file set should come from unpushed workflow commits
 - `snipara-companion doctor` = local readiness check for Snipara auth, deterministic hosted tool catalog access, Snipara Sandbox, Snipara Sandbox MCP wiring, provider keys, and Docker
 - `snipara-companion upload --metadata/--metadata-file` = single-file upload with the same business/client metadata fields supported by bulk sync
 - `snipara-companion business-collections` = manage reusable Team Business Context collections (Business Response Playbook, Business Library, Offer Templates, Company Presentations, Reference Diagrams)
@@ -846,6 +644,8 @@ Semantics:
 - `snipara-companion memory health` = direct hosted `snipara_memory_health` diagnostics for active counts, stale/noise/anomaly samples, and auto-compaction threshold status
 - `snipara-companion memory clean-candidates` = direct hosted `snipara_memory_clean_candidates` review packet for noise, stale memories, duplicates, category anomalies, and human review queues
 - `snipara-companion memory compact` = hosted compaction preview only; it always calls `snipara_memory_compact` with `dry_run=true` and never mutates memory
+- `snipara-companion memory invalidate <memory-id>` = hosted `snipara_memory_invalidate` for lifecycle correction without deleting memory
+- `snipara-companion memory supersede <old-memory-id> <new-memory-id>` = hosted `snipara_memory_supersede` for replacing obsolete memory with a newer approved memory
 - `snipara-companion memory local -- <args...>` = pass-through to the open `snipara-memory` CLI for local no-account memory workflows
 - `snipara-companion eval export` = write a `snipara-evals` case JSON from local workflow/team-sync state and explicit expected signals
 - `snipara-companion eval run <case.json...>` = run `snipara-evals` locally through `npx` or `SNIPARA_EVALS_RUNNER`
@@ -1030,7 +830,7 @@ To test a packed tarball manually, use `npm exec --package`:
 
 ```bash
 npm pack
-npm exec --package ./snipara-companion-1.1.13.tgz snipara-companion -- --help
+npm exec --package ./snipara-companion-1.4.13.tgz snipara-companion -- --help
 ```
 
 Do not use `npx /path/to/snipara-companion-*.tgz`. npm will try to execute the tarball itself instead of

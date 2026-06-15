@@ -1,5 +1,29 @@
 #!/usr/bin/env node
 
+/**
+ * snipara-companion CLI entry point.
+ *
+ * Builds the Commander program, registers every subcommand, and parses argv.
+ * Command behavior lives in the `./commands/*` modules; this file only maps the
+ * CLI surface (names, flags, argument parsing) onto those handlers.
+ *
+ * Command families registered below:
+ *   - Setup / auth:      login, init, config, doctor
+ *   - Continuity:        status, timeline, handoff, verify, brief, workflow, intelligence
+ *   - Team coordination: collaboration, swarm, htask (+ handoff/resume via team-sync)
+ *   - Editor hooks:      pre-tool, post-tool, session-end (invoked by Claude Code / IDE hooks)
+ *   - Guards:            stuck-guard, memory-guard
+ *   - Hosted context:    query, shared-context, plan, multi-query, orchestrate, chunk, reindex
+ *   - Docs / knowledge:  upload, references, business-collections, client-projects,
+ *                        onboard-folder, sync-documents
+ *   - Code graph:        code (local impact/callers/imports + hosted overlay)
+ *   - Automation:        automations, events, memory
+ *
+ * The `export { ... }` block below re-exports pure helpers (buildX, parsers,
+ * path resolvers) so they can be used programmatically and unit-tested without
+ * spawning the CLI.
+ */
+
 import fs from "fs";
 import path from "path";
 import { Command } from "commander";
@@ -19,6 +43,8 @@ import {
   memoryCleanCandidatesCommand,
   memoryCompactCommand,
   memoryHealthCommand,
+  memoryInvalidateCommand,
+  memorySupersedeCommand,
 } from "./commands/memory";
 import { evalExportCommand, evalRunCommand, memoryLocalCommand } from "./commands/local-stack";
 import { memoryGuardCheckCommand, rememberGuardMemoryCommand } from "./commands/memory-guard";
@@ -112,6 +138,8 @@ import {
 import { swarmCreateCommand, swarmJoinCommand } from "./commands/swarm";
 import { loadConfig } from "./config/store";
 
+// Programmatic API: pure helpers re-exported for embedding and unit tests.
+// These have no CLI side effects and are safe to import without running argv.
 export { resolveQueryFromToolInput } from "./commands/pre-tool";
 export { extractFilesFromToolInput } from "./commands/post-tool";
 export { buildCanonicalEvent } from "./commands/events";
@@ -275,6 +303,9 @@ function readCliVersion(): string {
   }
 }
 
+// CLI command registration. Each `program.command(...)` block below maps a
+// command's flags and arguments to a handler in ./commands/*; argv is parsed at
+// the bottom of the file. Behavior belongs in the handlers, not here.
 const program = new Command();
 
 function collectOption(value: string, previous: string[] = []): string[] {
@@ -403,7 +434,7 @@ program
   .option("--changed-files <files...>", "Changed files to analyze")
   .option("--diff-summary <summary>", "Natural-language summary for code impact")
   .option("-l, --limit <number>", "Maximum impact entries", "50")
-  .option("--skip-impact", "Skip hosted code impact and infer local package checks only")
+  .option("--skip-impact", "Skip code impact and infer local package checks only")
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await verifyCommand({
@@ -1351,7 +1382,7 @@ program
   .option("--recent-files <recentFiles...>", "Recently touched files for continuity lookup")
   .option("--diff-summary <diffSummary>", "Natural-language summary for code impact")
   .option("--max-tokens <number>", "Resume context token budget", "4000")
-  .option("--skip-impact", "Do not call snipara_code_impact")
+  .option("--skip-impact", "Do not run companion code impact")
   .option("--skip-memory-health", "Do not call snipara_memory_health")
   .option("--json", "Print raw JSON")
   .action(async (options) => {
@@ -1383,7 +1414,7 @@ intelligence
   .option("--recent-files <recentFiles...>", "Recently touched files for continuity lookup")
   .option("--diff-summary <diffSummary>", "Natural-language summary for code impact")
   .option("--max-tokens <number>", "Resume context token budget", "4000")
-  .option("--skip-impact", "Do not call snipara_code_impact")
+  .option("--skip-impact", "Do not run companion code impact")
   .option("--skip-memory-health", "Do not call snipara_memory_health")
   .option("--json", "Print raw JSON")
   .action(async (options) => {
@@ -2491,7 +2522,7 @@ code
   .addCommand(
     new Command("impact")
       .description(
-        "Run a hosted SaaS code impact gate for routes/services/jobs"
+        "Run the primary agent-ready code impact gate for routes/services/jobs; auto-select local overlay for dirty/ahead worktrees and hosted graph for clean indexed code"
       )
       .option("-q, --qualified-name <qualifiedName>", "Qualified symbol name")
       .option("--symbol-key <symbolKey>", "Stable graph symbol key")
@@ -2499,6 +2530,9 @@ code
       .option("--changed-files <changedFiles...>", "Changed files to analyze")
       .option("--diff-summary <diffSummary>", "Natural-language summary of the change")
       .option("-l, --limit <number>", "Maximum impact entries", "50")
+      .option("--source <source>", "auto|hosted|local", "auto")
+      .option("--cached", "When local is selected, use the cached overlay if present")
+      .option("--max-files <number>", "Maximum supported code files for local overlay", "2000")
       .option("--json", "Print raw JSON")
       .action(async (options) => {
         await codeGraphAutoSourceCommand("impact", {
@@ -2508,6 +2542,9 @@ code
           changedFiles: options.changedFiles,
           diffSummary: options.diffSummary,
           limit: parseInt(options.limit, 10),
+          source: options.source,
+          cached: Boolean(options.cached),
+          maxFiles: parseInt(options.maxFiles, 10),
           json: options.json,
         });
       })
@@ -2623,6 +2660,35 @@ program
             options.archiveOlderThanDays !== undefined
               ? parseInt(options.archiveOlderThanDays, 10)
               : undefined,
+          json: options.json,
+        });
+      })
+  )
+  .addCommand(
+    new Command("invalidate")
+      .description("Invalidate one hosted Memory V2 or mapped legacy memory without deleting it")
+      .argument("<memory-id>", "Memory ID to invalidate")
+      .option("--reason <reason>", "Human-readable invalidation reason")
+      .option("--invalidated-at <isoTimestamp>", "ISO timestamp; defaults to server time")
+      .option("--json", "Print raw JSON")
+      .action(async (memoryId, options) => {
+        await memoryInvalidateCommand(memoryId, {
+          reason: options.reason,
+          invalidatedAt: options.invalidatedAt,
+          json: options.json,
+        });
+      })
+  )
+  .addCommand(
+    new Command("supersede")
+      .description("Mark one hosted Memory V2 or mapped legacy memory as superseded by another")
+      .argument("<old-memory-id>", "Memory ID being replaced")
+      .argument("<new-memory-id>", "Replacement memory ID")
+      .option("--reason <reason>", "Human-readable supersession reason")
+      .option("--json", "Print raw JSON")
+      .action(async (oldMemoryId, newMemoryId, options) => {
+        await memorySupersedeCommand(oldMemoryId, newMemoryId, {
+          reason: options.reason,
           json: options.json,
         });
       })

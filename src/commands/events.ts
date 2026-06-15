@@ -1,3 +1,12 @@
+/**
+ * Canonical automation events — build, emit, and fetch.
+ *
+ * Defines the canonical event schema (session_start/end, tool_call/result,
+ * file_changed, error_observed, …) and privacy levels, builds events with
+ * consistent metadata, emits them to the Snipara automation API, and fetches
+ * recent events. Other commands route their telemetry through here so event
+ * shape stays consistent.
+ */
 import { createClient } from "../api/client";
 import { isConfigured, loadConfig } from "../config/store";
 

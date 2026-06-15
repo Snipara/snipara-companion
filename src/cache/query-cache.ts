@@ -1,3 +1,13 @@
+/**
+ * Local query cache for hosted context retrieval.
+ *
+ * Caches context/query results on disk so repeated hook lookups (especially
+ * `pre-tool`) stay fast and resilient when offline. Matches use three
+ * strategies — exact, nearby, and warm (similarity-based) — with configurable
+ * TTLs, entry/byte caps, and similarity thresholds (overridable via RLM_CACHE_*
+ * env vars). Query text is normalized and stop-words are stripped before
+ * matching.
+ */
 import * as crypto from "crypto";
 import * as fs from "fs";
 import * as os from "os";

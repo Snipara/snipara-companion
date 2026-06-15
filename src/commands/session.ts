@@ -1,3 +1,11 @@
+/**
+ * `session` commands — local session lifecycle.
+ *
+ * `session-end` (the Stop hook) persists the current session's tracked context
+ * to hosted Snipara and rotates the local session id; `session status` and
+ * `session reset` inspect and clear local session state. All commands no-op
+ * cleanly when the workspace is not configured.
+ */
 import { createClient } from "../api/client";
 import { isConfigured, loadConfig, saveConfig } from "../config/store";
 import { emitCanonicalEvent } from "./events";

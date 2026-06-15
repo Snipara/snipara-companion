@@ -1,6 +1,17 @@
+/**
+ * `intelligence` / `brief` command — Project Intelligence continuity brief.
+ *
+ * Composes a single "what changed, why, impact, next action, safe-to-proceed"
+ * brief for the current task by combining resume context, memory health, and
+ * local code impact. Each source is best-effort: failures are collected into
+ * the brief's `errors` array rather than aborting, so a partial brief is still
+ * produced. `buildProjectIntelligenceBrief` is the pure core; the command wraps
+ * it with I/O and output formatting.
+ */
 import { execFileSync } from "node:child_process";
 import chalk from "chalk";
 import { createClient } from "../api/client";
+import { resolveCodeGraphAutoSourceResult, type CodeGraphSourceSelection } from "./code";
 
 export interface ProjectIntelligenceBriefOptions {
   task?: string;
@@ -24,6 +35,7 @@ export interface ProjectIntelligenceBrief {
   resumeContext?: Record<string, unknown>;
   memoryHealth?: Record<string, unknown>;
   codeImpact?: Record<string, unknown>;
+  codeImpactSourceSelection?: CodeGraphSourceSelection;
   errors: Array<{ surface: string; message: string }>;
   suggestedCommands: string[];
 }
@@ -140,6 +152,20 @@ function buildSuggestedCommands(args: {
   return commands;
 }
 
+/**
+ * Build a Project Intelligence continuity brief for the current task.
+ *
+ * Gathers three best-effort signals through the hosted client — resume context
+ * (`snipara_resume_context`), memory health, and local code impact — and merges
+ * them with the changed/recent files and a list of suggested next commands.
+ * Each source is wrapped independently: a failure is recorded in `brief.errors`
+ * rather than thrown, so callers always receive a usable (possibly partial)
+ * brief.
+ *
+ * @param options Task, branch, changed/recent files, token budget, and skip
+ *   flags (`skipImpact`, `skipMemoryHealth`).
+ * @returns A `project-intelligence-brief-v1` document.
+ */
 export async function buildProjectIntelligenceBrief(
   options: ProjectIntelligenceBriefOptions
 ): Promise<ProjectIntelligenceBrief> {
@@ -195,11 +221,13 @@ export async function buildProjectIntelligenceBrief(
 
   if (!options.skipImpact && changedFiles.length > 0) {
     try {
-      brief.codeImpact = await client.codeImpact({
+      const autoResult = await resolveCodeGraphAutoSourceResult("impact", {
         changedFiles,
         diffSummary: options.diffSummary ?? options.task,
         limit: 20,
       });
+      brief.codeImpact = autoResult.result as Record<string, unknown>;
+      brief.codeImpactSourceSelection = autoResult.sourceSelection;
     } catch (error) {
       errors.push({
         surface: "code_impact",
@@ -346,6 +374,11 @@ export async function projectIntelligenceBriefCommand(
   console.log("");
 
   console.log(chalk.bold("Code Impact"));
+  if (brief.codeImpactSourceSelection) {
+    console.log(
+      `Source: ${brief.codeImpactSourceSelection.selected} (${brief.codeImpactSourceSelection.reason})`
+    );
+  }
   printCodeImpact(brief.codeImpact);
   console.log("");
 

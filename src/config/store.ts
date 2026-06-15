@@ -1,3 +1,12 @@
+/**
+ * Companion configuration store + workspace resolution.
+ *
+ * Loads and saves the companion config (RLMConfig: apiKey, projectId, apiUrl,
+ * sessionId, client) and resolves the active workspace root by walking up from
+ * the cwd for WORKSPACE_MARKERS (.git, .snipara, package.json, …). Config can be
+ * scoped auto / workspace / global. `isConfigured()` is the gate most commands
+ * use before making hosted calls.
+ */
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
