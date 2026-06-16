@@ -22,6 +22,7 @@ import {
   createClient,
   type CollaborationActorPayload,
   type CollaborationActorType,
+  type CollaborationConflictSeverity,
   type CollaborationGuardDecision,
   type CollaborationGuardEvaluation,
   type CollaborationGuardResponse,
@@ -77,6 +78,25 @@ type CollaborationGuardProfile =
   | "migration"
   | "schema"
   | "release-package";
+
+export type CollaborationGuardActionKind =
+  | "safe_to_ack"
+  | "needs_handoff"
+  | "needs_test"
+  | "needs_package_review"
+  | "blocking_conflict"
+  | "guard_unavailable";
+
+export interface CollaborationGuardActionCard {
+  kind: CollaborationGuardActionKind;
+  title: string;
+  reason: string;
+  severity: "info" | "watch" | "warning" | "critical";
+  safeToAck: boolean;
+  command?: string;
+  conflictCode?: string;
+  resource?: string;
+}
 
 interface CliCriticalSurface {
   id: string;
@@ -566,6 +586,12 @@ export async function collaborationGuardCommand(
     Boolean(options.enforce) &&
     Boolean(options.ackReviewOnly) &&
     isReviewOnlyGuardEvaluation(evaluation);
+  const actionCards = buildCollaborationGuardActionCards(evaluation, {
+    profile,
+    enforced: Boolean(options.enforce),
+    ackReviewOnly: Boolean(options.ackReviewOnly),
+    reviewOnlyAcknowledged,
+  });
   const guardFailed =
     hosted.status !== "ok" ||
     shouldFailGuard(evaluation, Boolean(options.enforce), Boolean(options.ackReviewOnly));
@@ -580,6 +606,7 @@ export async function collaborationGuardCommand(
       statePath: getCollaborationStatePath(context.rootDir),
       state,
       hosted,
+      actionCards,
       enforcement: {
         enforced: Boolean(options.enforce),
         ackReviewOnly: Boolean(options.ackReviewOnly),
@@ -1690,6 +1717,7 @@ function printCollaborationResult(payload: Record<string, unknown>, json?: boole
   }
   if (action === "guard") {
     printGuardEnforcementSummary(payload);
+    printGuardActionCards(payload.actionCards as CollaborationGuardActionCard[] | undefined);
   }
 }
 
@@ -1761,6 +1789,165 @@ function getCollaborationHeading(action: string): string {
     return "Collaboration watch";
   }
   return `Collaboration ${action}`;
+}
+
+export function buildCollaborationGuardActionCards(
+  evaluation: CollaborationGuardEvaluation | undefined,
+  context: {
+    profile?: string;
+    enforced?: boolean;
+    ackReviewOnly?: boolean;
+    reviewOnlyAcknowledged?: boolean;
+  } = {}
+): CollaborationGuardActionCard[] {
+  if (!evaluation) {
+    return [
+      {
+        kind: "guard_unavailable",
+        title: "Re-run collaboration guard",
+        reason: "No hosted collaboration guard evaluation was available.",
+        severity: "warning",
+        safeToAck: false,
+        command: "snipara-companion collaboration guard --profile pre-deploy --enforce",
+      },
+    ];
+  }
+
+  const cards: CollaborationGuardActionCard[] = [];
+  for (const conflict of evaluation.conflicts) {
+    const resource = formatResource(conflict.resource);
+    if (conflict.decision === "BLOCKED") {
+      cards.push({
+        kind: "blocking_conflict",
+        title: "Resolve blocking collaboration conflict",
+        reason: conflict.reason,
+        severity: "critical",
+        safeToAck: false,
+        command: conflict.leaseId
+          ? `snipara-companion collaboration release --lease-id ${conflict.leaseId} --reason '<resolution>'`
+          : "snipara-companion collaboration status",
+        conflictCode: conflict.code,
+        resource,
+      });
+      continue;
+    }
+
+    if (conflict.code.includes("package") || resource.includes("PACKAGE:")) {
+      cards.push({
+        kind: "needs_package_review",
+        title: "Review package release surface",
+        reason: conflict.recommendedAction || conflict.reason,
+        severity: normalizeActionSeverity(conflict.severity),
+        safeToAck: false,
+        command: "snipara-companion collaboration guard --profile release-package --enforce",
+        conflictCode: conflict.code,
+        resource,
+      });
+      continue;
+    }
+
+    if (conflict.code.includes("test") || conflict.code.includes("proof")) {
+      cards.push({
+        kind: "needs_test",
+        title: "Run proof or test check",
+        reason: conflict.recommendedAction || conflict.reason,
+        severity: normalizeActionSeverity(conflict.severity),
+        safeToAck: false,
+        command: "snipara-companion verify --changed-files <files...>",
+        conflictCode: conflict.code,
+        resource,
+      });
+      continue;
+    }
+
+    if (conflict.code.includes("stale") || conflict.code.includes("overlap")) {
+      cards.push({
+        kind: "needs_handoff",
+        title: "Refresh handoff or collaboration state",
+        reason: conflict.recommendedAction || conflict.reason,
+        severity: normalizeActionSeverity(conflict.severity),
+        safeToAck: isReviewOnlyGuardEvaluation(evaluation),
+        command: "snipara-companion team-sync what-changed",
+        conflictCode: conflict.code,
+        resource,
+      });
+      continue;
+    }
+
+    cards.push({
+      kind: isReviewOnlyGuardEvaluation(evaluation) ? "safe_to_ack" : "needs_handoff",
+      title: isReviewOnlyGuardEvaluation(evaluation)
+        ? "Review-only guard finding can be acknowledged"
+        : "Review guard finding",
+      reason: conflict.recommendedAction || conflict.reason,
+      severity: normalizeActionSeverity(conflict.severity),
+      safeToAck: isReviewOnlyGuardEvaluation(evaluation),
+      command: isReviewOnlyGuardEvaluation(evaluation)
+        ? `snipara-companion collaboration guard --profile ${
+            context.profile ?? "pre-deploy"
+          } --enforce --ack-review-only`
+        : "snipara-companion collaboration status",
+      conflictCode: conflict.code,
+      resource,
+    });
+  }
+
+  if (cards.length === 0 && evaluation.decision === "WATCH") {
+    cards.push({
+      kind: "safe_to_ack",
+      title: "Watch-only collaboration signal",
+      reason: "No blocking or review-required conflicts were returned.",
+      severity: "watch",
+      safeToAck: true,
+    });
+  }
+
+  if (isReviewOnlyGuardEvaluation(evaluation)) {
+    cards.push({
+      kind: "safe_to_ack",
+      title: context.reviewOnlyAcknowledged
+        ? "Review-only guard acknowledged"
+        : "Acknowledge review-only guard findings",
+      reason:
+        "All guard conflicts are review-only decision/stale-state signals; acknowledge after inspection.",
+      severity: "warning",
+      safeToAck: true,
+      command: `snipara-companion collaboration guard --profile ${
+        context.profile ?? "pre-deploy"
+      } --enforce --ack-review-only`,
+    });
+  }
+
+  return dedupeGuardActionCards(cards);
+}
+
+function normalizeActionSeverity(
+  severity: CollaborationConflictSeverity
+): CollaborationGuardActionCard["severity"] {
+  const severityMap: Record<
+    CollaborationConflictSeverity,
+    CollaborationGuardActionCard["severity"]
+  > = {
+    INFO: "info",
+    WATCH: "watch",
+    WARNING: "warning",
+    CRITICAL: "critical",
+  };
+  return severityMap[severity];
+}
+
+function dedupeGuardActionCards(
+  cards: CollaborationGuardActionCard[]
+): CollaborationGuardActionCard[] {
+  const seen = new Set<string>();
+  return cards.filter((card) => {
+    const key = `${card.kind}:${card.conflictCode ?? ""}:${card.command ?? card.title}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 export interface HostedGuardPayload {
@@ -1897,6 +2084,18 @@ function printGuardEnforcementSummary(payload: Record<string, unknown>): void {
     return;
   }
   console.log(formatReviewOnlyAckMessage());
+}
+
+function printGuardActionCards(cards: CollaborationGuardActionCard[] | undefined): void {
+  if (!cards || cards.length === 0) {
+    return;
+  }
+  console.log("Guard action cards:");
+  for (const card of cards.slice(0, 6)) {
+    const ack = card.safeToAck ? " safe-to-ack" : "";
+    const command = card.command ? ` -> ${card.command}` : "";
+    console.log(`- [${card.severity}] ${card.kind}${ack}: ${card.title}${command}`);
+  }
 }
 
 function buildLocalSessionId(

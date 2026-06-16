@@ -2,6 +2,17 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 1.4.14
+
+- Adds a production Project Intelligence Judgment Card to `intelligence brief`
+  and `verify`, with weighted readiness, evidence, and required-action output.
+- Adds `snipara-companion run` as the agent-facing production entrypoint that
+  composes resume context, memory health, code impact, release guard findings,
+  package review, verification hints, and the final Judgment Card.
+- Adds actionable collaboration guard cards so review-only findings, blocking
+  conflicts, tests, handoffs, and package-surface checks are classified directly
+  in guard JSON and human output.
+
 ## New In 1.4.13
 
 - Adds `snipara-companion memory invalidate <memory-id>` and

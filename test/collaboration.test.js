@@ -7,6 +7,7 @@ const { spawnSync } = require("node:child_process");
 
 const {
   COLLABORATION_STATE_RELATIVE_PATH,
+  buildCollaborationGuardActionCards,
   buildHostedGuardPayload,
   buildCollaborationHooksInstallPlan,
   compactHostedGuardResources,
@@ -493,6 +494,8 @@ test("collaboration guard exits non-zero for hosted blocking conflicts", () => {
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.hosted.status, "ok");
   assert.equal(payload.hosted.data.evaluation.decision, "BLOCKED");
+  assert.equal(payload.actionCards[0].kind, "blocking_conflict");
+  assert.equal(payload.actionCards[0].safeToAck, false);
   assert.equal(payload.state.lastGuard.decision, "BLOCKED");
   assert.equal(loadCollaborationState(dir).lastGuard.conflictCount, 1);
 });
@@ -553,8 +556,16 @@ test("collaboration guard can acknowledge review-only release warnings", () => {
   assert.equal(payload.hosted.data.evaluation.decision, "REVIEW_REQUIRED");
   assert.equal(payload.enforcement.reviewOnlyAcknowledged, true);
   assert.equal(payload.enforcement.failed, false);
+  assert.ok(payload.actionCards.some((card) => card.kind === "safe_to_ack" && card.safeToAck));
+  assert.ok(payload.actionCards.some((card) => card.kind === "needs_handoff"));
   assert.equal(payload.state.lastGuard.decision, "REVIEW_REQUIRED");
   assert.equal(loadCollaborationState(dir).lastGuard.conflictCount, 2);
+});
+
+test("collaboration guard action cards classify missing evaluations", () => {
+  const cards = buildCollaborationGuardActionCards(undefined);
+  assert.equal(cards[0].kind, "guard_unavailable");
+  assert.equal(cards[0].safeToAck, false);
 });
 
 test("collaboration guard profile expands blocking deployment resources", () => {

@@ -12,6 +12,12 @@ import { execFileSync } from "node:child_process";
 import chalk from "chalk";
 import { createClient } from "../api/client";
 import { resolveCodeGraphAutoSourceResult, type CodeGraphSourceSelection } from "./code";
+import {
+  buildProjectJudgmentCard,
+  formatProjectJudgmentCard,
+  type ProjectIntelligenceJudgmentCard,
+} from "./judgment-card";
+import { buildVerificationPlan, type VerificationPlan } from "./verify";
 
 export interface ProjectIntelligenceBriefOptions {
   task?: string;
@@ -36,6 +42,8 @@ export interface ProjectIntelligenceBrief {
   memoryHealth?: Record<string, unknown>;
   codeImpact?: Record<string, unknown>;
   codeImpactSourceSelection?: CodeGraphSourceSelection;
+  verificationPlan?: VerificationPlan;
+  judgmentCard?: ProjectIntelligenceJudgmentCard;
   errors: Array<{ surface: string; message: string }>;
   suggestedCommands: string[];
 }
@@ -236,6 +244,25 @@ export async function buildProjectIntelligenceBrief(
     }
   }
 
+  brief.verificationPlan = buildVerificationPlan({
+    task: options.task,
+    changedFiles,
+    diffSummary: options.diffSummary,
+    codeImpact: brief.codeImpact,
+    codeImpactSourceSelection: brief.codeImpactSourceSelection,
+    errors: brief.errors.filter((error) => error.surface === "code_impact"),
+  });
+  brief.judgmentCard = buildProjectJudgmentCard({
+    task: options.task,
+    branch,
+    changedFiles,
+    resumeContext: brief.resumeContext,
+    memoryHealth: brief.memoryHealth,
+    codeImpact: brief.codeImpact,
+    verificationPlan: brief.verificationPlan as unknown as Record<string, unknown>,
+    errors: brief.errors,
+  });
+
   return brief;
 }
 
@@ -364,6 +391,14 @@ export async function projectIntelligenceBriefCommand(
     console.log(`Changed files: ${brief.changedFiles.join(", ")}`);
   }
   console.log("");
+
+  if (brief.judgmentCard) {
+    console.log(chalk.bold("Project Judgment"));
+    for (const line of formatProjectJudgmentCard(brief.judgmentCard)) {
+      console.log(line);
+    }
+    console.log("");
+  }
 
   console.log(chalk.bold("Continuity"));
   printResumeContext(brief.resumeContext);

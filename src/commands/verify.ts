@@ -11,6 +11,11 @@ import fs from "fs";
 import path from "path";
 import chalk from "chalk";
 import { resolveCodeGraphAutoSourceResult, type CodeGraphSourceSelection } from "./code";
+import {
+  buildProjectJudgmentCard,
+  formatProjectJudgmentCard,
+  type ProjectIntelligenceJudgmentCard,
+} from "./judgment-card";
 
 export interface VerifyCommandOptions {
   task?: string;
@@ -63,6 +68,7 @@ export interface VerificationPlan {
   suggestedCommands: string[];
   codeImpact?: Record<string, unknown>;
   codeImpactSourceSelection?: CodeGraphSourceSelection;
+  judgmentCard?: ProjectIntelligenceJudgmentCard;
   errors: Array<{ surface: string; message: string }>;
 }
 
@@ -525,6 +531,13 @@ export function buildVerificationPlan(options: BuildVerificationPlanOptions): Ve
     errors,
   };
   plan.suggestedCommands = buildSuggestedCommands(plan);
+  plan.judgmentCard = buildProjectJudgmentCard({
+    task: options.task,
+    changedFiles,
+    codeImpact: options.codeImpact,
+    verificationPlan: plan as unknown as Record<string, unknown>,
+    errors,
+  });
   return plan;
 }
 
@@ -599,6 +612,14 @@ export async function verifyCommand(options: VerifyCommandOptions): Promise<void
     );
   }
   console.log("");
+
+  if (plan.judgmentCard) {
+    console.log(chalk.bold("Project Judgment"));
+    for (const line of formatProjectJudgmentCard(plan.judgmentCard)) {
+      console.log(line);
+    }
+    console.log("");
+  }
 
   console.log(chalk.bold("Impacted Files"));
   if (plan.impactedFiles.length === 0) {

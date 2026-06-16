@@ -140,6 +140,10 @@ function writeMemoryPreload(dir) {
       "    result = { total_scanned: 12, counts: { noise: 1, possibly_stale: 2, duplicates: 0 }, candidates: { noise: [{ memory_id: 'mem_noise', reason: 'receipt', preview: 'low signal' }] }, received: args };",
       "  } else if (toolName === 'snipara_memory_compact') {",
       "    result = { dry_run: args.dry_run, mutated: false, planned_actions: 3, received: args };",
+      "  } else if (toolName === 'snipara_memory_invalidate') {",
+      "    result = { memory_id: args.memory_id, invalidated: true, invalidated_at: args.invalidated_at || '2026-06-14T21:00:00.000Z', reason: args.reason, message: 'invalidated', received: args };",
+      "  } else if (toolName === 'snipara_memory_supersede') {",
+      "    result = { old_memory_id: args.old_memory_id, new_memory_id: args.new_memory_id, superseded: true, superseded_at: '2026-06-14T21:00:00.000Z', reason: args.reason, message: 'superseded', received: args };",
       "  } else {",
       "    result = {};",
       "  }",
@@ -212,6 +216,7 @@ test("root help exposes workflow, intelligence, and code commands", () => {
   assert.match(result.stdout, /\bintelligence\b/);
   assert.match(result.stdout, /\bstatus\b/);
   assert.match(result.stdout, /\bbrief\b/);
+  assert.match(result.stdout, /\brun\b/);
   assert.match(result.stdout, /\btimeline\b/);
   assert.match(result.stdout, /\bhandoff\b/);
   assert.match(result.stdout, /\bverify\b/);
@@ -235,13 +240,15 @@ test("root help exposes workflow, intelligence, and code commands", () => {
   assert.match(result.stdout, /\bhtask\b/);
 });
 
-test("memory help exposes audit and dry-run commands", () => {
+test("memory help exposes audit, dry-run, and lifecycle commands", () => {
   const result = runCli(["memory", "--help"]);
   assert.equal(result.status, 0);
   assert.match(result.stdout, /\baudit\b/);
   assert.match(result.stdout, /\bhealth\b/);
   assert.match(result.stdout, /clean-candidates/);
   assert.match(result.stdout, /\bcompact\b/);
+  assert.match(result.stdout, /\binvalidate\b/);
+  assert.match(result.stdout, /\bsupersede\b/);
 });
 
 test("intelligence help exposes the brief command", () => {
@@ -272,6 +279,15 @@ test("top-level verify help exposes verification plan options", () => {
   assert.match(result.stdout, /transparent verification plan/);
   assert.match(result.stdout, /--changed-files/);
   assert.match(result.stdout, /--skip-impact/);
+});
+
+test("top-level run help exposes production judgment options", () => {
+  const result = runCli(["run", "--help"]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /production Project Intelligence judgment flow/);
+  assert.match(result.stdout, /--release/);
+  assert.match(result.stdout, /--skip-guard/);
+  assert.match(result.stdout, /--skip-package-review/);
 });
 
 test("intelligence brief combines resume context, memory health, and code impact", () => {
@@ -310,11 +326,57 @@ test("intelligence brief combines resume context, memory health, and code impact
   assert.deepEqual(payload.changedFiles, ["src/auth.ts"]);
   assert.equal(payload.resumeContext.resumeContext.focus.summary, "Resume intelligence surface");
   assert.equal(payload.memoryHealth.health_score, 0.92);
+  assert.equal(payload.codeImpactSourceSelection.selected, "hosted_graph");
   assert.equal(payload.codeImpact.risk.level, "medium");
+  assert.equal(payload.judgmentCard.version, "project-intelligence.judgment-card.v1");
   assert.ok(
     payload.suggestedCommands.some((command) =>
       command.includes("snipara-companion code impact --changed-files src/auth.ts")
     )
+  );
+});
+
+test("run command composes production judgment JSON", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-run-"));
+  const preloadPath = writeIntelligencePreload(dir);
+
+  const result = runCli(
+    [
+      "run",
+      "--task",
+      "ship project intelligence",
+      "--branch",
+      "dev",
+      "--changed-files",
+      "src/auth.ts",
+      "--diff-summary",
+      "auth change",
+      "--release",
+      "--skip-guard",
+      "--skip-package-review",
+      "--json",
+    ],
+    {
+      cwd: dir,
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "snipara",
+        SNIPARA_API_URL: "https://api.snipara.com",
+      },
+      nodeArgs: ["--require", preloadPath],
+    }
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.version, "project-intelligence.production-run.v1");
+  assert.equal(payload.release, true);
+  assert.equal(payload.brief.version, "project-intelligence-brief-v1");
+  assert.equal(payload.packageReview.status, "skipped");
+  assert.equal(payload.guard, undefined);
+  assert.equal(payload.judgmentCard.version, "project-intelligence.judgment-card.v1");
+  assert.ok(
+    payload.suggestedCommands.includes("npm view snipara-companion version bin dist-tags --json")
   );
 });
 
@@ -355,6 +417,70 @@ test("memory audit combines health, candidates, and compact dry-run", () => {
   assert.equal(payload.compactDryRun.mutated, false);
   assert.equal(payload.compactDryRun.received.dry_run, true);
   assert.deepEqual(payload.errors, []);
+});
+
+test("memory lifecycle commands call hosted invalidate and supersede tools", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-memory-lifecycle-"));
+  const preloadPath = writeMemoryPreload(dir);
+
+  const invalidate = runCli(
+    [
+      "memory",
+      "invalidate",
+      "mem_old",
+      "--reason",
+      "superseded by corrected decision",
+      "--invalidated-at",
+      "2026-06-14T21:00:00.000Z",
+      "--json",
+    ],
+    {
+      cwd: dir,
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "snipara",
+        SNIPARA_API_URL: "https://api.snipara.com",
+      },
+      nodeArgs: ["--require", preloadPath],
+    }
+  );
+
+  assert.equal(invalidate.status, 0, invalidate.stderr);
+  const invalidatePayload = JSON.parse(invalidate.stdout);
+  assert.equal(invalidatePayload.memory_id, "mem_old");
+  assert.equal(invalidatePayload.received.memory_id, "mem_old");
+  assert.equal(invalidatePayload.received.reason, "superseded by corrected decision");
+  assert.equal(invalidatePayload.received.invalidated_at, "2026-06-14T21:00:00.000Z");
+
+  const supersede = runCli(
+    [
+      "memory",
+      "supersede",
+      "mem_old",
+      "mem_new",
+      "--reason",
+      "corrected source-selection rule",
+      "--json",
+    ],
+    {
+      cwd: dir,
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "snipara",
+        SNIPARA_API_URL: "https://api.snipara.com",
+      },
+      nodeArgs: ["--require", preloadPath],
+    }
+  );
+
+  assert.equal(supersede.status, 0, supersede.stderr);
+  const supersedePayload = JSON.parse(supersede.stdout);
+  assert.equal(supersedePayload.old_memory_id, "mem_old");
+  assert.equal(supersedePayload.new_memory_id, "mem_new");
+  assert.equal(supersedePayload.received.old_memory_id, "mem_old");
+  assert.equal(supersedePayload.received.new_memory_id, "mem_new");
+  assert.equal(supersedePayload.received.reason, "corrected source-selection rule");
+  assert.equal(supersedePayload.received.text, undefined);
 });
 
 test("top-level brief is an alias for intelligence brief", () => {
@@ -1154,11 +1280,11 @@ test("init writes one workspace companion config when reconfiguring codex", () =
   assert.match(workspaceConfig.sessionId, /^sess_/);
 });
 
-test("code help frames symbol-card and hosted impact gates", () => {
+test("code help frames symbol-card and impact as agent-ready gates", () => {
   const result = runCli(["code", "--help"]);
   assert.equal(result.status, 0);
   assert.match(result.stdout, /agent-ready symbol card/);
-  assert.match(result.stdout, /hosted SaaS code impact gate/);
+  assert.match(result.stdout, /agent-ready code impact gate/);
   assert.match(result.stdout, /routes\/services\/jobs/);
 });
 

@@ -73,6 +73,7 @@ import {
 import { projectIntelligenceBriefCommand } from "./commands/intelligence";
 import { referencesIngestCommand, referencesScanCommand } from "./commands/references";
 import { verifyCommand } from "./commands/verify";
+import { projectIntelligenceRunCommand } from "./commands/run";
 import {
   agenticHandoffCommand,
   teamSyncCompleteWorkCommand,
@@ -177,6 +178,8 @@ export {
   memoryLocalCommand,
 } from "./commands/local-stack";
 export { buildVerificationPlan, verifyCommand } from "./commands/verify";
+export { buildProjectJudgmentCard, formatProjectJudgmentCard } from "./commands/judgment-card";
+export { buildProjectIntelligenceRun, projectIntelligenceRunCommand } from "./commands/run";
 export {
   buildCodeHooksInstallPlan,
   buildCodePromotionResult,
@@ -248,6 +251,7 @@ export {
 } from "./commands/team-sync";
 export {
   buildCollaborationActor,
+  buildCollaborationGuardActionCards,
   buildHostedGuardPayload,
   buildCollaborationHooksInstallPlan,
   COLLABORATION_STATE_RELATIVE_PATH,
@@ -446,6 +450,38 @@ program
       diffSummary: options.diffSummary,
       limit: options.limit ? parseInt(options.limit, 10) : undefined,
       skipImpact: Boolean(options.skipImpact),
+      json: Boolean(options.json),
+    });
+  });
+
+program
+  .command("run")
+  .description("Run the production Project Intelligence judgment flow for a task or release")
+  .option("--task <task>", "Current task or change summary")
+  .option("--branch <branch>", "Branch to scope continuity signals")
+  .option("--changed-files <changedFiles...>", "Changed files to analyze")
+  .option("--recent-files <recentFiles...>", "Recently touched files for continuity lookup")
+  .option("--diff-summary <diffSummary>", "Natural-language summary for code impact")
+  .option("--max-tokens <number>", "Resume context token budget", "4000")
+  .option("--release", "Run release-oriented guard and package surface review")
+  .option("--skip-impact", "Do not run companion code impact")
+  .option("--skip-memory-health", "Do not call snipara_memory_health")
+  .option("--skip-guard", "Skip collaboration guard during release runs")
+  .option("--skip-package-review", "Skip npm package surface review")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await projectIntelligenceRunCommand({
+      task: options.task,
+      branch: options.branch,
+      changedFiles: options.changedFiles,
+      recentFiles: options.recentFiles,
+      diffSummary: options.diffSummary,
+      maxTokens: parseInt(options.maxTokens, 10),
+      release: Boolean(options.release),
+      skipImpact: Boolean(options.skipImpact),
+      skipMemoryHealth: Boolean(options.skipMemoryHealth),
+      skipGuard: Boolean(options.skipGuard),
+      skipPackageReview: Boolean(options.skipPackageReview),
       json: Boolean(options.json),
     });
   });

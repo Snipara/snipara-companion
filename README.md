@@ -128,6 +128,7 @@ snipara-companion timeline
 snipara-companion workflow phase-commit build --summary "tests green"
 snipara-companion workflow impact-gate
 snipara-companion verify --changed-files src/auth.ts --diff-summary "auth hardening"
+snipara-companion run --task "ship auth hardening" --changed-files src/auth.ts --release
 snipara-companion handoff --summary "status command shipped" --next "publish package"
 snipara-companion workflow resume --include-session-context
 ```
@@ -567,8 +568,9 @@ metadata, and referenced-from provenance.
 
 ### Project Intelligence Briefs
 
-Use `intelligence brief` when a task needs one local entrypoint for continuity,
-memory authority, and code impact:
+Use `intelligence brief` when a task needs a local continuity readout for
+memory authority, code impact, verification hints, and the Project Intelligence
+Judgment Card:
 
 ```bash
 snipara-companion intelligence brief \
@@ -581,8 +583,24 @@ The command calls hosted `snipara_resume_context` and `snipara_memory_health`.
 When changed files are provided, code impact uses companion auto-source
 selection, so dirty/ahead worktrees use the local overlay and clean configured
 checkouts use hosted graph impact. It prints continuity signals, memory health,
-risk and verification hints, degraded surfaces, and the next companion commands
-to keep the workflow resumable.
+risk and verification hints, degraded surfaces, and the Judgment Card's
+weighted readiness, evidence, and required actions.
+
+Use top-level `run` when the agent should make a production-oriented go/no-go
+judgment in one pass:
+
+```bash
+snipara-companion run \
+  --task "ship auth hardening" \
+  --changed-files src/auth.ts tests/auth.test.ts \
+  --diff-summary "auth hardening" \
+  --release
+```
+
+`run --release` composes the Project Intelligence brief, collaboration guard,
+package-surface review, verification plan, and final Judgment Card. Review-only
+guard findings can be acknowledged with the printed guard action card command;
+blocking conflicts still make the release judgment non-proceedable.
 
 For the full Project Intelligence and Continuity Layer roadmap, scaffold the
 built-in managed workflow plan:
@@ -614,6 +632,7 @@ Semantics:
 - `snipara-companion timeline` = local timeline of workflow starts, phase starts, phase commits, final commits, and Team Sync handoffs
 - `snipara-companion handoff` = top-level agent-ready Markdown/JSON handoff artifact plus the same local/hosted Team Sync handoff persistence
 - `snipara-companion intelligence brief` = one local Project Intelligence brief that combines resume context, memory health, and code impact for a task
+- `snipara-companion run` = production Project Intelligence flow that combines the brief, guard action cards, package review, verification hints, and a final weighted Judgment Card
 - `snipara-companion workflow start --plan-file` = records the visible LLM plan locally so phase state survives agent compaction; prefer JSON plans with explicit ids for stable machine phase state
 - `snipara-companion workflow scaffold --preset project-intelligence-continuity-layer` = creates a four-phase managed plan for memory authority, code impact, continuity summaries, and release/docs surfaces
 - `snipara-companion workflow phase-start` = marks the current phase and prints the required Snipara context gate plus code-impact / symbol-card gates; runtime-marked phases also get a stable Snipara Sandbox session binding
@@ -830,7 +849,7 @@ To test a packed tarball manually, use `npm exec --package`:
 
 ```bash
 npm pack
-npm exec --package ./snipara-companion-1.4.13.tgz snipara-companion -- --help
+npm exec --package ./snipara-companion-1.4.14.tgz snipara-companion -- --help
 ```
 
 Do not use `npx /path/to/snipara-companion-*.tgz`. npm will try to execute the tarball itself instead of

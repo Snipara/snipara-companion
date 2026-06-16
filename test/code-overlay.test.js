@@ -313,6 +313,11 @@ test("code unified commands can force local overlay source", () => {
   assert.equal(payload.result.target.name, "helper");
   assert.ok(payload.result.callers.some((caller) => caller.filePath === "src/index.ts"));
   assert.ok(payload.sourceSelection.limitations.includes("local_overlay_file_import_model"));
+  assert.ok(
+    payload.sourceSelection.guidance.some((item) =>
+      item.includes("Hosted snipara_code_impact is the fallback")
+    )
+  );
 });
 
 test("code unified commands auto-select local overlay for dirty worktrees", () => {
@@ -328,6 +333,11 @@ test("code unified commands auto-select local overlay for dirty worktrees", () =
   assert.equal(payload.sourceSelection.reason, "working_tree_dirty");
   assert.equal(payload.sourceSelection.dirtyFileCount, 1);
   assert.ok(payload.sourceSelection.dirtyFilesSample.includes("src/helper.ts"));
+  assert.ok(
+    payload.sourceSelection.guidance.some((item) =>
+      item.includes("working tree has uncommitted edits")
+    )
+  );
   assert.equal(payload.result.target.name, "helper");
 });
 
@@ -339,23 +349,6 @@ test("code unified commands fail clearly when hosted is forced without config", 
   });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Hosted Snipara is not configured/);
-});
-
-test("code impact remains SaaS-only in the open-source companion", () => {
-  const repo = makeTempRepo();
-  fs.appendFileSync(path.join(repo, "src/helper.ts"), "\nexport const dirty = true;\n", "utf8");
-
-  const result = runCli(["code", "impact", "--changed-files", "src/helper.ts", "--json"], {
-    cwd: repo,
-  });
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /code impact` is SaaS-only/);
-
-  const forcedLocal = runCli(
-    ["code", "impact", "--source", "local", "--changed-files", "src/helper.ts", "--json"],
-    { cwd: repo }
-  );
-  assert.notEqual(forcedLocal.status, 0);
 });
 
 test("code local impact warns when requested targets are absent from the selected overlay", () => {

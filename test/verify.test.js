@@ -38,6 +38,12 @@ function writePackageJson(dir, pkg) {
   fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify(pkg, null, 2), "utf8");
 }
 
+function runGit(cwd, args) {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  return result.stdout.trim();
+}
+
 function writeVerifyPreload(dir) {
   const preloadPath = path.join(dir, "verify-preload.js");
   fs.writeFileSync(
@@ -155,11 +161,51 @@ test("verify command returns JSON from mocked code impact", () => {
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.version, "snipara.verification_plan.v1");
   assert.equal(payload.task, "ship auth hardening");
+  assert.equal(payload.codeImpactSourceSelection.selected, "hosted_graph");
+  assert.equal(payload.codeImpactSourceSelection.reason, "hosted_configured_and_worktree_clean");
   assert.equal(payload.risk.level, "medium");
   assert.deepEqual(payload.impactedFiles, ["src/auth.ts"]);
   assert.ok(payload.recommendedChecks.some((check) => check.command === "pnpm test auth"));
   assert.ok(payload.recommendedChecks.some((check) => check.command === "pnpm test"));
   assert.ok(payload.missingChecks.some((gap) => gap.code === "missing_browser_check"));
+});
+
+test("verify command auto-selects local overlay for dirty worktrees", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-verify-dirty-local-"));
+  runGit(dir, ["init"]);
+  runGit(dir, ["config", "user.email", "agent@example.com"]);
+  runGit(dir, ["config", "user.name", "Agent"]);
+  fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "src", "auth.ts"), "export const auth = true;\n", "utf8");
+  writePackageJson(dir, {
+    name: "sample-project",
+    scripts: {
+      test: "node --test",
+    },
+  });
+  runGit(dir, ["add", "."]);
+  runGit(dir, ["commit", "-m", "initial"]);
+  fs.appendFileSync(path.join(dir, "src", "auth.ts"), "export const dirty = true;\n", "utf8");
+
+  const result = runCli(
+    ["verify", "--task", "ship auth hardening", "--changed-files", "src/auth.ts", "--json"],
+    {
+      cwd: dir,
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "snipara",
+        SNIPARA_API_URL: "https://api.snipara.com",
+      },
+    }
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.codeImpactSourceSelection.requested, "auto");
+  assert.equal(payload.codeImpactSourceSelection.selected, "local_overlay");
+  assert.equal(payload.codeImpactSourceSelection.reason, "working_tree_dirty");
+  assert.equal(payload.codeImpactSourceSelection.dirtyFileCount, 1);
+  assert.ok(payload.impactedFiles.includes("src/auth.ts"));
 });
 
 test("verify command can run in local fallback mode without hosted impact", () => {
