@@ -348,9 +348,9 @@ test("run command composes production judgment JSON", () => {
       "--branch",
       "dev",
       "--changed-files",
-      "src/auth.ts",
+      "packages/cli/src/commands/run.ts",
       "--diff-summary",
-      "auth change",
+      "companion run change",
       "--release",
       "--skip-guard",
       "--skip-package-review",
@@ -375,8 +375,18 @@ test("run command composes production judgment JSON", () => {
   assert.equal(payload.packageReview.status, "skipped");
   assert.equal(payload.guard, undefined);
   assert.equal(payload.judgmentCard.version, "project-intelligence.judgment-card.v1");
+  assert.equal(
+    payload.judgmentCard.requiredActions.some((action) => action.type === "package_review"),
+    false
+  );
   assert.ok(
-    payload.suggestedCommands.includes("npm view snipara-companion version bin dist-tags --json")
+    payload.judgmentCard.advisories.some(
+      (action) => action.type === "package_review" && action.title === "Package review skipped"
+    )
+  );
+  assert.equal(
+    payload.suggestedCommands.includes("npm view snipara-companion version bin dist-tags --json"),
+    false
   );
 });
 

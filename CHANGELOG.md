@@ -2,6 +2,14 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 1.4.15
+
+- Refines `snipara-companion run --release` Judgment Card behavior so completed
+  package reviews no longer remain required actions, and explicitly skipped
+  package reviews are shown as advisories instead of required work.
+- Stops suggesting the npm package review command when the review already passed
+  or was intentionally skipped.
+
 ## New In 1.4.14
 
 - Adds a production Project Intelligence Judgment Card to `intelligence brief`

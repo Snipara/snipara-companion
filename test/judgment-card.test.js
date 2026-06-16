@@ -81,6 +81,51 @@ test("buildProjectJudgmentCard blocks when collaboration guard blocks", () => {
   assert.ok(card.requiredActions.some((action) => action.type === "resolve_blocker"));
 });
 
+test("buildProjectJudgmentCard treats skipped package review as advisory", () => {
+  const card = buildProjectJudgmentCard({
+    task: "smoke release runner",
+    changedFiles: ["packages/cli/src/commands/run.ts"],
+    packageReview: {
+      command: "npm view snipara-companion version bin dist-tags --json",
+      status: "skipped",
+      packageName: "snipara-companion",
+    },
+  });
+
+  assert.equal(card.canProceed, "yes");
+  assert.equal(
+    card.requiredActions.some((action) => action.type === "package_review"),
+    false
+  );
+  assert.ok(
+    card.advisories.some(
+      (action) => action.type === "package_review" && action.title === "Package review skipped"
+    )
+  );
+  assert.ok(card.evidence.some((item) => item.source === "package_review"));
+});
+
+test("buildProjectJudgmentCard does not require completed package review", () => {
+  const card = buildProjectJudgmentCard({
+    task: "smoke release runner",
+    changedFiles: ["packages/cli/src/commands/run.ts"],
+    packageReview: {
+      command: "npm view snipara-companion version bin dist-tags --json",
+      status: "ok",
+      packageName: "snipara-companion",
+    },
+  });
+
+  assert.equal(
+    card.requiredActions.some((action) => action.type === "package_review"),
+    false
+  );
+  assert.equal(
+    card.advisories.some((action) => action.type === "package_review"),
+    false
+  );
+});
+
 test("buildVerificationPlan embeds a judgment card", () => {
   const plan = buildVerificationPlan({
     changedFiles: ["packages/cli/src/index.ts"],

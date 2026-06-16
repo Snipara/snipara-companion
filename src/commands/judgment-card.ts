@@ -71,6 +71,7 @@ export interface BuildProjectJudgmentCardInput {
   codeImpact?: Record<string, unknown>;
   verificationPlan?: Record<string, unknown>;
   guard?: Record<string, unknown>;
+  packageReview?: Record<string, unknown>;
   advisoryObservability?: Record<string, unknown>;
   teamSyncReadiness?: Record<string, unknown>;
   errors?: Array<{ surface: string; message: string }>;
@@ -239,6 +240,12 @@ function checkTitle(check: unknown): string {
     stringValue(check.command) ??
     stringValue(check.file) ??
     "verification check"
+  );
+}
+
+function packageReviewCommand(packageReview: Record<string, unknown> | undefined): string {
+  return (
+    stringValue(packageReview?.command) ?? "npm view snipara-companion version bin dist-tags --json"
   );
 }
 
@@ -513,11 +520,29 @@ export function buildProjectJudgmentCard(
     caveats.add(`${error.surface} unavailable: ${error.message}`);
   }
 
-  if (changedFiles.some((file) => file.includes("package.json") || file.startsWith("packages/"))) {
+  const packageFacingChanged = changedFiles.some(
+    (file) => file.includes("package.json") || file.startsWith("packages/")
+  );
+  if (input.packageReview) {
+    evidence.push({
+      source: "package_review",
+      label: `Package review ${stringValue(input.packageReview.status) ?? "unknown"}`,
+      detail: stringValue(input.packageReview.packageName),
+    });
+  }
+  if (packageFacingChanged && stringValue(input.packageReview?.status) === "skipped") {
+    addAction(advisories, {
+      type: "package_review",
+      title: "Package review skipped",
+      command: packageReviewCommand(input.packageReview),
+      reason: "Package-facing files changed, but package review was explicitly skipped.",
+      severity: "low",
+    });
+  } else if (packageFacingChanged && stringValue(input.packageReview?.status) !== "ok") {
     addAction(requiredActions, {
       type: "package_review",
       title: "Review package release surface",
-      command: "npm view snipara-companion version bin dist-tags --json",
+      command: packageReviewCommand(input.packageReview),
       reason: "Package-facing files changed.",
       severity: "medium",
     });

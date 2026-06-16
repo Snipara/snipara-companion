@@ -219,6 +219,7 @@ export async function buildProjectIntelligenceRun(
     codeImpact: brief.codeImpact,
     verificationPlan: brief.verificationPlan as unknown as Record<string, unknown>,
     guard: guardPayload(guard),
+    packageReview: packageReview as unknown as Record<string, unknown> | undefined,
     errors: runErrors,
   });
 
@@ -227,7 +228,9 @@ export async function buildProjectIntelligenceRun(
     ...(options.release
       ? [
           "snipara-companion collaboration guard --profile pre-deploy --enforce --ack-review-only",
-          packageReviewCommand(),
+          ...(!options.skipPackageReview && packageReview?.status !== "ok"
+            ? [packageReviewCommand()]
+            : []),
         ]
       : []),
   ];
