@@ -47,6 +47,12 @@ import {
   memorySupersedeCommand,
 } from "./commands/memory";
 import { evalExportCommand, evalRunCommand, memoryLocalCommand } from "./commands/local-stack";
+import {
+  contextPackCleanCommand,
+  contextPackPackCommand,
+  contextPackRetrieveCommand,
+  contextPackStatsCommand,
+} from "./commands/context-pack";
 import { memoryGuardCheckCommand, rememberGuardMemoryCommand } from "./commands/memory-guard";
 import { doctorCommand } from "./commands/doctor";
 import {
@@ -143,7 +149,12 @@ import { loadConfig } from "./config/store";
 // These have no CLI side effects and are safe to import without running argv.
 export { resolveQueryFromToolInput } from "./commands/pre-tool";
 export { extractFilesFromToolInput } from "./commands/post-tool";
-export { buildCanonicalEvent } from "./commands/events";
+export {
+  attachLocalContextPackReceipts,
+  buildCanonicalEvent,
+  buildLocalContextPackReceipt,
+  buildLocalContextPackReceipts,
+} from "./commands/events";
 export { createClient, listProjectsForApiKey } from "./api/client";
 export {
   buildToolCallPayload,
@@ -177,6 +188,18 @@ export {
   evalRunCommand,
   memoryLocalCommand,
 } from "./commands/local-stack";
+export {
+  buildContextPackStats,
+  cleanContextPacks,
+  contextPackCleanCommand,
+  contextPackPackCommand,
+  contextPackRetrieveCommand,
+  contextPackStatsCommand,
+  getContextPackStoragePaths,
+  packContext,
+  resolveContextPackRecord,
+  retrieveContextPack,
+} from "./commands/context-pack";
 export { buildVerificationPlan, verifyCommand } from "./commands/verify";
 export { buildProjectJudgmentCard, formatProjectJudgmentCard } from "./commands/judgment-card";
 export { buildProjectIntelligenceRun, projectIntelligenceRunCommand } from "./commands/run";
@@ -769,12 +792,14 @@ program
   .option("-t, --tool <tool>", "Tool name (Read, Grep, Bash, Edit)")
   .option("--exit-code <number>", "Tool process exit code")
   .option("--status <status>", "Tool result status (success|failure|timeout)")
+  .option("--pack-result", "Pack exact tool result locally and attach a metadata-only receipt")
   .action(async (toolInput, options) => {
     const resolvedToolInput = toolInput ?? (await readOptionalStdin());
     await postToolCommand({
       ...options,
       toolInput: resolvedToolInput,
       exitCode: typeof options.exitCode === "string" ? parseInt(options.exitCode, 10) : undefined,
+      packResult: Boolean(options.packResult),
     });
   });
 
@@ -815,6 +840,14 @@ program
     "standard"
   )
   .option("--payload <json>", "JSON payload for the event")
+  .option("-d, --dir <directory>", "Workspace directory for local context-pack references")
+  .option(
+    "--context-pack <id>",
+    "Attach a local context-pack receipt; repeatable",
+    collectOption,
+    []
+  )
+  .option("--context-pack-operation <operation>", "pack|retrieve|reference", "reference")
   .action(async (options) => {
     await emitEventCommand({
       eventType: options.eventType,
@@ -824,6 +857,9 @@ program
       agentId: options.agentId,
       privacyLevel: options.privacyLevel,
       payload: options.payload,
+      contextPackIds: options.contextPack,
+      contextPackOperation: options.contextPackOperation,
+      cwd: options.dir,
     });
   });
 
@@ -1591,6 +1627,12 @@ workflow
     "Commands or deterministic checks represented by this checkpoint"
   )
   .option("--artifacts <files...>", "Artifacts needed for resume or verification")
+  .option(
+    "--context-pack <id>",
+    "Attach a local context-pack receipt; repeatable",
+    collectOption,
+    []
+  )
   .option("--bootstrap-query <query>", "Query to reuse with snipara_repl_context during rehydrate")
   .option("--sandbox-session-id <sessionId>", "Override the bound Snipara Sandbox session id")
   .option("--rehydrate-json <json>", "Compact JSON-serializable state to restore during rehydrate")
@@ -1605,6 +1647,7 @@ workflow
       files: options.files,
       commands: options.commands,
       artifacts: options.artifacts,
+      contextPackIds: options.contextPack,
       bootstrapQuery: options.bootstrapQuery,
       sandboxSessionId: options.sandboxSessionId,
       rehydrateJson: options.rehydrateJson,
@@ -2646,6 +2689,99 @@ code
   );
 
 program
+  .command("context-pack")
+  .description("Pack and retrieve local-only tool outputs without a Snipara account")
+  .addCommand(
+    new Command("pack")
+      .description("Store text, file content, or piped tool output in .snipara/context-pack")
+      .argument("[content]", "Inline content to pack")
+      .option("-d, --dir <directory>", "Workspace directory (default: current)")
+      .option("--text <text>", "Inline text to pack")
+      .option("--file <file>", "Read content from a local text file")
+      .option("--label <label>", "Human label for this pack")
+      .option("--source <source>", "Source command, file, or tool name")
+      .option("--kind <kind>", "tool_output|log|diff|file|text|note", "tool_output")
+      .option("--tag <tag>", "Tag to attach; repeatable", collectOption, [])
+      .option("--ttl-days <number>", "Optional expiration TTL in days")
+      .option("--max-bytes <number>", "Maximum input bytes", "2097152")
+      .option("--allow-sensitive", "Allow secret-like content to be packed locally")
+      .option("--json", "Print raw JSON")
+      .action(async (content, options) => {
+        const pipedInput =
+          content === undefined && options.text === undefined && options.file === undefined
+            ? await readOptionalStdin()
+            : undefined;
+        await contextPackPackCommand({
+          cwd: options.dir,
+          input: content ?? pipedInput,
+          text: options.text,
+          file: options.file,
+          label: options.label,
+          source: options.source,
+          kind: options.kind,
+          tags: options.tag,
+          ttlDays: options.ttlDays !== undefined ? Number.parseInt(options.ttlDays, 10) : undefined,
+          maxBytes:
+            options.maxBytes !== undefined ? Number.parseInt(options.maxBytes, 10) : undefined,
+          allowSensitive: Boolean(options.allowSensitive),
+          json: Boolean(options.json),
+        });
+      })
+  )
+  .addCommand(
+    new Command("retrieve")
+      .description("Retrieve exact local content by pack id, hash prefix, or latest")
+      .argument("<id>", "Context pack id, hash prefix, or latest")
+      .option("-d, --dir <directory>", "Workspace directory (default: current)")
+      .option("-o, --output <file>", "Write content to a file instead of stdout")
+      .option("--metadata-only", "With --json, omit exact recovered content from stdout")
+      .option("--json", "Print metadata and content as JSON")
+      .action(async (id, options) => {
+        await contextPackRetrieveCommand(id, {
+          cwd: options.dir,
+          output: options.output,
+          metadataOnly: Boolean(options.metadataOnly),
+          json: Boolean(options.json),
+        });
+      })
+  )
+  .addCommand(
+    new Command("stats")
+      .description("Summarize local context-pack storage")
+      .option("-d, --dir <directory>", "Workspace directory (default: current)")
+      .option("--json", "Print raw JSON")
+      .action(async (options) => {
+        await contextPackStatsCommand({
+          cwd: options.dir,
+          json: Boolean(options.json),
+        });
+      })
+  )
+  .addCommand(
+    new Command("clean")
+      .description("Delete expired, old, or all local context packs")
+      .option("-d, --dir <directory>", "Workspace directory (default: current)")
+      .option("--all", "Delete every local context pack")
+      .option("--no-expired", "Do not include expired packs by default")
+      .option("--older-than-days <number>", "Delete packs older than this many days")
+      .option("--dry-run", "Preview deletions without removing files")
+      .option("--json", "Print raw JSON")
+      .action(async (options) => {
+        await contextPackCleanCommand({
+          cwd: options.dir,
+          all: Boolean(options.all),
+          expired: options.expired !== false,
+          olderThanDays:
+            options.olderThanDays !== undefined
+              ? Number.parseInt(options.olderThanDays, 10)
+              : undefined,
+          dryRun: Boolean(options.dryRun),
+          json: Boolean(options.json),
+        });
+      })
+  );
+
+program
   .command("load-document")
   .description("Load one exact source document by path through the local companion")
   .requiredOption("-p, --path <path>", "Document path")
@@ -2975,6 +3111,7 @@ Context vs Memory
     query           Search project documents, parsed business files, and current truth
     shared-context  Load linked team/workspace standards and reusable guidance
     load-document   Open one exact source document when you already know its path
+    context-pack    Pack/retrieve local-only tool outputs under .snipara/context-pack
 
   Memory commands:
     memory             Audit memory health, cleanup candidates, and compaction dry-runs

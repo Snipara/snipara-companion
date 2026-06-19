@@ -22,6 +22,7 @@ const {
   normalizeGuardTag,
   ORCHESTRATOR_HANDOFF_RELATIVE_PATH,
   normalizeWorkflowPlanInput,
+  packContext,
   resolveFullWorkflowTokenBudget,
   validatePlanResult,
   runMemoryGuardCheck,
@@ -949,6 +950,51 @@ test("workflow phase-commit advances local state when hosted commit times out", 
   assert.match(logged[0].text, /Verified local fallback after hosted timeout/);
 });
 
+test("workflow runtime-checkpoint records local context pack receipts without hosted auth", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-context-pack-"));
+  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+  writeWorkflowState(dir);
+  const packed = packContext({
+    cwd: dir,
+    content: "runtime log output\nline 2\n",
+    kind: "log",
+    label: "runtime log",
+    source: "sandbox validation",
+    now: new Date("2026-06-19T08:45:00.000Z"),
+  });
+
+  const result = runCli(
+    [
+      "workflow",
+      "runtime-checkpoint",
+      "verify",
+      "--summary",
+      "Captured runtime log",
+      "--context-pack",
+      packed.record.id,
+      "--json",
+    ],
+    { cwd: dir, env: { HOME: fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-home-")) } }
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.runtime_checkpoint.contextPackReceipts.length, 1);
+  assert.equal(payload.runtime_checkpoint.contextPackReceipts[0].pack_id, packed.record.id);
+  assert.deepEqual(payload.runtime_checkpoint.artifacts, [`context-pack:${packed.record.id}`]);
+  assert.equal(payload.hosted_event, null);
+
+  const current = JSON.parse(
+    fs.readFileSync(path.join(dir, ".snipara", "workflow", "current.json"), "utf8")
+  );
+  const checkpoint = current.runtime.sandbox.bindings[0].lastCheckpoint;
+  assert.equal(checkpoint.contextPackReceipts[0].content_uploaded, false);
+  assert.equal(
+    JSON.stringify(checkpoint.contextPackReceipts).includes("runtime log output"),
+    false
+  );
+});
+
 test("final-commit surfaces the backend Team Sync handoff invariant", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-final-commit-"));
   fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
@@ -1250,6 +1296,28 @@ test("orchestrator handoff artifact captures workflow and routing metadata", () 
                     summary: "Captured repeatable sandbox validation state",
                     capturedAt: "2026-05-28T08:20:00.000Z",
                     artifacts: ["artifacts/memory-health.json"],
+                    contextPackReceipts: [
+                      {
+                        version: "snipara.context_pack.receipt.v1",
+                        receipt_id: "cpack_0123456789abcdef:reference:2026-05-28T08:20:00.000Z",
+                        pack_id: "cpack_0123456789abcdef",
+                        operation: "reference",
+                        content_uploaded: false,
+                        policy_decision: "local_only",
+                        privacy_level: "standard",
+                        kind: "tool_output",
+                        tags: [],
+                        bytes: 42,
+                        line_count: 2,
+                        sensitive: false,
+                        created_at: "2026-05-28T08:19:00.000Z",
+                        local_ref: {
+                          base_relative_path: ".snipara/context-pack",
+                          manifest_relative_path:
+                            ".snipara/context-pack/items/cpack_0123456789abcdef.json",
+                        },
+                      },
+                    ],
                   },
                 },
               ],
@@ -1292,6 +1360,7 @@ test("orchestrator handoff artifact captures workflow and routing metadata", () 
     );
     assert.equal(artifact.runtime.sandbox.phases[0].hasCheckpoint, true);
     assert.equal(artifact.runtime.sandbox.phases[0].sessionId, "sandbox_session_123");
+    assert.deepEqual(artifact.runtime.sandbox.phases[0].contextPacks, ["cpack_0123456789abcdef"]);
 
     const written = writeOrchestratorHandoff({
       sourceCommand: "workflow run",

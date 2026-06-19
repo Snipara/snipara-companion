@@ -31,10 +31,52 @@ Local continuity commands work without a Snipara account; commands that read
 hosted context or memory need `init`/`login` first. Run
 `snipara-companion --help` for the full command list.
 
+## Local Context Pack
+
+`context-pack` is a free, local-only reversible pack for long tool outputs,
+logs, diffs, and notes. It stores exact content under
+`.snipara/context-pack` and never uploads raw output to hosted Snipara.
+
+```bash
+# Pack piped tool output
+pnpm test 2>&1 | snipara-companion context-pack pack \
+  --label "package test output" \
+  --source "pnpm test"
+
+# Pack a local file
+snipara-companion context-pack pack --file ./debug.log --kind log --json
+
+# Retrieve exact content later
+snipara-companion context-pack retrieve latest
+snipara-companion context-pack retrieve cpack_abcd1234 --output ./restored.log
+snipara-companion context-pack retrieve cpack_abcd1234 --json --metadata-only
+
+# Inspect and clean local storage
+snipara-companion context-pack stats
+snipara-companion context-pack clean --older-than-days 14
+
+# Attach metadata-only receipts to events/checkpoints
+snipara-companion post-tool --tool Bash --result "$(cat ./debug.log)" --pack-result
+snipara-companion emit-event -e tool_result --context-pack cpack_abcd1234
+snipara-companion workflow runtime-checkpoint verify \
+  --summary "Captured verifier output" \
+  --context-pack cpack_abcd1234
+```
+
+The pack ID is derived from the content hash, so packing identical content is
+idempotent. Use `--ttl-days` when temporary output should be cleaned by the
+default `context-pack clean` path. The storage directory writes its own
+`.gitignore` so raw pack blobs do not appear in normal Git staging. Pack blobs
+are plaintext local files with restrictive permissions. Secret-like input is
+blocked by default; use `--allow-sensitive` only when you intentionally need an
+exact local recovery artifact, and prefer the exact pack ID over `latest` in
+handoffs.
+
 ```mermaid
 flowchart LR
     Project["Local project"] --> Companion["snipara-companion"]
     Companion --> Diagnostics["status, brief, timeline, phase commits, handoff"]
+    Companion --> Packs["context-pack (local output packs)"]
     Companion --> Memory["snipara-memory (optional local memory)"]
     Companion --> Evals["snipara-evals (optional local evals)"]
     Companion --> Hosted["Snipara Hosted MCP / API"]

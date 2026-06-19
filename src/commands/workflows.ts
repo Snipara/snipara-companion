@@ -53,7 +53,11 @@ import {
   type AdaptiveWorkRoutingRecommendation,
   type WrittenOrchestratorHandoff,
 } from "../runtime/orchestrator-handoff";
-import { buildCanonicalEvent } from "./events";
+import {
+  buildCanonicalEvent,
+  buildLocalContextPackReceipts,
+  type LocalContextPackReceiptPayload,
+} from "./events";
 import { appendJournalCheckpoint, type JournalWriteResult } from "./journal";
 import { buildLocalImpactResult } from "./code";
 import { memoryGuardCheckCommand } from "./memory-guard";
@@ -228,6 +232,7 @@ export interface ManagedWorkflowRuntimeCheckpoint {
   files?: string[];
   commands?: string[];
   artifacts?: string[];
+  contextPackReceipts?: LocalContextPackReceiptPayload[];
   rehydratableState?: Record<string, unknown>;
 }
 
@@ -2164,7 +2169,22 @@ function normalizeRuntimeCheckpointRecord(
     files: uniqueStringList(checkpoint.files) ?? [],
     commands: uniqueStringList(checkpoint.commands) ?? [],
     artifacts: uniqueStringList(checkpoint.artifacts) ?? [],
+    contextPackReceipts: normalizeLocalContextPackReceipts(checkpoint.contextPackReceipts) ?? [],
   };
+}
+
+function normalizeLocalContextPackReceipts(
+  value: unknown
+): LocalContextPackReceiptPayload[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const receipts = value
+    .filter((item): item is Record<string, unknown> => isRecord(item))
+    .filter((item) => item.version === "snipara.context_pack.receipt.v1")
+    .map((item) => item as unknown as LocalContextPackReceiptPayload)
+    .slice(0, 20);
+  return receipts.length > 0 ? receipts : undefined;
 }
 
 function runtimeCheckpointEventPayload(
@@ -2230,6 +2250,9 @@ function parseRuntimeCheckpointFromEvent(
       normalizeStringArray(payload.commands) ??
       undefined,
     artifacts: normalizeStringArray(runtimeCheckpoint.artifacts) ?? undefined,
+    contextPackReceipts:
+      normalizeLocalContextPackReceipts(runtimeCheckpoint.context_pack_receipts) ??
+      normalizeLocalContextPackReceipts(payload.local_context_pack_receipts),
     rehydratableState: recordField(runtimeCheckpoint, "rehydratable_state"),
   });
 }
@@ -3827,7 +3850,9 @@ async function loadAdaptiveRoutingProjectPolicy(
       return fallbackPolicy;
     }
     const result = await client.getAutomationSettings();
-    return normalizeAdaptiveRoutingProjectPolicy(result.settings, "hosted_project") ?? fallbackPolicy;
+    return (
+      normalizeAdaptiveRoutingProjectPolicy(result.settings, "hosted_project") ?? fallbackPolicy
+    );
   } catch {
     return fallbackPolicy;
   }
@@ -3843,7 +3868,9 @@ function normalizeAdaptiveRoutingProjectPolicy(
   }
 
   const allowedEndpointTypes = normalizeRoutingEndpointTypes(
-    normalizeStringArray(policyValue(settings, "adaptiveRoutingAllowedEndpointTypes", "allowedEndpointTypes"))
+    normalizeStringArray(
+      policyValue(settings, "adaptiveRoutingAllowedEndpointTypes", "allowedEndpointTypes")
+    )
   );
   const preferredEndpointTypes = normalizeRoutingEndpointTypes(
     normalizeStringArray(
@@ -6119,7 +6146,9 @@ export async function workflowRunCommand(options: {
     }
 
     console.log(chalk.bold("Local Adaptive Work Routing"));
-    console.log("Hosted Snipara is not configured; no context query, hosted catalog, or planner call ran.");
+    console.log(
+      "Hosted Snipara is not configured; no context query, hosted catalog, or planner call ran."
+    );
     if (adaptiveRouting) {
       printAdaptiveRoutingRecommendation(adaptiveRouting);
     }
@@ -6356,15 +6385,19 @@ function shouldBuildAdaptiveRouting(options: {
   );
 }
 
-function buildWorkflowAdaptiveRouting(options: {
-  query: string;
-  mode: WorkflowMode;
-  routeLocalWorkers?: boolean;
-  routingWorkerRole?: string;
-  routingPreferredEndpoints?: string[];
-  routingAllowedEndpoints?: string[];
-  plannerRetainsReasoning?: boolean;
-}, policy: AdaptiveRoutingProjectPolicy | null = null, intentWarnings: string[] = []): AdaptiveWorkRoutingRecommendation {
+function buildWorkflowAdaptiveRouting(
+  options: {
+    query: string;
+    mode: WorkflowMode;
+    routeLocalWorkers?: boolean;
+    routingWorkerRole?: string;
+    routingPreferredEndpoints?: string[];
+    routingAllowedEndpoints?: string[];
+    plannerRetainsReasoning?: boolean;
+  },
+  policy: AdaptiveRoutingProjectPolicy | null = null,
+  intentWarnings: string[] = []
+): AdaptiveWorkRoutingRecommendation {
   const state = readWorkflowState();
   const currentPhase = state ? currentWorkflowPhase(state) : undefined;
   const initialPreferredEndpointTypes = normalizeRoutingEndpointTypes([
@@ -6374,7 +6407,9 @@ function buildWorkflowAdaptiveRouting(options: {
     ...(policy?.preferLocalWorkers ? ["local"] : []),
   ]);
   const policyAllowedEndpointTypes = policy?.allowedEndpointTypes ?? [];
-  const requestedAllowedEndpointTypes = normalizeRoutingEndpointTypes(options.routingAllowedEndpoints);
+  const requestedAllowedEndpointTypes = normalizeRoutingEndpointTypes(
+    options.routingAllowedEndpoints
+  );
   const requestedPolicyEndpointIntersection =
     policyAllowedEndpointTypes.length > 0 && requestedAllowedEndpointTypes.length > 0
       ? intersectStrings(requestedAllowedEndpointTypes, policyAllowedEndpointTypes)
@@ -6526,7 +6561,10 @@ function isAdaptiveWorkerClassAllowed(workerRole: string, allowedWorkerClasses: 
   return allowedWorkerClasses.includes(canonicalAdaptiveWorkerClass(workerRole));
 }
 
-function selectAdaptiveWorkerRoleForPolicy(taskType: string, allowedWorkerClasses: string[]): string {
+function selectAdaptiveWorkerRoleForPolicy(
+  taskType: string,
+  allowedWorkerClasses: string[]
+): string {
   const preferences =
     taskType === "documentation"
       ? ["documentation", "review", "coding", "tests"]
@@ -7051,6 +7089,7 @@ export async function workflowRuntimeCheckpointCommand(options: {
   files?: string[];
   commands?: string[];
   artifacts?: string[];
+  contextPackIds?: string[];
   bootstrapQuery?: string;
   sandboxSessionId?: string;
   rehydrateJson?: string;
@@ -7078,6 +7117,13 @@ export async function workflowRuntimeCheckpointCommand(options: {
       );
     }
   }
+  const contextPackReceipts = buildLocalContextPackReceipts({
+    ids: options.contextPackIds ?? [],
+    operation: "reference",
+  });
+  const contextPackArtifacts = contextPackReceipts.map(
+    (receipt) => `context-pack:${receipt.pack_id}`
+  );
 
   const checkpoint = normalizeRuntimeCheckpointRecord({
     summary: options.summary,
@@ -7088,7 +7134,11 @@ export async function workflowRuntimeCheckpointCommand(options: {
     bootstrapQuery: stringValue(options.bootstrapQuery) ?? binding.bootstrapQuery,
     files: uniqueStringList(options.files) ?? phase.files ?? [],
     commands: uniqueStringList(options.commands) ?? [],
-    artifacts: uniqueStringList(options.artifacts) ?? binding.artifacts ?? [],
+    artifacts:
+      uniqueStringList([...(options.artifacts ?? []), ...contextPackArtifacts]) ??
+      binding.artifacts ??
+      [],
+    contextPackReceipts,
     ...(rehydratableState ? { rehydratableState } : {}),
   });
 
@@ -7130,11 +7180,13 @@ export async function workflowRuntimeCheckpointCommand(options: {
             files: checkpoint.files ?? [],
             commands: checkpoint.commands ?? [],
             artifacts: checkpoint.artifacts ?? [],
+            context_pack_receipts: checkpoint.contextPackReceipts ?? [],
             ...(checkpoint.rehydratableState
               ? { rehydratable_state: checkpoint.rehydratableState }
               : {}),
           },
         },
+        contextPackReceipts,
       });
       const result = await client.emitEvent(event);
       hostedEvent = result.events[0]
@@ -7181,6 +7233,13 @@ export async function workflowRuntimeCheckpointCommand(options: {
   }
   if (checkpoint.artifacts?.length) {
     console.log(`Artifacts: ${checkpoint.artifacts.join(", ")}`);
+  }
+  if (checkpoint.contextPackReceipts?.length) {
+    console.log(
+      `Context packs: ${checkpoint.contextPackReceipts
+        .map((receipt) => receipt.pack_id)
+        .join(", ")}`
+    );
   }
   if (hostedEvent?.id) {
     console.log(`Hosted runtime event: ${hostedEvent.id}`);

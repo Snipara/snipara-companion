@@ -35,6 +35,7 @@ export interface OrchestratorHandoffRuntimeSandboxPhase {
   bootstrapQuery: string;
   files: string[];
   artifacts: string[];
+  contextPacks: string[];
   sessionId: string | null;
   environment: string | null;
   profile: string | null;
@@ -584,6 +585,7 @@ function readWorkflowState(rootDir: string): {
               ? checkpoint.artifacts
               : undefined
         ),
+        contextPacks: normalizeContextPackIds(checkpoint?.contextPackReceipts),
         sessionId: stringValue(binding?.sessionId) ?? null,
         environment:
           stringValue(binding?.environment) ?? stringValue(checkpoint?.environment) ?? null,
@@ -601,6 +603,18 @@ function readWorkflowState(rootDir: string): {
     phases,
     runtimeSandboxPhases,
   };
+}
+
+function normalizeContextPackIds(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return normalizeStringList(
+    value
+      .filter(isRecord)
+      .map((receipt) => stringValue(receipt.pack_id))
+      .filter((packId): packId is string => Boolean(packId))
+  );
 }
 
 function normalizeWorkflowPhase(

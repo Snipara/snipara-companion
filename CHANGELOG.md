@@ -2,6 +2,17 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 2.0.1
+
+- Adds `snipara-companion context-pack pack|retrieve|stats|clean` as a
+  no-account local Context Pack. It stores reversible tool outputs, logs, diffs,
+  and notes under `.snipara/context-pack` with content-hash IDs and no raw
+  hosted upload, local `.gitignore` protection, restrictive file permissions,
+  and default blocking for secret-like input unless `--allow-sensitive` is set.
+- Adds metadata-only Local Context Pack receipts to canonical event payloads,
+  `post-tool --pack-result`, and `workflow runtime-checkpoint --context-pack` so
+  workflows can reference exact local artifacts without uploading their content.
+
 ## New In 2.0.0
 
 - Adds project-level Adaptive Work Routing policy consumption to `workflow run`.

@@ -8,7 +8,13 @@
  */
 import { createClient } from "../api/client";
 import { isConfigured } from "../config/store";
-import { emitCanonicalEvent } from "./events";
+import {
+  attachLocalContextPackReceipts,
+  buildLocalContextPackReceipt,
+  emitCanonicalEvent,
+  type LocalContextPackReceiptPayload,
+} from "./events";
+import { packContext } from "./context-pack";
 import { runMemoryGuardCheck } from "./memory-guard";
 import {
   buildToolResultPayload,
@@ -102,13 +108,8 @@ export async function postToolCommand(options: {
   tool?: string;
   exitCode?: number;
   status?: string;
+  packResult?: boolean;
 }): Promise<void> {
-  // Check if configured
-  if (!isConfigured()) {
-    // Silently exit if not configured
-    process.exit(0);
-  }
-
   // Collect files to track
   const filesToTrack: string[] = [];
 
@@ -133,6 +134,38 @@ export async function postToolCommand(options: {
     exitCode: options.exitCode,
     status: options.status,
   });
+  const contextPackReceipts: LocalContextPackReceiptPayload[] = [];
+  let contextPackSkipped: Record<string, unknown> | undefined;
+  const shouldPackResult =
+    Boolean(options.packResult) || process.env.SNIPARA_CONTEXT_PACK_RESULTS === "1";
+  if (shouldPackResult && typeof options.result === "string" && options.result.trim() !== "") {
+    try {
+      const packed = packContext({
+        content: options.result,
+        kind: "tool_output",
+        label: `${options.tool || "tool"} result`,
+        source: command ?? options.tool ?? "post-tool",
+        tags: ["post-tool", classification],
+      });
+      contextPackReceipts.push(
+        buildLocalContextPackReceipt(packed.record, {
+          operation: "pack",
+          privacyLevel: packed.record.sensitive ? "sensitive" : "standard",
+        })
+      );
+    } catch (error) {
+      contextPackSkipped = {
+        reason: error instanceof Error ? error.message : String(error),
+        source: "post-tool",
+      };
+    }
+  }
+
+  // Check if configured after optional local packing. Packing is local-only and
+  // should still work for no-account fallback workflows.
+  if (!isConfigured()) {
+    process.exit(0);
+  }
 
   try {
     if (uniqueFiles.length > 0) {
@@ -148,17 +181,25 @@ export async function postToolCommand(options: {
       }
     }
 
+    const payload = attachLocalContextPackReceipts(
+      {
+        ...buildToolResultPayload({
+          hook: "post-tool",
+          tool: options.tool || "unknown",
+          toolInput: options.toolInput,
+          result: options.result,
+          exitCode: options.exitCode,
+          status: options.status,
+          files: uniqueFiles,
+        }),
+        ...(contextPackSkipped ? { local_context_pack_skipped: contextPackSkipped } : {}),
+      },
+      contextPackReceipts
+    );
+
     await emitCanonicalEvent({
       eventType: "tool_result",
-      payload: buildToolResultPayload({
-        hook: "post-tool",
-        tool: options.tool || "unknown",
-        toolInput: options.toolInput,
-        result: options.result,
-        exitCode: options.exitCode,
-        status: options.status,
-        files: uniqueFiles,
-      }),
+      payload,
     });
 
     if (classification === "failure" || classification === "timeout") {
