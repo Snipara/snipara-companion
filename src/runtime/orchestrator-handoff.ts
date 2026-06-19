@@ -67,6 +67,8 @@ export interface AdaptiveModelRequirements {
   preferredEndpointTypes?: string[];
   allowedEndpointTypes?: string[];
   catalogLimit?: number;
+  dailyBudgetCents?: number;
+  monthlyBudgetCents?: number;
   fallback: "main_agent";
 }
 
@@ -118,6 +120,8 @@ export interface AdaptiveWorkRoutingOptions {
   workerRole?: string;
   plannerRetainsReasoning?: boolean;
   catalogLimit?: number;
+  dailyBudgetCents?: number;
+  monthlyBudgetCents?: number;
 }
 
 export interface OrchestratorHandoffArtifact {
@@ -349,6 +353,8 @@ export function buildAdaptiveWorkRoutingRecommendation(
     preferredEndpointTypes,
     allowedEndpointTypes,
     catalogLimit: options.catalogLimit,
+    dailyBudgetCents: options.dailyBudgetCents,
+    monthlyBudgetCents: options.monthlyBudgetCents,
     fallback: "main_agent" as const,
   });
   const warnings = [

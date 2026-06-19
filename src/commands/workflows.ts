@@ -6457,6 +6457,8 @@ function buildWorkflowAdaptiveRouting(
         policy?.plannerRetainsReasoning ??
         (options.routeLocalWorkers ? true : undefined),
       catalogLimit: policy?.catalogLimit ?? DEFAULT_ADAPTIVE_ROUTING_CATALOG_LIMIT,
+      dailyBudgetCents: policy?.dailyBudgetCents,
+      monthlyBudgetCents: policy?.monthlyBudgetCents,
     });
 
   const requestedWorkerRole = stringValue(options.routingWorkerRole);

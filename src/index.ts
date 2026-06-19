@@ -496,6 +496,8 @@ program
   .option("--skip-memory-health", "Do not call snipara_memory_health")
   .option("--skip-guard", "Skip collaboration guard during release runs")
   .option("--skip-package-review", "Skip npm package surface review")
+  .option("--served-judgment-id <id>", "Served judgment id to use for first-party advisor receipts")
+  .option("--skip-advisor-receipts", "Skip first-party advisor influence receipt capture")
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await projectIntelligenceRunCommand({
@@ -510,6 +512,8 @@ program
       skipMemoryHealth: Boolean(options.skipMemoryHealth),
       skipGuard: Boolean(options.skipGuard),
       skipPackageReview: Boolean(options.skipPackageReview),
+      servedJudgmentId: options.servedJudgmentId,
+      skipAdvisorReceipts: Boolean(options.skipAdvisorReceipts),
       json: Boolean(options.json),
     });
   });

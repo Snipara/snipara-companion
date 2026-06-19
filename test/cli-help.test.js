@@ -125,6 +125,88 @@ function writeIntelligencePreload(dir) {
   return preloadPath;
 }
 
+function writeAdvisorReceiptPreload(dir) {
+  const preloadPath = path.join(dir, "advisor-receipt-preload.js");
+  const callsPath = path.join(dir, "advisor-receipt-calls.jsonl");
+  fs.writeFileSync(
+    preloadPath,
+    [
+      "const fs = require('node:fs');",
+      `const callsPath = ${JSON.stringify(callsPath)};`,
+      "globalThis.fetch = async (url, init = {}) => {",
+      "  const body = JSON.parse(init.body || '{}');",
+      "  if (String(url).includes('/project-intelligence/advisor-influence')) {",
+      "    fs.appendFileSync(callsPath, JSON.stringify({ url: String(url), body }) + '\\n');",
+      "    return {",
+      "      ok: true,",
+      "      status: 200,",
+      "      statusText: 'OK',",
+      "      json: async () => ({",
+      "        success: true,",
+      "        data: {",
+      "          project: { id: 'project_1', name: 'Snipara', slug: 'snipara' },",
+      "          receipt: { id: 'advisor-receipt:served-123:advisor-risk', advisorRecommendationId: body.recommendation.id, outcomeLinkStatus: 'pending' },",
+      "          advisorInfluence: { version: 'advisor-influence-outcome-loop-v0', receiptCount: 1 }",
+      "        }",
+      "      })",
+      "    };",
+      "  }",
+      "  const toolName = body.params?.name;",
+      "  const args = body.params?.arguments || {};",
+      "  let result;",
+      "  if (toolName === 'snipara_resume_context') {",
+      "    result = {",
+      "      project: { slug: 'snipara' },",
+      "      projectIntelligence: {",
+      "        judgment: {",
+      "          advisorRecommendations: [{",
+      "            id: 'advisor:historical_impact:package-surface-risk',",
+      "            source: 'historical_impact',",
+      "            severity: 'risk',",
+      "            title: 'Historical Impact suggests risk',",
+      "            rationale: 'Package releases need smoke proof.',",
+      "            reasonCodes: ['package_surface'],",
+      "            historicalImpactSummary: '1 helpful / 3 unhelpful.',",
+      "            reasonCodeReliability: 0.84,",
+      "            recommendedVerification: ['Run pack smoke before publish.'],",
+      "            expectedBehaviorChange: 'Add pack smoke before publishing.'",
+      "          }]",
+      "        }",
+      "      },",
+      "      resumeContext: {",
+      "        scope: { branch: args.branch },",
+      "        focus: { summary: 'Resume intelligence surface', activeDecisionCount: 2, overlapCount: 0 },",
+      "        recommendedActions: ['Run verification plan'],",
+      "        caveats: []",
+      "      },",
+      "      received: args",
+      "    };",
+      "  } else if (toolName === 'snipara_memory_health') {",
+      "    result = { health_score: 0.92, metrics: { stale_memories: 1, conflicting_memories: 0, verified_memories: 12 } };",
+      "  } else if (toolName === 'snipara_code_impact') {",
+      "    result = {",
+      "      risk: { level: 'medium', score: 42 },",
+      "      evidence_summary: { matched_target_count: 3 },",
+      "      recommended_actions: [{ action: 'run_tests', priority: 'high', reason: 'Changed CLI receipt surface' }],",
+      "      coverage_gaps: []",
+      "    };",
+      "  } else {",
+      "    result = {};",
+      "  }",
+      "  return {",
+      "    ok: true,",
+      "    status: 200,",
+      "    statusText: 'OK',",
+      "    json: async () => ({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } })",
+      "  };",
+      "};",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  return { preloadPath, callsPath };
+}
+
 function writeMemoryPreload(dir) {
   const preloadPath = path.join(dir, "memory-preload.js");
   fs.writeFileSync(
@@ -289,6 +371,8 @@ test("top-level run help exposes production judgment options", () => {
   assert.match(result.stdout, /--release/);
   assert.match(result.stdout, /--skip-guard/);
   assert.match(result.stdout, /--skip-package-review/);
+  assert.match(result.stdout, /--served-judgment-id/);
+  assert.match(result.stdout, /--skip-advisor-receipts/);
 });
 
 test("intelligence brief combines resume context, memory health, and code impact", () => {
@@ -389,6 +473,60 @@ test("run command composes production judgment JSON", () => {
     payload.suggestedCommands.includes("npm view snipara-companion version bin dist-tags --json"),
     false
   );
+});
+
+test("run command records first-party advisor influence receipts when served judgment is known", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-advisor-receipt-"));
+  const { preloadPath, callsPath } = writeAdvisorReceiptPreload(dir);
+
+  const result = runCli(
+    [
+      "run",
+      "--task",
+      "publish package surface",
+      "--branch",
+      "dev",
+      "--changed-files",
+      "packages/cli/src/commands/run.ts",
+      "--diff-summary",
+      "companion run change",
+      "--served-judgment-id",
+      "served_123",
+      "--skip-package-review",
+      "--json",
+    ],
+    {
+      cwd: dir,
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "snipara",
+        SNIPARA_API_URL: "https://api.snipara.com",
+      },
+      nodeArgs: ["--require", preloadPath],
+    }
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.advisorReceiptCapture.status, "recorded");
+  assert.equal(payload.advisorReceiptCapture.servedJudgmentId, "served_123");
+  assert.equal(payload.advisorReceiptCapture.attemptedCount, 1);
+  assert.equal(payload.advisorReceiptCapture.recordedCount, 1);
+  assert.equal(payload.judgmentCard.advisorRecommendations[0].source, "historical_impact");
+
+  const calls = fs.readFileSync(callsPath, "utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /\/api\/projects\/snipara\/project-intelligence\/advisor-influence$/);
+  assert.equal(calls[0].body.servedJudgmentId, "served_123");
+  assert.equal(calls[0].body.agentDecision, "modified");
+  assert.deepEqual(calls[0].body.verificationExecuted, []);
+  assert.equal(calls[0].body.outcomeLinkStatus, "pending");
+  assert.equal(calls[0].body.metadata.source, "snipara-companion:run");
+  assert.equal(calls[0].body.metadata.firstParty, true);
+  assert.equal(calls[0].body.recommendation.source, "historical_impact");
+  assert.deepEqual(calls[0].body.recommendation.caveats, [
+    "First-party companion receipt records plan adaptation, not outcome proof.",
+  ]);
 });
 
 test("memory audit combines health, candidates, and compact dry-run", () => {

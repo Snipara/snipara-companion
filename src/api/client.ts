@@ -377,6 +377,45 @@ export interface EmitEventResult {
   events: AutomationCheckpointSummary[];
 }
 
+export type AdvisorInfluenceAgentDecision = "accepted" | "modified" | "ignored" | "blocked";
+export type AdvisorInfluenceOutcomeLinkStatus = "pending" | "linked" | "missed" | "unevaluated";
+
+export interface AdvisorInfluenceRecommendationInput {
+  id: string;
+  version?: "advisor-recommendation-v0";
+  source: string;
+  severity: string;
+  title: string;
+  rationale: string;
+  reasonCodes: string[];
+  historicalImpactSummary?: string | null;
+  reasonCodeReliability?: number | null;
+  recommendedVerification: string[];
+  expectedBehaviorChange: string;
+  evidence?: unknown[];
+  caveats?: string[];
+}
+
+export interface RecordAdvisorInfluenceReceiptInput {
+  servedJudgmentId: string;
+  recommendation: AdvisorInfluenceRecommendationInput;
+  agentDecision: AdvisorInfluenceAgentDecision;
+  behaviorChange: string;
+  verificationExecuted: string[];
+  outcomeLinkStatus?: AdvisorInfluenceOutcomeLinkStatus;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RecordAdvisorInfluenceReceiptResult {
+  project: {
+    id: string;
+    name: string;
+    slug: string;
+  };
+  receipt: Record<string, unknown>;
+  advisorInfluence: Record<string, unknown>;
+}
+
 export interface AutomationConfigFile {
   path: string;
   content: string;
@@ -1731,6 +1770,22 @@ export class RLMClient {
     } finally {
       clearTimeout(timeoutId);
     }
+  }
+
+  async recordAdvisorInfluenceReceipt(
+    input: RecordAdvisorInfluenceReceiptInput
+  ): Promise<RecordAdvisorInfluenceReceiptResult> {
+    return this.dashboardProjectRequest<RecordAdvisorInfluenceReceiptResult>(
+      "/project-intelligence/advisor-influence",
+      {
+        method: "POST",
+        body: input,
+      },
+      {
+        invalidMessage: "Advisor influence receipt write failed",
+        validate: (data) => Boolean(data.receipt && data.advisorInfluence),
+      }
+    );
   }
 
   async getAutomationEvents(args?: {

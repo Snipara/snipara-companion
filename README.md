@@ -72,6 +72,12 @@ blocked by default; use `--allow-sensitive` only when you intentionally need an
 exact local recovery artifact, and prefer the exact pack ID over `latest` in
 handoffs.
 
+Metadata-only context-pack receipts include token economy fields:
+`baseline_tokens`, `packed_tokens`, `retrieved_tokens`, and `saved_tokens`.
+Pack/reference receipts can claim saved tokens because only receipt metadata is
+uploaded; retrieve receipts set retrieved tokens to the local baseline so they
+do not overstate savings.
+
 ```mermaid
 flowchart LR
     Project["Local project"] --> Companion["snipara-companion"]
@@ -244,6 +250,15 @@ Project owners can configure Adaptive Work Routing in Project > Automation:
 `off`, `recommend`, or `catalog`; approval; planner-retained reasoning; allowed
 endpoint types (`cloud`, `local`, `self_hosted`); worker classes; and budget
 hints. `workflow run` reads that hosted policy and CLI flags cannot broaden it.
+Companion passes policy budgets into provider-neutral model requirements; the
+hosted gateway enforces project and provider daily/monthly budgets when receipt
+history is available.
+
+Approval is an MCP contract, not a dashboard-only UX path. When project policy
+requires approval, a coding agent calls `snipara_adaptive_routing_approve` with
+the routing card or handoff subject, approved write scopes, endpoint types, a
+stable `idempotency_key`, and optional cost/expiry bounds. Companion dry-runs
+surface the approval requirement but do not auto-approve or spawn workers.
 Project credentials stay server-side behind the hosted gateway; local endpoints
 such as Ollama, LM Studio, AnythingLLM, or other OpenAI-compatible servers must
 be reachable from the worker execution environment.

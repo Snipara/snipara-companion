@@ -2,6 +2,24 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 2.0.3
+
+- Adds first-party Advisor Influence receipt capture to
+  `snipara-companion run` with `--served-judgment-id`, so Project Advisor
+  recommendations can record visible plan adaptation through the hosted
+  Project Intelligence receipt API.
+- Adds `--skip-advisor-receipts` for runs that need to keep the receipt write
+  path disabled while still producing the Project Intelligence judgment output.
+
+## New In 2.0.2
+
+- Passes Adaptive Work Routing daily and monthly project budgets into hosted
+  model requirements so the gateway can enforce budget caps against receipt
+  history.
+- Records Local Context Pack token economy fields on metadata-only receipts:
+  baseline, packed, retrieved, and saved tokens. Retrieve receipts count the
+  retrieved local payload against savings so they do not overstate reduction.
+
 ## New In 2.0.1
 
 - Adds `snipara-companion context-pack pack|retrieve|stats|clean` as a

@@ -7,6 +7,12 @@
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import chalk from "chalk";
+import {
+  createClient,
+  type AdvisorInfluenceAgentDecision,
+  type AdvisorInfluenceRecommendationInput,
+  type RecordAdvisorInfluenceReceiptResult,
+} from "../api/client";
 import { buildProjectIntelligenceBrief, type ProjectIntelligenceBrief } from "./intelligence";
 import {
   buildProjectJudgmentCard,
@@ -26,6 +32,8 @@ export interface ProjectRunCommandOptions {
   skipMemoryHealth?: boolean;
   skipGuard?: boolean;
   skipPackageReview?: boolean;
+  servedJudgmentId?: string;
+  skipAdvisorReceipts?: boolean;
   json?: boolean;
 }
 
@@ -46,6 +54,22 @@ export interface ProjectRunPackageReview {
   error?: string;
 }
 
+export interface ProjectRunAdvisorReceiptWrite {
+  advisorRecommendationId: string;
+  status: "recorded" | "error";
+  result?: RecordAdvisorInfluenceReceiptResult;
+  error?: string;
+}
+
+export interface ProjectRunAdvisorReceiptCapture {
+  status: "skipped" | "recorded" | "partial" | "error";
+  servedJudgmentId?: string;
+  attemptedCount: number;
+  recordedCount: number;
+  writes: ProjectRunAdvisorReceiptWrite[];
+  reason?: string;
+}
+
 export interface ProjectIntelligenceRunResult {
   version: "project-intelligence.production-run.v1";
   generatedAt: string;
@@ -53,6 +77,7 @@ export interface ProjectIntelligenceRunResult {
   brief: ProjectIntelligenceBrief;
   guard?: ProjectRunGuardResult;
   packageReview?: ProjectRunPackageReview;
+  advisorReceiptCapture?: ProjectRunAdvisorReceiptCapture;
   judgmentCard: ProjectIntelligenceJudgmentCard;
   suggestedCommands: string[];
 }
@@ -83,6 +108,212 @@ function outputPreview(value: string): string {
     return value;
   }
   return `${value.slice(0, RAW_OUTPUT_PREVIEW_BYTES)}\n...[truncated]`;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function servedJudgmentIdFromUnknown(value: unknown, depth = 0): string | undefined {
+  if (depth > 5 || value === null || value === undefined) {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    if (Array.isArray(value)) {
+      for (const item of value.slice(0, 12)) {
+        const found = servedJudgmentIdFromUnknown(item, depth + 1);
+        if (found) return found;
+      }
+    }
+    return undefined;
+  }
+
+  const direct = stringValue(value.servedJudgmentId) ?? stringValue(value.served_judgment_id);
+  if (direct) {
+    return direct;
+  }
+
+  for (const key of [
+    "projectIntelligence",
+    "project_intelligence",
+    "brief",
+    "judgment",
+    "resumeContext",
+    "resume_context",
+    "data",
+  ]) {
+    const found = servedJudgmentIdFromUnknown(value[key], depth + 1);
+    if (found) return found;
+  }
+
+  return undefined;
+}
+
+function servedJudgmentIdForRun(
+  options: ProjectRunCommandOptions,
+  brief: ProjectIntelligenceBrief
+): string | undefined {
+  return (
+    stringValue(options.servedJudgmentId) ??
+    servedJudgmentIdFromUnknown(brief.resumeContext) ??
+    servedJudgmentIdFromUnknown(brief.verificationPlan)
+  );
+}
+
+function normalizeAdvisorSource(value: string): AdvisorInfluenceRecommendationInput["source"] {
+  if (
+    value === "judgment" ||
+    value === "outcome_calibration" ||
+    value === "historical_impact" ||
+    value === "safety" ||
+    value === "verification" ||
+    value === "context_quality"
+  ) {
+    return value;
+  }
+  return "judgment";
+}
+
+function normalizeAdvisorSeverity(value: string): AdvisorInfluenceRecommendationInput["severity"] {
+  if (value === "info" || value === "watch" || value === "risk" || value === "block") {
+    return value;
+  }
+  return "watch";
+}
+
+function advisorReceiptRecommendation(
+  recommendation: ProjectIntelligenceJudgmentCard["advisorRecommendations"][number]
+): AdvisorInfluenceRecommendationInput {
+  return {
+    id: recommendation.id,
+    version: "advisor-recommendation-v0",
+    source: normalizeAdvisorSource(recommendation.source),
+    severity: normalizeAdvisorSeverity(recommendation.severity),
+    title: recommendation.title,
+    rationale:
+      recommendation.rationale ??
+      recommendation.expectedBehaviorChange ??
+      `Snipara recommended ${recommendation.title}.`,
+    reasonCodes: recommendation.reasonCodes,
+    historicalImpactSummary: recommendation.historicalImpactSummary ?? null,
+    reasonCodeReliability: recommendation.reasonCodeReliability ?? null,
+    recommendedVerification: recommendation.recommendedVerification,
+    expectedBehaviorChange:
+      recommendation.expectedBehaviorChange ??
+      `Adapt the visible plan according to ${recommendation.title}.`,
+    evidence: [],
+    caveats: ["First-party companion receipt records plan adaptation, not outcome proof."],
+  };
+}
+
+function advisorReceiptDecision(
+  recommendation: ProjectIntelligenceJudgmentCard["advisorRecommendations"][number],
+  judgmentCard: ProjectIntelligenceJudgmentCard
+): AdvisorInfluenceAgentDecision {
+  if (recommendation.severity === "block" && judgmentCard.canProceed === "block") {
+    return "blocked";
+  }
+  return "modified";
+}
+
+function advisorReceiptBehaviorChange(
+  recommendation: ProjectIntelligenceJudgmentCard["advisorRecommendations"][number],
+  judgmentCard: ProjectIntelligenceJudgmentCard
+): string {
+  const verification = recommendation.recommendedVerification.slice(0, 3).join("; ");
+  const mode =
+    recommendation.severity === "block" || recommendation.severity === "risk"
+      ? "required action"
+      : "advisory action";
+  return [
+    `snipara-companion run added a ${mode} from Project Advisor: ${recommendation.title}.`,
+    recommendation.expectedBehaviorChange
+      ? `Expected adaptation: ${recommendation.expectedBehaviorChange}.`
+      : null,
+    verification ? `Recommended verification to perform: ${verification}.` : null,
+    `Judgment state after adaptation: ${judgmentCard.state}.`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+async function recordFirstPartyAdvisorReceipts(args: {
+  options: ProjectRunCommandOptions;
+  brief: ProjectIntelligenceBrief;
+  judgmentCard: ProjectIntelligenceJudgmentCard;
+}): Promise<ProjectRunAdvisorReceiptCapture | undefined> {
+  if (args.options.skipAdvisorReceipts) {
+    return {
+      status: "skipped",
+      attemptedCount: 0,
+      recordedCount: 0,
+      writes: [],
+      reason: "advisor receipt capture was explicitly skipped",
+    };
+  }
+
+  if (args.judgmentCard.advisorRecommendations.length === 0) {
+    return undefined;
+  }
+
+  const servedJudgmentId = servedJudgmentIdForRun(args.options, args.brief);
+  if (!servedJudgmentId) {
+    return {
+      status: "skipped",
+      attemptedCount: 0,
+      recordedCount: 0,
+      writes: [],
+      reason: "no served judgment id was available for first-party advisor receipts",
+    };
+  }
+
+  const client = createClient(10000);
+  const recommendations = args.judgmentCard.advisorRecommendations.slice(0, 6);
+  const writes = await Promise.all(
+    recommendations.map(async (recommendation): Promise<ProjectRunAdvisorReceiptWrite> => {
+      try {
+        const result = await client.recordAdvisorInfluenceReceipt({
+          servedJudgmentId,
+          recommendation: advisorReceiptRecommendation(recommendation),
+          agentDecision: advisorReceiptDecision(recommendation, args.judgmentCard),
+          behaviorChange: advisorReceiptBehaviorChange(recommendation, args.judgmentCard),
+          verificationExecuted: [],
+          outcomeLinkStatus: "pending",
+          metadata: {
+            source: "snipara-companion:run",
+            firstParty: true,
+            runVersion: "project-intelligence.production-run.v1",
+            generatedAt: args.judgmentCard.generatedAt,
+            release: Boolean(args.options.release),
+            branch: args.brief.branch ?? args.options.branch ?? null,
+            changedFiles: args.brief.changedFiles,
+            judgmentState: args.judgmentCard.state,
+            canProceed: args.judgmentCard.canProceed,
+          },
+        });
+        return {
+          advisorRecommendationId: recommendation.id,
+          status: "recorded",
+          result,
+        };
+      } catch (error) {
+        return {
+          advisorRecommendationId: recommendation.id,
+          status: "error",
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    })
+  );
+
+  const recordedCount = writes.filter((write) => write.status === "recorded").length;
+  return {
+    status: recordedCount === writes.length ? "recorded" : recordedCount > 0 ? "partial" : "error",
+    servedJudgmentId,
+    attemptedCount: writes.length,
+    recordedCount,
+    writes,
+  };
 }
 
 function runGuard(
@@ -222,6 +453,11 @@ export async function buildProjectIntelligenceRun(
     packageReview: packageReview as unknown as Record<string, unknown> | undefined,
     errors: runErrors,
   });
+  const advisorReceiptCapture = await recordFirstPartyAdvisorReceipts({
+    options,
+    brief,
+    judgmentCard,
+  });
 
   const suggestedCommands = [
     ...brief.suggestedCommands,
@@ -242,6 +478,7 @@ export async function buildProjectIntelligenceRun(
     brief,
     ...(guard ? { guard } : {}),
     ...(packageReview ? { packageReview } : {}),
+    ...(advisorReceiptCapture ? { advisorReceiptCapture } : {}),
     judgmentCard,
     suggestedCommands: [...new Set(suggestedCommands)],
   };
@@ -288,6 +525,21 @@ export async function projectIntelligenceRunCommand(
       console.log(`${result.packageReview.packageName}: ${result.packageReview.status}`);
       if (result.packageReview.error) {
         console.log(result.packageReview.error);
+      }
+      console.log("");
+    }
+
+    if (result.advisorReceiptCapture) {
+      console.log(chalk.bold("Advisor Receipts"));
+      console.log(`Status: ${result.advisorReceiptCapture.status}`);
+      if (result.advisorReceiptCapture.servedJudgmentId) {
+        console.log(`Served judgment: ${result.advisorReceiptCapture.servedJudgmentId}`);
+      }
+      console.log(
+        `Recorded: ${result.advisorReceiptCapture.recordedCount}/${result.advisorReceiptCapture.attemptedCount}`
+      );
+      if (result.advisorReceiptCapture.reason) {
+        console.log(result.advisorReceiptCapture.reason);
       }
       console.log("");
     }

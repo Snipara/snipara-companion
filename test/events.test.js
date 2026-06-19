@@ -71,7 +71,7 @@ test("buildCanonicalEvent respects explicit overrides", () => {
 
 test("buildCanonicalEvent can attach metadata-only local context pack receipts", () => {
   const repo = makeTempRepo();
-  const content = "large tool output\nline 2\n";
+  const content = `${"large tool output line\n".repeat(200)}line 2\n`;
   const packed = packContext({
     cwd: repo,
     content,
@@ -100,11 +100,35 @@ test("buildCanonicalEvent can attach metadata-only local context pack receipts",
   assert.equal(receipt.pack_id, packed.record.id);
   assert.equal(receipt.content_uploaded, false);
   assert.equal(receipt.bytes, Buffer.byteLength(content, "utf8"));
+  assert.equal(receipt.baseline_tokens, Math.ceil(Buffer.byteLength(content, "utf8") / 4));
+  assert.ok(receipt.packed_tokens > 0);
+  assert.equal(receipt.retrieved_tokens, 0);
+  assert.ok(receipt.saved_tokens > 0);
   assert.equal(
     receipt.local_ref.manifest_relative_path,
     packed.record.storage.manifestRelativePath
   );
   assert.equal(JSON.stringify(receipt).includes(content), false);
+});
+
+test("local context pack retrieve receipts do not claim saved tokens", () => {
+  const repo = makeTempRepo();
+  const content = `${"large tool output line\n".repeat(200)}line 2\n`;
+  const packed = packContext({
+    cwd: repo,
+    content,
+    kind: "tool_output",
+    now: new Date("2026-06-19T08:30:00.000Z"),
+  });
+  const [receipt] = buildLocalContextPackReceipts({
+    ids: [packed.record.id],
+    cwd: repo,
+    operation: "retrieve",
+  });
+
+  assert.equal(receipt.baseline_tokens, Math.ceil(Buffer.byteLength(content, "utf8") / 4));
+  assert.equal(receipt.retrieved_tokens, receipt.baseline_tokens);
+  assert.equal(receipt.saved_tokens, 0);
 });
 
 test("post-tool --pack-result keeps no-account local fallback", () => {

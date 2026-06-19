@@ -1591,6 +1591,8 @@ test("workflow run applies project adaptive routing catalog policy", () => {
     ]);
     assert.deepEqual(payload.adaptive_routing.requirements.preferredEndpointTypes, ["local"]);
     assert.equal(payload.adaptive_routing.requirements.catalogLimit, 20);
+    assert.equal(payload.adaptive_routing.requirements.dailyBudgetCents, 500);
+    assert.equal(payload.adaptive_routing.requirements.monthlyBudgetCents, 2000);
     assert.equal(payload.adaptive_routing.gateway.success, true);
     assert.equal(payload.adaptive_routing.gateway.candidateCount, 1);
     assert.match(

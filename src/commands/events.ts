@@ -63,6 +63,10 @@ export interface LocalContextPackReceiptPayload {
   tags: string[];
   bytes: number;
   line_count: number;
+  baseline_tokens?: number;
+  packed_tokens?: number;
+  retrieved_tokens?: number;
+  saved_tokens?: number;
   payload_digest?: string;
   sensitive: boolean;
   created_at: string;
@@ -77,6 +81,17 @@ function uniqueStrings(values: string[]): string[] {
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 }
 
+function estimateTokensFromBytes(bytes: number): number {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return 0;
+  }
+  return Math.ceil(bytes / 4);
+}
+
+function estimateReceiptTokens(value: unknown): number {
+  return estimateTokensFromBytes(Buffer.byteLength(JSON.stringify(value), "utf8"));
+}
+
 export function buildLocalContextPackReceipt(
   record: ContextPackRecord,
   options: {
@@ -86,7 +101,11 @@ export function buildLocalContextPackReceipt(
   } = {}
 ): LocalContextPackReceiptPayload {
   const operation = options.operation ?? "reference";
-  return {
+  const baselineTokens = estimateTokensFromBytes(record.bytes);
+  const baseReceipt: Omit<
+    LocalContextPackReceiptPayload,
+    "baseline_tokens" | "packed_tokens" | "retrieved_tokens" | "saved_tokens"
+  > = {
     version: "snipara.context_pack.receipt.v1",
     receipt_id: `${record.id}:${operation}:${record.updatedAt}`,
     pack_id: record.id,
@@ -108,6 +127,16 @@ export function buildLocalContextPackReceipt(
       base_relative_path: record.storage.baseRelativePath,
       manifest_relative_path: record.storage.manifestRelativePath,
     },
+  };
+  const packedTokens = estimateReceiptTokens(baseReceipt);
+  const retrievedTokens = operation === "retrieve" ? baselineTokens : 0;
+  const savedTokens = Math.max(0, baselineTokens - packedTokens - retrievedTokens);
+  return {
+    ...baseReceipt,
+    baseline_tokens: baselineTokens,
+    packed_tokens: packedTokens,
+    retrieved_tokens: retrievedTokens,
+    saved_tokens: savedTokens,
   };
 }
 
