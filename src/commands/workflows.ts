@@ -25,6 +25,7 @@ import {
   type CodeShortestPathResult,
   normalizeSessionMemoriesResult,
   type ContextQueryResult,
+  type ProjectAutomationSettings,
   type RecentAutomationEvent,
   type RecallResult,
   type SharedContextDocumentResult,
@@ -36,7 +37,7 @@ import {
   type TeamSyncResumeResponse,
 } from "../api/client";
 import { createLocalQueryCache } from "../cache/query-cache";
-import { isConfigured, loadConfig } from "../config/store";
+import { findWorkspaceRoot, isConfigured, loadConfig } from "../config/store";
 import {
   detectRuntimeEnvironment,
   formatOrchestratorRecommendationReason,
@@ -45,7 +46,11 @@ import {
   shouldSuggestRuntimeForWorkflow,
 } from "../runtime/detection";
 import {
+  buildAdaptiveWorkRoutingRecommendation,
   writeOrchestratorHandoff,
+  type AdaptiveRoutingGatewayStatus,
+  type AdaptiveRoutingRuntimeCatalog,
+  type AdaptiveWorkRoutingRecommendation,
   type WrittenOrchestratorHandoff,
 } from "../runtime/orchestrator-handoff";
 import { buildCanonicalEvent } from "./events";
@@ -67,11 +72,16 @@ import {
 const DEFAULT_SESSION_CONTEXT_TOKENS = 1000;
 const DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS = 2000;
 const DEFAULT_SHARED_CONTEXT_TOKENS = 2000;
+const DEFAULT_WORKFLOW_RUN_TOKENS = 8000;
+const MIN_WORKFLOW_SURFACE_TOKENS = 200;
+const STALE_BOOTSTRAP_MEMORY_DAYS = 90;
 const TASK_COMMIT_TIMEOUT_MS = 30_000;
 const FINAL_COMMIT_TIMEOUT_MS = 90_000;
 const FINAL_COMMIT_RETRY_TIMEOUT_MS = 45_000;
 const FINAL_COMMIT_SUMMARY_MAX_CHARS = 1_200;
 const FINAL_COMMIT_RETRY_SUMMARY_MAX_CHARS = 600;
+const DEFAULT_ADAPTIVE_ROUTING_CATALOG_LIMIT = 20;
+const ADAPTIVE_ROUTING_POLICY_RELATIVE_PATH = path.join(".snipara", "adaptive-routing.json");
 const SHARED_CONTEXT_INTENT_PATTERN =
   /\b(standard|standards|convention|conventions|guideline|guidelines|best practice|best practices|policy|policies|compliance|compliant|security rules|team rules|style guide|playbook|checklist)\b/i;
 type SyncDocumentKind = "DOC" | "BINARY";
@@ -153,6 +163,32 @@ type ReindexMode = "incremental" | "full";
 type ManagedWorkflowPlanSource = "file" | "inline";
 type TaskCommitOutcome = "completed" | "partial" | "blocked" | "abandoned";
 type ManagedWorkflowSchemaVersion = "snipara.workflow.v1" | "snipara.workflow.v2";
+type AdaptiveRoutingMode = "off" | "recommend" | "catalog";
+
+interface AdaptiveRoutingProjectPolicy {
+  source: "hosted_project" | "local_file";
+  mode: AdaptiveRoutingMode;
+  requireApproval: boolean;
+  plannerRetainsReasoning: boolean;
+  preferLocalWorkers: boolean;
+  allowedEndpointTypes: string[];
+  preferredEndpointTypes: string[];
+  allowedWorkerClasses: string[];
+  fallback: "main_agent";
+  dailyBudgetCents: number;
+  monthlyBudgetCents: number;
+  catalogLimit?: number;
+}
+
+interface AdaptiveRoutingPolicyClient extends AdaptiveRoutingCatalogClient {
+  getAutomationSettings(): Promise<{ settings: ProjectAutomationSettings }>;
+}
+
+interface AdaptiveRoutingIntent {
+  shouldBuild: boolean;
+  shouldUseHostedCatalog: boolean;
+  warnings: string[];
+}
 
 export const WORKFLOW_STATE_RELATIVE_PATH = path.join(".snipara", "workflow", "current.json");
 export const WORKFLOW_PLANS_RELATIVE_DIR = path.join(".snipara", "workflow", "plans");
@@ -525,6 +561,22 @@ function stringValue(value: unknown): string | undefined {
   return stringified || undefined;
 }
 
+function numberValue(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  const text = stringValue(value);
+  if (!text) {
+    return undefined;
+  }
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.filter((value) => value.trim().length > 0)));
+}
+
 function normalizeEnum(value: unknown): string {
   return stringValue(value)?.replace(/[-\s]/g, "_").toUpperCase() ?? "";
 }
@@ -779,6 +831,475 @@ export function getPlanStepDisplayTitle(step: unknown, index: number = 0): strin
   return toPreview(step.title ?? step.name ?? step.action ?? step.goal ?? `Step ${index + 1}`);
 }
 
+export interface PlanQualityReport {
+  valid: boolean;
+  issues: string[];
+  warnings: string[];
+  stepCount: number;
+  actions: string[];
+  planId?: string;
+}
+
+export interface WorkflowTokenBudgetReport {
+  requested_max_tokens: number;
+  allocations: {
+    critical_memory_tokens: number;
+    session_context_tokens: number;
+    context_query_tokens: number;
+    shared_context_tokens: number;
+    plan_tokens: number;
+  };
+  estimated_max_tokens: number;
+  include_session_context: boolean;
+  explicit: {
+    max_critical_tokens: boolean;
+    max_context_tokens: boolean;
+  };
+  warnings: string[];
+}
+
+export interface SessionBootstrapQualityReport {
+  warnings: string[];
+  counts: {
+    critical_memories: number;
+    session_context_memories: number;
+    low_confidence_memories: number;
+    stale_memories: number;
+    test_memories: number;
+  };
+  total_tokens?: number;
+  oldest_memory_age_days?: number;
+}
+
+export interface GeneratedWorkflowPlanDocument {
+  mode: "full";
+  goal: string;
+  source: "snipara_plan";
+  plan_id?: string;
+  generatedAt: string;
+  steps: Array<{
+    id: string;
+    title: string;
+    query: string;
+    acceptance?: string;
+    files?: string[];
+    needs_runtime?: boolean;
+  }>;
+}
+
+export interface WrittenGeneratedPlanFile {
+  path: string;
+  relativePath: string;
+}
+
+function isPlaceholderPlanLabel(value: string, index: number): boolean {
+  const normalized = compactWhitespace(value).replace(/[.:]+$/, "");
+  return (
+    normalized.length === 0 ||
+    /^(?:step\s*)?\d+$/i.test(normalized) ||
+    normalized.toLowerCase() === `step ${index + 1}`.toLowerCase()
+  );
+}
+
+function normalizePositiveTokenBudget(
+  value: number | undefined,
+  fallback: number,
+  allowZero: boolean = false
+): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value < 0 ||
+    (!allowZero && value === 0)
+  ) {
+    return fallback;
+  }
+  return Math.floor(value);
+}
+
+export function resolveFullWorkflowTokenBudget(options: {
+  maxTokens?: number;
+  includeSessionContext?: boolean;
+  includeSharedContext?: boolean;
+  maxCriticalTokens?: number;
+  maxContextTokens?: number;
+}): WorkflowTokenBudgetReport {
+  const requestedMaxTokens = normalizePositiveTokenBudget(
+    options.maxTokens,
+    DEFAULT_WORKFLOW_RUN_TOKENS
+  );
+  const explicitCritical = options.maxCriticalTokens !== undefined;
+  const explicitContext = options.maxContextTokens !== undefined;
+  const criticalMemoryTokens = explicitCritical
+    ? normalizePositiveTokenBudget(options.maxCriticalTokens, 0, true)
+    : Math.min(
+        DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS,
+        Math.max(MIN_WORKFLOW_SURFACE_TOKENS, Math.floor(requestedMaxTokens * 0.2))
+      );
+  const includeSessionContext = Boolean(
+    options.includeSessionContext ||
+    (explicitContext && normalizePositiveTokenBudget(options.maxContextTokens, 0, true) > 0)
+  );
+  const sessionContextTokens = explicitContext
+    ? normalizePositiveTokenBudget(options.maxContextTokens, 0, true)
+    : includeSessionContext
+      ? Math.min(
+          DEFAULT_SESSION_CONTEXT_TOKENS,
+          Math.max(
+            Math.floor(MIN_WORKFLOW_SURFACE_TOKENS / 2),
+            Math.floor(requestedMaxTokens * 0.1)
+          )
+        )
+      : 0;
+  const warnings: string[] = [];
+  const bootstrapTokens = criticalMemoryTokens + sessionContextTokens;
+  const minimumRuntimeTokens = MIN_WORKFLOW_SURFACE_TOKENS * (options.includeSharedContext ? 3 : 2);
+  const runtimeBudget = Math.max(requestedMaxTokens - bootstrapTokens, minimumRuntimeTokens);
+  const sharedContextTokens = options.includeSharedContext
+    ? Math.min(
+        DEFAULT_SHARED_CONTEXT_TOKENS,
+        Math.max(MIN_WORKFLOW_SURFACE_TOKENS, Math.floor(runtimeBudget * 0.15))
+      )
+    : 0;
+  const remainingRuntimeBudget = Math.max(
+    runtimeBudget - sharedContextTokens,
+    MIN_WORKFLOW_SURFACE_TOKENS * 2
+  );
+  const contextQueryTokens = Math.max(
+    MIN_WORKFLOW_SURFACE_TOKENS,
+    Math.floor(remainingRuntimeBudget * 0.7)
+  );
+  const planTokens = Math.max(
+    MIN_WORKFLOW_SURFACE_TOKENS,
+    remainingRuntimeBudget - contextQueryTokens
+  );
+  const estimatedMaxTokens =
+    criticalMemoryTokens +
+    sessionContextTokens +
+    contextQueryTokens +
+    sharedContextTokens +
+    planTokens;
+
+  if (estimatedMaxTokens > requestedMaxTokens) {
+    warnings.push(
+      `Minimum viable FULL workflow surfaces require ${estimatedMaxTokens} tokens, above requested max_tokens ${requestedMaxTokens}.`
+    );
+  }
+  if (explicitCritical && criticalMemoryTokens > requestedMaxTokens * 0.5) {
+    warnings.push(
+      "Explicit max_critical_tokens consumes more than half of the workflow budget; context and plan quality may degrade."
+    );
+  }
+  if (explicitContext && sessionContextTokens > 0 && !options.includeSessionContext) {
+    warnings.push(
+      "max_context_tokens was provided, so short-lived session context is included even without --include-session-context."
+    );
+  }
+
+  return {
+    requested_max_tokens: requestedMaxTokens,
+    allocations: {
+      critical_memory_tokens: criticalMemoryTokens,
+      session_context_tokens: sessionContextTokens,
+      context_query_tokens: contextQueryTokens,
+      shared_context_tokens: sharedContextTokens,
+      plan_tokens: planTokens,
+    },
+    estimated_max_tokens: estimatedMaxTokens,
+    include_session_context: includeSessionContext,
+    explicit: {
+      max_critical_tokens: explicitCritical,
+      max_context_tokens: explicitContext,
+    },
+    warnings,
+  };
+}
+
+function normalizePlanTerm(value: string): string {
+  return value.endsWith("s") && value.length > 4 ? value.slice(0, -1) : value;
+}
+
+function extractPlanTerms(value: string): Set<string> {
+  const stopTerms = new Set([
+    "and",
+    "are",
+    "but",
+    "for",
+    "from",
+    "into",
+    "the",
+    "this",
+    "that",
+    "with",
+    "src",
+    "lib",
+    "app",
+    "apps",
+    "packages",
+    "test",
+    "tests",
+  ]);
+  const terms = new Set<string>();
+  for (const match of value.toLowerCase().matchAll(/[a-z0-9][a-z0-9_-]{2,}/g)) {
+    for (const part of match[0].split(/[_-]+/)) {
+      const term = normalizePlanTerm(part);
+      if (term.length >= 3 && !stopTerms.has(term)) {
+        terms.add(term);
+      }
+    }
+  }
+  return terms;
+}
+
+function collectPlanFileHints(plan: Record<string, unknown>): string[] {
+  const hints = new Set<string>();
+  const addHints = (value: unknown) => {
+    for (const item of normalizeStringArray(value) ?? []) {
+      hints.add(item);
+    }
+  };
+
+  addHints(plan.files);
+  addHints(plan.likely_files);
+  addHints(plan.files_touched);
+
+  for (const step of Array.isArray(plan.steps) ? plan.steps : []) {
+    if (!isRecord(step)) {
+      continue;
+    }
+    const params = isRecord(step.params) ? step.params : undefined;
+    addHints(step.files);
+    addHints(step.files_touched);
+    addHints(step.paths);
+    addHints(step.likely_files);
+    addHints(params?.files);
+    addHints(params?.likely_files);
+    addHints(params?.paths);
+  }
+
+  return [...hints];
+}
+
+function buildPlanRelevanceWarnings(
+  plan: Record<string, unknown>,
+  options: { query?: string; cwd?: string }
+): string[] {
+  const warnings: string[] = [];
+  const fileHints = collectPlanFileHints(plan);
+  const query = compactWhitespace(options.query ?? stringValue(plan.query) ?? "");
+  if (fileHints.length === 0 || query.length === 0) {
+    return warnings;
+  }
+
+  const queryTerms = extractPlanTerms(query);
+  const weakFileHints = fileHints.filter((fileHint) => {
+    const fileTerms = extractPlanTerms(fileHint);
+    return ![...fileTerms].some((term) => queryTerms.has(term));
+  });
+  if (weakFileHints.length === fileHints.length) {
+    warnings.push(
+      `Plan file hints have no obvious lexical overlap with the request; verify likely_files before starting implementation (${weakFileHints
+        .slice(0, 4)
+        .join(", ")}).`
+    );
+  } else if (weakFileHints.length > 0) {
+    warnings.push(
+      `Some plan file hints look weakly related to the request: ${weakFileHints
+        .slice(0, 4)
+        .join(", ")}.`
+    );
+  }
+
+  if (options.cwd) {
+    const missingHints = fileHints.filter((fileHint) => {
+      if (/^(?:https?:)?\/\//i.test(fileHint)) {
+        return false;
+      }
+      return !fs.existsSync(path.resolve(options.cwd as string, fileHint));
+    });
+    if (missingHints.length > 0) {
+      warnings.push(
+        `Plan references files not found in the local workspace: ${missingHints
+          .slice(0, 4)
+          .join(", ")}.`
+      );
+    }
+  }
+
+  return warnings;
+}
+
+export function validatePlanResult(
+  plan: unknown,
+  options: { query?: string; cwd?: string } = {}
+): PlanQualityReport {
+  const issues: string[] = [];
+  const warnings: string[] = [];
+  const actions: string[] = [];
+
+  if (!isRecord(plan)) {
+    return {
+      valid: false,
+      issues: ["Plan result is not an object."],
+      warnings,
+      stepCount: 0,
+      actions,
+    };
+  }
+
+  if (typeof plan.error === "string" && plan.error.length > 0) {
+    issues.push(`Hosted planner returned an error: ${plan.error}`);
+  }
+
+  const steps = Array.isArray(plan.steps) ? plan.steps : [];
+  if (steps.length === 0) {
+    issues.push("Plan result has no executable steps.");
+  }
+
+  steps.forEach((step, index) => {
+    if (typeof step === "string") {
+      if (isPlaceholderPlanLabel(step, index)) {
+        issues.push(`Step ${index + 1} has a placeholder label.`);
+      }
+      return;
+    }
+
+    if (!isRecord(step)) {
+      issues.push(`Step ${index + 1} is not an object or string.`);
+      return;
+    }
+
+    const action = stringValue(step.action);
+    if (action) {
+      actions.push(action);
+      if (isPlaceholderPlanLabel(action, index)) {
+        issues.push(`Step ${index + 1} has a placeholder action.`);
+      }
+    }
+
+    const labelSource =
+      stringValue(step.title) ??
+      stringValue(step.name) ??
+      action ??
+      stringValue(step.goal) ??
+      stringValue(step.query) ??
+      stringValue(step.description);
+    if (!labelSource || isPlaceholderPlanLabel(labelSource, index)) {
+      issues.push(`Step ${index + 1} is missing a useful title or action.`);
+    }
+
+    const expectedOutput = stringValue(step.expected_output);
+    if (!expectedOutput && !stringValue(step.acceptance) && !stringValue(step.verify)) {
+      issues.push(`Step ${index + 1} is missing expected output or acceptance criteria.`);
+    }
+
+    const params = isRecord(step.params) ? step.params : undefined;
+    if (params && Object.prototype.hasOwnProperty.call(params, "max_tokens")) {
+      const rawMaxTokens = params.max_tokens;
+      const maxTokens =
+        typeof rawMaxTokens === "number"
+          ? rawMaxTokens
+          : typeof rawMaxTokens === "string"
+            ? Number(rawMaxTokens)
+            : Number.NaN;
+      if (!Number.isFinite(maxTokens) || maxTokens <= 0) {
+        issues.push(`Step ${index + 1} has an invalid max_tokens budget.`);
+      }
+    }
+  });
+
+  warnings.push(...buildPlanRelevanceWarnings(plan, options));
+
+  return {
+    valid: issues.length === 0,
+    issues,
+    warnings,
+    stepCount: steps.length,
+    actions,
+    ...(stringValue(plan.plan_id) ? { planId: stringValue(plan.plan_id) } : {}),
+  };
+}
+
+function readBootstrapEntryText(entry: SessionMemoryEntry): string {
+  return compactWhitespace(
+    [entry.text, entry.content, entry.summary, entry.title]
+      .filter((value): value is string => typeof value === "string" && value.length > 0)
+      .join(" ")
+  );
+}
+
+function entryAgeDays(entry: SessionMemoryEntry, now: Date): number | undefined {
+  if (typeof entry.created_at !== "string" || entry.created_at.trim().length === 0) {
+    return undefined;
+  }
+  const createdAt = new Date(entry.created_at);
+  if (Number.isNaN(createdAt.getTime())) {
+    return undefined;
+  }
+  return Math.max(0, Math.floor((now.getTime() - createdAt.getTime()) / 86_400_000));
+}
+
+function isLikelyTestMemory(entry: SessionMemoryEntry): boolean {
+  const type = typeof entry.type === "string" ? entry.type.toLowerCase() : "";
+  const category = typeof entry.category === "string" ? entry.category.toLowerCase() : "";
+  const text = readBootstrapEntryText(entry).toLowerCase();
+  return type === "test" || category === "test" || /^test memory\b/.test(text);
+}
+
+export function buildSessionBootstrapQuality(
+  result: SessionMemoriesResult,
+  options: { expectedMaxTokens?: number; now?: Date } = {}
+): SessionBootstrapQualityReport {
+  const normalized = normalizeSessionMemoriesResult(result);
+  const now = options.now ?? new Date();
+  const memories = [...normalized.critical.memories, ...normalized.daily.memories];
+  const ages = memories
+    .map((entry) => entryAgeDays(entry, now))
+    .filter((age): age is number => typeof age === "number");
+  const lowConfidenceCount = memories.filter(
+    (entry) => typeof entry.confidence === "number" && entry.confidence < 0.5
+  ).length;
+  const staleCount = ages.filter((age) => age > STALE_BOOTSTRAP_MEMORY_DAYS).length;
+  const testCount = memories.filter((entry) => isLikelyTestMemory(entry)).length;
+  const warnings: string[] = [];
+
+  if (
+    typeof normalized.total_tokens === "number" &&
+    typeof options.expectedMaxTokens === "number" &&
+    normalized.total_tokens > options.expectedMaxTokens
+  ) {
+    warnings.push(
+      `Bootstrap returned ${normalized.total_tokens} tokens, above requested bootstrap budget ${options.expectedMaxTokens}.`
+    );
+  }
+  if (lowConfidenceCount > 0) {
+    warnings.push(`${lowConfidenceCount} bootstrap memories have confidence below 0.5.`);
+  }
+  if (staleCount > 0) {
+    warnings.push(
+      `${staleCount} bootstrap memories are older than ${STALE_BOOTSTRAP_MEMORY_DAYS} days; verify before relying on them.`
+    );
+  }
+  if (testCount > 0) {
+    warnings.push(`${testCount} bootstrap memories look like test fixtures and should be ignored.`);
+  }
+
+  return {
+    warnings,
+    counts: {
+      critical_memories: normalized.critical.count,
+      session_context_memories: normalized.daily.count,
+      low_confidence_memories: lowConfidenceCount,
+      stale_memories: staleCount,
+      test_memories: testCount,
+    },
+    ...(typeof normalized.total_tokens === "number"
+      ? { total_tokens: normalized.total_tokens }
+      : {}),
+    ...(ages.length > 0 ? { oldest_memory_age_days: Math.max(...ages) } : {}),
+  };
+}
+
 function normalizeStringArray(value: unknown): string[] | undefined {
   const raw = Array.isArray(value)
     ? value
@@ -793,6 +1314,106 @@ function normalizeStringArray(value: unknown): string[] | undefined {
     .map((item) => stringValue(item))
     .filter((item): item is string => Boolean(item));
   return items.length > 0 ? items : undefined;
+}
+
+function isUsableGeneratedStepQuery(value: unknown): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 && !trimmed.startsWith("$step");
+}
+
+function planStepToWorkflowStep(
+  step: unknown,
+  index: number,
+  fallbackGoal: string
+): GeneratedWorkflowPlanDocument["steps"][number] {
+  const title = getPlanStepDisplayTitle(step, index);
+  const fallbackQuery = `${fallbackGoal}: ${title}`;
+
+  if (!isRecord(step)) {
+    return {
+      id: sanitizeWorkflowId(title, `phase-${index + 1}`),
+      title,
+      query: typeof step === "string" ? step : fallbackQuery,
+    };
+  }
+
+  const params = isRecord(step.params) ? step.params : undefined;
+  const query =
+    stringValue(step.query) ??
+    stringValue(step.goal) ??
+    stringValue(step.description) ??
+    (isUsableGeneratedStepQuery(params?.query) ? params.query : undefined) ??
+    fallbackQuery;
+  const acceptance =
+    stringValue(step.acceptance) ??
+    stringValue(step.expected_output) ??
+    stringValue(step.done_when) ??
+    stringValue(step.verify);
+  const likelyFiles =
+    params && step.action === "implementation_map"
+      ? normalizeStringArray(params.likely_files)
+      : (normalizeStringArray(step.files) ??
+        normalizeStringArray(step.files_touched) ??
+        normalizeStringArray(step.paths));
+
+  return {
+    id: sanitizeWorkflowId(
+      stringValue(step.id) ?? stringValue(step.phase_id) ?? stringValue(step.key) ?? title,
+      `phase-${index + 1}`
+    ),
+    title,
+    query,
+    ...(acceptance ? { acceptance } : {}),
+    ...(likelyFiles ? { files: likelyFiles } : {}),
+    ...(booleanValue(step.needs_runtime ?? step.runtime) !== undefined
+      ? { needs_runtime: Boolean(booleanValue(step.needs_runtime ?? step.runtime)) }
+      : {}),
+  };
+}
+
+export function buildGeneratedWorkflowPlanDocument(
+  plan: Record<string, unknown>,
+  fallbackGoal: string
+): GeneratedWorkflowPlanDocument {
+  const goal = stringValue(plan.query) ?? fallbackGoal;
+  const steps = findWorkflowSteps(plan).map((step, index) =>
+    planStepToWorkflowStep(step, index, goal)
+  );
+
+  return {
+    mode: "full",
+    goal,
+    source: "snipara_plan",
+    ...(stringValue(plan.plan_id) ? { plan_id: stringValue(plan.plan_id) } : {}),
+    generatedAt: new Date().toISOString(),
+    steps,
+  };
+}
+
+function defaultGeneratedPlanFilePath(query: string): string {
+  const filename = `${sanitizeWorkflowId(query, "snipara-plan")}-plan.json`;
+  return path.join(process.cwd(), WORKFLOW_PLANS_RELATIVE_DIR, filename);
+}
+
+function writeGeneratedWorkflowPlanFile(
+  plan: Record<string, unknown>,
+  fallbackGoal: string,
+  outputFile?: string
+): WrittenGeneratedPlanFile {
+  const outputPath = path.resolve(outputFile ?? defaultGeneratedPlanFilePath(fallbackGoal));
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  fs.writeFileSync(
+    outputPath,
+    `${JSON.stringify(buildGeneratedWorkflowPlanDocument(plan, fallbackGoal), null, 2)}\n`,
+    "utf8"
+  );
+  return {
+    path: outputPath,
+    relativePath: path.relative(process.cwd(), outputPath) || path.basename(outputPath),
+  };
 }
 
 function booleanValue(value: unknown): boolean | undefined {
@@ -2922,15 +3543,28 @@ function printPlanResult(result: Record<string, unknown>): void {
   const steps = Array.isArray(result.steps) ? result.steps : [];
   const summary = result.summary;
   const strategy = result.strategy;
+  const quality = validatePlanResult(result);
 
   if (typeof summary === "string" && summary.length > 0) {
     printKeyValue("Summary:", summary);
+  }
+  if (typeof result.error === "string" && result.error.length > 0) {
+    printKeyValue("Error:", result.error);
   }
   if (typeof strategy === "string" && strategy.length > 0) {
     printKeyValue("Strategy:", strategy);
   }
   printKeyValue("Steps:", steps.length);
+  printKeyValue("Quality:", quality.valid ? "valid" : "needs review");
   console.log("");
+
+  if (!quality.valid) {
+    console.log(chalk.yellow("Plan quality diagnostics"));
+    for (const issue of quality.issues) {
+      console.log(`- ${issue}`);
+    }
+    console.log("");
+  }
 
   if (steps.length > 0) {
     steps.forEach((step, index) => {
@@ -2939,9 +3573,7 @@ function printPlanResult(result: Record<string, unknown>): void {
         return;
       }
       if (isRecord(step)) {
-        const title = toPreview(
-          step.title ?? step.name ?? step.action ?? step.goal ?? `Step ${index + 1}`
-        );
+        const title = getPlanStepDisplayTitle(step, index);
         console.log(`${index + 1}. ${title}`);
         const detail = step.description ?? step.reason ?? step.goal;
         if (detail !== undefined) {
@@ -2958,6 +3590,17 @@ function printPlanResult(result: Record<string, unknown>): void {
   }
 
   printJson(result);
+}
+
+function printGeneratedPlanFile(file: WrittenGeneratedPlanFile): void {
+  printKeyValue("Plan file:", file.relativePath);
+}
+
+function printManagedWorkflowStarted(state: ManagedWorkflowState): void {
+  printKeyValue("Managed workflow:", state.workflowId);
+  if (state.currentPhaseId) {
+    printKeyValue("Current phase:", state.currentPhaseId);
+  }
 }
 
 function printRuntimeHint(query: string, mode: WorkflowMode): void {
@@ -3063,7 +3706,7 @@ function printOrchestratorHandoffHint(
         "Preferred multi-agent path: snipara-orchestrator swarm-create | swarm-join | htask-create-feature | htask-create | htask-next | htask-tree | htask-complete."
       );
       console.log(
-        "Direct hosted fallback: snipara-companion swarm create|join and snipara-companion htask create|create-feature|next|tree|complete."
+        "Companion may retain legacy direct hosted passthrough commands, but htasks belong to the orchestrator workflow surface."
       );
     }
   } else {
@@ -3073,7 +3716,7 @@ function printOrchestratorHandoffHint(
     console.log("Manual install: pip install snipara-orchestrator");
     if (recommendation.reasons.includes("htask_or_swarm_intent")) {
       console.log(
-        "Until orchestrator is installed, use snipara-companion swarm create|join and snipara-companion htask create|create-feature|next|tree|complete as direct hosted fallbacks, then promote the queue back to snipara-orchestrator once multi-agent coordination is intentional."
+        "Install orchestrator before using hosted htasks or swarm coordination as a workflow surface."
       );
     }
   }
@@ -3088,6 +3731,296 @@ function printPreparedOrchestratorHandoff(handoff: WrittenOrchestratorHandoff): 
   console.log(chalk.bold("Prepared Orchestrator Handoff"));
   console.log(`Path: ${handoff.relativePath}`);
   console.log(`Command: ${handoff.command}`);
+}
+
+function printAdaptiveRoutingRecommendation(routing: AdaptiveWorkRoutingRecommendation): void {
+  console.log("");
+  console.log(chalk.bold("Adaptive Work Routing"));
+  printKeyValue("Mode:", routing.routingCard.mode);
+  printKeyValue("Task type:", routing.workProfile.taskType);
+  printKeyValue("Risk:", routing.workProfile.risk);
+  printKeyValue("Worker role:", routing.requirements.workerRole);
+  printKeyValue("Fallback:", routing.requirements.fallback);
+  if (routing.requirements.preferredEndpointTypes?.length) {
+    printKeyValue("Preferred endpoints:", routing.requirements.preferredEndpointTypes.join(", "));
+  }
+  if (routing.requirements.plannerRetainsReasoning) {
+    printKeyValue("Planner retains reasoning:", "yes");
+  }
+  if (routing.gateway) {
+    printKeyValue(
+      "Hosted catalog:",
+      routing.gateway.success
+        ? `${routing.gateway.candidateCount} candidate(s), ${routing.gateway.resolutionStatus ?? "ready"}`
+        : "unavailable"
+    );
+  }
+  if (routing.routingCard.reasons.length > 0) {
+    console.log("Reasons:");
+    for (const reason of routing.routingCard.reasons) {
+      console.log(`- ${reason}`);
+    }
+  }
+  if (routing.routingCard.warnings.length > 0) {
+    console.log("Warnings:");
+    for (const warning of routing.routingCard.warnings) {
+      console.log(`- ${warning}`);
+    }
+  }
+}
+
+interface AdaptiveRoutingCatalogGatewayResult {
+  success?: boolean;
+  fallback?: string;
+  catalog?: AdaptiveRoutingRuntimeCatalog;
+  resolution?: {
+    status?: string;
+    candidate_count?: number;
+    candidateCount?: number;
+    fallback?: string;
+  };
+  warnings?: unknown[];
+}
+
+interface AdaptiveRoutingCatalogClient {
+  callTool<T>(toolName: string, args: Record<string, unknown>): Promise<T>;
+}
+
+function policyValue(
+  settings: ProjectAutomationSettings | Record<string, unknown>,
+  hostedKey: keyof ProjectAutomationSettings,
+  localKey: string
+): unknown {
+  const record = settings as Record<string, unknown>;
+  return record[hostedKey] ?? record[localKey];
+}
+
+function readLocalAdaptiveRoutingProjectPolicy(): AdaptiveRoutingProjectPolicy | null {
+  const workspaceRoot = findWorkspaceRoot(process.cwd(), true);
+  if (!workspaceRoot) {
+    return null;
+  }
+
+  const policyPath = path.join(workspaceRoot, ADAPTIVE_ROUTING_POLICY_RELATIVE_PATH);
+  if (!fs.existsSync(policyPath)) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(policyPath, "utf8")) as unknown;
+    if (!isRecord(parsed)) {
+      return null;
+    }
+
+    return normalizeAdaptiveRoutingProjectPolicy(parsed, "local_file");
+  } catch {
+    return null;
+  }
+}
+
+async function loadAdaptiveRoutingProjectPolicy(
+  client: AdaptiveRoutingPolicyClient | null,
+  fallbackPolicy: AdaptiveRoutingProjectPolicy | null = null
+): Promise<AdaptiveRoutingProjectPolicy | null> {
+  try {
+    if (!client) {
+      return fallbackPolicy;
+    }
+    const result = await client.getAutomationSettings();
+    return normalizeAdaptiveRoutingProjectPolicy(result.settings, "hosted_project") ?? fallbackPolicy;
+  } catch {
+    return fallbackPolicy;
+  }
+}
+
+function normalizeAdaptiveRoutingProjectPolicy(
+  settings: ProjectAutomationSettings | Record<string, unknown>,
+  source: AdaptiveRoutingProjectPolicy["source"]
+): AdaptiveRoutingProjectPolicy | null {
+  const mode = normalizeAdaptiveRoutingMode(policyValue(settings, "adaptiveRoutingMode", "mode"));
+  if (!mode) {
+    return null;
+  }
+
+  const allowedEndpointTypes = normalizeRoutingEndpointTypes(
+    normalizeStringArray(policyValue(settings, "adaptiveRoutingAllowedEndpointTypes", "allowedEndpointTypes"))
+  );
+  const preferredEndpointTypes = normalizeRoutingEndpointTypes(
+    normalizeStringArray(
+      policyValue(settings, "adaptiveRoutingPreferredEndpointTypes", "preferredEndpointTypes")
+    )
+  );
+  const allowedWorkerClasses = normalizeAdaptiveWorkerClasses(
+    normalizeStringArray(
+      policyValue(settings, "adaptiveRoutingAllowedWorkerClasses", "allowedWorkerClasses")
+    )
+  );
+
+  return {
+    source,
+    mode,
+    requireApproval:
+      policyValue(settings, "adaptiveRoutingRequireApproval", "requireApproval") !== false,
+    plannerRetainsReasoning:
+      policyValue(settings, "adaptiveRoutingPlannerRetainsReasoning", "plannerRetainsReasoning") !==
+      false,
+    preferLocalWorkers:
+      policyValue(settings, "adaptiveRoutingPreferLocalWorkers", "preferLocalWorkers") === true,
+    allowedEndpointTypes: allowedEndpointTypes.length > 0 ? allowedEndpointTypes : ["cloud"],
+    preferredEndpointTypes,
+    allowedWorkerClasses:
+      allowedWorkerClasses.length > 0 ? allowedWorkerClasses : ["documentation", "tests", "review"],
+    fallback: "main_agent",
+    dailyBudgetCents: normalizeCents(
+      policyValue(settings, "adaptiveRoutingDailyBudgetCents", "dailyBudgetCents")
+    ),
+    monthlyBudgetCents: normalizeCents(
+      policyValue(settings, "adaptiveRoutingMonthlyBudgetCents", "monthlyBudgetCents")
+    ),
+    catalogLimit: normalizeAdaptiveRoutingCatalogLimit(
+      policyValue(settings, "adaptiveRoutingCatalogLimit", "catalogLimit")
+    ),
+  };
+}
+
+function resolveAdaptiveRoutingIntent(
+  options: {
+    adaptiveRoutingDryRun?: boolean;
+    routeLocalWorkers?: boolean;
+    routingWorkerRole?: string;
+    routingPreferredEndpoints?: string[];
+    routingAllowedEndpoints?: string[];
+    plannerRetainsReasoning?: boolean;
+  },
+  policy: AdaptiveRoutingProjectPolicy | null,
+  hostedConfigured: boolean
+): AdaptiveRoutingIntent {
+  const cliRequested = shouldBuildAdaptiveRouting(options);
+  if (!policy) {
+    return {
+      shouldBuild: cliRequested,
+      shouldUseHostedCatalog: cliRequested,
+      warnings: [],
+    };
+  }
+
+  if (policy.mode === "off") {
+    return {
+      shouldBuild: cliRequested,
+      shouldUseHostedCatalog: false,
+      warnings: cliRequested
+        ? ["Project Adaptive Work Routing policy is off; keeping recommendation metadata local."]
+        : [],
+    };
+  }
+
+  return {
+    shouldBuild: true,
+    shouldUseHostedCatalog: hostedConfigured && policy.mode === "catalog",
+    warnings: [
+      ...(policy.mode === "recommend"
+        ? [
+            "Project Adaptive Work Routing policy is recommendation-only; hosted catalog lookup is disabled.",
+          ]
+        : []),
+      ...(!hostedConfigured && policy.mode === "catalog"
+        ? [
+            "Local Adaptive Work Routing policy requested catalog mode; hosted catalog lookup is skipped without Snipara configuration.",
+          ]
+        : []),
+    ],
+  };
+}
+
+async function enrichAdaptiveRoutingWithHostedCatalog(
+  client: AdaptiveRoutingCatalogClient,
+  routing: AdaptiveWorkRoutingRecommendation
+): Promise<AdaptiveWorkRoutingRecommendation> {
+  try {
+    const result = await client.callTool<AdaptiveRoutingCatalogGatewayResult>(
+      "snipara_adaptive_routing_catalog",
+      {
+        work_profile: routing.workProfile,
+        model_requirements: routing.requirements,
+        limit: routing.requirements.catalogLimit ?? DEFAULT_ADAPTIVE_ROUTING_CATALOG_LIMIT,
+      }
+    );
+    const catalog = normalizeAdaptiveRoutingCatalog(result.catalog);
+    const gatewaySucceeded = result.success === true;
+    const warnings = normalizeStringArray(result.warnings) ?? [];
+    const gatewayWarnings = gatewaySucceeded
+      ? warnings
+      : [
+          ...warnings,
+          "Hosted adaptive routing catalog did not return success=true; treating gateway as failed closed.",
+        ];
+    const candidateCount =
+      numberValue(result.resolution?.candidate_count) ??
+      numberValue(result.resolution?.candidateCount) ??
+      catalog.candidates.length;
+    const gateway: AdaptiveRoutingGatewayStatus = {
+      source: "hosted_mcp",
+      success: gatewaySucceeded,
+      resolutionStatus: stringValue(result.resolution?.status),
+      candidateCount,
+      fallback:
+        stringValue(result.fallback) ?? stringValue(result.resolution?.fallback) ?? "main_agent",
+      warnings: gatewayWarnings,
+    };
+    const reasons = [
+      ...routing.routingCard.reasons,
+      gatewaySucceeded
+        ? candidateCount > 0
+          ? `hosted adaptive routing catalog returned ${candidateCount} candidate(s)`
+          : "hosted adaptive routing catalog returned no candidates and will fail closed"
+        : "hosted adaptive routing catalog did not report explicit success and will fail closed",
+    ];
+
+    return {
+      ...routing,
+      gateway,
+      runtimeCatalog: catalog,
+      routingCard: {
+        ...routing.routingCard,
+        reasons: uniqueStrings(reasons),
+        warnings: uniqueStrings([...routing.routingCard.warnings, ...gatewayWarnings]),
+      },
+    };
+  } catch (error) {
+    const warning = `Hosted adaptive routing catalog unavailable; keeping local dry-run metadata (${toPreview(error)}).`;
+    return {
+      ...routing,
+      gateway: {
+        source: "hosted_mcp",
+        success: false,
+        resolutionStatus: "unavailable",
+        candidateCount: 0,
+        fallback: "main_agent",
+        warnings: [warning],
+      },
+      routingCard: {
+        ...routing.routingCard,
+        warnings: uniqueStrings([...routing.routingCard.warnings, warning]),
+      },
+    };
+  }
+}
+
+function normalizeAdaptiveRoutingCatalog(value: unknown): AdaptiveRoutingRuntimeCatalog {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { candidates: [] };
+  }
+  const record = value as Record<string, unknown>;
+  const candidates = Array.isArray(record.candidates)
+    ? record.candidates.filter(
+        (candidate): candidate is Record<string, unknown> =>
+          Boolean(candidate) && typeof candidate === "object" && !Array.isArray(candidate)
+      )
+    : [];
+  return {
+    version: stringValue(record.version),
+    candidates,
+  };
 }
 
 function printUploadResult(path: string, result: Record<string, unknown>): void {
@@ -3305,6 +4238,30 @@ function printSessionBootstrap(
   if (normalized.critical.count === 0 && normalized.daily.count === 0) {
     printJson(normalized);
   }
+}
+
+function printSessionBootstrapQuality(report: SessionBootstrapQualityReport): void {
+  if (report.warnings.length === 0) {
+    return;
+  }
+
+  console.log(chalk.bold("Bootstrap Quality Warnings"));
+  for (const warning of report.warnings) {
+    console.log(`- ${warning}`);
+  }
+  console.log("");
+}
+
+function printPlanQualityWarnings(report: PlanQualityReport): void {
+  if (report.warnings.length === 0) {
+    return;
+  }
+
+  console.log(chalk.bold("Plan Quality Warnings"));
+  for (const warning of report.warnings) {
+    console.log(`- ${warning}`);
+  }
+  console.log("");
 }
 
 function printTaskCommitResult(result: Record<string, unknown>): void {
@@ -3531,17 +4488,56 @@ export async function queryCommand(options: {
 export async function planCommand(options: {
   query: string;
   maxTokens?: number;
+  writePlanFile?: string;
+  startWorkflow?: boolean;
+  workflowId?: string;
+  force?: boolean;
   json?: boolean;
 }): Promise<void> {
   ensureConfigured();
 
   const client = createClient(15000);
   const result = await client.plan(options.query, options.maxTokens);
+  const quality = validatePlanResult(result);
+  const payload: Record<string, unknown> = {
+    plan: result,
+    plan_quality: quality,
+  };
+
+  if (quality.valid) {
+    if (options.writePlanFile || options.startWorkflow) {
+      const planFile = writeGeneratedWorkflowPlanFile(result, options.query, options.writePlanFile);
+      payload.generated_plan_file = planFile;
+      if (options.startWorkflow) {
+        const state = startManagedWorkflowState({
+          goal: options.query,
+          planFile: planFile.path,
+          id: options.workflowId,
+          force: options.force,
+        });
+        payload.managed_workflow = state;
+      }
+    }
+  } else {
+    payload.plan_error = {
+      code: "invalid_plan",
+      retryable: true,
+      message: "Hosted planner returned an invalid or incomplete plan.",
+      issues: quality.issues,
+    };
+  }
+
   if (options.json) {
-    printJson(result);
+    printJson(options.writePlanFile || options.startWorkflow ? payload : result);
     return;
   }
   printPlanResult(result);
+  if (payload.generated_plan_file) {
+    printGeneratedPlanFile(payload.generated_plan_file as WrittenGeneratedPlanFile);
+  }
+  if (payload.managed_workflow) {
+    printManagedWorkflowStarted(payload.managed_workflow as ManagedWorkflowState);
+  }
 }
 
 export async function uploadCommand(options: {
@@ -5042,14 +6038,51 @@ export async function workflowRunCommand(options: {
   emitOrchestratorHandoff?: boolean;
   autoRouteOrchestrator?: boolean;
   orchestratorPolicySource?: string;
+  adaptiveRoutingDryRun?: boolean;
+  routeLocalWorkers?: boolean;
+  routingWorkerRole?: string;
+  routingPreferredEndpoints?: string[];
+  routingAllowedEndpoints?: string[];
+  plannerRetainsReasoning?: boolean;
+  writePlanFile?: string;
+  startWorkflowFromPlan?: boolean;
+  workflowId?: string;
+  force?: boolean;
   json?: boolean;
 }): Promise<void> {
-  ensureConfigured();
+  const hostedConfigured = isConfigured();
+  const localAdaptiveRoutingPolicy = readLocalAdaptiveRoutingProjectPolicy();
+  const localAdaptiveRoutingRequested = shouldBuildAdaptiveRouting(options);
+  const canRunLocalAdaptiveRouting =
+    !hostedConfigured &&
+    options.mode !== "orchestrate" &&
+    (localAdaptiveRoutingRequested ||
+      (localAdaptiveRoutingPolicy !== null && localAdaptiveRoutingPolicy.mode !== "off"));
 
-  const client = createClient(20000);
+  if (!hostedConfigured && !canRunLocalAdaptiveRouting) {
+    ensureConfigured();
+  }
+
+  const client = hostedConfigured ? createClient(20000) : null;
+  const adaptiveRoutingPolicy = hostedConfigured
+    ? await loadAdaptiveRoutingProjectPolicy(client, localAdaptiveRoutingPolicy)
+    : localAdaptiveRoutingPolicy;
+  const adaptiveRoutingIntent = resolveAdaptiveRoutingIntent(
+    options,
+    adaptiveRoutingPolicy,
+    hostedConfigured
+  );
+  const adaptiveRoutingDryRun = adaptiveRoutingIntent.shouldBuild
+    ? buildWorkflowAdaptiveRouting(options, adaptiveRoutingPolicy, adaptiveRoutingIntent.warnings)
+    : null;
+  const adaptiveRouting =
+    adaptiveRoutingDryRun && adaptiveRoutingIntent.shouldUseHostedCatalog && client
+      ? await enrichAdaptiveRoutingWithHostedCatalog(client, adaptiveRoutingDryRun)
+      : adaptiveRoutingDryRun;
   const orchestratorRecommendation = getOrchestratorRecommendation(options.query, options.mode, {
     policyAutoRoute: options.autoRouteOrchestrator,
     policySource: options.orchestratorPolicySource,
+    adaptiveRoutingDryRun: Boolean(adaptiveRouting),
   });
   const shouldEmitOrchestratorHandoff =
     options.emitOrchestratorHandoff || options.autoRouteOrchestrator;
@@ -5062,8 +6095,43 @@ export async function workflowRunCommand(options: {
           summary: options.query,
           title: options.query,
           mode: options.mode,
+          adaptiveRouting,
         })
       : null;
+
+  if (!hostedConfigured) {
+    const payload = {
+      mode: options.mode,
+      effective_mode: effectiveWorkflowMode(options.mode),
+      local_only: true,
+      local_policy_path: localAdaptiveRoutingPolicy ? ADAPTIVE_ROUTING_POLICY_RELATIVE_PATH : null,
+      orchestrator_recommendation: orchestratorRecommendation,
+      orchestrator_handoff: preparedHandoff,
+      adaptive_routing: adaptiveRouting,
+      warnings: [
+        "Hosted Snipara is not configured; workflow run is limited to local Adaptive Work Routing metadata.",
+      ],
+    };
+
+    if (options.json) {
+      printJson(payload);
+      return;
+    }
+
+    console.log(chalk.bold("Local Adaptive Work Routing"));
+    console.log("Hosted Snipara is not configured; no context query, hosted catalog, or planner call ran.");
+    if (adaptiveRouting) {
+      printAdaptiveRoutingRecommendation(adaptiveRouting);
+    }
+    if (preparedHandoff) {
+      printPreparedOrchestratorHandoff(preparedHandoff);
+    }
+    return;
+  }
+
+  if (!client) {
+    throw new Error("Hosted Snipara client unavailable after configuration check.");
+  }
 
   if (options.mode === "orchestrate") {
     const result = await client.orchestrate(options.query, options.maxTokens);
@@ -5073,6 +6141,7 @@ export async function workflowRunCommand(options: {
         orchestrate: result,
         orchestrator_recommendation: orchestratorRecommendation,
         orchestrator_handoff: preparedHandoff,
+        adaptive_routing: adaptiveRouting,
       });
       return;
     }
@@ -5081,6 +6150,9 @@ export async function workflowRunCommand(options: {
       printRuntimeHint(options.query, options.mode);
       printOrchestratorHandoffHint(options.query, options.mode, orchestratorRecommendation);
     }
+    if (adaptiveRouting) {
+      printAdaptiveRoutingRecommendation(adaptiveRouting);
+    }
     if (preparedHandoff) {
       printPreparedOrchestratorHandoff(preparedHandoff);
     }
@@ -5088,36 +6160,59 @@ export async function workflowRunCommand(options: {
   }
 
   const effectiveMode = effectiveWorkflowMode(options.mode);
+  const shouldRequestSharedContext =
+    shouldFollowWorkflowRecommendations(options.mode) && hasSharedContextIntent(options.query);
+  const workflowBudget =
+    effectiveMode === "full"
+      ? resolveFullWorkflowTokenBudget({
+          maxTokens: options.maxTokens,
+          includeSessionContext: options.includeSessionContext,
+          includeSharedContext: shouldRequestSharedContext,
+          maxCriticalTokens: options.maxCriticalTokens,
+          maxContextTokens: options.maxContextTokens,
+        })
+      : null;
   const payload: Record<string, unknown> = {
     mode: options.mode,
     effective_mode: effectiveMode,
     orchestrator_recommendation: orchestratorRecommendation,
     orchestrator_handoff: preparedHandoff,
+    adaptive_routing: adaptiveRouting,
   };
-
-  if (effectiveMode === "full") {
-    const maxContextTokens =
-      options.maxContextTokens !== undefined
-        ? options.maxContextTokens
-        : options.includeSessionContext
-          ? DEFAULT_SESSION_CONTEXT_TOKENS
-          : 0;
-    const bootstrap = await client.getSessionMemories(
-      options.maxCriticalTokens ?? DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS,
-      maxContextTokens
-    );
-    payload.session_bootstrap = bootstrap;
+  if (workflowBudget) {
+    payload.workflow_budget = workflowBudget;
   }
 
-  const context = await client.queryContext(options.query, options.maxTokens || 8000);
+  if (effectiveMode === "full") {
+    const bootstrap = await client.getSessionMemories(
+      workflowBudget?.allocations.critical_memory_tokens ?? DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS,
+      workflowBudget?.allocations.session_context_tokens ?? 0
+    );
+    payload.session_bootstrap = bootstrap;
+    payload.session_bootstrap_quality = buildSessionBootstrapQuality(bootstrap, {
+      expectedMaxTokens:
+        (workflowBudget?.allocations.critical_memory_tokens ??
+          DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS) +
+        (workflowBudget?.allocations.session_context_tokens ?? 0),
+    });
+  }
+
+  const context = await client.queryContext(
+    options.query,
+    workflowBudget?.allocations.context_query_tokens ||
+      options.maxTokens ||
+      DEFAULT_WORKFLOW_RUN_TOKENS
+  );
   payload.context = context;
 
-  if (shouldFollowWorkflowRecommendations(options.mode) && hasSharedContextIntent(options.query)) {
+  if (shouldRequestSharedContext) {
     payload.shared_context = await client.sharedContext({
-      maxTokens: Math.min(
-        DEFAULT_SHARED_CONTEXT_TOKENS,
-        Math.max(500, Math.floor((options.maxTokens || 8000) * 0.3))
-      ),
+      maxTokens:
+        workflowBudget?.allocations.shared_context_tokens ||
+        Math.min(
+          DEFAULT_SHARED_CONTEXT_TOKENS,
+          Math.max(500, Math.floor((options.maxTokens || DEFAULT_WORKFLOW_RUN_TOKENS) * 0.3))
+        ),
       categories: inferSharedContextCategories(options.query),
       includeContent: true,
     });
@@ -5128,7 +6223,40 @@ export async function workflowRunCommand(options: {
   }
 
   if (effectiveMode === "full") {
-    payload.plan = await client.plan(options.query, options.maxTokens);
+    try {
+      const plan = await client.plan(
+        options.query,
+        workflowBudget?.allocations.plan_tokens ?? options.maxTokens
+      );
+      const quality = validatePlanResult(plan, { query: options.query, cwd: process.cwd() });
+      payload.plan = plan;
+      payload.plan_quality = quality;
+      if (quality.valid && (options.writePlanFile || options.startWorkflowFromPlan)) {
+        const planFile = writeGeneratedWorkflowPlanFile(plan, options.query, options.writePlanFile);
+        payload.generated_plan_file = planFile;
+        if (options.startWorkflowFromPlan) {
+          payload.managed_workflow = startManagedWorkflowState({
+            goal: options.query,
+            planFile: planFile.path,
+            id: options.workflowId,
+            force: options.force,
+          });
+        }
+      } else if (!quality.valid) {
+        payload.plan_error = {
+          code: "invalid_plan",
+          retryable: true,
+          message: "Hosted planner returned an invalid or incomplete plan.",
+          issues: quality.issues,
+        };
+      }
+    } catch (error) {
+      payload.plan_error = {
+        code: "planner_call_failed",
+        retryable: isRetryableHostedCommitError(error),
+        message: hostedCommitErrorMessage(error),
+      };
+    }
   }
 
   if (options.json) {
@@ -5139,8 +6267,21 @@ export async function workflowRunCommand(options: {
   if (effectiveMode === "full" && payload.session_bootstrap) {
     console.log(chalk.bold("Workflow Bootstrap"));
     printSessionBootstrap(payload.session_bootstrap as SessionMemoriesResult, {
-      includeSessionContext: Boolean(options.includeSessionContext),
+      includeSessionContext: Boolean(workflowBudget?.include_session_context),
     });
+    if (
+      payload.session_bootstrap_quality &&
+      typeof payload.session_bootstrap_quality === "object"
+    ) {
+      printSessionBootstrapQuality(
+        payload.session_bootstrap_quality as SessionBootstrapQualityReport
+      );
+    }
+    if (workflowBudget?.warnings.length) {
+      console.log(chalk.bold("Workflow Budget Warnings"));
+      workflowBudget.warnings.forEach((warning) => console.log(`- ${warning}`));
+      console.log("");
+    }
   }
 
   printQueryResult(context);
@@ -5162,24 +6303,252 @@ export async function workflowRunCommand(options: {
   if (effectiveMode === "full" && payload.plan && typeof payload.plan === "object") {
     console.log(chalk.bold("Generated Plan"));
     printPlanResult(payload.plan as Record<string, unknown>);
+    if (payload.plan_quality && typeof payload.plan_quality === "object") {
+      printPlanQualityWarnings(payload.plan_quality as PlanQualityReport);
+    }
+  }
+  if (effectiveMode === "full" && payload.plan_error && typeof payload.plan_error === "object") {
+    console.log(chalk.bold("Plan fallback"));
+    const error = payload.plan_error as Record<string, unknown>;
+    if (typeof error.message === "string") {
+      printKeyValue("Reason:", error.message);
+    }
+    if (Array.isArray(error.issues)) {
+      for (const issue of error.issues) {
+        console.log(`- ${toPreview(issue)}`);
+      }
+    }
+  }
+  if (payload.generated_plan_file) {
+    printGeneratedPlanFile(payload.generated_plan_file as WrittenGeneratedPlanFile);
+  }
+  if (payload.managed_workflow) {
+    printManagedWorkflowStarted(payload.managed_workflow as ManagedWorkflowState);
   }
 
   if (options.runtimeHint !== false) {
     printRuntimeHint(options.query, options.mode);
     printOrchestratorHandoffHint(options.query, options.mode, orchestratorRecommendation);
   }
+  if (adaptiveRouting) {
+    printAdaptiveRoutingRecommendation(adaptiveRouting);
+  }
   if (preparedHandoff) {
     printPreparedOrchestratorHandoff(preparedHandoff);
   }
 }
 
-export async function workflowStartCommand(options: {
+function shouldBuildAdaptiveRouting(options: {
+  adaptiveRoutingDryRun?: boolean;
+  routeLocalWorkers?: boolean;
+  routingWorkerRole?: string;
+  routingPreferredEndpoints?: string[];
+  routingAllowedEndpoints?: string[];
+  plannerRetainsReasoning?: boolean;
+}): boolean {
+  return Boolean(
+    options.adaptiveRoutingDryRun ||
+    options.routeLocalWorkers ||
+    options.routingWorkerRole ||
+    options.routingPreferredEndpoints?.length ||
+    options.routingAllowedEndpoints?.length ||
+    options.plannerRetainsReasoning
+  );
+}
+
+function buildWorkflowAdaptiveRouting(options: {
+  query: string;
+  mode: WorkflowMode;
+  routeLocalWorkers?: boolean;
+  routingWorkerRole?: string;
+  routingPreferredEndpoints?: string[];
+  routingAllowedEndpoints?: string[];
+  plannerRetainsReasoning?: boolean;
+}, policy: AdaptiveRoutingProjectPolicy | null = null, intentWarnings: string[] = []): AdaptiveWorkRoutingRecommendation {
+  const state = readWorkflowState();
+  const currentPhase = state ? currentWorkflowPhase(state) : undefined;
+  const initialPreferredEndpointTypes = normalizeRoutingEndpointTypes([
+    ...(options.routingPreferredEndpoints ?? []),
+    ...(options.routeLocalWorkers ? ["local"] : []),
+    ...(policy?.preferredEndpointTypes ?? []),
+    ...(policy?.preferLocalWorkers ? ["local"] : []),
+  ]);
+  const policyAllowedEndpointTypes = policy?.allowedEndpointTypes ?? [];
+  const requestedAllowedEndpointTypes = normalizeRoutingEndpointTypes(options.routingAllowedEndpoints);
+  const requestedPolicyEndpointIntersection =
+    policyAllowedEndpointTypes.length > 0 && requestedAllowedEndpointTypes.length > 0
+      ? intersectStrings(requestedAllowedEndpointTypes, policyAllowedEndpointTypes)
+      : [];
+  const allowedEndpointTypes =
+    policyAllowedEndpointTypes.length > 0
+      ? requestedAllowedEndpointTypes.length > 0
+        ? requestedPolicyEndpointIntersection.length > 0
+          ? requestedPolicyEndpointIntersection
+          : policyAllowedEndpointTypes
+        : policyAllowedEndpointTypes
+      : requestedAllowedEndpointTypes;
+  const preferredEndpointTypes =
+    allowedEndpointTypes.length > 0
+      ? initialPreferredEndpointTypes.filter((type) => allowedEndpointTypes.includes(type))
+      : initialPreferredEndpointTypes;
+  const removedPreferredEndpointTypes = initialPreferredEndpointTypes.filter(
+    (type) => !preferredEndpointTypes.includes(type)
+  );
+  const policyWarnings = [
+    ...intentWarnings,
+    ...(requestedAllowedEndpointTypes.length > 0 &&
+    policyAllowedEndpointTypes.length > 0 &&
+    requestedPolicyEndpointIntersection.length === 0
+      ? [
+          `Project Adaptive Work Routing policy rejected requested allowed endpoint(s): ${requestedAllowedEndpointTypes.join(", ")}.`,
+        ]
+      : []),
+    ...(removedPreferredEndpointTypes.length > 0
+      ? [
+          `Project Adaptive Work Routing policy removed unsupported preferred endpoint(s): ${removedPreferredEndpointTypes.join(", ")}.`,
+        ]
+      : []),
+  ];
+  const buildRecommendation = (workerRole?: string) =>
+    buildAdaptiveWorkRoutingRecommendation({
+      query: options.query,
+      mode: options.mode,
+      changedFiles: currentPhase?.files ?? [],
+      preferredEndpointTypes,
+      allowedEndpointTypes,
+      workerRole,
+      plannerRetainsReasoning:
+        options.plannerRetainsReasoning ??
+        policy?.plannerRetainsReasoning ??
+        (options.routeLocalWorkers ? true : undefined),
+      catalogLimit: policy?.catalogLimit ?? DEFAULT_ADAPTIVE_ROUTING_CATALOG_LIMIT,
+    });
+
+  const requestedWorkerRole = stringValue(options.routingWorkerRole);
+  let routing = buildRecommendation(requestedWorkerRole);
+  const allowedWorkerClasses = policy?.allowedWorkerClasses ?? [];
+  if (
+    allowedWorkerClasses.length > 0 &&
+    !isAdaptiveWorkerClassAllowed(routing.requirements.workerRole, allowedWorkerClasses)
+  ) {
+    const disallowedWorkerClass = canonicalAdaptiveWorkerClass(routing.requirements.workerRole);
+    const fallbackWorkerRole = selectAdaptiveWorkerRoleForPolicy(
+      routing.workProfile.taskType,
+      allowedWorkerClasses
+    );
+    routing = buildRecommendation(fallbackWorkerRole);
+    policyWarnings.push(
+      `Project Adaptive Work Routing policy does not allow worker class ${disallowedWorkerClass}; using ${canonicalAdaptiveWorkerClass(
+        fallbackWorkerRole
+      )}.`
+    );
+  }
+
+  const policyReasons = policy
+    ? [
+        `project adaptive routing policy mode is ${policy.mode}`,
+        `project adaptive routing allows endpoint type(s): ${policy.allowedEndpointTypes.join(", ")}`,
+      ]
+    : [];
+
+  return {
+    ...routing,
+    routingCard: {
+      ...routing.routingCard,
+      reasons: uniqueStrings([...routing.routingCard.reasons, ...policyReasons]),
+      warnings: uniqueStrings([...routing.routingCard.warnings, ...policyWarnings]),
+    },
+  };
+}
+
+function normalizeRoutingEndpointTypes(values: string[] | undefined): string[] {
+  return Array.from(
+    new Set(
+      (values ?? [])
+        .map((value) => stringValue(value)?.toLowerCase())
+        .filter((value): value is string => Boolean(value))
+    )
+  ).sort();
+}
+
+function normalizeAdaptiveRoutingMode(value: unknown): AdaptiveRoutingMode | null {
+  const normalized = stringValue(value)?.toLowerCase();
+  return normalized === "off" || normalized === "recommend" || normalized === "catalog"
+    ? normalized
+    : null;
+}
+
+function normalizeAdaptiveWorkerClasses(values: string[] | undefined): string[] {
+  return uniqueStrings((values ?? []).map(canonicalAdaptiveWorkerClass)).filter((value) =>
+    ["documentation", "tests", "review", "coding"].includes(value)
+  );
+}
+
+function normalizeCents(value: unknown): number {
+  const parsed = numberValue(value);
+  if (parsed === undefined || parsed < 0) {
+    return 0;
+  }
+  return Math.floor(parsed);
+}
+
+function normalizeAdaptiveRoutingCatalogLimit(value: unknown): number | undefined {
+  const parsed = numberValue(value);
+  if (parsed === undefined || parsed < 1) {
+    return undefined;
+  }
+  return Math.min(Math.floor(parsed), 100);
+}
+
+function intersectStrings(left: string[], right: string[]): string[] {
+  const rightSet = new Set(right);
+  return left.filter((value) => rightSet.has(value));
+}
+
+function canonicalAdaptiveWorkerClass(value: string | undefined): string {
+  const normalized = stringValue(value)?.toLowerCase().replace(/[-\s]/g, "_") ?? "execution";
+  if (normalized === "docs" || normalized === "doc") {
+    return "documentation";
+  }
+  if (normalized === "test" || normalized === "testing") {
+    return "tests";
+  }
+  if (normalized === "validation" || normalized === "reviewer") {
+    return "review";
+  }
+  if (normalized === "code" || normalized === "coder" || normalized === "implementation") {
+    return "coding";
+  }
+  return normalized;
+}
+
+function isAdaptiveWorkerClassAllowed(workerRole: string, allowedWorkerClasses: string[]): boolean {
+  return allowedWorkerClasses.includes(canonicalAdaptiveWorkerClass(workerRole));
+}
+
+function selectAdaptiveWorkerRoleForPolicy(taskType: string, allowedWorkerClasses: string[]): string {
+  const preferences =
+    taskType === "documentation"
+      ? ["documentation", "review", "coding", "tests"]
+      : taskType === "tests"
+        ? ["tests", "review", "coding", "documentation"]
+        : taskType === "coding" || taskType === "critical_code"
+          ? ["coding", "review", "tests", "documentation"]
+          : ["review", "coding", "documentation", "tests"];
+  const selected = preferences.find((workerClass) => allowedWorkerClasses.includes(workerClass));
+  return workerRoleFromAdaptiveClass(selected ?? allowedWorkerClasses[0] ?? "review");
+}
+
+function workerRoleFromAdaptiveClass(workerClass: string): string {
+  return workerClass === "tests" ? "testing" : workerClass;
+}
+
+function startManagedWorkflowState(options: {
   goal?: string;
   planFile?: string;
   id?: string;
   force?: boolean;
-  json?: boolean;
-}): Promise<void> {
+}): ManagedWorkflowState {
   const existing = readWorkflowState();
   if (existing && existing.status === "active" && !options.force) {
     throw new Error(
@@ -5214,6 +6583,22 @@ export async function workflowStartCommand(options: {
   };
 
   writeWorkflowState(state);
+  return state;
+}
+
+export async function workflowStartCommand(options: {
+  goal?: string;
+  planFile?: string;
+  id?: string;
+  force?: boolean;
+  json?: boolean;
+}): Promise<void> {
+  const state = startManagedWorkflowState({
+    goal: options.goal,
+    planFile: options.planFile,
+    id: options.id,
+    force: options.force,
+  });
 
   if (options.json) {
     printJson(state);
@@ -5820,12 +7205,13 @@ export async function workflowResumeCommand(options: {
       ? options.maxContextTokens
       : options.includeSessionContext
         ? DEFAULT_SESSION_CONTEXT_TOKENS
-        : DEFAULT_SESSION_CONTEXT_TOKENS;
+        : 0;
   const client = createClient(15000);
-  const bootstrap = await client.getSessionMemories(
-    options.maxCriticalTokens ?? DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS,
-    resolvedContextTokens
-  );
+  const resolvedCriticalTokens = options.maxCriticalTokens ?? DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS;
+  const bootstrap = await client.getSessionMemories(resolvedCriticalTokens, resolvedContextTokens);
+  const bootstrapQuality = buildSessionBootstrapQuality(bootstrap, {
+    expectedMaxTokens: resolvedCriticalTokens + resolvedContextTokens,
+  });
   const teamSyncResume = await loadWorkflowTeamSyncResume(state);
   const runtimeResume = await loadWorkflowRuntimeResumePlan(state);
 
@@ -5833,6 +7219,7 @@ export async function workflowResumeCommand(options: {
     printJson({
       workflow: state,
       session_bootstrap: bootstrap,
+      session_bootstrap_quality: bootstrapQuality,
       team_sync_resume: teamSyncResume?.data ?? null,
       team_sync_resume_error: teamSyncResume?.error,
       runtime_resume: runtimeResume?.data ?? null,
@@ -5850,6 +7237,7 @@ export async function workflowResumeCommand(options: {
   printSessionBootstrap(bootstrap, {
     includeSessionContext: resolvedContextTokens > 0,
   });
+  printSessionBootstrapQuality(bootstrapQuality);
   printWorkflowTeamSyncResume(teamSyncResume);
   printWorkflowRuntimeResumePlan(runtimeResume);
   printManagedWorkflowResumeBoundary();
@@ -6309,6 +7697,10 @@ export async function sessionBootstrapCommand(options: {
         : 0;
   const client = createClient(15000);
   const result = await client.getSessionMemories(options.maxCriticalTokens, resolvedContextTokens);
+  const bootstrapQuality = buildSessionBootstrapQuality(result, {
+    expectedMaxTokens:
+      (options.maxCriticalTokens ?? DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS) + resolvedContextTokens,
+  });
   const config = loadConfig();
   const warmSnapshot = createLocalQueryCache({
     cwd: process.cwd(),
@@ -6326,12 +7718,14 @@ export async function sessionBootstrapCommand(options: {
         included: resolvedContextTokens > 0,
         max_tokens: resolvedContextTokens,
       },
+      session_bootstrap_quality: bootstrapQuality,
     });
     return;
   }
   printSessionBootstrap(result, {
     includeSessionContext: resolvedContextTokens > 0,
   });
+  printSessionBootstrapQuality(bootstrapQuality);
   if (warmSnapshot.storedEntries > 0) {
     printKeyValue(
       "Warm cache:",

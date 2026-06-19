@@ -43,6 +43,82 @@ export interface OrchestratorHandoffRuntimeSandboxPhase {
   checkpointCapturedAt: string | null;
 }
 
+export interface AdaptiveWorkProfile {
+  taskType: string;
+  risk: string;
+  scope: string[];
+  contextBudget: string;
+  reasoningDepth: string;
+  evidenceRequirements?: string[];
+  notes?: string[];
+}
+
+export interface AdaptiveModelRequirements {
+  workerRole: string;
+  reasoning: string;
+  plannerRetainsReasoning: boolean;
+  speed: string;
+  cost: string;
+  contextBudget: string;
+  capabilities: string[];
+  forbiddenCapabilities: string[];
+  writeScope: string[];
+  preferredEndpointTypes?: string[];
+  allowedEndpointTypes?: string[];
+  catalogLimit?: number;
+  fallback: "main_agent";
+}
+
+export interface AdaptiveRoutingCostEstimate {
+  currency: "USD";
+  confidence: "low" | "medium" | "high";
+}
+
+export interface AdaptiveRoutingCard {
+  mode: "dry_run";
+  workProfile: AdaptiveWorkProfile;
+  requirements: AdaptiveModelRequirements;
+  recommendedWorkerClass: string;
+  costEstimate: AdaptiveRoutingCostEstimate;
+  humanApprovalRequired: true;
+  fallback: "main_agent";
+  reasons: string[];
+  warnings: string[];
+}
+
+export interface AdaptiveRoutingGatewayStatus {
+  source: "hosted_mcp";
+  success: boolean;
+  resolutionStatus?: string;
+  candidateCount: number;
+  fallback?: string;
+  warnings: string[];
+}
+
+export interface AdaptiveRoutingRuntimeCatalog {
+  version?: string;
+  candidates: Array<Record<string, unknown>>;
+}
+
+export interface AdaptiveWorkRoutingRecommendation {
+  workProfile: AdaptiveWorkProfile;
+  requirements: AdaptiveModelRequirements;
+  routingCard: AdaptiveRoutingCard;
+  gateway?: AdaptiveRoutingGatewayStatus;
+  runtimeCatalog?: AdaptiveRoutingRuntimeCatalog;
+}
+
+export interface AdaptiveWorkRoutingOptions {
+  query: string;
+  mode?: string;
+  changedFiles?: string[];
+  preferredEndpointTypes?: string[];
+  allowedEndpointTypes?: string[];
+  workerRole?: string;
+  plannerRetainsReasoning?: boolean;
+  catalogLimit?: number;
+}
+
 export interface OrchestratorHandoffArtifact {
   schemaVersion: "snipara.orchestrator.handoff.v1";
   source: {
@@ -66,6 +142,11 @@ export interface OrchestratorHandoffArtifact {
     level: OrchestratorRecommendation["level"];
     reasons: OrchestratorRecommendation["reasons"];
     policySource: string | null;
+    workProfile?: AdaptiveWorkProfile;
+    requirements?: AdaptiveModelRequirements;
+    routingCard?: AdaptiveRoutingCard;
+    gateway?: AdaptiveRoutingGatewayStatus;
+    runtimeCatalog?: AdaptiveRoutingRuntimeCatalog;
   };
   task: {
     title: string;
@@ -118,6 +199,7 @@ export interface OrchestratorHandoffOptions {
   resumeSummary?: string;
   featureTitle?: string;
   workstreams?: string[];
+  adaptiveRouting?: AdaptiveWorkRoutingRecommendation | null;
 }
 
 export interface WrittenOrchestratorHandoff {
@@ -169,6 +251,19 @@ export function buildOrchestratorHandoff(
       level: options.recommendation.level,
       reasons: options.recommendation.reasons,
       policySource: options.recommendation.policySource ?? null,
+      ...(options.adaptiveRouting
+        ? {
+            workProfile: options.adaptiveRouting.workProfile,
+            requirements: options.adaptiveRouting.requirements,
+            routingCard: options.adaptiveRouting.routingCard,
+            ...(options.adaptiveRouting.gateway
+              ? { gateway: options.adaptiveRouting.gateway }
+              : {}),
+            ...(options.adaptiveRouting.runtimeCatalog
+              ? { runtimeCatalog: options.adaptiveRouting.runtimeCatalog }
+              : {}),
+          }
+        : {}),
     },
     task: {
       title: options.title ?? options.summary,
@@ -211,6 +306,217 @@ export function buildOrchestratorHandoff(
       resumeSummary: options.resumeSummary ?? null,
     },
   };
+}
+
+export function buildAdaptiveWorkRoutingRecommendation(
+  options: AdaptiveWorkRoutingOptions
+): AdaptiveWorkRoutingRecommendation {
+  const changedFiles = normalizeStringList(options.changedFiles);
+  const preferredEndpointTypes = normalizeEndpointTypes(options.preferredEndpointTypes);
+  const allowedEndpointTypes = normalizeEndpointTypes(options.allowedEndpointTypes);
+  const taskType = inferAdaptiveTaskType(options.query, changedFiles);
+  const risk = inferAdaptiveRisk(options.query, changedFiles);
+  const contextBudget = inferAdaptiveContextBudget(options.mode, risk, changedFiles);
+  const reasoningDepth = inferAdaptiveReasoningDepth(risk, taskType);
+  const workerRole = options.workerRole ?? inferAdaptiveWorkerRole(taskType);
+  const plannerRetainsReasoning =
+    options.plannerRetainsReasoning ?? preferredEndpointTypes.includes("local");
+  const capabilities = inferAdaptiveCapabilities(taskType, workerRole);
+  const forbiddenCapabilities = risk === "high" ? ["secrets", "prod_write"] : ["secrets"];
+  const workProfile: AdaptiveWorkProfile = compactObject({
+    taskType,
+    risk,
+    scope: changedFiles,
+    contextBudget,
+    reasoningDepth,
+    evidenceRequirements: inferAdaptiveEvidenceRequirements(options.query, risk),
+    notes: [
+      "Generated by snipara-companion as recommendation-only routing metadata.",
+      "snipara-orchestrator must resolve the worker against the runtime catalog before execution.",
+    ],
+  });
+  const requirements: AdaptiveModelRequirements = compactObject({
+    workerRole,
+    reasoning: reasoningDepth,
+    plannerRetainsReasoning,
+    speed: preferredEndpointTypes.includes("local") ? "high" : "normal",
+    cost: preferredEndpointTypes.includes("local") ? "minimal" : "balanced",
+    contextBudget,
+    capabilities,
+    forbiddenCapabilities,
+    writeScope: changedFiles,
+    preferredEndpointTypes,
+    allowedEndpointTypes,
+    catalogLimit: options.catalogLimit,
+    fallback: "main_agent" as const,
+  });
+  const warnings = [
+    "Recommendation-only dry run; companion does not launch or claim workers.",
+    ...(preferredEndpointTypes.includes("local")
+      ? ["Local endpoint preference requires a runtime catalog or gateway to confirm availability."]
+      : []),
+  ];
+  const routingCard: AdaptiveRoutingCard = {
+    mode: "dry_run",
+    workProfile,
+    requirements,
+    recommendedWorkerClass: workerRole,
+    costEstimate: {
+      currency: "USD",
+      confidence: "low",
+    },
+    humanApprovalRequired: true,
+    fallback: "main_agent",
+    reasons: [
+      `task profile classified as ${taskType}`,
+      `worker role ${workerRole} is suggested from task shape`,
+      plannerRetainsReasoning
+        ? "planner retains reasoning while worker executes scoped work"
+        : "worker must satisfy reasoning requirement directly",
+      "runtime catalog resolution remains delegated to snipara-orchestrator",
+    ],
+    warnings,
+  };
+
+  return {
+    workProfile,
+    requirements,
+    routingCard,
+  };
+}
+
+function inferAdaptiveTaskType(query: string, changedFiles: string[]): string {
+  const normalizedQuery = query.toLowerCase();
+  if (
+    /\b(doc|docs|documentation|readme|changelog|guide|manual)\b/i.test(query) ||
+    changedFiles.some((file) => /(^|\/)(docs|documentation)\//.test(file) || /\.mdx?$/i.test(file))
+  ) {
+    return "documentation";
+  }
+  if (/\b(test|tests|pytest|unit|integration|e2e|smoke|verify|verification)\b/i.test(query)) {
+    return "tests";
+  }
+  if (/\b(release|deploy|deployment|production|prod|rollout)\b/i.test(query)) {
+    return "release";
+  }
+  if (/\b(schema|migration|database|prisma|auth|billing|secret|credential)\b/i.test(query)) {
+    return "critical_code";
+  }
+  if (
+    /\b(code|coding|implement|fix|refactor|patch|edit)\b/i.test(query) ||
+    changedFiles.some((file) => /\.(ts|tsx|js|jsx|py|go|rs|java|kt|swift|rb|php)$/i.test(file))
+  ) {
+    return "coding";
+  }
+  return normalizedQuery.trim() ? "general" : "unknown";
+}
+
+function inferAdaptiveRisk(query: string, changedFiles: string[]): string {
+  if (
+    /\b(prod|production|deploy|release|migration|schema|database|prisma|auth|billing|secret|credential|security)\b/i.test(
+      query
+    ) ||
+    changedFiles.some((file) =>
+      /(schema\.prisma|migration|auth|billing|secret|credential|security|deploy)/i.test(file)
+    )
+  ) {
+    return "high";
+  }
+  if (
+    changedFiles.length > 5 ||
+    changedFiles.some((file) => /\.(ts|tsx|js|jsx|py|go|rs|java)$/i.test(file))
+  ) {
+    return "medium";
+  }
+  return "low";
+}
+
+function inferAdaptiveContextBudget(
+  mode: string | undefined,
+  risk: string,
+  changedFiles: string[]
+): string {
+  if (mode === "full" || mode === "orchestrate" || risk === "high" || changedFiles.length > 8) {
+    return "large";
+  }
+  if (changedFiles.length > 3 || risk === "medium") {
+    return "medium";
+  }
+  return "small";
+}
+
+function inferAdaptiveReasoningDepth(risk: string, taskType: string): string {
+  if (risk === "high" || taskType === "critical_code" || taskType === "release") {
+    return "high";
+  }
+  if (taskType === "documentation") {
+    return "low";
+  }
+  return "medium";
+}
+
+function inferAdaptiveWorkerRole(taskType: string): string {
+  switch (taskType) {
+    case "documentation":
+      return "documentation";
+    case "tests":
+      return "testing";
+    case "release":
+      return "validation";
+    case "critical_code":
+    case "coding":
+      return "coding";
+    default:
+      return "execution";
+  }
+}
+
+function inferAdaptiveCapabilities(taskType: string, workerRole: string): string[] {
+  if (workerRole === "coding") {
+    return ["code_edit"];
+  }
+  if (workerRole === "documentation" || taskType === "documentation") {
+    return ["docs_write"];
+  }
+  if (workerRole === "testing" || taskType === "tests") {
+    return ["test_execute"];
+  }
+  if (workerRole === "validation" || taskType === "release") {
+    return ["validation"];
+  }
+  return ["execution"];
+}
+
+function inferAdaptiveEvidenceRequirements(query: string, risk: string): string[] {
+  const evidence = new Set<string>();
+  if (/\b(test|tests|pytest|unit|integration|e2e|smoke|verify|verification)\b/i.test(query)) {
+    evidence.add("tests");
+  }
+  if (/\b(proof|evidence|gate|production|prod|deploy|release|drift)\b/i.test(query)) {
+    evidence.add("proof");
+  }
+  if (risk === "high") {
+    evidence.add("review");
+  }
+  return Array.from(evidence).sort();
+}
+
+function normalizeEndpointTypes(values: string[] | undefined): string[] {
+  return Array.from(
+    new Set(
+      (values ?? [])
+        .map((value) => stringValue(value)?.toLowerCase())
+        .filter((value): value is string => Boolean(value))
+    )
+  ).sort();
+}
+
+function compactObject<T extends Record<string, unknown>>(value: T): T {
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      ([, item]) => item !== undefined && !(Array.isArray(item) && item.length === 0)
+    )
+  ) as T;
 }
 
 export function writeOrchestratorHandoff(

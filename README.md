@@ -93,7 +93,7 @@ For Codex, the primary integration remains Hosted MCP plus `AGENTS.md`.
 
 ## Configuring MCP Tool Surfaces
 
-The MCP server advertises different tool surfaces depending on the `SNIPARA_EXPOSED_SURFACES` environment variable. Hosted MCP defaults to inline tools plus a small companion maintenance set for index health, reindexing, and read-only memory hygiene. To expose all companion tools directly in the advertised manifest, set `SNIPARA_EXPOSED_SURFACES=inline,companion` on the MCP server. Remaining companion tools are discoverable via `snipara_help` and can be executed by direct JSON-RPC or clients/server configurations that expose those surfaces. Standard MCP agents only receive schemas for tools returned by `tools/list`.
+The MCP server advertises different tool surfaces depending on the `SNIPARA_EXPOSED_SURFACES` environment variable. Hosted MCP defaults to inline tools plus a small companion maintenance set for index health, reindexing, and read-only memory hygiene. To expose all companion tools directly in the advertised manifest, set `SNIPARA_EXPOSED_SURFACES=inline,companion` on the MCP server. To expose swarm and htask coordination tools, use `SNIPARA_EXPOSED_SURFACES=inline,orchestrator`. Remaining non-default tools are discoverable via `snipara_help` and can be executed by direct JSON-RPC or clients/server configurations that expose those surfaces. Standard MCP agents only receive schemas for tools returned by `tools/list`.
 
 ## Installation
 
@@ -127,6 +127,7 @@ snipara-companion brief --task "ship auth hardening" --changed-files src/auth.ts
 snipara-companion timeline
 snipara-companion workflow phase-commit build --summary "tests green"
 snipara-companion workflow impact-gate
+snipara-companion workflow run --adaptive-routing-dry-run --route-local-workers "document a scoped change"
 snipara-companion verify --changed-files src/auth.ts --diff-summary "auth hardening"
 snipara-companion run --task "ship auth hardening" --changed-files src/auth.ts --release
 snipara-companion handoff --summary "status command shipped" --next "publish package"
@@ -141,6 +142,9 @@ snipara-companion workflow resume --include-session-context
 - `workflow impact-gate` audits committed local workflow phases that are ahead
   of upstream but not pushed. It does not push, and dirty working-tree files are
   reported separately from the committed diff.
+- `workflow run --adaptive-routing-dry-run` prints an Adaptive Work Routing
+  card. Add `--route-local-workers` when a strong planner should keep deep
+  reasoning while a local worker handles scoped execution.
 - `verify` builds a transparent verification plan from companion code impact
   signals plus local package scripts. It recommends checks; it does not claim to
   execute them.
@@ -166,6 +170,59 @@ and then records a local fallback handoff in `.snipara/team-sync/session.json`
 if the hosted call still times out. A hosted final-commit timeout does not modify
 Git state. Custom final-commit categories are namespaced under `final-commit`
 before the hosted call so they stay on the handoff-only path.
+
+## Adaptive Work Routing
+
+Adaptive Work Routing is a recommendation-first path for routing scoped work to
+the right worker class, endpoint type, and cost profile without hardcoding model
+names in the CLI.
+
+```bash
+snipara-companion workflow run \
+  --mode full \
+  --adaptive-routing-dry-run \
+  --route-local-workers \
+  --routing-worker-role coding \
+  --routing-preferred-endpoint local \
+  --routing-allowed-endpoint local \
+  --routing-allowed-endpoint cloud \
+  --planner-retains-reasoning \
+  "Update documentation for the new gateway"
+```
+
+The output is a routing card and handoff metadata. Companion calls the hosted
+`snipara_adaptive_routing_catalog` tool when project auth and policy allow it,
+records the sanitized runtime catalog in the handoff, and falls back to local
+dry-run metadata when the hosted gateway is unavailable or omits
+`success: true`. It does not silently spawn workers. The stable contract is
+provider-neutral requirements such as worker role, reasoning depth, context
+budget, endpoint type, write scope, and fallback.
+
+Project owners can configure Adaptive Work Routing in Project > Automation:
+`off`, `recommend`, or `catalog`; approval; planner-retained reasoning; allowed
+endpoint types (`cloud`, `local`, `self_hosted`); worker classes; and budget
+hints. `workflow run` reads that hosted policy and CLI flags cannot broaden it.
+Project credentials stay server-side behind the hosted gateway; local endpoints
+such as Ollama, LM Studio, AnythingLLM, or other OpenAI-compatible servers must
+be reachable from the worker execution environment.
+
+For the open package without Snipara SaaS, add a local policy file:
+
+```json
+{
+  "mode": "recommend",
+  "plannerRetainsReasoning": true,
+  "preferLocalWorkers": true,
+  "allowedEndpointTypes": ["local", "cloud"],
+  "preferredEndpointTypes": ["local"],
+  "allowedWorkerClasses": ["documentation", "tests", "review"],
+  "catalogLimit": 8
+}
+```
+
+Save it at `.snipara/adaptive-routing.json`. Without hosted configuration,
+`workflow run` only emits local Adaptive Work Routing metadata and handoff files:
+it does not query hosted context, call the hosted catalog, or spawn workers.
 
 ## Verification Plans
 
@@ -399,6 +456,7 @@ These are thin local wrappers around hosted Snipara workflows:
 ```bash
 npx -y snipara-companion@latest workflow run --mode standard --query "who imports src.mcp_transport"
 npx -y snipara-companion@latest workflow run --mode full --include-session-context --query "plan the auth refactor"
+npx -y snipara-companion@latest plan --query "plan the auth refactor" --write-plan-file .snipara/workflow/plans/auth-refactor-plan.json
 npx -y snipara-companion@latest task-commit --summary "Shipped auth refactor" --files apps/web/src/lib/auth.ts
 
 snipara-companion query --query "auth middleware"
@@ -408,6 +466,7 @@ snipara-companion brief --task "ship auth hardening" --changed-files apps/web/sr
 snipara-companion handoff --summary "auth hardening implemented" --next "run permissions tests" --files apps/web/src/lib/auth.ts --output handoff.md
 snipara-companion intelligence brief --task "ship auth hardening" --changed-files apps/web/src/lib/auth.ts tests/auth.test.ts --diff-summary "auth hardening"
 snipara-companion workflow scaffold --preset project-intelligence-continuity-layer --output .snipara/workflow/plans/project-intelligence-plan.json
+snipara-companion plan --query "ship auth hardening" --start-workflow --workflow-id auth-hardening
 snipara-companion workflow start --goal "ship auth hardening" --plan-file ./plan.json
 snipara-companion workflow status
 snipara-companion workflow impact-gate
@@ -487,6 +546,13 @@ without an extra LLM provider key because your AI client supplies the reasoning;
 `workflow resume` restores local workflow state plus hosted memory/handoff continuity. For
 runtime-bound phases it also restores the recorded Sandbox binding and prints a reattach or
 rehydrate plan. It does not snapshot or exactly restore a live Snipara Sandbox or REPL process.
+Short-lived session context is skipped unless you pass `--include-session-context`
+or an explicit `--max-context-tokens`; durable memory still loads by default.
+`workflow run --mode full --json` also reports `workflow_budget`,
+`session_bootstrap_quality`, and `plan_quality.warnings` so agents can detect
+oversized bootstrap context or weak generated-plan file hints before editing.
+`doctor` reports the running companion version and warns when the workspace
+`packages/cli` package or npm latest is newer than the installed binary.
 For diagnostics and Snipara Sandbox hints, companion also detects these keys in local `.env`, `.env.local`,
 `.env.development`, and `.env.development.local` files without printing their values.
 
@@ -624,7 +690,9 @@ Semantics:
 - `snipara-companion workflow run --mode lite` = focused context query for small known-file work
 - `snipara-companion workflow run --mode standard` = context query plus automatic `snipara_code_*` follow-up when Snipara recommends one
 - `snipara-companion workflow run --mode auto` = compatibility alias for STANDARD behavior
-- `snipara-companion workflow run --mode full` = session bootstrap + context query + automatic structural follow-up + hosted plan
+- `snipara-companion workflow run --mode full` = budgeted durable bootstrap + optional session context + context query + automatic structural follow-up + hosted plan with quality diagnostics
+- `snipara-companion plan --write-plan-file ./plan.json` = convert hosted `snipara_plan` output into managed workflow JSON
+- `snipara-companion plan --start-workflow` or `workflow run --mode full --start-workflow-from-plan` = create local `.snipara/workflow/current.json` from a valid generated plan
 - `snipara-companion workflow run --mode orchestrate` = explicit hosted orchestrator flow for deeper multi-step exploration; use the Python `snipara-orchestrator` package for production gates and htasks
 - `snipara-companion workflow run` = suggests Snipara Sandbox when the query calls for validation, execution, data transforms, or heavier FULL/orchestrated work
 - `snipara-companion status` = top-level agentic work status across local workflow state, git dirtiness, and Team Sync carryover
@@ -639,7 +707,7 @@ Semantics:
 - `snipara-companion workflow runtime-checkpoint` = captures a resume-ready Snipara Sandbox checkpoint for one phase using local workflow state plus a hosted automation event when configured
 - `snipara-companion workflow phase-commit` = calls hosted `snipara_end_of_task_commit` for that phase, updates local state, and advances the next phase; if the hosted commit times out or hits a transient network failure, local workflow state still advances with an explicit local fallback record
 - `snipara-companion workflow impact-gate` = local pre-push gate for completed workflow phases in `upstream..HEAD`; it keeps dirty files out of the committed impact analysis and reports phase/file coverage before hosted reindex catches up
-- `snipara-companion workflow resume` = reloads local workflow state plus hosted durable/session memory after compaction or resume, then appends the latest hosted Team Sync handoff/checkpoint context when available; runtime-bound phases also print a Snipara Sandbox reattach or rehydrate plan; rerun `workflow phase-start` before editing again
+- `snipara-companion workflow resume` = reloads local workflow state plus hosted durable memory after compaction or resume, optionally includes short-lived session context with `--include-session-context`, then appends the latest hosted Team Sync handoff/checkpoint context when available; runtime-bound phases also print a Snipara Sandbox reattach or rehydrate plan; rerun `workflow phase-start` before editing again
 - `snipara-companion workflow resume` does not snapshot or exactly restore a live Snipara Sandbox process; exact process restore remains a roadmap item
 - `snipara-companion team-sync start-work` = keeps the local session file, reports Start Work Brief status, and fetches the hosted brief when the workspace has project auth
 - `snipara-companion team-sync handoff` = keeps the local handoff record and publishes the hosted handoff capsule when project auth is available
@@ -651,7 +719,7 @@ Semantics:
 - `snipara-companion code symbol-card` = direct paid Context `snipara_code_symbol_card` for an important symbol before editing, with an agent guidance summary before raw JSON
 - `snipara-companion code impact --source hosted|local` = optional source override for debugging; normal agent instructions should leave `--source auto` in place. Hosted `snipara_code_impact` is the fallback when companion is unavailable or the canonical graph check after push/reindex.
 - `snipara-companion code local impact` = explicit repository-local file-level import impact from the local code overlay; keep this for power-user/debug workflows, and use `workflow impact-gate` when the file set should come from unpushed workflow commits
-- `snipara-companion doctor` = local readiness check for Snipara auth, deterministic hosted tool catalog access, Snipara Sandbox, Snipara Sandbox MCP wiring, provider keys, and Docker
+- `snipara-companion doctor` = local readiness check for companion version skew, Snipara auth, deterministic hosted tool catalog access, Snipara Sandbox, Snipara Sandbox MCP wiring, provider keys, and Docker
 - `snipara-companion upload --metadata/--metadata-file` = single-file upload with the same business/client metadata fields supported by bulk sync
 - `snipara-companion business-collections` = manage reusable Team Business Context collections (Business Response Playbook, Business Library, Offer Templates, Company Presentations, Reference Diagrams)
 - `snipara-companion client-projects` = create/list project-scoped client context workspaces before uploading current client files
@@ -741,9 +809,9 @@ keep that in a separate hook or adapter; reserve `task-commit` for durable summa
 
 Use this when the user's LLM has already produced a plan and Snipara should enforce the workflow around it. For coding work, choose LITE, STANDARD, FULL, or FULL + ORCHESTRATED explicitly before editing: LITE is for small single-phase changes, STANDARD is for normal context/code-graph work, FULL managed workflow is for multi-file, risky, release/deploy, architectural, compaction-prone, or maintainer-sensitive work, and FULL + ORCHESTRATED is for production proof gates, drift checks, htasks, or explicit multi-agent coordination.
 
-1. Save or paste the visible plan into a JSON file. Keep a Markdown/Text copy only when you also want a human-facing contract alongside the machine plan.
+1. Generate or save a visible plan into a JSON file. `snipara-companion plan --query "<goal>" --write-plan-file ./plan.json` converts hosted `snipara_plan` output into a managed workflow plan; keep a Markdown/Text copy only when you also want a human-facing contract alongside the machine plan.
 2. Run `snipara-companion workflow start --goal "<goal>" --plan-file ./plan.json`.
-3. At each phase/chunk, run `snipara-companion workflow phase-start <phase_id>`, then `snipara-companion workflow run --mode full --include-session-context --query "<phase query>"`.
+3. At each phase/chunk, run `snipara-companion workflow phase-start <phase_id>`, then `snipara-companion workflow run --mode full --query "<phase query>"`. Add `--include-session-context` after compaction, handoff, or another agent's work may matter.
 4. Before risky code changes, routes/services/jobs work, or any "what is missing" conclusion, run `snipara-companion code impact --changed-files <files...> --diff-summary "<change>"`. For an important symbol, run `snipara-companion code symbol-card --qualified-name <symbol>`.
 5. After compaction, first run `snipara-companion workflow resume --include-session-context`, then rerun `snipara-companion workflow phase-start <phase_id>` before editing again.
 6. For execution/test/debug/finalization that benefits from repeatable isolation, use Snipara Sandbox MCP `execute_python` from the AI client or standalone `snipara-sandbox run`. After material runtime progress, capture a resume-ready checkpoint with `snipara-companion workflow runtime-checkpoint <phase_id> --summary "<state>" --rehydrate-file <state.json>`.
@@ -751,7 +819,7 @@ Use this when the user's LLM has already produced a plan and Snipara should enfo
 8. End every phase with `snipara-companion workflow phase-commit <phase_id> --summary "<outcome>" --files <files...>`.
 9. End the whole task with `snipara-companion final-commit --summary "<final outcome>" --files <files...>`.
 
-After compaction or resume, run `snipara-companion workflow resume --include-session-context`, then rerun `snipara-companion workflow phase-start <phase_id>`. The local state file tells the agent the current phase, and hosted memory contains durable phase outcomes.
+After compaction or resume, run `snipara-companion workflow resume --include-session-context` when short-lived carryover matters, then rerun `snipara-companion workflow phase-start <phase_id>`. The local state file tells the agent the current phase, and hosted memory contains durable phase outcomes.
 
 `snipara-companion` does not execute Snipara Sandbox jobs itself. For runtime-bound phases it can bind a stable Sandbox session, capture a runtime checkpoint, and print a reattach or rehydrate plan on `workflow resume`, but it still does not exactly restore a live Snipara Sandbox / REPL process. Snipara Sandbox MCP `execute_python` can run
 without an extra LLM provider key because your AI client supplies the reasoning; standalone

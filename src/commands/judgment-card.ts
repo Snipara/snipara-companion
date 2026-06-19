@@ -10,6 +10,7 @@
 export type ProjectJudgmentCanProceed = "yes" | "review" | "block";
 export type ProjectJudgmentState = "ready" | "watch" | "review" | "proof_required" | "blocked";
 export type ProjectJudgmentSeverity = "info" | "low" | "medium" | "high" | "critical";
+export type ProjectAdvisorRecommendationSeverity = "info" | "watch" | "risk" | "block";
 export type ProjectJudgmentActionType =
   | "run_check"
   | "inspect"
@@ -42,6 +43,19 @@ export interface ProjectJudgmentEvidence {
   detail?: string;
 }
 
+export interface ProjectAdvisorRecommendationCard {
+  id: string;
+  source: string;
+  severity: ProjectAdvisorRecommendationSeverity;
+  title: string;
+  rationale?: string;
+  reasonCodes: string[];
+  historicalImpactSummary?: string;
+  reasonCodeReliability?: number;
+  recommendedVerification: string[];
+  expectedBehaviorChange?: string;
+}
+
 export interface ProjectIntelligenceJudgmentCard {
   version: "project-intelligence.judgment-card.v1";
   generatedAt: string;
@@ -58,6 +72,7 @@ export interface ProjectIntelligenceJudgmentCard {
   reasons: ProjectJudgmentReason[];
   requiredActions: ProjectJudgmentAction[];
   advisories: ProjectJudgmentAction[];
+  advisorRecommendations: ProjectAdvisorRecommendationCard[];
   evidence: ProjectJudgmentEvidence[];
   caveats: string[];
 }
@@ -73,6 +88,7 @@ export interface BuildProjectJudgmentCardInput {
   guard?: Record<string, unknown>;
   packageReview?: Record<string, unknown>;
   advisoryObservability?: Record<string, unknown>;
+  advisorRecommendations?: unknown[];
   teamSyncReadiness?: Record<string, unknown>;
   errors?: Array<{ surface: string; message: string }>;
 }
@@ -93,6 +109,13 @@ function arrayValue(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+function stringListValue(value: unknown): string[] {
+  return arrayValue(value)
+    .map((item) => stringValue(item) ?? String(item))
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function nestedRecord(root: unknown, keys: string[]): Record<string, unknown> {
   let current: unknown = root;
   for (const key of keys) {
@@ -102,6 +125,14 @@ function nestedRecord(root: unknown, keys: string[]): Record<string, unknown> {
     current = current[key];
   }
   return isRecord(current) ? current : {};
+}
+
+function nestedArray(root: unknown, keys: string[]): unknown[] {
+  if (keys.length === 0) {
+    return arrayValue(root);
+  }
+  const parent = nestedRecord(root, keys.slice(0, -1));
+  return arrayValue(parent[keys[keys.length - 1]]);
 }
 
 function firstNonEmptyRecord(...records: Record<string, unknown>[]): Record<string, unknown> {
@@ -124,6 +155,23 @@ function normalizeSeverity(value: unknown): ProjectJudgmentSeverity {
     return severity;
   }
   return "medium";
+}
+
+function normalizeAdvisorSeverity(value: unknown): ProjectAdvisorRecommendationSeverity {
+  const severity = stringValue(value)?.toLowerCase();
+  if (severity === "info" || severity === "watch" || severity === "risk" || severity === "block") {
+    return severity;
+  }
+  return "watch";
+}
+
+function advisorJudgmentSeverity(
+  severity: ProjectAdvisorRecommendationSeverity
+): ProjectJudgmentSeverity {
+  if (severity === "block") return "critical";
+  if (severity === "risk") return "high";
+  if (severity === "watch") return "medium";
+  return "low";
 }
 
 function severityPenalty(severity: ProjectJudgmentSeverity): number {
@@ -159,6 +207,64 @@ function addAction(actions: ProjectJudgmentAction[], action: ProjectJudgmentActi
 
 function changedFilesFromInput(input: BuildProjectJudgmentCardInput): string[] {
   return [...new Set((input.changedFiles ?? []).map((file) => file.trim()).filter(Boolean))];
+}
+
+function advisorRecommendationsFromInput(
+  input: BuildProjectJudgmentCardInput
+): ProjectAdvisorRecommendationCard[] {
+  const candidates = [
+    ...arrayValue(input.advisorRecommendations),
+    ...nestedArray(input.resumeContext, ["judgment", "advisorRecommendations"]),
+    ...nestedArray(input.resumeContext, [
+      "projectIntelligence",
+      "judgment",
+      "advisorRecommendations",
+    ]),
+    ...nestedArray(input.resumeContext, ["brief", "judgment", "advisorRecommendations"]),
+    ...nestedArray(input.verificationPlan, ["judgment", "advisorRecommendations"]),
+  ];
+  const seen = new Set<string>();
+  const recommendations: ProjectAdvisorRecommendationCard[] = [];
+  for (const candidate of candidates) {
+    const recommendation = advisorRecommendationFromUnknown(candidate, recommendations.length);
+    if (!recommendation || seen.has(recommendation.id)) {
+      continue;
+    }
+    seen.add(recommendation.id);
+    recommendations.push(recommendation);
+  }
+  return recommendations;
+}
+
+function advisorRecommendationFromUnknown(
+  value: unknown,
+  index: number
+): ProjectAdvisorRecommendationCard | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const title = stringValue(value.title);
+  if (!title) {
+    return null;
+  }
+  const source = stringValue(value.source) ?? "advisor";
+  const reliability = numberValue(value.reasonCodeReliability);
+  return {
+    id: stringValue(value.id) ?? `advisor:${source}:${index}`,
+    source,
+    severity: normalizeAdvisorSeverity(value.severity),
+    title,
+    ...(stringValue(value.rationale) ? { rationale: stringValue(value.rationale) } : {}),
+    reasonCodes: stringListValue(value.reasonCodes),
+    ...(stringValue(value.historicalImpactSummary)
+      ? { historicalImpactSummary: stringValue(value.historicalImpactSummary) }
+      : {}),
+    ...(reliability !== undefined ? { reasonCodeReliability: clamp(reliability, 0, 1) } : {}),
+    recommendedVerification: stringListValue(value.recommendedVerification),
+    ...(stringValue(value.expectedBehaviorChange)
+      ? { expectedBehaviorChange: stringValue(value.expectedBehaviorChange) }
+      : {}),
+  };
 }
 
 function codeImpactRisk(impact: Record<string, unknown> | undefined): {
@@ -249,6 +355,18 @@ function packageReviewCommand(packageReview: Record<string, unknown> | undefined
   );
 }
 
+function advisorCodeFragment(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 48);
+}
+
+function formatCardPercent(value: number): string {
+  return `${Math.round(clamp(value, 0, 1) * 100)}%`;
+}
+
 function buildSummary(state: ProjectJudgmentState, score: number): string {
   if (state === "blocked") {
     return `Blocked (${score}/100): resolve blocking guard or verification findings before proceeding.`;
@@ -274,6 +392,7 @@ export function buildProjectJudgmentCard(
   const advisories: ProjectJudgmentAction[] = [];
   const evidence: ProjectJudgmentEvidence[] = [];
   const caveats = new Set<string>();
+  const advisorRecommendations = advisorRecommendationsFromInput(input);
 
   const risk = codeImpactRisk(input.codeImpact);
   if (input.codeImpact) {
@@ -510,6 +629,44 @@ export function buildProjectJudgmentCard(
     }
   }
 
+  for (const recommendation of advisorRecommendations.slice(0, 6)) {
+    const severity = advisorJudgmentSeverity(recommendation.severity);
+    evidence.push({
+      source: "project_advisor",
+      label: `Snipara says: ${recommendation.title}`,
+      detail:
+        recommendation.reasonCodeReliability !== undefined
+          ? `reason-code reliability ${formatCardPercent(recommendation.reasonCodeReliability)}`
+          : recommendation.historicalImpactSummary,
+    });
+
+    if (recommendation.severity !== "info") {
+      addReason(reasons, {
+        code: `advisor_${recommendation.severity}_${advisorCodeFragment(recommendation.source)}`,
+        severity,
+        message: `Snipara says: ${recommendation.title}.`,
+        source: "project_advisor",
+      });
+    }
+
+    const actionTarget =
+      recommendation.severity === "block" || recommendation.severity === "risk"
+        ? requiredActions
+        : advisories;
+    const checks =
+      recommendation.recommendedVerification.length > 0
+        ? recommendation.recommendedVerification
+        : ["Record whether the agent accepted, modified, ignored, or blocked the recommendation."];
+    for (const check of checks.slice(0, 3)) {
+      addAction(actionTarget, {
+        type: "inspect",
+        title: `Advisor verification: ${check}`,
+        reason: recommendation.expectedBehaviorChange ?? recommendation.rationale,
+        severity,
+      });
+    }
+  }
+
   for (const error of input.errors ?? []) {
     addReason(reasons, {
       code: `surface_unavailable_${error.surface}`,
@@ -591,6 +748,7 @@ export function buildProjectJudgmentCard(
     reasons: reasons.sort((a, b) => b.points - a.points),
     requiredActions,
     advisories,
+    advisorRecommendations,
     evidence,
     caveats: [...caveats],
   };
@@ -615,6 +773,24 @@ export function formatProjectJudgmentCard(card: ProjectIntelligenceJudgmentCard)
     lines.push("Required actions:");
     for (const action of card.requiredActions.slice(0, 6)) {
       lines.push(`- [${action.severity}] ${action.command ?? action.title}`);
+    }
+  }
+
+  if (card.advisorRecommendations.length > 0) {
+    lines.push("Advisor recommendations:");
+    for (const recommendation of card.advisorRecommendations.slice(0, 3)) {
+      lines.push(`Snipara says: ${recommendation.title}.`);
+      if (recommendation.reasonCodeReliability !== undefined) {
+        lines.push(
+          `- Reason code reliability: ${formatCardPercent(recommendation.reasonCodeReliability)}`
+        );
+      }
+      if (recommendation.recommendedVerification[0]) {
+        lines.push(`- Recommended verification: ${recommendation.recommendedVerification[0]}`);
+      }
+      if (recommendation.expectedBehaviorChange) {
+        lines.push(`- Expected adaptation: ${recommendation.expectedBehaviorChange}`);
+      }
     }
   }
 

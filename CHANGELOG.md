@@ -2,6 +2,52 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 2.0.0
+
+- Adds project-level Adaptive Work Routing policy consumption to `workflow run`.
+  Companion now reads Project > Automation settings, applies endpoint and worker
+  class bounds, and only calls the hosted catalog when the project policy allows
+  catalog mode.
+- Makes hosted Adaptive Work Routing catalog success explicit: missing
+  `success: true` is treated as fail-closed and falls back to the main agent
+  instead of optimistic success.
+- Carries `catalogLimit` in provider-neutral model requirements so future
+  selection policy can tune catalog breadth without hardcoding the gateway call.
+- Supports open-package local-only routing through
+  `.snipara/adaptive-routing.json`, so recommendation cards and handoff metadata
+  can be generated without Snipara SaaS, hosted context, or hosted catalog
+  calls.
+- Documents the major routing milestone: strong planner reasoning can stay with
+  the main agent while scoped execution is routed to cloud, local, or
+  self-hosted workers through project policy and sanitized catalogs.
+
+## New In 1.4.20
+
+- Treats `workflow run --mode full --max-tokens` as a workflow budget split
+  across durable bootstrap, optional session context, context query, shared
+  context, and hosted planning.
+- Adds `session_bootstrap_quality` and `plan_quality.warnings` diagnostics so
+  agents can catch stale/test memories and weak generated-plan file hints before
+  editing.
+- Makes `workflow resume` short-lived session context truly opt-in with
+  `--include-session-context` or explicit `--max-context-tokens`.
+- Adds `doctor` companion version-skew reporting for stale global installs
+  versus the workspace package or npm latest.
+
+## New In 1.4.18
+
+- Removes autonomous htask bootstrap/claim ergonomics from `snipara-companion`;
+  those workflow commands now belong to `snipara-orchestrator`.
+- Keeps the companion `htask` and `swarm` commands as explicit legacy hosted
+  passthroughs that require stable IDs.
+
+## New In 1.4.16
+
+- Clarifies that hosted htask and swarm coordination belong to the
+  `snipara-orchestrator` workflow surface.
+- Keeps direct `snipara-companion htask` and `snipara-companion swarm` commands
+  framed as legacy passthroughs instead of the primary task-routing path.
+
 ## New In 1.4.15
 
 - Refines `snipara-companion run --release` Judgment Card behavior so completed

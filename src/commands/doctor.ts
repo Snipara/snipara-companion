@@ -6,21 +6,37 @@
  * catalog (including htask/swarm completeness). Meant for debugging setup
  * before filing issues — it changes nothing.
  */
+import * as fs from "fs";
+import * as path from "path";
+import { execFileSync } from "node:child_process";
 import chalk from "chalk";
 import { createClient, type ConnectionProbeResult } from "../api/client";
 import { detectRuntimeEnvironment, type RuntimeDetectionReport } from "../runtime/detection";
 
 export async function doctorCommand(options: { json?: boolean } = {}): Promise<void> {
   const report = detectRuntimeEnvironment();
+  const companionVersion = probeCompanionVersion(report);
   const auth = await probeSniparaAuth(report);
   const toolCatalog = await probeToolCatalog(report, auth);
 
   if (options.json) {
-    console.log(JSON.stringify({ ...report, auth, toolCatalog }, null, 2));
+    console.log(JSON.stringify({ ...report, companionVersion, auth, toolCatalog }, null, 2));
     return;
   }
 
-  printDoctorReport(report, auth, toolCatalog);
+  printDoctorReport(report, companionVersion, auth, toolCatalog);
+}
+
+interface DoctorCompanionVersionReport {
+  checked: boolean;
+  currentVersion?: string;
+  workspacePackageVersion?: string;
+  latestNpmVersion?: string;
+  workspaceMismatch: boolean;
+  npmUpdateAvailable: boolean;
+  npmLatestChecked: boolean;
+  detail: string;
+  warnings: string[];
 }
 
 interface DoctorAuthReport {
@@ -40,6 +56,137 @@ interface DoctorToolCatalogReport {
   swarmToolCount?: number;
   htaskComplete?: boolean;
   swarmComplete?: boolean;
+}
+
+function probeCompanionVersion(report: RuntimeDetectionReport): DoctorCompanionVersionReport {
+  const currentVersion = readPackageVersion(path.resolve(__dirname, "../package.json"));
+  const workspacePackageVersion = findWorkspaceCompanionVersion(report);
+  const latestNpm = probeLatestNpmVersion();
+  const warnings: string[] = [];
+  const workspaceMismatch = Boolean(
+    currentVersion &&
+    workspacePackageVersion &&
+    isVersionNewer(workspacePackageVersion, currentVersion)
+  );
+  const npmUpdateAvailable = Boolean(
+    currentVersion && latestNpm.version && isVersionNewer(latestNpm.version, currentVersion)
+  );
+
+  if (workspaceMismatch) {
+    warnings.push(
+      `workspace packages/cli is ${workspacePackageVersion}, but the running CLI is ${currentVersion}`
+    );
+  }
+  if (npmUpdateAvailable) {
+    warnings.push(`npm latest is ${latestNpm.version}, but the running CLI is ${currentVersion}`);
+  }
+  if (latestNpm.error) {
+    warnings.push(`npm latest check skipped or failed: ${latestNpm.error}`);
+  }
+
+  const detailParts = [
+    currentVersion ? `running ${currentVersion}` : "running version unknown",
+    workspacePackageVersion ? `workspace ${workspacePackageVersion}` : null,
+    latestNpm.version ? `npm latest ${latestNpm.version}` : null,
+  ].filter((value): value is string => Boolean(value));
+
+  return {
+    checked: true,
+    currentVersion,
+    workspacePackageVersion,
+    latestNpmVersion: latestNpm.version,
+    workspaceMismatch,
+    npmUpdateAvailable,
+    npmLatestChecked: latestNpm.checked,
+    detail: detailParts.join(", "),
+    warnings,
+  };
+}
+
+function readPackageVersion(packageJsonPath: string): string | undefined {
+  try {
+    const raw = fs.readFileSync(packageJsonPath, "utf8");
+    const parsed = JSON.parse(raw) as { version?: unknown };
+    return typeof parsed.version === "string" && parsed.version.length > 0
+      ? parsed.version
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function findWorkspaceCompanionVersion(report: RuntimeDetectionReport): string | undefined {
+  const candidates = [
+    path.join(report.cwd, "packages", "cli", "package.json"),
+    report.workspaceRoot
+      ? path.join(report.workspaceRoot, "packages", "cli", "package.json")
+      : undefined,
+    path.basename(report.cwd) === "cli" ? path.join(report.cwd, "package.json") : undefined,
+  ].filter((value): value is string => Boolean(value));
+
+  for (const candidate of candidates) {
+    const version = readPackageVersion(candidate);
+    if (version) {
+      return version;
+    }
+  }
+
+  return undefined;
+}
+
+function probeLatestNpmVersion(): { checked: boolean; version?: string; error?: string } {
+  if (process.env.SNIPARA_COMPANION_SKIP_NPM_VERSION_CHECK === "1") {
+    return {
+      checked: false,
+      error: "disabled by SNIPARA_COMPANION_SKIP_NPM_VERSION_CHECK",
+    };
+  }
+
+  try {
+    const output = execFileSync("npm", ["view", "snipara-companion", "version"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 3000,
+    }).trim();
+    return {
+      checked: true,
+      version: output || undefined,
+      ...(output ? {} : { error: "npm returned an empty version" }),
+    };
+  } catch (error) {
+    return {
+      checked: true,
+      error: formatErrorDetail(error),
+    };
+  }
+}
+
+function parseVersion(value: string | undefined): number[] | null {
+  if (!value) {
+    return null;
+  }
+  const match = value.match(/^(\d+)\.(\d+)\.(\d+)/);
+  if (!match) {
+    return null;
+  }
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function isVersionNewer(candidate: string, baseline: string): boolean {
+  const candidateParts = parseVersion(candidate);
+  const baselineParts = parseVersion(baseline);
+  if (!candidateParts || !baselineParts) {
+    return candidate !== baseline;
+  }
+  for (let index = 0; index < candidateParts.length; index += 1) {
+    if (candidateParts[index] > baselineParts[index]) {
+      return true;
+    }
+    if (candidateParts[index] < baselineParts[index]) {
+      return false;
+    }
+  }
+  return false;
 }
 
 async function probeSniparaAuth(report: RuntimeDetectionReport): Promise<DoctorAuthReport> {
@@ -167,6 +314,7 @@ async function probeToolCatalog(
 
 function printDoctorReport(
   report: RuntimeDetectionReport,
+  companionVersion: DoctorCompanionVersionReport,
   auth: DoctorAuthReport,
   toolCatalog: DoctorToolCatalogReport
 ): void {
@@ -180,6 +328,14 @@ function printDoctorReport(
       ? `configured (${report.companion.configPath})`
       : `missing (run npx -y snipara-companion@latest init or npx create-snipara)`
   );
+  printCheck(
+    "Snipara Companion version",
+    !companionVersion.workspaceMismatch && !companionVersion.npmUpdateAvailable,
+    companionVersion.detail
+  );
+  for (const warning of companionVersion.warnings) {
+    console.log(`${chalk.yellow("[warn]")} Companion version detail: ${warning}`);
+  }
   printCheck(
     "Snipara Sandbox CLI",
     report.runtime.cliAvailable,
@@ -285,14 +441,14 @@ function printDoctorReport(
       "- Primary multi-agent path: snipara-orchestrator swarm-create | swarm-join | htask-create-feature | htask-create | htask-next | htask-tree | htask-complete."
     );
     console.log(
-      "- Hosted fallback remains available through snipara-companion swarm create|join and snipara-companion htask create|create-feature|next|tree|complete when you only need direct hosted calls."
+      "- Companion may retain legacy direct hosted passthrough commands, but htasks belong to the orchestrator workflow surface."
     );
   } else {
     console.log("- Existing project: npx create-snipara repair --with-orchestrator.");
     console.log("- Manual install: pip install snipara-orchestrator.");
     console.log("- Companion does not install or run orchestrator automatically.");
     console.log(
-      "- Without orchestrator, use snipara-companion swarm create|join and snipara-companion htask create|create-feature|next|tree|complete for direct hosted task routing."
+      "- Install orchestrator before using hosted htasks or swarm coordination as a workflow surface."
     );
   }
 }

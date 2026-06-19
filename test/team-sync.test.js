@@ -1098,6 +1098,8 @@ test("team-sync resume and workflow resume surface the hosted handoff context", 
   const workflowPayload = JSON.parse(workflowResult.stdout);
   assert.equal(workflowPayload.team_sync_resume.handoff.id, "handoff_hosted_1");
   assert.equal(workflowPayload.session_bootstrap.critical.count, 1);
+  assert.equal(workflowPayload.session_context.included, false);
+  assert.equal(workflowPayload.session_context.max_tokens, 0);
   assert.equal(
     workflowPayload.runtime_resume.binding.sessionId,
     "sandbox-align-team-sync-phase-4-abc123"

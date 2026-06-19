@@ -3,8 +3,11 @@ const test = require("node:test");
 
 const {
   buildJournalCheckpointEntry,
+  buildAdaptiveWorkRoutingRecommendation,
   buildAgenticTimeline,
   buildAgenticWorkStatus,
+  buildGeneratedWorkflowPlanDocument,
+  buildSessionBootstrapQuality,
   buildTeamSyncStartWorkRecord,
   buildWorkflowImpactGate,
   buildOrchestratorHandoff,
@@ -19,6 +22,8 @@ const {
   normalizeGuardTag,
   ORCHESTRATOR_HANDOFF_RELATIVE_PATH,
   normalizeWorkflowPlanInput,
+  resolveFullWorkflowTokenBudget,
+  validatePlanResult,
   runMemoryGuardCheck,
   saveTeamSyncState,
   WORKFLOW_PLANS_RELATIVE_DIR,
@@ -152,11 +157,33 @@ function writeWorkflowPreload(dir) {
       "        }),",
       "      };",
       "    }",
+      "    if (toolName === 'snipara_adaptive_routing_catalog') {",
+      "      const catalogResponse = process.env.SNIPARA_TEST_ADAPTIVE_CATALOG_RESPONSE ? JSON.parse(process.env.SNIPARA_TEST_ADAPTIVE_CATALOG_RESPONSE) : { success: true, catalog: { version: 'test.catalog.v1', candidates: [{ candidateId: 'local-docs', workerClass: 'coding', endpointType: 'local', capabilities: ['docs'], isAvailable: true }] }, resolution: { status: 'candidate_catalog', candidate_count: 1, fallback: 'main_agent' }, fallback: 'main_agent', warnings: [] };",
+      "      return {",
+      "        ok: true,",
+      "        status: 200,",
+      "        statusText: 'OK',",
+      "        json: async () => ({",
+      "          jsonrpc: '2.0',",
+      "          id: 1,",
+      "          result: { content: [{ type: 'text', text: JSON.stringify(catalogResponse) }] },",
+      "        }),",
+      "      };",
+      "    }",
       "    return {",
       "      ok: true,",
       "      status: 200,",
       "      statusText: 'OK',",
       "      json: async () => ({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '{}' }] } }),",
+      "    };",
+      "  }",
+      "  if (pathname.endsWith('/automation')) {",
+      "    const settings = process.env.SNIPARA_TEST_AUTOMATION_SETTINGS ? JSON.parse(process.env.SNIPARA_TEST_AUTOMATION_SETTINGS) : {};",
+      "    return {",
+      "      ok: true,",
+      "      status: 200,",
+      "      statusText: 'OK',",
+      "      json: async () => ({ success: true, data: { settings } }),",
       "    };",
       "  }",
       "  if (pathname.endsWith('/automation/events')) {",
@@ -512,6 +539,128 @@ test("managed workflow plan normalization accepts hosted plan shapes", () => {
   assert.equal(phases[0].acceptance, "Relevant auth notes");
   assert.deepEqual(phases[0].files, ["src/auth.ts"]);
   assert.equal(phases[1].needsRuntime, true);
+});
+
+test("plan validation rejects placeholder and empty hosted plans", () => {
+  const empty = validatePlanResult({ plan_id: "plan_empty", steps: [] });
+  assert.equal(empty.valid, false);
+  assert.match(empty.issues.join("\n"), /no executable steps/);
+
+  const placeholder = validatePlanResult({
+    plan_id: "plan_placeholder",
+    steps: [
+      { step: 1 },
+      {
+        step: 2,
+        action: "2",
+        expected_output: "sections",
+        params: { max_tokens: -334 },
+      },
+    ],
+  });
+
+  assert.equal(placeholder.valid, false);
+  assert.match(placeholder.issues.join("\n"), /missing a useful title or action/);
+  assert.match(placeholder.issues.join("\n"), /placeholder action/);
+  assert.match(placeholder.issues.join("\n"), /invalid max_tokens budget/);
+});
+
+test("plan validation keeps structural validity while warning on weak file hints", () => {
+  const quality = validatePlanResult(
+    {
+      plan_id: "plan_weak_files",
+      query: "Harden companion workflow token budget",
+      steps: [
+        {
+          action: "implementation_map",
+          title: "Map htask implementation",
+          expected_output: "files",
+          params: {
+            likely_files: ["apps/mcp-server/src/engine/handlers/htask.py"],
+            max_tokens: 500,
+          },
+        },
+      ],
+    },
+    { query: "Harden companion workflow token budget" }
+  );
+
+  assert.equal(quality.valid, true);
+  assert.match(quality.warnings.join("\n"), /no obvious lexical overlap|weakly related/);
+});
+
+test("full workflow token budget allocates compact FULL surfaces", () => {
+  const budget = resolveFullWorkflowTokenBudget({
+    maxTokens: 1200,
+    includeSessionContext: false,
+  });
+
+  assert.equal(budget.requested_max_tokens, 1200);
+  assert.equal(budget.allocations.session_context_tokens, 0);
+  assert.ok(budget.allocations.critical_memory_tokens < 1200);
+  assert.ok(budget.allocations.context_query_tokens < 1200);
+  assert.ok(budget.allocations.plan_tokens < 1200);
+  assert.equal(budget.estimated_max_tokens, 1200);
+});
+
+test("session bootstrap quality warns on stale low-confidence test memories", () => {
+  const quality = buildSessionBootstrapQuality(
+    {
+      critical: {
+        memories: [
+          {
+            id: "mem_test",
+            content: "Test memory should not steer production work",
+            confidence: 0.2,
+            created_at: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+        count: 1,
+        tokens: 120,
+      },
+      daily: { memories: [], count: 0, tokens: 0 },
+      total_tokens: 120,
+    },
+    { expectedMaxTokens: 80, now: new Date("2026-06-18T00:00:00.000Z") }
+  );
+
+  assert.equal(quality.counts.low_confidence_memories, 1);
+  assert.equal(quality.counts.stale_memories, 1);
+  assert.equal(quality.counts.test_memories, 1);
+  assert.match(quality.warnings.join("\n"), /above requested bootstrap budget/);
+  assert.match(quality.warnings.join("\n"), /confidence below 0\.5/);
+  assert.match(quality.warnings.join("\n"), /older than 90 days/);
+  assert.match(quality.warnings.join("\n"), /test fixtures/);
+});
+
+test("generated workflow plan document converts hosted plan steps", () => {
+  const document = buildGeneratedWorkflowPlanDocument(
+    {
+      plan_id: "plan_test",
+      query: "Harden auth",
+      steps: [
+        {
+          action: "context_query",
+          params: { query: "auth middleware", max_tokens: 2000 },
+          expected_output: "sections",
+        },
+        {
+          action: "implementation_map",
+          params: { likely_files: ["src/auth.ts"] },
+          expected_output: "implementation_targets",
+        },
+      ],
+    },
+    "Fallback goal"
+  );
+
+  assert.equal(document.mode, "full");
+  assert.equal(document.goal, "Harden auth");
+  assert.equal(document.source, "snipara_plan");
+  assert.equal(document.steps[0].title, "context_query");
+  assert.equal(document.steps[0].query, "auth middleware");
+  assert.equal(document.steps[0].acceptance, "sections");
+  assert.deepEqual(document.steps[1].files, ["src/auth.ts"]);
 });
 
 test("managed workflow plan normalization keeps markdown sub-bullets inside their parent phase", () => {
@@ -1161,6 +1310,395 @@ test("orchestrator handoff artifact captures workflow and routing metadata", () 
     );
     assert.equal(persisted.schemaVersion, "snipara.orchestrator.handoff.v1");
     assert.deepEqual(persisted.memory.decisionIds, ["DEC-002"]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("adaptive work routing handoff remains recommendation-only and local-capable", () => {
+  const recommendation = getOrchestratorRecommendation("Coordinate local worker coding", "full", {
+    changedFilesCount: 1,
+  });
+  const adaptiveRouting = buildAdaptiveWorkRoutingRecommendation({
+    query: "Reason with the main agent, then let a local worker code the docs update",
+    mode: "full",
+    changedFiles: ["docs/roadmap.md"],
+    preferredEndpointTypes: ["local"],
+    workerRole: "coding",
+  });
+
+  const artifact = buildOrchestratorHandoff({
+    sourceCommand: "workflow run",
+    recommendation,
+    query: "Coordinate local worker coding",
+    summary: "Prepare local worker handoff",
+    changedFiles: ["docs/roadmap.md"],
+    adaptiveRouting,
+  });
+
+  assert.equal(artifact.routing.workProfile.taskType, "documentation");
+  assert.equal(artifact.routing.requirements.workerRole, "coding");
+  assert.equal(artifact.routing.requirements.plannerRetainsReasoning, true);
+  assert.deepEqual(artifact.routing.requirements.preferredEndpointTypes, ["local"]);
+  assert.deepEqual(artifact.routing.requirements.writeScope, ["docs/roadmap.md"]);
+  assert.equal(artifact.routing.routingCard.mode, "dry_run");
+  assert.equal(artifact.routing.routingCard.humanApprovalRequired, true);
+  assert.equal(artifact.routing.routingCard.fallback, "main_agent");
+  assert.match(
+    artifact.routing.routingCard.reasons.join(" "),
+    /runtime catalog resolution remains delegated to snipara-orchestrator/
+  );
+  assert.doesNotMatch(JSON.stringify(artifact.routing), /api[_-]?key|secret value/i);
+});
+
+test("workflow run emits adaptive routing dry-run metadata into orchestrator handoff", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-adaptive-routing-run-"));
+  try {
+    fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+    fs.mkdirSync(path.join(dir, ".snipara", "workflow"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, ".snipara", "workflow", "current.json"),
+      JSON.stringify(
+        {
+          schemaVersion: "snipara.workflow.v2",
+          workflowId: "adaptive-routing-cli",
+          goal: "Prepare adaptive routing handoff",
+          status: "active",
+          currentPhaseId: "docs-worker",
+          planSource: "inline",
+          createdAt: "2026-06-18T21:30:00.000Z",
+          updatedAt: "2026-06-18T21:30:00.000Z",
+          phases: [
+            {
+              id: "docs-worker",
+              title: "Docs worker",
+              query: "Update docs through a scoped worker",
+              status: "in_progress",
+              files: ["docs/roadmap.md"],
+            },
+          ],
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const preloadPath = writeWorkflowPreload(dir);
+    const result = runCli(
+      [
+        "workflow",
+        "run",
+        "--mode",
+        "standard",
+        "--query",
+        "Reason with the main planner then use a local worker for a docs update",
+        "--adaptive-routing-dry-run",
+        "--route-local-workers",
+        "--routing-worker-role",
+        "coding",
+        "--emit-orchestrator-handoff",
+        "--json",
+      ],
+      {
+        cwd: dir,
+        env: {
+          SNIPARA_API_KEY: "snp-test",
+          SNIPARA_PROJECT_ID: "project_1",
+          SNIPARA_API_URL: "https://api.snipara.com",
+        },
+        nodeArgs: ["-r", preloadPath],
+      }
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.adaptive_routing.requirements.workerRole, "coding");
+    assert.equal(payload.adaptive_routing.requirements.plannerRetainsReasoning, true);
+    assert.deepEqual(payload.adaptive_routing.requirements.preferredEndpointTypes, ["local"]);
+    assert.deepEqual(payload.adaptive_routing.requirements.writeScope, ["docs/roadmap.md"]);
+    assert.equal(payload.adaptive_routing.gateway.source, "hosted_mcp");
+    assert.equal(payload.adaptive_routing.gateway.success, true);
+    assert.equal(payload.adaptive_routing.gateway.candidateCount, 1);
+    assert.equal(payload.adaptive_routing.runtimeCatalog.candidates[0].candidateId, "local-docs");
+    assert.equal(payload.orchestrator_handoff.relativePath, ORCHESTRATOR_HANDOFF_RELATIVE_PATH);
+    assert.equal(
+      payload.orchestrator_handoff.handoff.routing.routingCard.recommendedWorkerClass,
+      "coding"
+    );
+
+    const persisted = JSON.parse(
+      fs.readFileSync(path.join(dir, ORCHESTRATOR_HANDOFF_RELATIVE_PATH), "utf8")
+    );
+    assert.equal(persisted.routing.workProfile.taskType, "documentation");
+    assert.equal(persisted.routing.routingCard.humanApprovalRequired, true);
+    assert.equal(persisted.routing.gateway.candidateCount, 1);
+    assert.equal(persisted.routing.runtimeCatalog.candidates[0].endpointType, "local");
+    assert.match(
+      persisted.routing.routingCard.warnings.join(" "),
+      /companion does not launch or claim workers/
+    );
+    assert.doesNotMatch(JSON.stringify(persisted.routing), /api[_-]?key|secret value/i);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("workflow run applies project adaptive routing catalog policy", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-adaptive-routing-policy-"));
+  try {
+    fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+    fs.mkdirSync(path.join(dir, ".snipara", "workflow"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, ".snipara", "workflow", "current.json"),
+      JSON.stringify(
+        {
+          schemaVersion: "snipara.workflow.v2",
+          workflowId: "adaptive-routing-policy",
+          goal: "Prepare adaptive routing handoff",
+          status: "active",
+          currentPhaseId: "docs-worker",
+          planSource: "inline",
+          createdAt: "2026-06-18T21:30:00.000Z",
+          updatedAt: "2026-06-18T21:30:00.000Z",
+          phases: [
+            {
+              id: "docs-worker",
+              title: "Docs worker",
+              query: "Update docs through a scoped worker",
+              status: "in_progress",
+              files: ["docs/roadmap.md"],
+            },
+          ],
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const preloadPath = writeWorkflowPreload(dir);
+    const result = runCli(
+      [
+        "workflow",
+        "run",
+        "--mode",
+        "standard",
+        "--query",
+        "Reason with the main planner then use a local worker for a docs update",
+        "--emit-orchestrator-handoff",
+        "--json",
+      ],
+      {
+        cwd: dir,
+        env: {
+          SNIPARA_API_KEY: "snp-test",
+          SNIPARA_PROJECT_ID: "project_1",
+          SNIPARA_API_URL: "https://api.snipara.com",
+          SNIPARA_TEST_AUTOMATION_SETTINGS: JSON.stringify({
+            adaptiveRoutingMode: "catalog",
+            adaptiveRoutingRequireApproval: true,
+            adaptiveRoutingPlannerRetainsReasoning: true,
+            adaptiveRoutingPreferLocalWorkers: true,
+            adaptiveRoutingAllowedEndpointTypes: ["cloud", "local"],
+            adaptiveRoutingPreferredEndpointTypes: ["local"],
+            adaptiveRoutingAllowedWorkerClasses: ["documentation", "tests", "review"],
+            adaptiveRoutingFallback: "main_agent",
+            adaptiveRoutingDailyBudgetCents: 500,
+            adaptiveRoutingMonthlyBudgetCents: 2000,
+          }),
+        },
+        nodeArgs: ["-r", preloadPath],
+      }
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.adaptive_routing.requirements.workerRole, "documentation");
+    assert.equal(payload.adaptive_routing.requirements.plannerRetainsReasoning, true);
+    assert.deepEqual(payload.adaptive_routing.requirements.allowedEndpointTypes, [
+      "cloud",
+      "local",
+    ]);
+    assert.deepEqual(payload.adaptive_routing.requirements.preferredEndpointTypes, ["local"]);
+    assert.equal(payload.adaptive_routing.requirements.catalogLimit, 20);
+    assert.equal(payload.adaptive_routing.gateway.success, true);
+    assert.equal(payload.adaptive_routing.gateway.candidateCount, 1);
+    assert.match(
+      payload.adaptive_routing.routingCard.reasons.join(" "),
+      /project adaptive routing policy mode is catalog/
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("workflow run uses local adaptive routing policy without hosted configuration", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-adaptive-routing-local-"));
+  try {
+    fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+    fs.mkdirSync(path.join(dir, ".snipara", "workflow"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, ".snipara", "workflow", "current.json"),
+      JSON.stringify(
+        {
+          schemaVersion: "snipara.workflow.v2",
+          workflowId: "adaptive-routing-local",
+          goal: "Prepare local adaptive routing handoff",
+          status: "active",
+          currentPhaseId: "docs-worker",
+          planSource: "inline",
+          createdAt: "2026-06-18T21:30:00.000Z",
+          updatedAt: "2026-06-18T21:30:00.000Z",
+          phases: [
+            {
+              id: "docs-worker",
+              title: "Docs worker",
+              query: "Update docs through a scoped worker",
+              status: "in_progress",
+              files: ["docs/roadmap.md"],
+            },
+          ],
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+    fs.writeFileSync(
+      path.join(dir, ".snipara", "adaptive-routing.json"),
+      JSON.stringify(
+        {
+          mode: "catalog",
+          plannerRetainsReasoning: true,
+          preferLocalWorkers: true,
+          allowedEndpointTypes: ["local", "cloud"],
+          preferredEndpointTypes: ["local"],
+          allowedWorkerClasses: ["documentation", "tests", "review"],
+          catalogLimit: 8,
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const result = runCli(
+      [
+        "workflow",
+        "run",
+        "--mode",
+        "standard",
+        "--query",
+        "Reason with the main planner then use a local worker for a docs update",
+        "--emit-orchestrator-handoff",
+        "--json",
+      ],
+      { cwd: dir }
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.local_only, true);
+    assert.equal(payload.context, undefined);
+    assert.equal(payload.adaptive_routing.gateway, undefined);
+    assert.equal(payload.adaptive_routing.requirements.workerRole, "documentation");
+    assert.equal(payload.adaptive_routing.requirements.catalogLimit, 8);
+    assert.deepEqual(payload.adaptive_routing.requirements.preferredEndpointTypes, ["local"]);
+    assert.match(
+      payload.adaptive_routing.routingCard.warnings.join(" "),
+      /hosted catalog lookup is skipped without Snipara configuration/
+    );
+    assert.equal(payload.orchestrator_handoff.relativePath, ORCHESTRATOR_HANDOFF_RELATIVE_PATH);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("workflow run treats missing adaptive catalog success as fail-closed", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-adaptive-routing-strict-"));
+  try {
+    fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+    fs.mkdirSync(path.join(dir, ".snipara", "workflow"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, ".snipara", "workflow", "current.json"),
+      JSON.stringify(
+        {
+          schemaVersion: "snipara.workflow.v2",
+          workflowId: "adaptive-routing-strict",
+          goal: "Prepare adaptive routing handoff",
+          status: "active",
+          currentPhaseId: "docs-worker",
+          planSource: "inline",
+          createdAt: "2026-06-18T21:30:00.000Z",
+          updatedAt: "2026-06-18T21:30:00.000Z",
+          phases: [
+            {
+              id: "docs-worker",
+              title: "Docs worker",
+              query: "Update docs through a scoped worker",
+              status: "in_progress",
+              files: ["docs/roadmap.md"],
+            },
+          ],
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const preloadPath = writeWorkflowPreload(dir);
+    const result = runCli(
+      [
+        "workflow",
+        "run",
+        "--mode",
+        "standard",
+        "--query",
+        "Use adaptive routing for documentation",
+        "--adaptive-routing-dry-run",
+        "--emit-orchestrator-handoff",
+        "--json",
+      ],
+      {
+        cwd: dir,
+        env: {
+          SNIPARA_API_KEY: "snp-test",
+          SNIPARA_PROJECT_ID: "project_1",
+          SNIPARA_API_URL: "https://api.snipara.com",
+          SNIPARA_TEST_ADAPTIVE_CATALOG_RESPONSE: JSON.stringify({
+            catalog: {
+              version: "test.catalog.v1",
+              candidates: [
+                {
+                  candidateId: "local-docs",
+                  workerClass: "documentation",
+                  endpointType: "local",
+                  capabilities: ["docs"],
+                  isAvailable: true,
+                },
+              ],
+            },
+            resolution: {
+              status: "candidate_catalog",
+              candidate_count: 1,
+              fallback: "main_agent",
+            },
+          }),
+        },
+        nodeArgs: ["-r", preloadPath],
+      }
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.adaptive_routing.gateway.success, false);
+    assert.equal(payload.adaptive_routing.gateway.candidateCount, 1);
+    assert.match(
+      payload.adaptive_routing.routingCard.warnings.join(" "),
+      /did not return success=true/
+    );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

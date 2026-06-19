@@ -44,6 +44,7 @@ export interface OrchestratorRecommendationOptions {
   hasActiveCollisions?: boolean;
   policyAutoRoute?: boolean;
   policySource?: string;
+  adaptiveRoutingDryRun?: boolean;
 }
 
 export interface RuntimeDetectionReport {
@@ -217,6 +218,9 @@ export function getOrchestratorRecommendation(
   }
   if (options.policyAutoRoute) {
     addReason("policy_auto_route", 100);
+  }
+  if (options.adaptiveRoutingDryRun) {
+    addReason("parallel_worker_intent", 20);
   }
 
   if (reasons.length === 0) {

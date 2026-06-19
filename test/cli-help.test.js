@@ -10,6 +10,7 @@ const cliPath = path.join(__dirname, "..", "dist", "index.js");
 function runCli(args, options = {}) {
   const env = {
     ...process.env,
+    SNIPARA_COMPANION_SKIP_NPM_VERSION_CHECK: "1",
     ...(options.env ?? {}),
   };
   if (!options.env || !Object.prototype.hasOwnProperty.call(options.env, "OPENAI_API_KEY")) {
@@ -540,6 +541,13 @@ test("swarm help exposes the hosted fallback subcommands", () => {
   assert.match(result.stdout, /\bjoin\b/);
 });
 
+test("swarm create help stays an explicit legacy passthrough", () => {
+  const result = runCli(["swarm", "create", "--help"]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /--name/);
+  assert.doesNotMatch(result.stdout, /reuse-existing/);
+});
+
 test("htask help exposes the hosted fallback subcommands", () => {
   const result = runCli(["htask", "--help"]);
   assert.equal(result.status, 0);
@@ -548,10 +556,30 @@ test("htask help exposes the hosted fallback subcommands", () => {
     /prefer\s+snipara-orchestrator\s+for\s+shared\s+multi-agent\s+queues/i
   );
   assert.match(result.stdout, /\bcreate\b/);
+  assert.doesNotMatch(result.stdout, /\bbootstrap\b/);
   assert.match(result.stdout, /create-feature/);
   assert.match(result.stdout, /\bnext\b/);
   assert.match(result.stdout, /\btree\b/);
   assert.match(result.stdout, /\bcomplete\b/);
+});
+
+test("htask create-feature help stays an explicit legacy passthrough", () => {
+  const result = runCli(["htask", "create-feature", "--help"]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /swarm-id/);
+  assert.match(result.stdout, /workstream-owner/);
+  assert.doesNotMatch(result.stdout, /swarm-name/);
+  assert.doesNotMatch(result.stdout, /create-initiative/);
+  assert.doesNotMatch(result.stdout, /custom-workstream/);
+  assert.doesNotMatch(result.stdout, /no-actionable-tasks/);
+});
+
+test("htask next help stays read-only unless orchestrator claims work", () => {
+  const result = runCli(["htask", "next", "--help"]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /swarm-id/);
+  assert.doesNotMatch(result.stdout, /swarm-name/);
+  assert.doesNotMatch(result.stdout, /claim-for-agent/);
 });
 
 test("query help exposes follow recommendation flag", () => {
@@ -1362,7 +1390,20 @@ test("workflow run help exposes runtime hint toggle", () => {
   const result = runCli(["workflow", "run", "--help"]);
   assert.equal(result.status, 0);
   assert.match(result.stdout, /runtime-hint/);
+  assert.match(result.stdout, /write-plan-file/);
+  assert.match(result.stdout, /start-workflow-from-plan/);
+  assert.match(result.stdout, /adaptive-routing-dry-run/);
+  assert.match(result.stdout, /route-local-workers/);
+  assert.match(result.stdout, /routing-preferred-endpoint/);
   assert.match(result.stdout, /lite\|standard\|auto\|full\|orchestrate/);
+});
+
+test("plan help exposes managed workflow bridge options", () => {
+  const result = runCli(["plan", "--help"]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /write-plan-file/);
+  assert.match(result.stdout, /start-workflow/);
+  assert.match(result.stdout, /workflow-id/);
 });
 
 test("team-sync help exposes continuity commands and hosted context wording", () => {
@@ -1700,6 +1741,9 @@ test("doctor json reports runtime readiness", () => {
   assert.equal(typeof report.providerKeys.sources, "object");
   assert.ok(Array.isArray(report.providerKeys.envFilesLoaded));
   assert.equal(typeof report.docker.available, "boolean");
+  assert.equal(report.companionVersion.checked, true);
+  assert.equal(typeof report.companionVersion.currentVersion, "string");
+  assert.equal(report.companionVersion.npmLatestChecked, false);
   assert.equal(report.auth.checked, true);
   assert.equal(report.auth.valid, true);
   assert.equal(report.auth.detail, "project access confirmed via snipara_settings");
@@ -1708,6 +1752,28 @@ test("doctor json reports runtime readiness", () => {
   assert.equal(report.toolCatalog.available, true);
   assert.equal(report.toolCatalog.toolCount, 0);
   assert.match(report.toolCatalog.detail, /snipara_help\(list_all=true\) returned 0 tools/);
+});
+
+test("doctor json detects workspace companion version newer than running CLI", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-doctor-version-"));
+  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+  fs.mkdirSync(path.join(dir, "packages", "cli"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "packages", "cli", "package.json"),
+    JSON.stringify({ name: "snipara-companion", version: "99.0.0" }, null, 2),
+    "utf8"
+  );
+
+  const result = runCli(["doctor", "--json"], { cwd: dir });
+  assert.equal(result.status, 0);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.companionVersion.workspacePackageVersion, "99.0.0");
+  assert.equal(report.companionVersion.workspaceMismatch, true);
+  assert.ok(
+    report.companionVersion.warnings.some((warning) =>
+      warning.includes("workspace packages/cli is 99.0.0")
+    )
+  );
 });
 
 test("doctor json detects provider keys from workspace dotenv files", () => {

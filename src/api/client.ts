@@ -388,6 +388,35 @@ export interface AutomationConfigBundle {
   instructions: string[];
 }
 
+export interface ProjectAutomationSettings {
+  automationClient?: string;
+  autoInjectContext?: boolean;
+  trackAccessedFiles?: boolean;
+  preserveOnCompaction?: boolean;
+  restoreOnSessionStart?: boolean;
+  enrichPrompts?: boolean;
+  maxTokensPerQuery?: number;
+  searchMode?: string;
+  includeSummaries?: boolean;
+  adaptiveRoutingMode?: string;
+  adaptiveRoutingRequireApproval?: boolean;
+  adaptiveRoutingPlannerRetainsReasoning?: boolean;
+  adaptiveRoutingPreferLocalWorkers?: boolean;
+  adaptiveRoutingAllowedEndpointTypes?: string[];
+  adaptiveRoutingPreferredEndpointTypes?: string[];
+  adaptiveRoutingAllowedWorkerClasses?: string[];
+  adaptiveRoutingFallback?: string;
+  adaptiveRoutingDailyBudgetCents?: number;
+  adaptiveRoutingMonthlyBudgetCents?: number;
+  adaptiveRoutingCatalogLimit?: number;
+}
+
+export interface ProjectAutomationSettingsResult {
+  settings: ProjectAutomationSettings;
+  plan?: string;
+  featureAvailability?: Record<string, unknown>;
+}
+
 export interface RecentAutomationEvent {
   id: string;
   sessionId: string;
@@ -1814,6 +1843,61 @@ export class RLMClient {
         instructions: Array.isArray(data.data.instructions)
           ? data.data.instructions.filter((item): item is string => typeof item === "string")
           : [],
+      };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  async getAutomationSettings(): Promise<ProjectAutomationSettingsResult> {
+    if (!this.config.apiKey) {
+      throw new Error("API key not configured. Run 'npx -y snipara-companion@latest init' first.");
+    }
+
+    const projectIdentifier = this.resolveProjectIdentifier();
+    const projectId = encodeURIComponent(projectIdentifier);
+    const url = `${this.dashboardApiUrl()}/api/projects/${projectId}/automation`;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+
+    try {
+      const response = await this.fetchWithApiKeyRetry(
+        url,
+        {
+          method: "GET",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          signal: controller.signal,
+        },
+        projectIdentifier
+      );
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const data = (await response.json()) as {
+        success: boolean;
+        data?: Partial<ProjectAutomationSettingsResult>;
+      };
+
+      if (!data.success || !data.data?.settings || typeof data.data.settings !== "object") {
+        throw new Error("Automation settings response was invalid");
+      }
+
+      return {
+        settings: data.data.settings,
+        plan: typeof data.data.plan === "string" ? data.data.plan : undefined,
+        featureAvailability:
+          data.data.featureAvailability &&
+          typeof data.data.featureAvailability === "object" &&
+          !Array.isArray(data.data.featureAvailability)
+            ? (data.data.featureAvailability as Record<string, unknown>)
+            : undefined,
       };
     } finally {
       clearTimeout(timeoutId);

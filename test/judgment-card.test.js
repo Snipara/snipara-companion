@@ -1,7 +1,11 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { buildProjectJudgmentCard, buildVerificationPlan } = require("../dist/index.js");
+const {
+  buildProjectJudgmentCard,
+  buildVerificationPlan,
+  formatProjectJudgmentCard,
+} = require("../dist/index.js");
 
 test("buildProjectJudgmentCard returns ready when all production surfaces are clean", () => {
   const card = buildProjectJudgmentCard({
@@ -124,6 +128,40 @@ test("buildProjectJudgmentCard does not require completed package review", () =>
     card.advisories.some((action) => action.type === "package_review"),
     false
   );
+});
+
+test("buildProjectJudgmentCard lets advisor recommendations influence agent actions", () => {
+  const card = buildProjectJudgmentCard({
+    task: "publish package surface",
+    changedFiles: ["packages/cli/src/commands/run.ts"],
+    advisorRecommendations: [
+      {
+        id: "advisor:historical_impact:package-surface-risk",
+        source: "historical_impact",
+        severity: "risk",
+        title: "Historical Impact suggests risk",
+        rationale: "Package releases with skipped smoke tests were later refuted.",
+        reasonCodes: ["package_surface", "low_outcome_sample"],
+        historicalImpactSummary: "1 helpful / 3 unhelpful across 4 sample(s).",
+        reasonCodeReliability: 0.84,
+        recommendedVerification: ["Run pack smoke before publish."],
+        expectedBehaviorChange:
+          "Adapt by running package smoke before following the publish recommendation.",
+      },
+    ],
+  });
+
+  assert.equal(card.canProceed, "review");
+  assert.equal(card.state, "proof_required");
+  assert.ok(card.reasons.some((reason) => reason.code === "advisor_risk_historical_impact"));
+  assert.ok(
+    card.requiredActions.some((action) =>
+      action.title.includes("Advisor verification: Run pack smoke before publish.")
+    )
+  );
+  const lines = formatProjectJudgmentCard(card);
+  assert.ok(lines.includes("Snipara says: Historical Impact suggests risk."));
+  assert.ok(lines.includes("- Reason code reliability: 84%"));
 });
 
 test("buildVerificationPlan embeds a judgment card", () => {

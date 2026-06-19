@@ -9,8 +9,11 @@ const { createClient, listProjectsForApiKey } = require("../dist/index.js");
 async function withTempHome(fn) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-auth-"));
   const homeDir = path.join(tmpDir, "home");
+  const cwdDir = path.join(tmpDir, "cwd");
   fs.mkdirSync(homeDir, { recursive: true });
+  fs.mkdirSync(cwdDir, { recursive: true });
 
+  const previousCwd = process.cwd();
   const previousHome = process.env.HOME;
   const previousApiKey = process.env.SNIPARA_API_KEY;
   const previousProjectId = process.env.SNIPARA_PROJECT_ID;
@@ -23,10 +26,12 @@ async function withTempHome(fn) {
   process.env.SNIPARA_API_URL = "https://api.snipara.com";
   delete process.env.SNIPARA_DASHBOARD_URL;
   delete process.env.SNIPARA_WEB_URL;
+  process.chdir(cwdDir);
 
   try {
-    await fn({ tmpDir, homeDir });
+    await fn({ tmpDir, homeDir, cwdDir });
   } finally {
+    process.chdir(previousCwd);
     global.fetch = previousFetch;
 
     if (previousHome === undefined) {

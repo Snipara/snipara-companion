@@ -210,14 +210,18 @@ export {
 export {
   buildAgenticTimeline,
   buildAgenticWorkStatus,
+  buildGeneratedWorkflowPlanDocument,
   buildWorkflowImpactGate,
   buildWorkflowPhaseCommitSummary,
   buildWorkflowPlanScaffold,
+  buildSessionBootstrapQuality,
   buildOnboardFolderManifest,
   buildSyncDocumentsDryRun,
   collectSyncDocuments,
   collectSyncDocumentsInput,
   normalizeWorkflowPlanInput,
+  resolveFullWorkflowTokenBudget,
+  validatePlanResult,
   WORKFLOW_PLANS_RELATIVE_DIR,
   WORKFLOW_STATE_RELATIVE_PATH,
 } from "./commands/workflows";
@@ -274,6 +278,7 @@ export {
   shouldSuggestRuntimeForWorkflow,
 } from "./runtime/detection";
 export {
+  buildAdaptiveWorkRoutingRecommendation,
   buildOrchestratorHandoff,
   ORCHESTRATOR_HANDOFF_RELATIVE_PATH,
   writeOrchestratorHandoff,
@@ -489,7 +494,7 @@ program
 program
   .command("swarm")
   .description(
-    "Call hosted swarm tools directly through Snipara companion (prefer snipara-orchestrator for shared multi-agent task routing)"
+    "Legacy direct hosted swarm passthrough (prefer snipara-orchestrator for shared multi-agent task routing)"
   )
   .addCommand(
     new Command("create")
@@ -539,7 +544,7 @@ program
 program
   .command("htask")
   .description(
-    "Call hosted hierarchical task tools directly through Snipara companion (prefer snipara-orchestrator for shared multi-agent queues)"
+    "Legacy direct hosted htask passthrough (prefer snipara-orchestrator for shared multi-agent queues)"
   )
   .addCommand(
     new Command("create")
@@ -1019,11 +1024,19 @@ program
   .description("Generate a hosted execution plan through the local companion")
   .requiredOption("-q, --query <query>", "Plan query")
   .option("-m, --max-tokens <number>", "Maximum tokens")
+  .option("--write-plan-file <file>", "Write a managed workflow-compatible plan JSON file")
+  .option("--start-workflow", "Start a local managed workflow from the generated plan")
+  .option("--workflow-id <id>", "Stable managed workflow id when using --start-workflow")
+  .option("--force", "Replace an existing active workflow state when starting a workflow")
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await planCommand({
       query: options.query,
       maxTokens: options.maxTokens ? parseInt(options.maxTokens, 10) : undefined,
+      writePlanFile: options.writePlanFile,
+      startWorkflow: Boolean(options.startWorkflow),
+      workflowId: options.workflowId,
+      force: Boolean(options.force),
       json: options.json,
     });
   });
@@ -1645,7 +1658,11 @@ workflow
   .description("Run a LITE/STANDARD/FULL/orchestrate workflow preset")
   .requiredOption("-q, --query <query>", "Workflow query")
   .option("-M, --mode <mode>", "lite|standard|auto|full|orchestrate", "standard")
-  .option("-m, --max-tokens <number>", "Maximum tokens", "8000")
+  .option(
+    "-m, --max-tokens <number>",
+    "Maximum tokens; FULL mode splits this across workflow surfaces",
+    "8000"
+  )
   .option("--include-session-context", "Include short-lived session carryover for FULL workflow")
   .option("--max-critical-tokens <number>", "Durable memory token budget for FULL workflow")
   .option("--max-context-tokens <number>", "Short-lived session context token budget")
@@ -1662,6 +1679,38 @@ workflow
     "--orchestrator-policy-source <source>",
     "Label the workspace or tenant policy that triggered orchestrator routing"
   )
+  .option(
+    "--adaptive-routing-dry-run",
+    "Attach Adaptive Work Routing recommendation metadata without launching workers"
+  )
+  .option(
+    "--route-local-workers",
+    "Prefer local worker endpoints and keep deep reasoning on the planner"
+  )
+  .option("--routing-worker-role <role>", "Suggested worker role for Adaptive Work Routing")
+  .option(
+    "--routing-preferred-endpoint <type>",
+    "Preferred worker endpoint type for runtime catalog resolution; repeatable",
+    collectOption,
+    []
+  )
+  .option(
+    "--routing-allowed-endpoint <type>",
+    "Allowed worker endpoint type for runtime catalog resolution; repeatable",
+    collectOption,
+    []
+  )
+  .option(
+    "--planner-retains-reasoning",
+    "Mark the main planner as retaining deep reasoning while the worker executes scoped work"
+  )
+  .option("--write-plan-file <file>", "Write the generated FULL-mode plan as workflow JSON")
+  .option(
+    "--start-workflow-from-plan",
+    "Start a local managed workflow from the generated FULL-mode plan"
+  )
+  .option("--workflow-id <id>", "Stable managed workflow id when using --start-workflow-from-plan")
+  .option("--force", "Replace an existing active workflow state when starting from generated plan")
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await workflowRunCommand({
@@ -1679,6 +1728,16 @@ workflow
       emitOrchestratorHandoff: Boolean(options.emitOrchestratorHandoff),
       autoRouteOrchestrator: Boolean(options.autoRouteOrchestrator),
       orchestratorPolicySource: options.orchestratorPolicySource,
+      adaptiveRoutingDryRun: Boolean(options.adaptiveRoutingDryRun),
+      routeLocalWorkers: Boolean(options.routeLocalWorkers),
+      routingWorkerRole: options.routingWorkerRole,
+      routingPreferredEndpoints: options.routingPreferredEndpoint,
+      routingAllowedEndpoints: options.routingAllowedEndpoint,
+      plannerRetainsReasoning: options.plannerRetainsReasoning ? true : undefined,
+      writePlanFile: options.writePlanFile,
+      startWorkflowFromPlan: Boolean(options.startWorkflowFromPlan),
+      workflowId: options.workflowId,
+      force: Boolean(options.force),
       json: options.json,
     });
   });
