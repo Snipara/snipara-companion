@@ -23,6 +23,10 @@ This package complements `snipara-mcp`. It does not replace it.
 workflow stack for solo users and small teams, with a clear upgrade path to
 hosted Snipara for team-wide Project Intelligence.
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Snipara/snipara-companion/main/assets/mini-snipara-open-stack.svg?v=2" alt="Mini Snipara Open Stack: local workflow continuity, local memory, local evals, and optional hosted shared memory, cloud code graph and impact, and team coordination" width="760">
+</p>
+
 | Repo                                                                | Role                                                                                                            | Account required                         |
 | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
 | [`snipara-companion`](https://github.com/Snipara/snipara-companion) | Local workflow continuity, hooks, handoffs, context-pack, phase commits, and hosted bridges                     | No for local state; yes for hosted calls |
