@@ -24,7 +24,7 @@ workflow stack for solo users and small teams, with a clear upgrade path to
 hosted Snipara for team-wide Project Intelligence.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Snipara/snipara-companion/main/assets/mini-snipara-open-stack.svg?v=2" alt="Mini Snipara Open Stack: local workflow continuity, local memory, local evals, and optional hosted shared memory, cloud code graph and impact, and team coordination" width="760">
+  <img src="https://raw.githubusercontent.com/Snipara/snipara-companion/main/assets/mini-snipara-open-stack.jpg?v=4" alt="Mini Snipara Open Stack: every AI session starts with context across Snipara Companion, shared project intelligence, memory, code graph, impact, and team coordination" width="860">
 </p>
 
 | Repo                                                                | Role                                                                                                            | Account required                         |
