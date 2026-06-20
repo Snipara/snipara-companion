@@ -203,6 +203,7 @@ export {
 export { buildVerificationPlan, verifyCommand } from "./commands/verify";
 export { buildProjectJudgmentCard, formatProjectJudgmentCard } from "./commands/judgment-card";
 export { buildProjectIntelligenceRun, projectIntelligenceRunCommand } from "./commands/run";
+export { evaluateProjectPolicyGates, formatPolicyGateDecision } from "./commands/policy-gates";
 export {
   buildCodeHooksInstallPlan,
   buildCodePromotionResult,

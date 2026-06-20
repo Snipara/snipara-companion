@@ -459,6 +459,13 @@ test("run command composes production judgment JSON", () => {
   assert.equal(payload.brief.version, "project-intelligence-brief-v1");
   assert.equal(payload.packageReview.status, "skipped");
   assert.equal(payload.guard, undefined);
+  assert.equal(payload.policyGates.version, "project-intelligence.policy-gates.v1");
+  assert.equal(payload.policyGates.summary.strongestSeverity, "required_action");
+  assert.ok(
+    payload.policyGates.gates.some(
+      (gate) => gate.surface === "package_surface" && gate.severity === "required_action"
+    )
+  );
   assert.equal(payload.judgmentCard.version, "project-intelligence.judgment-card.v1");
   assert.equal(
     payload.judgmentCard.requiredActions.some((action) => action.type === "package_review"),
@@ -471,7 +478,11 @@ test("run command composes production judgment JSON", () => {
   );
   assert.equal(
     payload.suggestedCommands.includes("npm view snipara-companion version bin dist-tags --json"),
-    false
+    true
+  );
+  assert.equal(
+    payload.suggestedCommands.includes("pnpm --filter snipara-companion pack:smoke"),
+    true
   );
 });
 

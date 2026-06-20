@@ -19,6 +19,11 @@ import {
   formatProjectJudgmentCard,
   type ProjectIntelligenceJudgmentCard,
 } from "./judgment-card";
+import {
+  evaluateProjectPolicyGates,
+  formatPolicyGateDecision,
+  type ProjectPolicyGatesResult,
+} from "./policy-gates";
 
 export interface ProjectRunCommandOptions {
   task?: string;
@@ -77,6 +82,7 @@ export interface ProjectIntelligenceRunResult {
   brief: ProjectIntelligenceBrief;
   guard?: ProjectRunGuardResult;
   packageReview?: ProjectRunPackageReview;
+  policyGates: ProjectPolicyGatesResult;
   advisorReceiptCapture?: ProjectRunAdvisorReceiptCapture;
   judgmentCard: ProjectIntelligenceJudgmentCard;
   suggestedCommands: string[];
@@ -458,9 +464,21 @@ export async function buildProjectIntelligenceRun(
     brief,
     judgmentCard,
   });
+  const policyGates = evaluateProjectPolicyGates({
+    task: options.task,
+    release: options.release,
+    changedFiles,
+    diffSummary: options.diffSummary,
+    skipGuard: options.skipGuard,
+    skipPackageReview: options.skipPackageReview,
+    guard,
+    packageReview,
+    judgmentCard,
+  });
 
   const suggestedCommands = [
     ...brief.suggestedCommands,
+    ...policyGates.suggestedCommands,
     ...(options.release
       ? [
           "snipara-companion collaboration guard --profile pre-deploy --enforce --ack-review-only",
@@ -478,6 +496,7 @@ export async function buildProjectIntelligenceRun(
     brief,
     ...(guard ? { guard } : {}),
     ...(packageReview ? { packageReview } : {}),
+    policyGates,
     ...(advisorReceiptCapture ? { advisorReceiptCapture } : {}),
     judgmentCard,
     suggestedCommands: [...new Set(suggestedCommands)],
@@ -504,6 +523,19 @@ export async function projectIntelligenceRunCommand(
       console.log(line);
     }
     console.log("");
+
+    if (result.policyGates.gates.length > 0) {
+      console.log(chalk.bold("Policy Gates"));
+      console.log(
+        `Strongest: ${result.policyGates.summary.strongestSeverity}; advisory ${result.policyGates.summary.advisory}, required ${result.policyGates.summary.requiredAction}, block ${result.policyGates.summary.block}`
+      );
+      for (const gateDecision of result.policyGates.gates.slice(0, 8)) {
+        for (const line of formatPolicyGateDecision(gateDecision)) {
+          console.log(line);
+        }
+      }
+      console.log("");
+    }
 
     if (result.guard) {
       console.log(chalk.bold("Guard"));
@@ -550,7 +582,7 @@ export async function projectIntelligenceRunCommand(
     }
   }
 
-  if (result.judgmentCard.canProceed === "block") {
+  if (result.judgmentCard.canProceed === "block" || result.policyGates.summary.block > 0) {
     process.exitCode = 2;
   }
 }

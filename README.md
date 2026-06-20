@@ -1,16 +1,50 @@
 # snipara-companion
 
-**Local helper CLI for Snipara agent workflows.**
+**Local-first workflow continuity CLI for Snipara agent workflows.**
 
-`snipara-companion` adds Git-style continuity commands for agent work: status,
-briefs, timelines, phase commits, handoffs, resume, diagnostics, hooks, folder
-onboarding, local Mini Snipara bridges, and command-line access around Snipara
-Hosted MCP. It complements the hosted context and memory surface; it is not the
-primary runtime for agents.
+`snipara-companion` runs fully locally for workflow continuity: status, briefs,
+timelines, phase commits, context-pack, handoffs, resume, diagnostics, hooks,
+folder onboarding, local Mini Snipara bridges, and command-line access around
+Snipara Hosted MCP.
 
-In this repository, the source currently lives in `packages/cli`, and the installed executable is `snipara-companion`.
+Connect it to the Snipara SaaS when you need the managed Project Intelligence
+layer: shared memory, cloud code graph, outcome-weighted judgment, source
+authority, team coordination, shared claims/locks, conflict alarms, GitHub
+checks, and dashboard live views.
+
+This repository is the standalone open-source package. The installed executable
+is `snipara-companion`.
 
 This package complements `snipara-mcp`. It does not replace it.
+
+## Mini Snipara Open Stack
+
+`snipara-companion` is part of the Mini Snipara Open Stack: a useful local
+workflow stack for solo users and small teams, with a clear upgrade path to
+hosted Snipara for team-wide Project Intelligence.
+
+| Repo                                                                | Role                                                                                                            | Account required                         |
+| ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| [`snipara-companion`](https://github.com/Snipara/snipara-companion) | Local workflow continuity, hooks, handoffs, context-pack, phase commits, and hosted bridges                     | No for local state; yes for hosted calls |
+| [`snipara-memory`](https://github.com/Snipara/snipara-memory)       | Local durable project memory engine and MCP/API wrapper                                                         | No                                       |
+| [`snipara-evals`](https://github.com/Snipara/snipara-evals)         | Deterministic Project Intelligence evals for handoffs, context, decisions, impact, verification, and continuity | No                                       |
+
+## Local vs Hosted Capabilities
+
+| Capability                                   | Local/open stack                   | Hosted Snipara                              |
+| -------------------------------------------- | ---------------------------------- | ------------------------------------------- |
+| Workflow state, timeline, handoff files      | Yes                                | Syncs and enriches when configured          |
+| Local project memory                         | Via `snipara-memory`               | Managed, reviewed, scoped memory            |
+| Project Intelligence eval artifacts          | Via `snipara-evals`                | Can use hosted context/code graph as inputs |
+| Git hooks and local guards                   | Yes                                | Stronger with hosted guard decisions        |
+| Presence across machines and agents          | No                                 | Yes                                         |
+| Shared claims/locks and stale lease handling | Local only is advisory             | Yes                                         |
+| GitHub checks and dashboard live views       | No                                 | Yes                                         |
+| Code graph impact and symbol cards           | Local overlay only where available | Cloud code graph                            |
+
+Local commands are useful for single-machine continuity and CI artifacts, but
+they cannot prove what another human or agent is doing on a different machine
+unless the hosted collaboration backend is configured.
 
 ## Quickstart
 
@@ -88,36 +122,6 @@ flowchart LR
     Companion --> Hosted["Snipara Hosted MCP / API"]
     Hosted --> Agents["Codex, Claude Code, Cursor, ChatGPT"]
 ```
-
-## Mini Snipara Open Stack
-
-`snipara-companion` is the local workflow layer in the open Mini Snipara stack:
-
-| Repo                                                                | Role                                                                                                            | Account required                         |
-| ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| [`snipara-companion`](https://github.com/Snipara/snipara-companion) | Local workflow continuity, hooks, handoffs, and hosted bridges                                                  | No for local state; yes for hosted calls |
-| [`snipara-memory`](https://github.com/Snipara/snipara-memory)       | Local durable project memory engine and MCP/API wrapper                                                         | No                                       |
-| [`snipara-evals`](https://github.com/Snipara/snipara-evals)         | Deterministic Project Intelligence evals for handoffs, context, decisions, impact, verification, and continuity | No                                       |
-
-Hosted Snipara remains the managed layer for source authority, reviewed memory,
-team-wide presence, shared claims/locks, conflict alarms, GitHub checks,
-dashboard live views, and Cloud code graph impact. Local commands are useful for
-single-machine continuity and CI artifacts, but they cannot prove what another
-human or agent is doing on a different machine unless the hosted collaboration
-backend is configured.
-
-## Local vs Hosted Capabilities
-
-| Capability                                   | Local/open stack                   | Hosted Snipara                              |
-| -------------------------------------------- | ---------------------------------- | ------------------------------------------- |
-| Workflow state, timeline, handoff files      | Yes                                | Syncs and enriches when configured          |
-| Local project memory                         | Via `snipara-memory`               | Managed, reviewed, scoped memory            |
-| Project Intelligence eval artifacts          | Via `snipara-evals`                | Can use hosted context/code graph as inputs |
-| Git hooks and local guards                   | Yes                                | Stronger with hosted guard decisions        |
-| Presence across machines and agents          | No                                 | Yes                                         |
-| Shared claims/locks and stale lease handling | Local only is advisory             | Yes                                         |
-| GitHub checks and dashboard live views       | No                                 | Yes                                         |
-| Code graph impact and symbol cards           | Local overlay only where available | Cloud code graph                            |
 
 ## When To Use It
 

@@ -2,6 +2,14 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 2.0.4
+
+- Adds Project Intelligence policy gates to `snipara-companion run --release`,
+  including advisory, required-action, and block decisions for release, schema,
+  auth, billing, deploy, and package surfaces.
+- Shows guard and Judgment Card policy blocks as explicit release blockers so
+  agents cannot silently continue when strong project evidence requires a stop.
+
 ## New In 2.0.3
 
 - Adds first-party Advisor Influence receipt capture to
