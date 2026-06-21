@@ -377,7 +377,26 @@ test("top-level run help exposes production judgment options", () => {
 
 test("intelligence brief combines resume context, memory health, and code impact", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-intelligence-"));
+  assert.equal(spawnSync("git", ["init"], { cwd: dir, encoding: "utf8" }).status, 0);
+  assert.equal(
+    spawnSync("git", ["config", "user.email", "agent@example.com"], {
+      cwd: dir,
+      encoding: "utf8",
+    }).status,
+    0
+  );
+  assert.equal(
+    spawnSync("git", ["config", "user.name", "Agent"], { cwd: dir, encoding: "utf8" }).status,
+    0
+  );
+  fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "src", "auth.ts"), "export const auth = true;\n", "utf8");
   const preloadPath = writeIntelligencePreload(dir);
+  assert.equal(spawnSync("git", ["add", "."], { cwd: dir, encoding: "utf8" }).status, 0);
+  assert.equal(
+    spawnSync("git", ["commit", "-m", "init"], { cwd: dir, encoding: "utf8" }).status,
+    0
+  );
 
   const result = runCli(
     [
@@ -411,8 +430,10 @@ test("intelligence brief combines resume context, memory health, and code impact
   assert.deepEqual(payload.changedFiles, ["src/auth.ts"]);
   assert.equal(payload.resumeContext.resumeContext.focus.summary, "Resume intelligence surface");
   assert.equal(payload.memoryHealth.health_score, 0.92);
-  assert.equal(payload.codeImpactSourceSelection.selected, "hosted_graph");
-  assert.equal(payload.codeImpact.risk.level, "medium");
+  assert.equal(payload.codeImpactSourceSelection.selected, "local_overlay");
+  assert.equal(payload.codeImpactSourceSelection.reason, "auto_local_default");
+  assert.equal(payload.codeImpact.title, "Local impact");
+  assert.deepEqual(payload.codeImpact.changedFiles, ["src/auth.ts"]);
   assert.equal(payload.judgmentCard.version, "project-intelligence.judgment-card.v1");
   assert.ok(
     payload.suggestedCommands.some((command) =>
@@ -1472,7 +1493,7 @@ test("code help frames symbol-card and impact as agent-ready gates", () => {
   assert.equal(result.status, 0);
   assert.match(result.stdout, /agent-ready symbol card/);
   assert.match(result.stdout, /agent-ready code impact gate/);
-  assert.match(result.stdout, /routes\/services\/jobs/);
+  assert.match(result.stdout, /local overlay by default/);
 });
 
 test("shared-context help exposes category filter", () => {

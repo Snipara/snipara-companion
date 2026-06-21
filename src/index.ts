@@ -16,7 +16,7 @@
  *   - Hosted context:    query, shared-context, plan, multi-query, orchestrate, chunk, reindex
  *   - Docs / knowledge:  upload, references, business-collections, client-projects,
  *                        onboard-folder, sync-documents
- *   - Code graph:        code (local impact/callers/imports + hosted overlay)
+ *   - Code graph:        impact, code (local impact/callers/imports + optional hosted overlay)
  *   - Automation:        automations, events, memory
  *
  * The `export { ... }` block below re-exports pure helpers (buildX, parsers,
@@ -2258,9 +2258,38 @@ collaboration
     });
   });
 
+program
+  .command("impact")
+  .description("Run a local code impact check for a file, symbol, or changed files")
+  .argument("[filePath]", "Source file to analyze")
+  .option("-q, --qualified-name <qualifiedName>", "Qualified symbol name")
+  .option("--symbol-key <symbolKey>", "Stable graph symbol key")
+  .option("-f, --file-path <filePath>", "Source file to analyze")
+  .option("--changed-files <changedFiles...>", "Changed files to analyze")
+  .option("--diff-summary <diffSummary>", "Natural-language summary of the change")
+  .option("-l, --limit <number>", "Maximum impact entries", "50")
+  .option("--source <source>", "auto|local|hosted (auto defaults to local)", "auto")
+  .option("--cached", "When local is selected, use the cached overlay if present")
+  .option("--max-files <number>", "Maximum supported code files for local overlay", "2000")
+  .option("--json", "Print raw JSON")
+  .action(async (filePath, options) => {
+    await codeGraphAutoSourceCommand("impact", {
+      qualifiedName: options.qualifiedName,
+      symbolKey: options.symbolKey,
+      filePath: options.filePath ?? filePath,
+      changedFiles: options.changedFiles,
+      diffSummary: options.diffSummary,
+      limit: parseInt(options.limit, 10),
+      source: options.source,
+      cached: Boolean(options.cached),
+      maxFiles: parseInt(options.maxFiles, 10),
+      json: options.json,
+    });
+  });
+
 const code = program
   .command("code")
-  .description("Direct hosted code graph queries and local overlay helpers");
+  .description("Local code graph queries plus optional hosted graph bridge");
 
 code
   .addCommand(
@@ -2544,12 +2573,12 @@ code
   )
   .addCommand(
     new Command("callers")
-      .description("Find who calls a symbol; auto-select hosted graph or local overlay")
+      .description("Find who calls a symbol from the local overlay by default")
       .option("-q, --qualified-name <qualifiedName>", "Qualified symbol name")
       .option("--symbol-key <symbolKey>", "Stable graph or local overlay symbol key")
       .option("-d, --depth <number>", "Traversal depth", "1")
       .option("-l, --limit <number>", "Maximum callers", "50")
-      .option("--source <source>", "auto|hosted|local", "auto")
+      .option("--source <source>", "auto|local|hosted (auto defaults to local)", "auto")
       .option("--cached", "When local is selected, use the cached overlay if present")
       .option("--max-files <number>", "Maximum supported code files for local overlay", "2000")
       .option("--json", "Print raw JSON")
@@ -2569,7 +2598,7 @@ code
   .addCommand(
     new Command("imports")
       .description(
-        "Find imports/importers for a symbol or file; auto-select hosted graph or local overlay"
+        "Find imports/importers for a symbol or file from the local overlay by default"
       )
       .option("-q, --qualified-name <qualifiedName>", "Qualified symbol name")
       .option("--symbol-key <symbolKey>", "Stable graph or local overlay symbol key")
@@ -2577,7 +2606,7 @@ code
       .option("-d, --direction <direction>", "in|out", "out")
       .option("--include-file-nodes", "Include all matched file nodes")
       .option("-l, --limit <number>", "Maximum imports", "50")
-      .option("--source <source>", "auto|hosted|local", "auto")
+      .option("--source <source>", "auto|local|hosted (auto defaults to local)", "auto")
       .option("--cached", "When local is selected, use the cached overlay if present")
       .option("--max-files <number>", "Maximum supported code files for local overlay", "2000")
       .option("--json", "Print raw JSON")
@@ -2598,13 +2627,13 @@ code
   )
   .addCommand(
     new Command("neighbors")
-      .description("Get a symbol neighborhood; auto-select hosted graph or local overlay")
+      .description("Get a symbol neighborhood from the local overlay by default")
       .option("-q, --qualified-name <qualifiedName>", "Qualified symbol name")
       .option("--symbol-key <symbolKey>", "Stable graph or local overlay symbol key")
       .option("-d, --depth <number>", "Traversal depth", "2")
       .option("-e, --edge-kinds <edgeKinds...>", "Edge kinds to include")
       .option("-l, --limit <number>", "Maximum nodes", "200")
-      .option("--source <source>", "auto|hosted|local", "auto")
+      .option("--source <source>", "auto|local|hosted (auto defaults to local)", "auto")
       .option("--cached", "When local is selected, use the cached overlay if present")
       .option("--max-files <number>", "Maximum supported code files for local overlay", "2000")
       .option("--json", "Print raw JSON")
@@ -2624,12 +2653,12 @@ code
   )
   .addCommand(
     new Command("shortest-path")
-      .description("Find how two symbols connect; auto-select hosted graph or local overlay")
+      .description("Find how two symbols connect from the local overlay by default")
       .requiredOption("--from <from>", "Source qualified symbol name")
       .requiredOption("--to <to>", "Target qualified symbol name")
       .option("-e, --edge-kinds <edgeKinds...>", "Edge kinds to include")
       .option("--max-hops <number>", "Maximum hops", "6")
-      .option("--source <source>", "auto|hosted|local", "auto")
+      .option("--source <source>", "auto|local|hosted (auto defaults to local)", "auto")
       .option("--cached", "When local is selected, use the cached overlay if present")
       .option("--max-files <number>", "Maximum supported code files for local overlay", "2000")
       .option("--json", "Print raw JSON")
@@ -2665,23 +2694,24 @@ code
   .addCommand(
     new Command("impact")
       .description(
-        "Run the primary agent-ready code impact gate for routes/services/jobs; auto-select local overlay for dirty/ahead worktrees and hosted graph for clean indexed code"
+        "Run the primary agent-ready code impact gate from the local overlay by default"
       )
+      .argument("[filePath]", "Source file to analyze")
       .option("-q, --qualified-name <qualifiedName>", "Qualified symbol name")
       .option("--symbol-key <symbolKey>", "Stable graph symbol key")
       .option("-f, --file-path <filePath>", "Source file to analyze")
       .option("--changed-files <changedFiles...>", "Changed files to analyze")
       .option("--diff-summary <diffSummary>", "Natural-language summary of the change")
       .option("-l, --limit <number>", "Maximum impact entries", "50")
-      .option("--source <source>", "auto|hosted|local", "auto")
+      .option("--source <source>", "auto|local|hosted (auto defaults to local)", "auto")
       .option("--cached", "When local is selected, use the cached overlay if present")
       .option("--max-files <number>", "Maximum supported code files for local overlay", "2000")
       .option("--json", "Print raw JSON")
-      .action(async (options) => {
+      .action(async (filePath, options) => {
         await codeGraphAutoSourceCommand("impact", {
           qualifiedName: options.qualifiedName,
           symbolKey: options.symbolKey,
-          filePath: options.filePath,
+          filePath: options.filePath ?? filePath,
           changedFiles: options.changedFiles,
           diffSummary: options.diffSummary,
           limit: parseInt(options.limit, 10),

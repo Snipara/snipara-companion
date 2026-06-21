@@ -1,11 +1,12 @@
 /**
- * `code` commands — local code graph overlay + hosted bridge.
+ * `code` commands — local code graph overlay + optional hosted bridge.
  *
  * Builds a local code overlay (files, symbols, imports) over the working tree
  * or a local commit and answers structural queries offline: impact, callers,
  * imports, neighbors, and shortest path. Also installs Git hooks, serves a
  * small MCP, and promotes/uploads the overlay to the hosted Cloud code graph.
- * Local results are a best-effort overlay; the hosted graph is authoritative.
+ * Local results are first-class for the current checkout; hosted graph queries
+ * are opt-in when team, cross-machine, or cloud-indexed context is needed.
  */
 import crypto from "crypto";
 import { execFileSync } from "child_process";
@@ -735,8 +736,8 @@ export function getLocalCodePromotionStatePath(cwd: string = process.cwd()): str
  * records why files were excluded (ignored, unsupported language, too large,
  * secret pattern, read error). Honors `.sniparaignore`, per-file size and file
  * count caps (`maxFiles`, `maxFileBytes`), and adds warnings when limits are
- * hit. This overlay backs the offline impact/callers/imports queries; it is
- * best-effort, not authoritative.
+ * hit. This overlay backs the offline impact/callers/imports queries for the
+ * current checkout.
  *
  * @returns A `LocalCodeOverlayManifest` with files, symbols, imports, excluded
  *   samples, and warnings.
@@ -832,7 +833,8 @@ export function buildLocalCodeOverlay(
     warnings.push({
       code: "local_working_tree_overlay",
       severity: "info",
-      message: "This overlay includes local working tree state and is not canonical hosted truth.",
+      message:
+        "This overlay includes local working tree state that has not been pushed to a shared hosted index.",
     });
   } else if (mode === "local_commit" && dirtyStatus.trim()) {
     warnings.push({
@@ -1130,7 +1132,7 @@ function localOverlaySelection(
     },
     limitations: [
       "local_overlay_file_import_model",
-      "local callers and impact are file-level import analysis, not canonical hosted call-site/impact traversal",
+      "local callers and impact use file-level import and symbol analysis from the current checkout",
     ],
   };
 }
@@ -1165,7 +1167,7 @@ function hostedSelection(
       contextScope: record.context_scope,
     },
     limitations: dirtyFiles.length
-      ? ["hosted graph is indexed canonical code and does not include current uncommitted edits"]
+      ? ["hosted graph does not include current uncommitted edits"]
       : [],
   };
 }
@@ -1173,15 +1175,17 @@ function hostedSelection(
 function localOverlayGuidance(reason: string): string[] {
   const selectedBecause =
     reason === "working_tree_dirty"
-      ? "Primary code impact source: local overlay selected because the working tree has uncommitted edits."
+      ? "Local overlay selected because the working tree has uncommitted edits."
       : reason === "local_head_ahead_of_upstream"
-        ? "Primary code impact source: local overlay selected because local commits are ahead of upstream."
+        ? "Local overlay selected because local commits are ahead of upstream."
         : reason === "hosted_not_configured"
-          ? "Primary code impact source: local overlay selected because hosted MCP is not configured."
-          : "Primary code impact source: local overlay selected by request.";
+          ? "Local overlay selected because hosted Snipara is not configured."
+          : reason === "auto_local_default"
+            ? "Local overlay selected by default; no account or network call is required."
+            : "Local overlay selected by request.";
   return [
     selectedBecause,
-    "Hosted snipara_code_impact is the fallback/canonical graph surface after push and hosted reindex.",
+    "Use --source hosted after login when you want shared team context, cloud indexing, or cross-machine graph state.",
   ];
 }
 
@@ -1189,16 +1193,16 @@ function hostedGraphGuidance(reason: string, dirtyFileCount: number): string[] {
   if (dirtyFileCount > 0) {
     return [
       "Hosted graph selected even though the working tree is dirty; this does not include uncommitted edits.",
-      "Rerun snipara-companion code impact with --source auto or --source local before relying on local-change impact.",
+      "Rerun with --source local before relying on local-change impact.",
     ];
   }
   if (reason === "source_forced_hosted") {
     return [
-      "Hosted graph selected by request; use snipara-companion code impact with --source auto for local-change-aware impact.",
+      "Hosted graph selected by request; use --source local for account-free checkout-local impact.",
     ];
   }
   return [
-    "Hosted graph selected because the checkout is clean and configured; use companion local overlay only when local commits or dirty files matter.",
+    "Hosted graph selected by request; use --source local when this checkout should stay fully local.",
   ];
 }
 
@@ -1220,10 +1224,7 @@ function shouldUseLocalOverlay(args: {
   if ((args.aheadCount ?? 0) > 0) {
     return { useLocal: true, reason: "local_head_ahead_of_upstream" };
   }
-  if (!isConfigured({ cwd: args.repoRoot })) {
-    return { useLocal: true, reason: "hosted_not_configured" };
-  }
-  return { useLocal: false, reason: "hosted_configured_and_worktree_clean" };
+  return { useLocal: true, reason: "auto_local_default" };
 }
 
 function buildLocalResultForVerb(
@@ -1690,7 +1691,7 @@ export function buildLocalImpactResult(
   return {
     title: "Local impact",
     caveat:
-      "Local impact currently reports file-level import neighbors in the local overlay; hosted snipara_code_impact remains the canonical richer impact model after push/index.",
+      "Local impact reports file-level import neighbors from the current checkout. Use --source hosted only when you want the hosted team graph.",
     scope: summarizeLocalCodeOverlay(manifest),
     target: symbol ? compactSymbol(symbol) : { changedFiles, missingTargetFiles },
     changedFiles,

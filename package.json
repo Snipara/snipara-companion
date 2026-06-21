@@ -1,7 +1,7 @@
 {
   "name": "snipara-companion",
   "version": "2.0.4",
-  "description": "Snipara Git-style companion CLI for local workflow continuity, hooks, hosted context, and Mini Snipara OSS workflows",
+  "description": "Local code impact and workflow continuity CLI for AI coding agents",
   "main": "dist/index.js",
   "bin": {
     "snipara-companion": "dist/index.js"
@@ -23,6 +23,8 @@
     "agent-continuity",
     "agent-workflows",
     "ai-coding-agents",
+    "code-impact",
+    "code-graph",
     "context",
     "project-intelligence",
     "workflow-continuity",
@@ -67,6 +69,7 @@
     "node": ">=18"
   },
   "files": [
-    "dist"
+    "dist",
+    "docs"
   ]
 }

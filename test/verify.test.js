@@ -135,6 +135,7 @@ test("buildVerificationPlan combines code impact, coverage gaps, and local scrip
 test("verify command returns JSON from mocked code impact", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-verify-cli-"));
   fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "src", "auth.ts"), "export const auth = true;\n", "utf8");
   writePackageJson(dir, {
     name: "sample-project",
     scripts: {
@@ -161,13 +162,12 @@ test("verify command returns JSON from mocked code impact", () => {
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.version, "snipara.verification_plan.v1");
   assert.equal(payload.task, "ship auth hardening");
-  assert.equal(payload.codeImpactSourceSelection.selected, "hosted_graph");
-  assert.equal(payload.codeImpactSourceSelection.reason, "hosted_configured_and_worktree_clean");
-  assert.equal(payload.risk.level, "medium");
+  assert.equal(payload.codeImpactSourceSelection.selected, "local_overlay");
+  assert.equal(payload.codeImpactSourceSelection.reason, "auto_local_default");
+  assert.equal(payload.risk.level, "unknown");
   assert.deepEqual(payload.impactedFiles, ["src/auth.ts"]);
-  assert.ok(payload.recommendedChecks.some((check) => check.command === "pnpm test auth"));
   assert.ok(payload.recommendedChecks.some((check) => check.command === "pnpm test"));
-  assert.ok(payload.missingChecks.some((gap) => gap.code === "missing_browser_check"));
+  assert.ok(payload.recommendedChecks.some((check) => check.command === "pnpm type-check"));
 });
 
 test("verify command auto-selects local overlay for dirty worktrees", () => {

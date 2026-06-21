@@ -315,7 +315,25 @@ test("code unified commands can force local overlay source", () => {
   assert.ok(payload.sourceSelection.limitations.includes("local_overlay_file_import_model"));
   assert.ok(
     payload.sourceSelection.guidance.some((item) =>
-      item.includes("Hosted snipara_code_impact is the fallback")
+      item.includes("Use --source hosted after login")
+    )
+  );
+});
+
+test("top-level impact runs locally by default without project auth", () => {
+  const repo = makeTempRepo();
+
+  const result = runCli(["impact", "src/helper.ts", "--json"], { cwd: repo });
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+
+  assert.equal(payload.sourceSelection.requested, "auto");
+  assert.equal(payload.sourceSelection.selected, "local_overlay");
+  assert.equal(payload.sourceSelection.reason, "auto_local_default");
+  assert.deepEqual(payload.result.changedFiles, ["src/helper.ts"]);
+  assert.ok(
+    payload.sourceSelection.guidance.some((item) =>
+      item.includes("no account or network call is required")
     )
   );
 });
