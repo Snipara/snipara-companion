@@ -151,13 +151,20 @@ test("buildLocalCodeOverlay reports local commit metadata and code structure", (
   assert.ok(manifest.imports.some((item) => item.specifier === "./helper"));
 });
 
-test("working tree overlay includes dirty hash and excludes ignored or secret-like files", () => {
+test("working tree overlay includes dirty hash and redacts secret-like files without excluding them", () => {
   const repo = makeTempRepo();
   fs.writeFileSync(path.join(repo, ".sniparaignore"), "src/ignored.ts\n", "utf8");
   fs.writeFileSync(path.join(repo, "src", "ignored.ts"), "export const ignored = true;\n", "utf8");
   fs.writeFileSync(
     path.join(repo, "src", "secret.ts"),
-    "const apiKey = 'abcdefghijklmnopqrstuvwxyz1234567890';\n",
+    [
+      "import { helper } from './helper';",
+      "const apiKey = 'abcdefghijklmnopqrstuvwxyz1234567890';",
+      "export function useSecretConfig() {",
+      "  return helper();",
+      "}",
+      "",
+    ].join("\n"),
     "utf8"
   );
   fs.writeFileSync(
@@ -178,10 +185,17 @@ test("working tree overlay includes dirty hash and excludes ignored or secret-li
   assert.ok(manifest.dirtyTreeHash);
   assert.ok(manifest.warnings.some((warning) => warning.code === "local_working_tree_overlay"));
   assert.ok(!manifest.files.some((file) => file.path === "src/ignored.ts"));
-  assert.ok(!manifest.files.some((file) => file.path === "src/secret.ts"));
+  assert.ok(manifest.files.some((file) => file.path === "src/secret.ts"));
   assert.ok(manifest.files.some((file) => file.path === "src/config-reference.ts"));
+  assert.ok(manifest.symbols.some((symbol) => symbol.filePath === "src/secret.ts"));
+  assert.ok(manifest.imports.some((item) => item.filePath === "src/secret.ts"));
   assert.equal(manifest.excluded.byReason.ignored, 1);
-  assert.equal(manifest.excluded.byReason.secret_pattern, 1);
+  assert.equal(manifest.excluded.byReason.secret_pattern, 0);
+  assert.ok(manifest.warnings.some((warning) => warning.code === "secret_like_lines_redacted"));
+  assert.match(
+    manifest.warnings.find((warning) => warning.code === "secret_like_lines_redacted").message,
+    /src\/secret\.ts:2/
+  );
 });
 
 test("local overlay cache round-trips through .snipara/code-overlay/latest.json", () => {
@@ -354,6 +368,46 @@ test("top-level impact prints a human-readable local blast radius by default", (
   assert.doesNotMatch(result.stdout, /"files"/);
 });
 
+test("top-level impact keeps secret-like target files visible with a redaction warning", () => {
+  const repo = makeTempRepo();
+  fs.writeFileSync(
+    path.join(repo, "src", "secret.ts"),
+    [
+      "import { helper } from './helper';",
+      "const accessToken = 'abcdefghijklmnopqrstuvwxyz1234567890';",
+      "export function readSecretBackedConfig() {",
+      "  return helper();",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(repo, "src", "consumer.ts"),
+    [
+      "import { readSecretBackedConfig } from './secret';",
+      "export function consume() {",
+      "  return readSecretBackedConfig();",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+
+  const result = runCli(["impact", "src/secret.ts", "--source", "local"], { cwd: repo });
+  assert.equal(result.status, 0, result.stderr);
+
+  assert.match(result.stdout, /Code impact - local - src\/secret\.ts/);
+  assert.match(result.stdout, /Incoming \(1\) - files that depend on this/);
+  assert.match(result.stdout, /  src\/consumer\.ts/);
+  assert.match(result.stdout, /Outgoing \(1\) - files this depends on/);
+  assert.match(result.stdout, /  src\/helper\.ts/);
+  assert.match(result.stdout, /secret_like_lines_redacted/);
+  assert.match(result.stdout, /src\/secret\.ts:2/);
+  assert.doesNotMatch(result.stdout, /Missing targets/);
+  assert.doesNotMatch(result.stdout, /larger --max-files/);
+});
+
 test("code unified commands auto-select local overlay for dirty worktrees", () => {
   const repo = makeTempRepo();
   fs.appendFileSync(path.join(repo, "src/helper.ts"), "\nexport const dirty = true;\n", "utf8");
@@ -401,7 +455,9 @@ test("code local impact warns when requested targets are absent from the selecte
   assert.deepEqual(payload.changedFiles, []);
   assert.deepEqual(payload.missingTargetFiles, ["src/missing.ts"]);
   assert.equal(payload.warnings[0].code, "local_impact_targets_missing");
-  assert.match(payload.warnings[0].message, /Rebuild without --cached/);
+  assert.match(payload.warnings[0].message, /check the path, \.sniparaignore/);
+  assert.doesNotMatch(payload.warnings[0].message, /larger --max-files/);
+  assert.equal(payload.missingTargetDetails[0].reason, "not_in_overlay");
 });
 
 test("code hooks install writes background Git hooks for local overlay sync and promotion", () => {

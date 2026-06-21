@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Full command reference
+    url: https://github.com/Snipara/snipara-companion/blob/main/docs/FULL_REFERENCE.md
+    about: Read the complete CLI reference before opening a usage question.
+  - name: Launch kit
+    url: https://github.com/Snipara/snipara-companion/blob/main/docs/launch/LAUNCH_KIT.md
+    about: Demo scripts, post drafts, and positioning notes.

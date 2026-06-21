@@ -2,6 +2,15 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 2.0.8
+
+- Keeps secret-like source files visible to local `impact` by redacting matching
+  lines before graph extraction instead of excluding the whole file.
+- Improves missing-target warnings so `--max-files` is suggested only when the
+  local overlay actually hit the file cap.
+- Adds launch assets, demo scripts, post drafts, and issue templates for
+  impact feedback, docs feedback, and contribution proposals.
+
 ## New In 2.0.7
 
 - Reframes the package README around the account-free local `impact` first run,

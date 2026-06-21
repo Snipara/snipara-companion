@@ -1,0 +1,34 @@
+name: Docs or first-run feedback
+description: Report confusing README, quickstart, demo, or reference material.
+title: "[docs] "
+labels: ["docs-feedback"]
+body:
+  - type: textarea
+    id: page
+    attributes:
+      label: Page or command
+      description: Which README section, docs page, or command output caused confusion?
+      placeholder: "README first-run command"
+    validations:
+      required: true
+  - type: textarea
+    id: confusion
+    attributes:
+      label: What was confusing?
+      description: Describe what you expected to learn or do.
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested wording or fix
+      description: Optional, but concrete wording helps.
+  - type: dropdown
+    id: first_run
+    attributes:
+      label: Did this block the first run?
+      options:
+        - "Yes"
+        - "No"
+        - "Not sure"
+

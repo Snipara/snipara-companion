@@ -99,4 +99,7 @@ The previous long README has moved to [docs/FULL_REFERENCE.md](./docs/FULL_REFER
 Start there for the full command list, hook setup, hosted MCP bridge commands,
 workflow modes, team-sync, local context packs, and release-oriented flows.
 
+Launch assets, demo scripts, and post drafts live in
+[docs/launch/LAUNCH_KIT.md](./docs/launch/LAUNCH_KIT.md).
+
 Release notes live in [CHANGELOG.md](./CHANGELOG.md).

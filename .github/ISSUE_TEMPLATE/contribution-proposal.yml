@@ -1,0 +1,38 @@
+name: Contribution proposal
+description: Propose a focused docs, test, parser, or workflow improvement.
+title: "[contribution] "
+labels: ["good-first-issue"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Local impact parser or resolver
+        - README or docs
+        - Demo or launch assets
+        - Tests
+        - Workflow continuity
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should change, and what user problem does it solve?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Intended scope
+      description: Keep this small enough for a focused pull request.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I understand local impact is file-level import impact, not perfect call-site analysis.
+          required: true
+

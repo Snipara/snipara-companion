@@ -53,9 +53,17 @@ export interface LocalCodeOverlayImport {
   line: number;
 }
 
+export interface LocalCodeOverlayWarning {
+  code: string;
+  severity: "info" | "warning";
+  message: string;
+  [key: string]: unknown;
+}
+
 export interface LocalCodeOverlayExcludedFile {
   path: string;
   reason: "ignored" | "unsupported_language" | "too_large" | "secret_pattern" | "read_error";
+  line?: number;
 }
 
 export interface LocalCodeOverlayManifest {
@@ -82,7 +90,7 @@ export interface LocalCodeOverlayManifest {
     byReason: Record<LocalCodeOverlayExcludedFile["reason"], number>;
     samples: LocalCodeOverlayExcludedFile[];
   };
-  warnings: Array<{ code: string; severity: "info" | "warning"; message: string }>;
+  warnings: LocalCodeOverlayWarning[];
 }
 
 export interface CodeStatusCommandOptions {
@@ -307,6 +315,16 @@ const SAFE_SECRET_VALUE_PREFIXES = [
   "undefined",
 ];
 
+interface SecretPatternFinding {
+  line: number;
+  reason: "private_key" | "secret_assignment";
+}
+
+interface SecretRedactionSample {
+  path: string;
+  findings: SecretPatternFinding[];
+}
+
 function normalizeRepoPath(value: string): string {
   return value.split(path.sep).join("/").replace(/^\/+/, "");
 }
@@ -493,20 +511,69 @@ function isIgnored(filePath: string, sniparaIgnore: string[]): boolean {
   return sniparaIgnore.some((pattern) => matchesIgnorePattern(normalized, pattern));
 }
 
-function hasSecretPattern(content: string): boolean {
-  if (SECRET_PATTERNS.some((pattern) => pattern.test(content))) {
-    return true;
+function findUnsafeSecretAssignment(line: string): { value: string } | null {
+  const match = line.match(SECRET_ASSIGNMENT_PATTERN);
+  if (!match) {
+    return null;
   }
+  const value = match[1] ?? match[2] ?? match[3] ?? "";
+  const normalized = value.trim().toLowerCase();
+  if (SAFE_SECRET_VALUE_PREFIXES.some((prefix) => normalized.startsWith(prefix))) {
+    return null;
+  }
+  return { value };
+}
 
-  return content.split(/\r?\n/).some((line) => {
-    const match = line.match(SECRET_ASSIGNMENT_PATTERN);
-    if (!match) {
-      return false;
+function redactSecretLikeContentForOverlay(content: string): {
+  content: string;
+  findings: SecretPatternFinding[];
+} {
+  const findings: SecretPatternFinding[] = [];
+  const lines = content.split(/\r?\n/);
+  const redactedLines = lines.map((line, index) => {
+    const lineNumber = index + 1;
+    if (SECRET_PATTERNS.some((pattern) => pattern.test(line))) {
+      findings.push({ line: lineNumber, reason: "private_key" });
+      return "[SNIPARA_REDACTED_SECRET_LIKE_LINE]";
     }
-    const value = match[1] ?? match[2] ?? match[3] ?? "";
-    const normalized = value.trim().toLowerCase();
-    return !SAFE_SECRET_VALUE_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+
+    const assignment = findUnsafeSecretAssignment(line);
+    if (!assignment) {
+      return line;
+    }
+
+    findings.push({ line: lineNumber, reason: "secret_assignment" });
+    return line.replace(assignment.value, "[SNIPARA_REDACTED_SECRET]");
   });
+
+  return {
+    content: redactedLines.join("\n"),
+    findings,
+  };
+}
+
+function formatSecretRedactionWarning(samples: SecretRedactionSample[]): LocalCodeOverlayWarning {
+  const displayed = samples.slice(0, 5).map((sample) => {
+    const lines = sample.findings
+      .slice(0, 5)
+      .map((finding) => finding.line)
+      .join(",");
+    const suffix = sample.findings.length > 5 ? ",..." : "";
+    return `${sample.path}:${lines}${suffix}`;
+  });
+  const more = samples.length > displayed.length ? `; ${samples.length - displayed.length} more` : "";
+  return {
+    code: "secret_like_lines_redacted",
+    severity: "warning",
+    message:
+      "Secret-like lines were redacted before local graph extraction; files remain visible to impact. " +
+      `Samples: ${displayed.join("; ")}${more}.`,
+    samples: samples.map((sample) => ({
+      path: sample.path,
+      lines: sample.findings.map((finding) => finding.line),
+      reasons: [...new Set(sample.findings.map((finding) => finding.reason))],
+    })),
+  };
 }
 
 function listWorkingTreeFiles(repoRoot: string): string[] {
@@ -762,6 +829,7 @@ export function buildLocalCodeOverlay(
   const symbols: LocalCodeOverlaySymbol[] = [];
   const imports: LocalCodeOverlayImport[] = [];
   const excludedSamples: LocalCodeOverlayExcludedFile[] = [];
+  const secretRedactionSamples: SecretRedactionSample[] = [];
   const byReason: Record<LocalCodeOverlayExcludedFile["reason"], number> = {
     ignored: 0,
     unsupported_language: 0,
@@ -811,17 +879,18 @@ export function buildLocalCodeOverlay(
     }
 
     const content = contentBuffer.toString("utf8");
-    if (hasSecretPattern(content)) {
-      addExcluded(filePath, "secret_pattern");
-      continue;
+    const redaction = redactSecretLikeContentForOverlay(content);
+    const indexedContent = redaction.content;
+    if (redaction.findings.length > 0) {
+      secretRedactionSamples.push({ path: filePath, findings: redaction.findings });
     }
 
-    const extracted = extractCode(content, filePath, language);
+    const extracted = extractCode(indexedContent, filePath, language);
     files.push({
       path: filePath,
       language,
       sizeBytes: contentBuffer.length,
-      sha256: sha256(contentBuffer),
+      sha256: sha256(indexedContent),
       symbolCount: extracted.symbols.length,
       importCount: extracted.imports.length,
     });
@@ -844,13 +913,8 @@ export function buildLocalCodeOverlay(
         "The working tree is dirty, but this overlay was built from the selected commit only.",
     });
   }
-  if (byReason.secret_pattern > 0) {
-    warnings.push({
-      code: "secret_like_files_excluded",
-      severity: "warning",
-      message:
-        "One or more supported code files were excluded because they matched secret patterns.",
-    });
+  if (secretRedactionSamples.length > 0) {
+    warnings.push(formatSecretRedactionWarning(secretRedactionSamples));
   }
 
   const dirtyTreeHash =
@@ -1087,6 +1151,73 @@ function buildLocalFileEdges(manifest: LocalCodeOverlayManifest): Array<{
       ? [{ from: item.filePath, to: target, specifier: item.specifier, line: item.line }]
       : [];
   });
+}
+
+function missingTargetDetail(
+  manifest: LocalCodeOverlayManifest,
+  filePath: string
+): Record<string, unknown> {
+  const excluded = manifest.excluded.samples.find((sample) => sample.path === filePath);
+  if (!excluded) {
+    const hitFileLimit = manifest.warnings.some(
+      (warning) => warning.code === "local_overlay_file_limit_reached"
+    );
+    return {
+      path: filePath,
+      reason: "not_in_overlay",
+      remediation: hitFileLimit
+        ? "The overlay reached --max-files before this target was indexed. Increase --max-files and rebuild without --cached."
+        : "Rebuild without --cached, then check the path, .sniparaignore, supported language, or generated-file state.",
+    };
+  }
+
+  const remediationByReason: Record<LocalCodeOverlayExcludedFile["reason"], string> = {
+    ignored:
+      "Remove or narrow the matching .sniparaignore/default ignore rule if this file should be indexed.",
+    unsupported_language:
+      "Local overlay impact currently indexes TypeScript, TSX, Python, and Go files.",
+    too_large:
+      "This file is above the local overlay size limit. Split the generated file or raise maxFileBytes in the local overlay builder.",
+    secret_pattern:
+      "Rebuild without --cached so secret-like lines can be redacted and the file can stay in the graph; inspect the reported line if it should be changed.",
+    read_error: "The file could not be read from the selected working tree or commit.",
+  };
+
+  return {
+    path: filePath,
+    reason: excluded.reason,
+    ...(excluded.line ? { line: excluded.line } : {}),
+    remediation: remediationByReason[excluded.reason],
+  };
+}
+
+function buildMissingTargetsWarning(
+  manifest: LocalCodeOverlayManifest,
+  missingTargetFiles: string[]
+): LocalCodeOverlayWarning | null {
+  if (missingTargetFiles.length === 0) {
+    return null;
+  }
+  const details = missingTargetFiles.map((filePath) => missingTargetDetail(manifest, filePath));
+  const reasons = [...new Set(details.map((detail) => String(detail.reason)))];
+  const remediation = [...new Set(details.map((detail) => String(detail.remediation)))].join(" ");
+  return {
+    code: "local_impact_targets_missing",
+    severity: "warning",
+    message:
+      "One or more requested impact targets are not present in the selected local overlay. " +
+      remediation,
+    files: missingTargetFiles,
+    reasons,
+    details,
+  };
+}
+
+function shouldShowOverlayWarningInImpact(warning: LocalCodeOverlayWarning): boolean {
+  return (
+    warning.code === "secret_like_lines_redacted" ||
+    warning.code === "local_overlay_file_limit_reached"
+  );
 }
 
 function printLocalQueryResult(result: Record<string, unknown>, json?: boolean): void {
@@ -1372,6 +1503,7 @@ function printLocalImpactHumanResult(result: CodeGraphAutoSourceResult): void {
   const missingTargets = Array.isArray(impact.missingTargetFiles)
     ? impact.missingTargetFiles.filter((item): item is string => typeof item === "string")
     : [];
+  const missingTargetDetails = extractMissingTargetDetails(impact.missingTargetDetails);
 
   console.log(chalk.bold(`Code impact - local - ${target}`));
   console.log(`Source: ${result.sourceSelection.selected}`);
@@ -1385,7 +1517,8 @@ function printLocalImpactHumanResult(result: CodeGraphAutoSourceResult): void {
     console.log("");
     console.log(chalk.yellow(`Missing targets (${missingTargets.length})`));
     for (const filePath of missingTargets.slice(0, 12)) {
-      console.log(`  ${filePath}`);
+      const detail = missingTargetDetails.get(filePath);
+      console.log(`  ${filePath}${detail ? ` (${detail})` : ""}`);
     }
     if (missingTargets.length > 12) {
       console.log(`  ... ${missingTargets.length - 12} more`);
@@ -1445,6 +1578,29 @@ function uniqueEdgeFiles(value: unknown, field: "from" | "to"): string[] {
         .filter((item): item is string => typeof item === "string")
     ),
   ].sort();
+}
+
+function extractMissingTargetDetails(value: unknown): Map<string, string> {
+  const details = new Map<string, string>();
+  if (!Array.isArray(value)) {
+    return details;
+  }
+
+  for (const item of value) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    const pathValue = typeof record.path === "string" ? record.path : undefined;
+    const reason = typeof record.reason === "string" ? record.reason : undefined;
+    const line = typeof record.line === "number" ? record.line : undefined;
+    if (!pathValue || !reason) {
+      continue;
+    }
+    details.set(pathValue, line ? `excluded: ${reason} at line ${line}` : `excluded: ${reason}`);
+  }
+
+  return details;
 }
 
 function printFileList(title: string, description: string, files: string[]): void {
@@ -1799,18 +1955,11 @@ export function buildLocalImpactResult(
   const impactedFiles = [
     ...new Set([...incoming.map((edge) => edge.from), ...outgoing.map((edge) => edge.to)]),
   ].sort();
-  const warnings =
-    missingTargetFiles.length > 0
-      ? [
-          {
-            code: "local_impact_targets_missing",
-            severity: "warning",
-            message:
-              "One or more requested impact targets are not present in the selected local overlay. Rebuild without --cached or rerun code sync with a larger --max-files value.",
-            files: missingTargetFiles,
-          },
-        ]
-      : [];
+  const missingTargetsWarning = buildMissingTargetsWarning(manifest, missingTargetFiles);
+  const warnings = [
+    ...(missingTargetsWarning ? [missingTargetsWarning] : []),
+    ...manifest.warnings.filter(shouldShowOverlayWarningInImpact),
+  ];
 
   return {
     title: "Local impact",
@@ -1820,6 +1969,7 @@ export function buildLocalImpactResult(
     target: symbol ? compactSymbol(symbol) : { changedFiles, missingTargetFiles },
     changedFiles,
     missingTargetFiles,
+    missingTargetDetails: missingTargetsWarning?.details ?? [],
     warnings,
     symbols: manifest.symbols.filter((item) => selectedFiles.has(item.filePath)).map(compactSymbol),
     incoming,
