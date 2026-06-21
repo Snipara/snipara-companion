@@ -1356,10 +1356,10 @@ function printCodeGraphAutoSourceResult(result: CodeGraphAutoSourceResult, json?
 function isLocalImpactResult(value: unknown): value is Record<string, unknown> {
   return Boolean(
     value &&
-      typeof value === "object" &&
-      (value as Record<string, unknown>).title === "Local impact" &&
-      Array.isArray((value as Record<string, unknown>).incoming) &&
-      Array.isArray((value as Record<string, unknown>).outgoing)
+    typeof value === "object" &&
+    (value as Record<string, unknown>).title === "Local impact" &&
+    Array.isArray((value as Record<string, unknown>).incoming) &&
+    Array.isArray((value as Record<string, unknown>).outgoing)
   );
 }
 

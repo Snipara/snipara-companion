@@ -1,68 +1,29 @@
-# snipara-companion full reference
+# snipara-companion
 
-This is the previous long-form README, kept as a command reference. For the
-first-run path, start with the root [README](../README.md).
+**Local helper CLI for Snipara agent workflows.**
 
-**Local-first code impact and workflow continuity CLI for Snipara agent workflows.**
+`snipara-companion` adds Git-style continuity commands for agent work: status,
+briefs, timelines, phase commits, handoffs, resume, diagnostics, hooks, folder
+onboarding, local Mini Snipara bridges, and command-line access around Snipara
+Hosted MCP. It complements the hosted context and memory surface; it is not the
+primary runtime for agents.
 
-`snipara-companion` runs fully locally for code impact, callers, imports,
-neighbors, shortest-path, workflow continuity, status, briefs, timelines, phase
-commits, context-pack, handoffs, resume, diagnostics, hooks, folder onboarding,
-local Mini Snipara bridges, and command-line access around Snipara Hosted MCP.
-
-Connect it to the Snipara SaaS when you need the managed Project Intelligence
-layer: shared memory, cloud code graph, outcome-weighted judgment, source
-authority, team coordination, shared claims/locks, conflict alarms, GitHub
-checks, and dashboard live views.
-
-This repository is the standalone open-source package. The installed executable
-is `snipara-companion`.
+In this repository, the source currently lives in `packages/cli`, and the installed executable is `snipara-companion`.
 
 This package complements `snipara-mcp`. It does not replace it.
-
-## Mini Snipara Open Stack
-
-`snipara-companion` is part of the Mini Snipara Open Stack: a useful local
-workflow stack for solo users and small teams, with a clear upgrade path to
-hosted Snipara for team-wide Project Intelligence.
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/Snipara/snipara-companion/main/assets/mini-snipara-open-stack.jpg?v=4" alt="Mini Snipara Open Stack: every AI session starts with context across Snipara Companion, shared project intelligence, memory, code graph, impact, and team coordination" width="860">
-</p>
-
-| Repo                                                                | Role                                                                                                            | Account required                         |
-| ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| [`snipara-companion`](https://github.com/Snipara/snipara-companion) | Local workflow continuity, hooks, handoffs, context-pack, phase commits, and hosted bridges                     | No for local state; yes for hosted calls |
-| [`snipara-memory`](https://github.com/Snipara/snipara-memory)       | Local durable project memory engine and MCP/API wrapper                                                         | No                                       |
-| [`snipara-evals`](https://github.com/Snipara/snipara-evals)         | Deterministic Project Intelligence evals for handoffs, context, decisions, impact, verification, and continuity | No                                       |
-
-## Local vs Hosted Capabilities
-
-| Capability                                   | Local companion                     | Hosted Snipara                              |
-| -------------------------------------------- | ----------------------------------- | ------------------------------------------- |
-| Code impact, callers, imports, neighbors     | Yes, from the current checkout      | Optional cloud/team graph                   |
-| Workflow state, timeline, handoff files      | Yes                                 | Syncs and enriches when configured          |
-| Local project memory                         | Via `snipara-memory`                | Managed, reviewed, scoped memory            |
-| Project Intelligence eval artifacts          | Via `snipara-evals`                 | Can use hosted context/code graph as inputs |
-| Git hooks and local guards                   | Yes                                 | Adds shared/team guard decisions            |
-| Presence across machines and agents          | Local machine only                  | Yes                                         |
-| Shared claims/locks and stale lease handling | Local hints                         | Team-wide coordination                      |
-| GitHub checks and dashboard live views       | Local artifacts                     | Yes                                         |
-
-Local commands are complete for one repo, one machine, and one session. Hosted
-Snipara adds team memory, semantic retrieval, cloud code graph, cross-machine
-presence, outcome learning, dashboards, and audit.
 
 ## Quickstart
 
 ```bash
-# First local impact check, no install or login
-npx -y snipara-companion impact src/auth/session.ts --source local
-
-# Optional daily install
+# 1. Install
 npm install -g snipara-companion
-snipara-companion impact src/auth/session.ts
-snipara-companion brief           # what changed, why, impact, next action
+
+# 2. Point this workspace at a Snipara project (writes local .snipara/ config)
+snipara-companion init            # interactive; or: snipara-companion login
+
+# 3. Use it in your agent workflow
+snipara-companion brief           # what changed, why, impact, next action, safe-to-proceed
+snipara-companion status          # current work across workflow, git, and Team Sync
 snipara-companion handoff --summary "<what changed>" --next "<next step>"
 ```
 
@@ -127,6 +88,36 @@ flowchart LR
     Companion --> Hosted["Snipara Hosted MCP / API"]
     Hosted --> Agents["Codex, Claude Code, Cursor, ChatGPT"]
 ```
+
+## Mini Snipara Open Stack
+
+`snipara-companion` is the local workflow layer in the open Mini Snipara stack:
+
+| Repo                                                                | Role                                                                                                            | Account required                         |
+| ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| [`snipara-companion`](https://github.com/Snipara/snipara-companion) | Local workflow continuity, hooks, handoffs, and hosted bridges                                                  | No for local state; yes for hosted calls |
+| [`snipara-memory`](https://github.com/Snipara/snipara-memory)       | Local durable project memory engine and MCP/API wrapper                                                         | No                                       |
+| [`snipara-evals`](https://github.com/Snipara/snipara-evals)         | Deterministic Project Intelligence evals for handoffs, context, decisions, impact, verification, and continuity | No                                       |
+
+Hosted Snipara remains the managed layer for source authority, reviewed memory,
+team-wide presence, shared claims/locks, conflict alarms, GitHub checks,
+dashboard live views, and Cloud code graph impact. Local commands are useful for
+single-machine continuity and CI artifacts, but they cannot prove what another
+human or agent is doing on a different machine unless the hosted collaboration
+backend is configured.
+
+## Local vs Hosted Capabilities
+
+| Capability                                   | Local/open stack                   | Hosted Snipara                              |
+| -------------------------------------------- | ---------------------------------- | ------------------------------------------- |
+| Workflow state, timeline, handoff files      | Yes                                | Syncs and enriches when configured          |
+| Local project memory                         | Via `snipara-memory`               | Managed, reviewed, scoped memory            |
+| Project Intelligence eval artifacts          | Via `snipara-evals`                | Can use hosted context/code graph as inputs |
+| Git hooks and local guards                   | Yes                                | Stronger with hosted guard decisions        |
+| Presence across machines and agents          | No                                 | Yes                                         |
+| Shared claims/locks and stale lease handling | Local only is advisory             | Yes                                         |
+| GitHub checks and dashboard live views       | No                                 | Yes                                         |
+| Code graph impact and symbol cards           | Local overlay only where available | Cloud code graph                            |
 
 ## When To Use It
 
@@ -712,11 +703,11 @@ snipara-companion intelligence brief \
 ```
 
 The command calls hosted `snipara_resume_context` and `snipara_memory_health`.
-When changed files are provided, code impact uses the local overlay by default,
-including clean configured checkouts. Pass `--source hosted` only when you want
-the hosted team graph. It prints continuity signals, memory health, risk and
-verification hints, degraded surfaces, and the Judgment Card's weighted
-readiness, evidence, and required actions.
+When changed files are provided, code impact uses companion auto-source
+selection, so dirty/ahead worktrees use the local overlay and clean configured
+checkouts use hosted graph impact. It prints continuity signals, memory health,
+risk and verification hints, degraded surfaces, and the Judgment Card's
+weighted readiness, evidence, and required actions.
 
 Use top-level `run` when the agent should make a production-oriented go/no-go
 judgment in one pass:
@@ -733,6 +724,12 @@ snipara-companion run \
 package-surface review, verification plan, and final Judgment Card. Review-only
 guard findings can be acknowledged with the printed guard action card command;
 blocking conflicts still make the release judgment non-proceedable.
+When a served judgment id is available, add `--served-judgment-id` so `run` can
+write first-party Advisor Influence receipts for recommendations that visibly
+change the plan. The receipt payload includes stable skip/record counts,
+bounded automation metadata, and observed verification evidence from guard,
+package review, and policy-gate results without treating those checks as
+outcome proof.
 
 For the full Project Intelligence and Continuity Layer roadmap, scaffold the
 built-in managed workflow plan:
@@ -781,10 +778,9 @@ Semantics:
 - `snipara-companion team-sync sweep` = archives stale local work items after an inactivity threshold; default is 14 days and `--dry-run` previews the cleanup
 - `snipara-companion team-sync resume` = reloads local carryover plus the hosted latest handoff and checkpoint-aware resume guidance when available
 - `snipara-companion final-commit` / `workflow final-commit` = final hosted commit for the managed workflow
-- `snipara-companion impact <file>` = shortest local blast-radius first-run path.
-- `snipara-companion code callers/imports/neighbors/shortest-path/impact` = primary local code graph surface for agents with shell access. These commands use `--source auto` by default, and `auto` defaults to the local overlay. Every response reports `sourceSelection` plus agent guidance.
+- `snipara-companion code callers/imports/neighbors/shortest-path/impact` = primary code graph surface for agents with shell access. These commands use `--source auto` by default; clean configured checkouts use hosted MCP, dirty/ahead worktrees use the local overlay, and every response reports `sourceSelection` plus agent guidance.
 - `snipara-companion code symbol-card` = direct paid Context `snipara_code_symbol_card` for an important symbol before editing, with an agent guidance summary before raw JSON
-- `snipara-companion code impact --source hosted|local` = optional source override for debugging; normal first-run instructions can use `--source local`, while daily usage can leave `--source auto` in place. Hosted `snipara_code_impact` is the opt-in path when team graph state matters.
+- `snipara-companion code impact --source hosted|local` = optional source override for debugging; normal agent instructions should leave `--source auto` in place. Hosted `snipara_code_impact` is the fallback when companion is unavailable or the canonical graph check after push/reindex.
 - `snipara-companion code local impact` = explicit repository-local file-level import impact from the local code overlay; keep this for power-user/debug workflows, and use `workflow impact-gate` when the file set should come from unpushed workflow commits
 - `snipara-companion doctor` = local readiness check for companion version skew, Snipara auth, deterministic hosted tool catalog access, Snipara Sandbox, Snipara Sandbox MCP wiring, provider keys, and Docker
 - `snipara-companion upload --metadata/--metadata-file` = single-file upload with the same business/client metadata fields supported by bulk sync

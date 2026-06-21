@@ -403,7 +403,22 @@ export interface RecordAdvisorInfluenceReceiptInput {
   behaviorChange: string;
   verificationExecuted: string[];
   outcomeLinkStatus?: AdvisorInfluenceOutcomeLinkStatus;
-  metadata?: Record<string, unknown>;
+  metadata?: AdvisorInfluenceReceiptMetadataInput;
+}
+
+export interface AdvisorInfluenceReceiptMetadataInput extends Record<string, unknown> {
+  source?: string;
+  firstParty?: boolean;
+  planBefore?: string | null;
+  planAfter?: string | null;
+  changedBecauseOfRecommendation?: boolean | null;
+  filesAffected?: string[];
+  toolActions?: string[];
+  humanOverride?: string | null;
+  task?: string | null;
+  branch?: string | null;
+  runId?: string | null;
+  generatedAt?: string | null;
 }
 
 export interface RecordAdvisorInfluenceReceiptResult {

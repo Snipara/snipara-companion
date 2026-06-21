@@ -2,6 +2,30 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 2.0.7
+
+- Reframes the package README around the account-free local `impact` first run,
+  with the full reference moved to `docs/FULL_REFERENCE.md`.
+- Makes `impact` available as a top-level command and keeps code graph `auto`
+  source local by default, so no account or network call is required unless
+  `--source hosted` is explicitly requested.
+- Renders local `impact` output as a human-readable Incoming/Outgoing
+  blast-radius by default, while preserving `--json` for the full overlay
+  payload.
+
+## New In 2.0.6
+
+- Hardens `snipara-companion run` first-party Advisor Influence receipt capture
+  with stable skip reasons, total/eligible/recorded/skipped counts, bounded
+  write limits, per-recommendation skipped writes, and receipt automation
+  metadata.
+- Backfills observed run verification evidence into advisor receipts through
+  `verificationExecuted` and bounded metadata for collaboration guard,
+  package-surface review, and policy-gate results. This records verification
+  evidence without claiming outcome proof.
+- Keeps receipt writes tied to visible plan adaptation: recommendations that do
+  not change the agent plan are explicitly skipped instead of silently recorded.
+
 ## New In 2.0.4
 
 - Adds Project Intelligence policy gates to `snipara-companion run --release`,

@@ -61,18 +61,42 @@ export interface ProjectRunPackageReview {
 
 export interface ProjectRunAdvisorReceiptWrite {
   advisorRecommendationId: string;
-  status: "recorded" | "error";
+  status: "recorded" | "skipped" | "error";
+  agentDecision?: AdvisorInfluenceAgentDecision;
+  changedBecauseOfRecommendation?: boolean;
   result?: RecordAdvisorInfluenceReceiptResult;
+  reason?: ProjectRunAdvisorReceiptSkipReason;
   error?: string;
 }
+
+export type ProjectRunAdvisorReceiptSkipReason =
+  | "explicitly_skipped"
+  | "no_advisor_recommendations"
+  | "missing_served_judgment_id"
+  | "no_plan_adaptation"
+  | "write_limit_exceeded";
 
 export interface ProjectRunAdvisorReceiptCapture {
   status: "skipped" | "recorded" | "partial" | "error";
   servedJudgmentId?: string;
+  totalRecommendationCount: number;
+  eligibleCount: number;
   attemptedCount: number;
   recordedCount: number;
+  skippedCount: number;
   writes: ProjectRunAdvisorReceiptWrite[];
-  reason?: string;
+  reason?: ProjectRunAdvisorReceiptSkipReason;
+}
+
+export type ProjectRunVerificationEvidenceStatus = "passed" | "failed" | "skipped" | "warning";
+
+export interface ProjectRunVerificationEvidence {
+  source: "collaboration_guard" | "package_review" | "policy_gates";
+  label: string;
+  status: ProjectRunVerificationEvidenceStatus;
+  command?: string;
+  detail?: string;
+  exitCode?: number | null;
 }
 
 export interface ProjectIntelligenceRunResult {
@@ -90,6 +114,7 @@ export interface ProjectIntelligenceRunResult {
 
 const GUARD_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 const RAW_OUTPUT_PREVIEW_BYTES = 64_000;
+const ADVISOR_RECEIPT_WRITE_LIMIT = 6;
 
 function normalizeStringList(values: string[] | undefined): string[] {
   return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))];
@@ -222,6 +247,25 @@ function advisorReceiptDecision(
   return "modified";
 }
 
+function advisorReceiptChangedBecauseOfRecommendation(args: {
+  recommendation: ProjectIntelligenceJudgmentCard["advisorRecommendations"][number];
+  judgmentCard: ProjectIntelligenceJudgmentCard;
+}): boolean {
+  if (args.recommendation.severity === "block" && args.judgmentCard.canProceed === "block") {
+    return true;
+  }
+  if (args.recommendation.severity === "risk") {
+    return true;
+  }
+  if (args.recommendation.expectedBehaviorChange?.trim()) {
+    return true;
+  }
+  if (args.recommendation.recommendedVerification.length > 0) {
+    return true;
+  }
+  return args.judgmentCard.requiredActions.length > 0;
+}
+
 function advisorReceiptBehaviorChange(
   recommendation: ProjectIntelligenceJudgmentCard["advisorRecommendations"][number],
   judgmentCard: ProjectIntelligenceJudgmentCard
@@ -243,81 +287,334 @@ function advisorReceiptBehaviorChange(
     .join(" ");
 }
 
+function advisorReceiptPlanBefore(options: ProjectRunCommandOptions): string | null {
+  return (
+    options.task ??
+    options.diffSummary ??
+    (options.changedFiles && options.changedFiles.length > 0
+      ? `Work on ${options.changedFiles.slice(0, 8).join(", ")}`
+      : null)
+  );
+}
+
+function advisorReceiptPlanAfter(args: {
+  recommendation: ProjectIntelligenceJudgmentCard["advisorRecommendations"][number];
+  behaviorChange: string;
+  judgmentCard: ProjectIntelligenceJudgmentCard;
+}): string {
+  const requiredActions = args.judgmentCard.requiredActions
+    .slice(0, 5)
+    .map((action) => action.command ?? action.title)
+    .filter(Boolean);
+  return [
+    args.behaviorChange,
+    requiredActions.length > 0
+      ? `Visible plan now includes required action(s): ${requiredActions.join("; ")}.`
+      : null,
+    args.recommendation.recommendedVerification.length > 0
+      ? `Recommended verification stays open: ${args.recommendation.recommendedVerification
+          .slice(0, 5)
+          .join("; ")}.`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function advisorReceiptMetadata(args: {
+  options: ProjectRunCommandOptions;
+  brief: ProjectIntelligenceBrief;
+  judgmentCard: ProjectIntelligenceJudgmentCard;
+  recommendation: ProjectIntelligenceJudgmentCard["advisorRecommendations"][number];
+  recommendationIndex: number;
+  totalRecommendations: number;
+  verificationEvidence: ProjectRunVerificationEvidence[];
+  agentDecision: AdvisorInfluenceAgentDecision;
+  behaviorChange: string;
+}): Record<string, unknown> {
+  const toolActions = normalizeStringList([
+    ...args.recommendation.recommendedVerification,
+    ...args.judgmentCard.requiredActions.map((action) => action.command ?? action.title),
+  ]).slice(0, 20);
+  const filesAffected = normalizeStringList([
+    ...(args.brief.changedFiles ?? []),
+    ...(args.options.changedFiles ?? []),
+  ]).slice(0, 80);
+  return {
+    source: "snipara-companion:run",
+    firstParty: true,
+    runVersion: "project-intelligence.production-run.v1",
+    runId: process.env.SNIPARA_SESSION_ID ?? process.env.CODEX_SESSION_ID ?? null,
+    generatedAt: args.judgmentCard.generatedAt,
+    release: Boolean(args.options.release),
+    task: args.brief.task ?? args.options.task ?? null,
+    branch: args.brief.branch ?? args.options.branch ?? null,
+    filesAffected,
+    changedFiles: filesAffected,
+    planBefore: advisorReceiptPlanBefore(args.options),
+    planAfter: advisorReceiptPlanAfter({
+      recommendation: args.recommendation,
+      behaviorChange: args.behaviorChange,
+      judgmentCard: args.judgmentCard,
+    }),
+    changedBecauseOfRecommendation: args.agentDecision !== "ignored",
+    toolActions,
+    humanOverride: null,
+    judgmentState: args.judgmentCard.state,
+    canProceed: args.judgmentCard.canProceed,
+    verificationEvidence: args.verificationEvidence,
+    verificationBackfill: {
+      version: "advisor-receipt-verification-backfill-v1",
+      executedCount: args.verificationEvidence.filter((item) => item.status !== "skipped").length,
+      skippedCount: args.verificationEvidence.filter((item) => item.status === "skipped").length,
+      caveat:
+        "Verification evidence records commands or gates observed by this run; it is not outcome proof.",
+    },
+    receiptAutomation: {
+      version: "first-party-advisor-receipt-automation-v1",
+      trigger: "snipara-companion run",
+      selectedRecommendationRank: args.recommendationIndex + 1,
+      totalRecommendations: args.totalRecommendations,
+      writeLimit: ADVISOR_RECEIPT_WRITE_LIMIT,
+      skipReason: null,
+      reason: "served judgment id and plan adaptation were present",
+    },
+  };
+}
+
+function skippedAdvisorReceiptWrite(
+  recommendation: ProjectIntelligenceJudgmentCard["advisorRecommendations"][number],
+  reason: ProjectRunAdvisorReceiptSkipReason,
+  agentDecision?: AdvisorInfluenceAgentDecision,
+  changedBecauseOfRecommendation?: boolean
+): ProjectRunAdvisorReceiptWrite {
+  return {
+    advisorRecommendationId: recommendation.id,
+    status: "skipped",
+    ...(agentDecision ? { agentDecision } : {}),
+    ...(changedBecauseOfRecommendation !== undefined ? { changedBecauseOfRecommendation } : {}),
+    reason,
+  };
+}
+
+function advisorReceiptCaptureStatus(args: {
+  eligibleCount: number;
+  recordedCount: number;
+  skippedCount: number;
+  errorCount: number;
+}): ProjectRunAdvisorReceiptCapture["status"] {
+  if (args.eligibleCount === 0) return "skipped";
+  if (
+    args.recordedCount === args.eligibleCount &&
+    args.errorCount === 0 &&
+    args.skippedCount === 0
+  ) {
+    return "recorded";
+  }
+  if (args.recordedCount > 0) return "partial";
+  if (args.errorCount > 0) return "error";
+  return "skipped";
+}
+
+function verificationEvidenceFromRun(args: {
+  guard?: ProjectRunGuardResult;
+  packageReview?: ProjectRunPackageReview;
+  policyGates?: ProjectPolicyGatesResult;
+}): ProjectRunVerificationEvidence[] {
+  const evidence: ProjectRunVerificationEvidence[] = [];
+  if (args.guard) {
+    evidence.push({
+      source: "collaboration_guard",
+      label: "Collaboration guard",
+      status: args.guard.status === 0 ? "passed" : "failed",
+      command: args.guard.command,
+      exitCode: args.guard.status,
+      detail:
+        args.guard.status === 0
+          ? "Pre-deploy collaboration guard passed or only review-only warnings were acknowledged."
+          : (args.guard.error ?? args.guard.stderr.trim() ?? `Guard exited ${args.guard.status}.`),
+    });
+  }
+  if (args.packageReview) {
+    evidence.push({
+      source: "package_review",
+      label: "Package surface review",
+      status:
+        args.packageReview.status === "ok"
+          ? "passed"
+          : args.packageReview.status === "skipped"
+            ? "skipped"
+            : "failed",
+      command: args.packageReview.command,
+      detail:
+        args.packageReview.status === "ok"
+          ? "npm package metadata was read successfully."
+          : (args.packageReview.error ?? `Package review ${args.packageReview.status}.`),
+    });
+  }
+  if (args.policyGates) {
+    evidence.push({
+      source: "policy_gates",
+      label: "Policy gates",
+      status:
+        args.policyGates.summary.block > 0
+          ? "failed"
+          : args.policyGates.summary.requiredAction > 0
+            ? "warning"
+            : "passed",
+      detail: `Strongest policy gate: ${args.policyGates.summary.strongestSeverity}; advisory ${args.policyGates.summary.advisory}, required ${args.policyGates.summary.requiredAction}, block ${args.policyGates.summary.block}.`,
+    });
+  }
+  return evidence;
+}
+
+function verificationExecutedFromEvidence(evidence: ProjectRunVerificationEvidence[]): string[] {
+  return evidence
+    .filter((item) => item.status !== "skipped")
+    .map((item) =>
+      item.command
+        ? `${item.label}: ${item.command} (${item.status})`
+        : `${item.label}: ${item.status}`
+    );
+}
+
 async function recordFirstPartyAdvisorReceipts(args: {
   options: ProjectRunCommandOptions;
   brief: ProjectIntelligenceBrief;
   judgmentCard: ProjectIntelligenceJudgmentCard;
+  verificationEvidence?: ProjectRunVerificationEvidence[];
 }): Promise<ProjectRunAdvisorReceiptCapture | undefined> {
+  const allRecommendations = args.judgmentCard.advisorRecommendations;
   if (args.options.skipAdvisorReceipts) {
     return {
       status: "skipped",
+      totalRecommendationCount: allRecommendations.length,
+      eligibleCount: 0,
       attemptedCount: 0,
       recordedCount: 0,
+      skippedCount: allRecommendations.length,
       writes: [],
-      reason: "advisor receipt capture was explicitly skipped",
+      reason: "explicitly_skipped",
     };
   }
 
-  if (args.judgmentCard.advisorRecommendations.length === 0) {
-    return undefined;
+  if (allRecommendations.length === 0) {
+    return {
+      status: "skipped",
+      totalRecommendationCount: 0,
+      eligibleCount: 0,
+      attemptedCount: 0,
+      recordedCount: 0,
+      skippedCount: 0,
+      writes: [],
+      reason: "no_advisor_recommendations",
+    };
   }
 
   const servedJudgmentId = servedJudgmentIdForRun(args.options, args.brief);
   if (!servedJudgmentId) {
+    const writes = allRecommendations
+      .slice(0, ADVISOR_RECEIPT_WRITE_LIMIT)
+      .map((recommendation) =>
+        skippedAdvisorReceiptWrite(recommendation, "missing_served_judgment_id")
+      );
     return {
       status: "skipped",
+      totalRecommendationCount: allRecommendations.length,
+      eligibleCount: 0,
       attemptedCount: 0,
       recordedCount: 0,
-      writes: [],
-      reason: "no served judgment id was available for first-party advisor receipts",
+      skippedCount: writes.length,
+      writes,
+      reason: "missing_served_judgment_id",
     };
   }
 
   const client = createClient(10000);
-  const recommendations = args.judgmentCard.advisorRecommendations.slice(0, 6);
-  const writes = await Promise.all(
-    recommendations.map(async (recommendation): Promise<ProjectRunAdvisorReceiptWrite> => {
-      try {
-        const result = await client.recordAdvisorInfluenceReceipt({
-          servedJudgmentId,
-          recommendation: advisorReceiptRecommendation(recommendation),
-          agentDecision: advisorReceiptDecision(recommendation, args.judgmentCard),
-          behaviorChange: advisorReceiptBehaviorChange(recommendation, args.judgmentCard),
-          verificationExecuted: [],
-          outcomeLinkStatus: "pending",
-          metadata: {
-            source: "snipara-companion:run",
-            firstParty: true,
-            runVersion: "project-intelligence.production-run.v1",
-            generatedAt: args.judgmentCard.generatedAt,
-            release: Boolean(args.options.release),
-            branch: args.brief.branch ?? args.options.branch ?? null,
-            changedFiles: args.brief.changedFiles,
-            judgmentState: args.judgmentCard.state,
-            canProceed: args.judgmentCard.canProceed,
-          },
-        });
-        return {
-          advisorRecommendationId: recommendation.id,
-          status: "recorded",
-          result,
-        };
-      } catch (error) {
-        return {
-          advisorRecommendationId: recommendation.id,
-          status: "error",
-          error: error instanceof Error ? error.message : String(error),
-        };
-      }
-    })
-  );
+  const verificationEvidence = args.verificationEvidence ?? [];
+  const verificationExecuted = verificationExecutedFromEvidence(verificationEvidence);
+  const selectedRecommendations = allRecommendations.slice(0, ADVISOR_RECEIPT_WRITE_LIMIT);
+  const overflowWrites = allRecommendations
+    .slice(ADVISOR_RECEIPT_WRITE_LIMIT)
+    .map((recommendation) => skippedAdvisorReceiptWrite(recommendation, "write_limit_exceeded"));
+  const writes = [
+    ...(await Promise.all(
+      selectedRecommendations.map(
+        async (recommendation, recommendationIndex): Promise<ProjectRunAdvisorReceiptWrite> => {
+          const agentDecision = advisorReceiptDecision(recommendation, args.judgmentCard);
+          const changedBecauseOfRecommendation = advisorReceiptChangedBecauseOfRecommendation({
+            recommendation,
+            judgmentCard: args.judgmentCard,
+          });
+          if (!changedBecauseOfRecommendation) {
+            return skippedAdvisorReceiptWrite(
+              recommendation,
+              "no_plan_adaptation",
+              agentDecision,
+              false
+            );
+          }
+
+          try {
+            const behaviorChange = advisorReceiptBehaviorChange(recommendation, args.judgmentCard);
+            const result = await client.recordAdvisorInfluenceReceipt({
+              servedJudgmentId,
+              recommendation: advisorReceiptRecommendation(recommendation),
+              agentDecision,
+              behaviorChange,
+              verificationExecuted,
+              outcomeLinkStatus: "pending",
+              metadata: advisorReceiptMetadata({
+                options: args.options,
+                brief: args.brief,
+                judgmentCard: args.judgmentCard,
+                recommendation,
+                recommendationIndex,
+                totalRecommendations: allRecommendations.length,
+                verificationEvidence,
+                agentDecision,
+                behaviorChange,
+              }),
+            });
+            return {
+              advisorRecommendationId: recommendation.id,
+              status: "recorded",
+              agentDecision,
+              changedBecauseOfRecommendation,
+              result,
+            };
+          } catch (error) {
+            return {
+              advisorRecommendationId: recommendation.id,
+              status: "error",
+              agentDecision,
+              changedBecauseOfRecommendation,
+              error: error instanceof Error ? error.message : String(error),
+            };
+          }
+        }
+      )
+    )),
+    ...overflowWrites,
+  ];
 
   const recordedCount = writes.filter((write) => write.status === "recorded").length;
+  const skippedCount = writes.filter((write) => write.status === "skipped").length;
+  const errorCount = writes.filter((write) => write.status === "error").length;
+  const eligibleCount = writes.filter((write) => write.status !== "skipped").length;
   return {
-    status: recordedCount === writes.length ? "recorded" : recordedCount > 0 ? "partial" : "error",
+    status: advisorReceiptCaptureStatus({
+      eligibleCount,
+      recordedCount,
+      skippedCount,
+      errorCount,
+    }),
     servedJudgmentId,
-    attemptedCount: writes.length,
+    totalRecommendationCount: allRecommendations.length,
+    eligibleCount,
+    attemptedCount: eligibleCount,
     recordedCount,
+    skippedCount,
     writes,
   };
 }
@@ -459,11 +756,6 @@ export async function buildProjectIntelligenceRun(
     packageReview: packageReview as unknown as Record<string, unknown> | undefined,
     errors: runErrors,
   });
-  const advisorReceiptCapture = await recordFirstPartyAdvisorReceipts({
-    options,
-    brief,
-    judgmentCard,
-  });
   const policyGates = evaluateProjectPolicyGates({
     task: options.task,
     release: options.release,
@@ -474,6 +766,17 @@ export async function buildProjectIntelligenceRun(
     guard,
     packageReview,
     judgmentCard,
+  });
+  const verificationEvidence = verificationEvidenceFromRun({
+    guard,
+    packageReview,
+    policyGates,
+  });
+  const advisorReceiptCapture = await recordFirstPartyAdvisorReceipts({
+    options,
+    brief,
+    judgmentCard,
+    verificationEvidence,
   });
 
   const suggestedCommands = [
@@ -570,8 +873,16 @@ export async function projectIntelligenceRunCommand(
       console.log(
         `Recorded: ${result.advisorReceiptCapture.recordedCount}/${result.advisorReceiptCapture.attemptedCount}`
       );
+      if (result.advisorReceiptCapture.skippedCount > 0) {
+        console.log(`Skipped: ${result.advisorReceiptCapture.skippedCount}`);
+      }
       if (result.advisorReceiptCapture.reason) {
-        console.log(result.advisorReceiptCapture.reason);
+        console.log(`Reason: ${result.advisorReceiptCapture.reason}`);
+      }
+      for (const write of result.advisorReceiptCapture.writes.slice(0, 4)) {
+        if (write.status === "skipped" && write.reason) {
+          console.log(`- skipped ${write.advisorRecommendationId}: ${write.reason}`);
+        }
       }
       console.log("");
     }

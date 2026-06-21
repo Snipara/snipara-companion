@@ -2597,9 +2597,7 @@ code
   )
   .addCommand(
     new Command("imports")
-      .description(
-        "Find imports/importers for a symbol or file from the local overlay by default"
-      )
+      .description("Find imports/importers for a symbol or file from the local overlay by default")
       .option("-q, --qualified-name <qualifiedName>", "Qualified symbol name")
       .option("--symbol-key <symbolKey>", "Stable graph or local overlay symbol key")
       .option("-f, --file-path <filePath>", "File path to inspect")
@@ -2693,9 +2691,7 @@ code
   )
   .addCommand(
     new Command("impact")
-      .description(
-        "Run the primary agent-ready code impact gate from the local overlay by default"
-      )
+      .description("Run the primary agent-ready code impact gate from the local overlay by default")
       .argument("[filePath]", "Source file to analyze")
       .option("-q, --qualified-name <qualifiedName>", "Qualified symbol name")
       .option("--symbol-key <symbolKey>", "Stable graph symbol key")

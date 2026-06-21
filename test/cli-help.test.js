@@ -542,8 +542,11 @@ test("run command records first-party advisor influence receipts when served jud
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.advisorReceiptCapture.status, "recorded");
   assert.equal(payload.advisorReceiptCapture.servedJudgmentId, "served_123");
+  assert.equal(payload.advisorReceiptCapture.totalRecommendationCount, 1);
+  assert.equal(payload.advisorReceiptCapture.eligibleCount, 1);
   assert.equal(payload.advisorReceiptCapture.attemptedCount, 1);
   assert.equal(payload.advisorReceiptCapture.recordedCount, 1);
+  assert.equal(payload.advisorReceiptCapture.skippedCount, 0);
   assert.equal(payload.judgmentCard.advisorRecommendations[0].source, "historical_impact");
 
   const calls = fs.readFileSync(callsPath, "utf8").trim().split("\n").map(JSON.parse);
@@ -551,14 +554,80 @@ test("run command records first-party advisor influence receipts when served jud
   assert.match(calls[0].url, /\/api\/projects\/snipara\/project-intelligence\/advisor-influence$/);
   assert.equal(calls[0].body.servedJudgmentId, "served_123");
   assert.equal(calls[0].body.agentDecision, "modified");
-  assert.deepEqual(calls[0].body.verificationExecuted, []);
+  assert.deepEqual(calls[0].body.verificationExecuted, ["Policy gates: warning"]);
   assert.equal(calls[0].body.outcomeLinkStatus, "pending");
   assert.equal(calls[0].body.metadata.source, "snipara-companion:run");
   assert.equal(calls[0].body.metadata.firstParty, true);
+  assert.equal(calls[0].body.metadata.changedBecauseOfRecommendation, true);
+  assert.deepEqual(
+    calls[0].body.metadata.verificationEvidence.map((item) => [item.source, item.status]),
+    [
+      ["package_review", "skipped"],
+      ["policy_gates", "warning"],
+    ]
+  );
+  assert.equal(
+    calls[0].body.metadata.verificationBackfill.version,
+    "advisor-receipt-verification-backfill-v1"
+  );
+  assert.equal(calls[0].body.metadata.verificationBackfill.executedCount, 1);
+  assert.equal(calls[0].body.metadata.verificationBackfill.skippedCount, 1);
+  assert.equal(
+    calls[0].body.metadata.receiptAutomation.version,
+    "first-party-advisor-receipt-automation-v1"
+  );
+  assert.equal(calls[0].body.metadata.receiptAutomation.selectedRecommendationRank, 1);
+  assert.equal(calls[0].body.metadata.receiptAutomation.totalRecommendations, 1);
+  assert.equal(calls[0].body.metadata.receiptAutomation.skipReason, null);
+  assert.equal(payload.advisorReceiptCapture.writes[0].agentDecision, "modified");
+  assert.equal(payload.advisorReceiptCapture.writes[0].changedBecauseOfRecommendation, true);
   assert.equal(calls[0].body.recommendation.source, "historical_impact");
   assert.deepEqual(calls[0].body.recommendation.caveats, [
     "First-party companion receipt records plan adaptation, not outcome proof.",
   ]);
+});
+
+test("run command skips advisor receipts with stable reason when served judgment is missing", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-advisor-receipt-skip-"));
+  const { preloadPath, callsPath } = writeAdvisorReceiptPreload(dir);
+
+  const result = runCli(
+    [
+      "run",
+      "--task",
+      "publish package surface",
+      "--branch",
+      "dev",
+      "--changed-files",
+      "packages/cli/src/commands/run.ts",
+      "--diff-summary",
+      "companion run change",
+      "--skip-package-review",
+      "--json",
+    ],
+    {
+      cwd: dir,
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "snipara",
+        SNIPARA_API_URL: "https://api.snipara.com",
+      },
+      nodeArgs: ["--require", preloadPath],
+    }
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.advisorReceiptCapture.status, "skipped");
+  assert.equal(payload.advisorReceiptCapture.reason, "missing_served_judgment_id");
+  assert.equal(payload.advisorReceiptCapture.totalRecommendationCount, 1);
+  assert.equal(payload.advisorReceiptCapture.eligibleCount, 0);
+  assert.equal(payload.advisorReceiptCapture.attemptedCount, 0);
+  assert.equal(payload.advisorReceiptCapture.recordedCount, 0);
+  assert.equal(payload.advisorReceiptCapture.skippedCount, 1);
+  assert.equal(payload.advisorReceiptCapture.writes[0].status, "skipped");
+  assert.equal(payload.advisorReceiptCapture.writes[0].reason, "missing_served_judgment_id");
+  assert.equal(fs.existsSync(callsPath), false);
 });
 
 test("memory audit combines health, candidates, and compact dry-run", () => {

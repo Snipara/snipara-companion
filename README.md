@@ -11,20 +11,19 @@ npx -y snipara-companion impact src/auth/session.ts --source local
 Example output excerpt:
 
 ```text
-Code impact
+Code impact - local - src/auth/session.ts
 Source: local_overlay
 Reason: source_forced_local
 
-Target
-  src/auth/session.ts
-
-Incoming
+Incoming (2) - files that depend on this
   apps/web/src/lib/auth/permissions.ts
   apps/web/src/app/api/auth/session/route.ts
 
-Outgoing
+Outgoing (2) - files this depends on
   src/auth/cookies.ts
   src/auth/tokens.ts
+
+Use --json for full overlay details.
 ```
 
 That first command is the product promise: run a local blast-radius check from
@@ -34,14 +33,14 @@ your current checkout in seconds, before an agent edits the wrong thing.
 
 These commands are useful without hosted Snipara:
 
-| Command | What it gives you locally |
-| --- | --- |
-| `impact` / `code impact` | File-level blast-radius from the local code overlay |
-| `code callers` / `imports` / `neighbors` / `shortest-path` | Structural repo questions from local files |
-| `workflow start` / `phase-start` / `phase-commit` / `resume` | Agent continuity that survives compaction |
-| `context-pack` | Reversible local packs for long logs, diffs, and tool output |
-| `judgment-card`, `verify`, `references` | Local review artifacts and source-backed references |
-| `stuck-guard`, `memory-guard`, `pre-tool`, `post-tool` | Fail-soft local guards and hook helpers |
+| Command                                                      | What it gives you locally                                    |
+| ------------------------------------------------------------ | ------------------------------------------------------------ |
+| `impact` / `code impact`                                     | File-level blast-radius from the local code overlay          |
+| `code callers` / `imports` / `neighbors` / `shortest-path`   | Structural repo questions from local files                   |
+| `workflow start` / `phase-start` / `phase-commit` / `resume` | Agent continuity that survives compaction                    |
+| `context-pack`                                               | Reversible local packs for long logs, diffs, and tool output |
+| `judgment-card`, `verify`, `references`                      | Local review artifacts and source-backed references          |
+| `stuck-guard`, `memory-guard`, `pre-tool`, `post-tool`       | Fail-soft local guards and hook helpers                      |
 
 ## Agent Continuity
 
@@ -63,15 +62,15 @@ verification hints.
 Local mode is first-class for one repo, one machine, and one session. Hosted
 Snipara is the upgrade path for team and cross-project intelligence.
 
-| Need | Local companion | Hosted Snipara |
-| --- | --- | --- |
-| Inspect this repo before editing | Yes, no account | Optional hosted code graph |
-| Keep code private on this machine | Yes | Use only when explicitly configured |
-| Preserve agent workflow state | Yes, `.snipara/` files | Syncs across machines and agents |
-| Store/retrieve long tool output | Yes, `context-pack` | Metadata and receipts can be shared |
-| Semantic project context and embeddings | Local docs/artifacts only | Managed context ranking |
-| Reviewed memory and outcome calibration | Local artifacts only | Team memory and proof loop |
-| Shared claims, locks, dashboards, GitHub checks | Local hints only | Team coordination and audit |
+| Need                                            | Local companion           | Hosted Snipara                      |
+| ----------------------------------------------- | ------------------------- | ----------------------------------- |
+| Inspect this repo before editing                | Yes, no account           | Optional hosted code graph          |
+| Keep code private on this machine               | Yes                       | Use only when explicitly configured |
+| Preserve agent workflow state                   | Yes, `.snipara/` files    | Syncs across machines and agents    |
+| Store/retrieve long tool output                 | Yes, `context-pack`       | Metadata and receipts can be shared |
+| Semantic project context and embeddings         | Local docs/artifacts only | Managed context ranking             |
+| Reviewed memory and outcome calibration         | Local artifacts only      | Team memory and proof loop          |
+| Shared claims, locks, dashboards, GitHub checks | Local hints only          | Team coordination and audit         |
 
 Use hosted mode when you want shared memory, semantic retrieval, cloud code
 graph, cross-machine presence, outcome learning, team coordination, or dashboard
