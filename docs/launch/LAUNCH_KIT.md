@@ -66,8 +66,11 @@ Use --json for full overlay details.
   npx -y snipara-companion@latest impact src/index.ts --source local
   ```
 
-- Record a 15 to 30 second terminal demo using
-  [DEMO_SCRIPT.md](./DEMO_SCRIPT.md).
+- Run or record the executable demo runner:
+
+  ```bash
+  docs/launch/demo-impact.sh
+  ```
 - Publish the GitHub README link and npm link together.
 - Post one problem-first version from [POSTS.md](./POSTS.md), not every channel
   at once.
@@ -80,6 +83,5 @@ Use --json for full overlay details.
 - GitHub: <https://github.com/Snipara/snipara-companion>
 - npm: <https://www.npmjs.com/package/snipara-companion>
 - Full reference: [../FULL_REFERENCE.md](../FULL_REFERENCE.md)
-- Demo script: [DEMO_SCRIPT.md](./DEMO_SCRIPT.md)
+- Demo runner: [DEMO_SCRIPT.md](./DEMO_SCRIPT.md)
 - Post drafts: [POSTS.md](./POSTS.md)
-

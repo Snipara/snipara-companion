@@ -70,6 +70,6 @@
   },
   "files": [
     "dist",
-    "docs"
+    "docs/FULL_REFERENCE.md"
   ]
 }
