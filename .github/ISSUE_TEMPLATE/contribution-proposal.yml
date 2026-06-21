@@ -1,7 +1,7 @@
 name: Contribution proposal
 description: Propose a focused docs, test, parser, or workflow improvement.
 title: "[contribution] "
-labels: ["good-first-issue"]
+labels: ["good first issue"]
 body:
   - type: dropdown
     id: area
@@ -35,4 +35,3 @@ body:
       options:
         - label: I understand local impact is file-level import impact, not perfect call-site analysis.
           required: true
-

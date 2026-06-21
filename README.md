@@ -1,5 +1,10 @@
 # snipara-companion
 
+[![npm version](https://img.shields.io/npm/v/snipara-companion.svg)](https://www.npmjs.com/package/snipara-companion)
+[![CI](https://github.com/Snipara/snipara-companion/actions/workflows/ci.yml/badge.svg)](https://github.com/Snipara/snipara-companion/actions/workflows/ci.yml)
+[![MIT License](https://img.shields.io/badge/license-MIT-yellow.svg)](./LICENSE)
+[![Node >=18](https://img.shields.io/badge/node-%3E%3D18-339933.svg)](./package.json)
+
 **Ask your repo what breaks if you touch this.**
 
 No global install. No `init`. No account. Your code stays on your machine.

@@ -2,6 +2,15 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 2.0.9
+
+- Aligns public package metadata with the local-first `impact` first-run
+  positioning.
+- Adds README badges and community support/security/PR surfaces for the public
+  repository.
+- Keeps GitHub issue-template labels aligned with the repo labels used for
+  launch feedback.
+
 ## New In 2.0.8
 
 - Keeps secret-like source files visible to local `impact` by redacting matching

@@ -1,7 +1,7 @@
 {
   "name": "snipara-companion",
-  "version": "2.0.8",
-  "description": "Snipara Git-style companion CLI for local workflow continuity, hooks, hosted context, and Mini Snipara OSS workflows",
+  "version": "2.0.9",
+  "description": "Local-first CLI that asks your repo what breaks before an AI coding agent edits it.",
   "main": "dist/index.js",
   "bin": {
     "snipara-companion": "dist/index.js"
@@ -19,6 +19,14 @@
   "keywords": [
     "snipara",
     "snipara-companion",
+    "code-impact",
+    "code-graph",
+    "blast-radius",
+    "local-first",
+    "repository-analysis",
+    "npx",
+    "agent-continuity",
+    "workflow-continuity",
     "context",
     "llm",
     "claude",
