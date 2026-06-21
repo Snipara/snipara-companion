@@ -393,6 +393,11 @@ test("top-level impact keeps secret-like target files visible with a redaction w
     ].join("\n"),
     "utf8"
   );
+  fs.writeFileSync(
+    path.join(repo, "src", "unrelated.ts"),
+    "const apiKey = 'zyxwvutsrqponmlkjihgfedcba9876543210';\n",
+    "utf8"
+  );
 
   const result = runCli(["impact", "src/secret.ts", "--source", "local"], { cwd: repo });
   assert.equal(result.status, 0, result.stderr);
@@ -404,6 +409,7 @@ test("top-level impact keeps secret-like target files visible with a redaction w
   assert.match(result.stdout, /  src\/helper\.ts/);
   assert.match(result.stdout, /secret_like_lines_redacted/);
   assert.match(result.stdout, /src\/secret\.ts:2/);
+  assert.doesNotMatch(result.stdout, /src\/unrelated\.ts/);
   assert.doesNotMatch(result.stdout, /Missing targets/);
   assert.doesNotMatch(result.stdout, /larger --max-files/);
 });

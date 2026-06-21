@@ -325,6 +325,12 @@ interface SecretRedactionSample {
   findings: SecretPatternFinding[];
 }
 
+interface SecretWarningSample {
+  path: string;
+  lines: number[];
+  reasons: string[];
+}
+
 function normalizeRepoPath(value: string): string {
   return value.split(path.sep).join("/").replace(/^\/+/, "");
 }
@@ -552,27 +558,34 @@ function redactSecretLikeContentForOverlay(content: string): {
   };
 }
 
-function formatSecretRedactionWarning(samples: SecretRedactionSample[]): LocalCodeOverlayWarning {
+function formatSecretWarningMessage(samples: SecretWarningSample[]): string {
   const displayed = samples.slice(0, 5).map((sample) => {
-    const lines = sample.findings
-      .slice(0, 5)
-      .map((finding) => finding.line)
-      .join(",");
-    const suffix = sample.findings.length > 5 ? ",..." : "";
+    const lines = sample.lines.slice(0, 5).join(",");
+    const suffix = sample.lines.length > 5 ? ",..." : "";
     return `${sample.path}:${lines}${suffix}`;
   });
   const more = samples.length > displayed.length ? `; ${samples.length - displayed.length} more` : "";
+  return (
+    "Secret-like lines were redacted before local graph extraction; files remain visible to impact. " +
+    `Samples: ${displayed.join("; ")}${more}.`
+  );
+}
+
+function toSecretWarningSamples(samples: SecretRedactionSample[]): SecretWarningSample[] {
+  return samples.map((sample) => ({
+    path: sample.path,
+    lines: sample.findings.map((finding) => finding.line),
+    reasons: [...new Set(sample.findings.map((finding) => finding.reason))],
+  }));
+}
+
+function formatSecretRedactionWarning(samples: SecretRedactionSample[]): LocalCodeOverlayWarning {
+  const warningSamples = toSecretWarningSamples(samples);
   return {
     code: "secret_like_lines_redacted",
     severity: "warning",
-    message:
-      "Secret-like lines were redacted before local graph extraction; files remain visible to impact. " +
-      `Samples: ${displayed.join("; ")}${more}.`,
-    samples: samples.map((sample) => ({
-      path: sample.path,
-      lines: sample.findings.map((finding) => finding.line),
-      reasons: [...new Set(sample.findings.map((finding) => finding.reason))],
-    })),
+    message: formatSecretWarningMessage(warningSamples),
+    samples: warningSamples,
   };
 }
 
@@ -1213,11 +1226,52 @@ function buildMissingTargetsWarning(
   };
 }
 
-function shouldShowOverlayWarningInImpact(warning: LocalCodeOverlayWarning): boolean {
-  return (
-    warning.code === "secret_like_lines_redacted" ||
-    warning.code === "local_overlay_file_limit_reached"
-  );
+function parseSecretWarningSamples(value: unknown): SecretWarningSample[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") {
+      return [];
+    }
+    const record = item as Record<string, unknown>;
+    const pathValue = typeof record.path === "string" ? record.path : undefined;
+    const lines = Array.isArray(record.lines)
+      ? record.lines.filter((line): line is number => typeof line === "number")
+      : [];
+    const reasons = Array.isArray(record.reasons)
+      ? record.reasons.filter((reason): reason is string => typeof reason === "string")
+      : [];
+    return pathValue && lines.length > 0 ? [{ path: pathValue, lines, reasons }] : [];
+  });
+}
+
+function impactOverlayWarnings(
+  warnings: LocalCodeOverlayWarning[],
+  relevantFiles: Set<string>
+): LocalCodeOverlayWarning[] {
+  return warnings.flatMap((warning) => {
+    if (warning.code === "local_overlay_file_limit_reached") {
+      return [warning];
+    }
+    if (warning.code !== "secret_like_lines_redacted") {
+      return [];
+    }
+
+    const samples = parseSecretWarningSamples(warning.samples).filter((sample) =>
+      relevantFiles.has(sample.path)
+    );
+    if (samples.length === 0) {
+      return [];
+    }
+    return [
+      {
+        ...warning,
+        message: formatSecretWarningMessage(samples),
+        samples,
+      },
+    ];
+  });
 }
 
 function printLocalQueryResult(result: Record<string, unknown>, json?: boolean): void {
@@ -1955,10 +2009,16 @@ export function buildLocalImpactResult(
   const impactedFiles = [
     ...new Set([...incoming.map((edge) => edge.from), ...outgoing.map((edge) => edge.to)]),
   ].sort();
+  const relevantWarningFiles = new Set<string>([
+    ...selectedFiles,
+    ...impactedFiles,
+    ...incoming.map((edge) => edge.from),
+    ...outgoing.map((edge) => edge.to),
+  ]);
   const missingTargetsWarning = buildMissingTargetsWarning(manifest, missingTargetFiles);
   const warnings = [
     ...(missingTargetsWarning ? [missingTargetsWarning] : []),
-    ...manifest.warnings.filter(shouldShowOverlayWarningInImpact),
+    ...impactOverlayWarnings(manifest.warnings, relevantWarningFiles),
   ];
 
   return {
