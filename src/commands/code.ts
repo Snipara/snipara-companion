@@ -1324,6 +1324,11 @@ function printCodeGraphAutoSourceResult(result: CodeGraphAutoSourceResult, json?
     return;
   }
 
+  if (result.sourceSelection.selected === "local_overlay" && isLocalImpactResult(result.result)) {
+    printLocalImpactHumanResult(result);
+    return;
+  }
+
   console.log(chalk.bold(result.title));
   console.log(`Source: ${result.sourceSelection.selected}`);
   console.log(`Reason: ${result.sourceSelection.reason}`);
@@ -1346,6 +1351,125 @@ function printCodeGraphAutoSourceResult(result: CodeGraphAutoSourceResult, json?
   }
   console.log("");
   console.log(JSON.stringify(result.result, null, 2));
+}
+
+function isLocalImpactResult(value: unknown): value is Record<string, unknown> {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      (value as Record<string, unknown>).title === "Local impact" &&
+      Array.isArray((value as Record<string, unknown>).incoming) &&
+      Array.isArray((value as Record<string, unknown>).outgoing)
+  );
+}
+
+function printLocalImpactHumanResult(result: CodeGraphAutoSourceResult): void {
+  const impact = result.result as Record<string, unknown>;
+  const target = formatLocalImpactTarget(impact);
+  const incoming = uniqueEdgeFiles(impact.incoming, "from");
+  const outgoing = uniqueEdgeFiles(impact.outgoing, "to");
+  const warnings = Array.isArray(impact.warnings) ? impact.warnings : [];
+  const missingTargets = Array.isArray(impact.missingTargetFiles)
+    ? impact.missingTargetFiles.filter((item): item is string => typeof item === "string")
+    : [];
+
+  console.log(chalk.bold(`Code impact - local - ${target}`));
+  console.log(`Source: ${result.sourceSelection.selected}`);
+  console.log(`Reason: ${result.sourceSelection.reason}`);
+  console.log("");
+  printFileList("Incoming", "files that depend on this", incoming);
+  console.log("");
+  printFileList("Outgoing", "files this depends on", outgoing);
+
+  if (missingTargets.length > 0) {
+    console.log("");
+    console.log(chalk.yellow(`Missing targets (${missingTargets.length})`));
+    for (const filePath of missingTargets.slice(0, 12)) {
+      console.log(`  ${filePath}`);
+    }
+    if (missingTargets.length > 12) {
+      console.log(`  ... ${missingTargets.length - 12} more`);
+    }
+  }
+
+  if (warnings.length > 0) {
+    console.log("");
+    console.log(chalk.yellow(`Warnings (${warnings.length})`));
+    for (const warning of warnings.slice(0, 4)) {
+      console.log(`  ${formatWarning(warning)}`);
+    }
+    if (warnings.length > 4) {
+      console.log(`  ... ${warnings.length - 4} more`);
+    }
+  }
+
+  console.log("");
+  console.log("Use --json for full overlay details.");
+}
+
+function formatLocalImpactTarget(impact: Record<string, unknown>): string {
+  const target = impact.target;
+  if (target && typeof target === "object") {
+    const record = target as Record<string, unknown>;
+    const name = typeof record.name === "string" ? record.name : undefined;
+    const filePath = typeof record.filePath === "string" ? record.filePath : undefined;
+    const changedFiles = Array.isArray(record.changedFiles)
+      ? record.changedFiles.filter((item): item is string => typeof item === "string")
+      : [];
+    if (name && filePath) {
+      return `${name} (${filePath})`;
+    }
+    if (filePath) {
+      return filePath;
+    }
+    if (changedFiles.length === 1) {
+      return changedFiles[0];
+    }
+    if (changedFiles.length > 1) {
+      return `${changedFiles.length} files`;
+    }
+  }
+  return "selected target";
+}
+
+function uniqueEdgeFiles(value: unknown, field: "from" | "to"): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return [
+    ...new Set(
+      value
+        .map((item) =>
+          item && typeof item === "object" ? (item as Record<string, unknown>)[field] : undefined
+        )
+        .filter((item): item is string => typeof item === "string")
+    ),
+  ].sort();
+}
+
+function printFileList(title: string, description: string, files: string[]): void {
+  const displayLimit = 12;
+  console.log(`${title} (${files.length}) - ${description}`);
+  if (files.length === 0) {
+    console.log("  (none)");
+    return;
+  }
+  for (const filePath of files.slice(0, displayLimit)) {
+    console.log(`  ${filePath}`);
+  }
+  if (files.length > displayLimit) {
+    console.log(`  ... ${files.length - displayLimit} more`);
+  }
+}
+
+function formatWarning(value: unknown): string {
+  if (!value || typeof value !== "object") {
+    return String(value);
+  }
+  const record = value as Record<string, unknown>;
+  const code = typeof record.code === "string" ? record.code : "warning";
+  const message = typeof record.message === "string" ? record.message : "";
+  return message ? `${code}: ${message}` : code;
 }
 
 function emitCodeSourceTelemetry(

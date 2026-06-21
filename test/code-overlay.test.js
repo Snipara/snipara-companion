@@ -338,6 +338,22 @@ test("top-level impact runs locally by default without project auth", () => {
   );
 });
 
+test("top-level impact prints a human-readable local blast radius by default", () => {
+  const repo = makeTempRepo();
+
+  const result = runCli(["impact", "src/helper.ts", "--source", "local"], { cwd: repo });
+  assert.equal(result.status, 0, result.stderr);
+
+  assert.match(result.stdout, /Code impact - local - src\/helper\.ts/);
+  assert.match(result.stdout, /Source: local_overlay/);
+  assert.match(result.stdout, /Incoming \(1\) - files that depend on this/);
+  assert.match(result.stdout, /  src\/index\.ts/);
+  assert.match(result.stdout, /Outgoing \(0\) - files this depends on/);
+  assert.match(result.stdout, /Use --json for full overlay details\./);
+  assert.doesNotMatch(result.stdout, /"scope"/);
+  assert.doesNotMatch(result.stdout, /"files"/);
+});
+
 test("code unified commands auto-select local overlay for dirty worktrees", () => {
   const repo = makeTempRepo();
   fs.appendFileSync(path.join(repo, "src/helper.ts"), "\nexport const dirty = true;\n", "utf8");
