@@ -154,29 +154,29 @@ function booleanValue(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
-function enumValue<T extends string>(values: readonly T[], value: unknown, fallback: T): T {
-  return typeof value === "string" && (values as readonly string[]).includes(value)
-    ? (value as T)
-    : fallback;
+interface CockpitEnumValue<T extends string> {
+  value: T;
+  droppedReasonCode: string | null;
 }
 
-function statusValue(value: unknown, fallback: EngineeringLeadStatus): EngineeringLeadStatus {
-  return enumValue(ENGINEERING_LEAD_STATUSES, value, fallback);
-}
-
-function postureValue(value: unknown, fallback: EngineeringLeadPosture): EngineeringLeadPosture {
-  return enumValue(ENGINEERING_LEAD_POSTURES, value, fallback);
-}
-
-function roleValue(value: unknown, fallback: EngineeringLeadWorkerRole): EngineeringLeadWorkerRole {
-  return enumValue(ENGINEERING_LEAD_WORKER_ROLES, value, fallback);
-}
-
-function routingModeValue(
+function cockpitEnumValue<T extends string>(
+  field: string,
+  values: readonly T[],
   value: unknown,
-  fallback: EngineeringLeadRoutingMode
-): EngineeringLeadRoutingMode {
-  return enumValue(ENGINEERING_LEAD_ROUTING_MODES, value, fallback);
+  fallback: T
+): CockpitEnumValue<T> {
+  if (typeof value === "string" && (values as readonly string[]).includes(value)) {
+    return { value: value as T, droppedReasonCode: null };
+  }
+  return {
+    value: fallback,
+    droppedReasonCode:
+      typeof value === "string" && value.trim() ? `companion_dropped_unknown_${field}` : null,
+  };
+}
+
+function compactReasonCodes(values: Array<string | null>): string[] {
+  return values.filter((value): value is string => Boolean(value));
 }
 
 function slug(value: string, fallback: string): string {
@@ -569,12 +569,25 @@ function normalizeWorkerRecommendation(
   index: number
 ): EngineeringLeadWorkerRecommendation {
   const contract = isRecord(value.contract) ? value.contract : {};
+  const role = cockpitEnumValue(
+    "worker_role",
+    ENGINEERING_LEAD_WORKER_ROLES,
+    value.role,
+    "main_agent"
+  );
+  const status = cockpitEnumValue("worker_status", ENGINEERING_LEAD_STATUSES, value.status, "unknown");
+  const routingMode = cockpitEnumValue(
+    "routing_mode",
+    ENGINEERING_LEAD_ROUTING_MODES,
+    value.routingMode,
+    "hold"
+  );
   return {
     id: stringValue(value.id) ?? `worker:${index + 1}`,
-    role: roleValue(value.role, "main_agent"),
-    label: stringValue(value.label) ?? workerLabel(roleValue(value.role, "main_agent")),
-    status: statusValue(value.status, "unknown"),
-    routingMode: routingModeValue(value.routingMode, "hold"),
+    role: role.value,
+    label: stringValue(value.label) ?? workerLabel(role.value),
+    status: status.value,
+    routingMode: routingMode.value,
     workPackageId: stringValue(value.workPackageId) ?? null,
     workPackageTitle: stringValue(value.workPackageTitle) ?? null,
     owner: stringValue(value.owner) ?? null,
@@ -590,7 +603,16 @@ function normalizeWorkerRecommendation(
     proofGates: stringList(value.proofGates),
     brainUpdateCandidates: stringList(value.brainUpdateCandidates),
     evidence: normalizeEvidence(value.evidence),
-    reasonCodes: stringList(value.reasonCodes),
+    reasonCodes: [
+      ...new Set([
+        ...stringList(value.reasonCodes),
+        ...compactReasonCodes([
+          role.droppedReasonCode,
+          status.droppedReasonCode,
+          routingMode.droppedReasonCode,
+        ]),
+      ]),
+    ],
   };
 }
 
@@ -600,10 +622,25 @@ function normalizeCockpitPlan(cockpit: Record<string, unknown>): EngineeringLead
   const workerRecommendations = recordList(rawPlan.workerRecommendations).map(
     normalizeWorkerRecommendation
   );
+  const posture = cockpitEnumValue(
+    "posture",
+    ENGINEERING_LEAD_POSTURES,
+    rawPlan.posture,
+    "lead_cold_start"
+  );
+  const status = cockpitEnumValue(
+    "status",
+    ENGINEERING_LEAD_STATUSES,
+    rawPlan.status,
+    statusForScore(score)
+  );
+  const workerDroppedReasonCodes = workerRecommendations.flatMap((worker) =>
+    worker.reasonCodes.filter((code) => code.startsWith("companion_dropped_unknown_"))
+  );
   return {
     version: PROJECT_INTELLIGENCE_ENGINEERING_LEAD_PLAN_VERSION,
-    posture: postureValue(rawPlan.posture, "lead_cold_start"),
-    status: statusValue(rawPlan.status, statusForScore(score)),
+    posture: posture.value,
+    status: status.value,
     score,
     headline: stringValue(rawPlan.headline) ?? "Imported Project Health Engineering Lead Plan.",
     operatingMode: "advisory_fail_closed",
@@ -630,7 +667,9 @@ function normalizeCockpitPlan(cockpit: Record<string, unknown>): EngineeringLead
     reasonCodes: [
       ...new Set([
         "companion_imported_project_health_lead_plan",
+        ...compactReasonCodes([posture.droppedReasonCode, status.droppedReasonCode]),
         ...stringList(rawPlan.reasonCodes),
+        ...workerDroppedReasonCodes,
       ]),
     ],
   };

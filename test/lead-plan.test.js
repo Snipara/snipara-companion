@@ -377,4 +377,26 @@ test("lead-plan cockpit import fails closed for unknown future enum values", () 
   assert.equal(report.engineeringLeadPlan.workerRecommendations[0].status, "unknown");
   assert.equal(report.engineeringLeadPlan.workerRecommendations[0].routingMode, "hold");
   assert.equal(report.engineeringLeadPlan.workerRecommendations[0].contract.approvalRequired, true);
+  assert.deepEqual(
+    report.engineeringLeadPlan.reasonCodes
+      .filter((code) => code.startsWith("companion_dropped_unknown_"))
+      .sort(),
+    [
+      "companion_dropped_unknown_posture",
+      "companion_dropped_unknown_routing_mode",
+      "companion_dropped_unknown_status",
+      "companion_dropped_unknown_worker_role",
+      "companion_dropped_unknown_worker_status",
+    ].sort()
+  );
+  assert.deepEqual(
+    report.engineeringLeadPlan.workerRecommendations[0].reasonCodes
+      .filter((code) => code.startsWith("companion_dropped_unknown_"))
+      .sort(),
+    [
+      "companion_dropped_unknown_routing_mode",
+      "companion_dropped_unknown_worker_role",
+      "companion_dropped_unknown_worker_status",
+    ].sort()
+  );
 });
