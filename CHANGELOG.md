@@ -2,6 +2,13 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 2.1.1
+
+- Makes `lead-plan --from-cockpit` enum drift observable: unknown future
+  cockpit posture, status, worker role, worker status, or routing mode values
+  still fail closed, but now emit `companion_dropped_unknown_*` reason codes in
+  the imported summary and affected worker recommendation.
+
 ## New In 2.1.0
 
 - Adds `snipara-companion lead-plan`, a local Companion Engineering Lead Plan
