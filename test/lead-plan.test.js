@@ -4,10 +4,29 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 const { spawnSync } = require("node:child_process");
+const ts = require("typescript");
 
-const { buildCompanionEngineeringLeadPlanReport } = require("../dist/index.js");
+const {
+  ENGINEERING_LEAD_POSTURES,
+  ENGINEERING_LEAD_ROUTING_MODES,
+  ENGINEERING_LEAD_STATUSES,
+  ENGINEERING_LEAD_WORKER_ROLES,
+  buildCompanionEngineeringLeadPlanReport,
+} = require("../dist/index.js");
 
 const cliPath = path.join(__dirname, "..", "dist", "index.js");
+const webHealthCockpitPath = path.resolve(
+  __dirname,
+  "..",
+  "..",
+  "..",
+  "apps",
+  "web",
+  "src",
+  "lib",
+  "project-intelligence",
+  "health-cockpit.ts"
+);
 
 function readySignals() {
   return {
@@ -57,6 +76,43 @@ function runCli(args, options = {}) {
   });
 }
 
+function exportedStringArray(filePath, exportName) {
+  const source = ts.createSourceFile(
+    filePath,
+    fs.readFileSync(filePath, "utf8"),
+    ts.ScriptTarget.Latest,
+    true
+  );
+
+  for (const statement of source.statements) {
+    if (!ts.isVariableStatement(statement)) {
+      continue;
+    }
+    const isExported = statement.modifiers?.some(
+      (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword
+    );
+    if (!isExported) {
+      continue;
+    }
+    for (const declaration of statement.declarationList.declarations) {
+      if (
+        ts.isIdentifier(declaration.name) &&
+        declaration.name.text === exportName &&
+        declaration.initializer &&
+        ts.isAsExpression(declaration.initializer) &&
+        ts.isArrayLiteralExpression(declaration.initializer.expression)
+      ) {
+        return declaration.initializer.expression.elements.map((element) => {
+          assert.ok(ts.isStringLiteral(element), `${exportName} must contain only string literals`);
+          return element.text;
+        });
+      }
+    }
+  }
+
+  assert.fail(`Could not find exported string array ${exportName} in ${filePath}`);
+}
+
 test("buildCompanionEngineeringLeadPlanReport creates a ready fail-closed handoff plan", () => {
   const report = buildCompanionEngineeringLeadPlanReport({
     now: new Date("2026-06-25T18:00:00.000Z"),
@@ -74,11 +130,45 @@ test("buildCompanionEngineeringLeadPlanReport creates a ready fail-closed handof
   assert.equal(report.engineeringLeadPlan.posture, "lead_ready");
   assert.equal(report.engineeringLeadPlan.workersSpawned, 0);
   assert.equal(report.engineeringLeadPlan.failClosedFallback, "main_agent");
-  assert.equal(report.engineeringLeadPlan.workerRecommendations[0].routingMode, "explicit_handoff_ready");
+  assert.equal(
+    report.engineeringLeadPlan.workerRecommendations[0].routingMode,
+    "explicit_handoff_ready"
+  );
   assert.ok(
     report.engineeringLeadPlan.caveats.some((caveat) => caveat.includes("does not launch"))
   );
 });
+
+if (fs.existsSync(webHealthCockpitPath)) {
+  test("lead-plan enum allowlists stay in parity with Project Health cockpit producer", () => {
+    assert.deepEqual(
+      ENGINEERING_LEAD_STATUSES,
+      exportedStringArray(webHealthCockpitPath, "PROJECT_HEALTH_COCKPIT_STATUSES")
+    );
+    assert.deepEqual(
+      ENGINEERING_LEAD_POSTURES,
+      exportedStringArray(webHealthCockpitPath, "PROJECT_INTELLIGENCE_ENGINEERING_LEAD_POSTURES")
+    );
+    assert.deepEqual(
+      ENGINEERING_LEAD_WORKER_ROLES,
+      exportedStringArray(
+        webHealthCockpitPath,
+        "PROJECT_INTELLIGENCE_ENGINEERING_LEAD_WORKER_ROLES"
+      )
+    );
+    assert.deepEqual(
+      ENGINEERING_LEAD_ROUTING_MODES,
+      exportedStringArray(
+        webHealthCockpitPath,
+        "PROJECT_INTELLIGENCE_ENGINEERING_LEAD_ROUTING_MODES"
+      )
+    );
+  });
+} else {
+  test("lead-plan enum allowlists stay in parity with Project Health cockpit producer", {
+    skip: "monorepo-only Project Health producer source is not present",
+  });
+}
 
 test("buildCompanionEngineeringLeadPlanReport blocks delegation without proof gates", () => {
   const report = buildCompanionEngineeringLeadPlanReport({
@@ -157,48 +247,90 @@ test("lead-plan command reads local workflow state and prints JSON", () => {
   assert.equal(payload.engineeringLeadPlan.workersSpawned, 0);
 });
 
-test("lead-plan command imports a Project Health cockpit lead plan", () => {
+test("lead-plan command round-trips a Project Health cockpit lead plan", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-lead-plan-cockpit-"));
   const cockpitPath = path.join(dir, "cockpit.json");
-  fs.writeFileSync(
-    cockpitPath,
-    JSON.stringify(
+  const sourcePlan = {
+    version: "project-intelligence-engineering-lead-plan-v0",
+    posture: "lead_watch",
+    status: "watch",
+    score: 72,
+    headline: "Imported cockpit headline",
+    operatingMode: "advisory_fail_closed",
+    nextAction: "Review worker contract",
+    workersSpawned: 0,
+    failClosedFallback: "main_agent",
+    workerRecommendations: [
       {
-        engineeringLeadPlan: {
-          version: "project-intelligence-engineering-lead-plan-v0",
-          posture: "lead_watch",
-          status: "watch",
-          score: 72,
-          headline: "Imported cockpit headline",
-          nextAction: "Review worker contract",
-          workersSpawned: 0,
-          failClosedFallback: "main_agent",
-          workerRecommendations: [
+        id: "worker:docs",
+        role: "documentation_worker",
+        label: "Documentation worker",
+        status: "watch",
+        routingMode: "needs_contract",
+        workPackageId: "wp:docs",
+        workPackageTitle: "Update docs",
+        owner: "Docs",
+        rationale: "Docs need proof",
+        contract: {
+          writeScope: ["docs/features/ADAPTIVE_WORK_ROUTING.md"],
+          contextRefs: [
             {
-              id: "worker:docs",
-              role: "documentation_worker",
-              label: "Documentation worker",
-              status: "watch",
-              routingMode: "needs_contract",
-              rationale: "Docs need proof",
-              contract: {
-                writeScope: ["docs/features/ADAPTIVE_WORK_ROUTING.md"],
-                acceptanceCriteria: ["docs updated"],
-                proofRequired: ["pnpm test docs"],
-                approvalRequired: true,
-                fallback: "main_agent",
-              },
-              proofGates: ["pnpm test docs"],
+              id: "ctx:docs",
+              kind: "project_decision",
+              label: "Adaptive Work Routing decision",
+              sourceRef: "docs/features/ADAPTIVE_WORK_ROUTING.md",
+              strength: 0.9,
+              reviewStatus: "approved",
+              authorityStatus: "approved",
+              freshness: "fresh",
             },
           ],
-          proofGates: ["pnpm test docs"],
-          brainUpdateActions: ["Record docs result"],
-          caveats: ["Imported from Project Health"],
+          acceptanceCriteria: ["docs updated"],
+          proofRequired: ["pnpm test docs"],
+          approvalRequired: true,
+          fallback: "main_agent",
         },
+        proofGates: ["pnpm test docs"],
+        brainUpdateCandidates: ["Record docs worker result"],
+        evidence: [
+          {
+            id: "evidence:docs",
+            kind: "workflow",
+            label: "Docs workflow",
+            sourceRef: ".snipara/workflow/current.json",
+            strength: 0.8,
+            reviewStatus: "approved",
+            authorityStatus: "approved",
+            freshness: "fresh",
+          },
+        ],
+        reasonCodes: ["engineering_lead_role_documentation_worker"],
       },
-      null,
-      2
-    ),
+    ],
+    proofGates: ["pnpm test docs"],
+    brainUpdateActions: ["Record docs result"],
+    metrics: [
+      { label: "Work packages", value: 1 },
+      { label: "Ready packages", value: 0 },
+    ],
+    evidence: [
+      {
+        id: "evidence:summary",
+        kind: "outcome_signal",
+        label: "Summary evidence",
+        sourceRef: "outcome:1",
+        strength: 0.75,
+        reviewStatus: "approved",
+        authorityStatus: "approved",
+        freshness: "fresh",
+      },
+    ],
+    caveats: ["Imported from Project Health"],
+    reasonCodes: ["project_intelligence_engineering_lead_plan_v0"],
+  };
+  fs.writeFileSync(
+    cockpitPath,
+    JSON.stringify({ engineeringLeadPlan: sourcePlan }, null, 2),
     "utf8"
   );
 
@@ -207,10 +339,44 @@ test("lead-plan command imports a Project Health cockpit lead plan", () => {
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.source, "project_health_cockpit");
-  assert.equal(payload.engineeringLeadPlan.headline, "Imported cockpit headline");
-  assert.equal(payload.engineeringLeadPlan.workersSpawned, 0);
-  assert.equal(
-    payload.engineeringLeadPlan.workerRecommendations[0].contract.fallback,
-    "main_agent"
-  );
+  assert.deepEqual(payload.engineeringLeadPlan, {
+    ...sourcePlan,
+    caveats: [
+      "Imported from Project Health",
+      "Imported cockpit plans remain advisory and fail-closed inside Companion.",
+    ],
+    reasonCodes: [
+      "companion_imported_project_health_lead_plan",
+      "project_intelligence_engineering_lead_plan_v0",
+    ],
+  });
+});
+
+test("lead-plan cockpit import fails closed for unknown future enum values", () => {
+  const report = buildCompanionEngineeringLeadPlanReport({
+    now: new Date("2026-06-25T18:00:00.000Z"),
+    cockpit: {
+      engineeringLeadPlan: {
+        posture: "lead_degraded",
+        status: "degraded",
+        score: 70,
+        workerRecommendations: [
+          {
+            role: "security_worker",
+            status: "degraded",
+            routingMode: "parallel_auto_launch",
+            contract: {},
+          },
+        ],
+      },
+    },
+    localSignals: readySignals(),
+  });
+
+  assert.equal(report.engineeringLeadPlan.posture, "lead_cold_start");
+  assert.equal(report.engineeringLeadPlan.status, "watch");
+  assert.equal(report.engineeringLeadPlan.workerRecommendations[0].role, "main_agent");
+  assert.equal(report.engineeringLeadPlan.workerRecommendations[0].status, "unknown");
+  assert.equal(report.engineeringLeadPlan.workerRecommendations[0].routingMode, "hold");
+  assert.equal(report.engineeringLeadPlan.workerRecommendations[0].contract.approvalRequired, true);
 });

@@ -13,24 +13,32 @@ import {
   type AgentReadinessTarget,
 } from "./agent-readiness";
 
-export type EngineeringLeadPosture =
-  | "lead_ready"
-  | "lead_watch"
-  | "lead_blocked"
-  | "lead_cold_start";
-export type EngineeringLeadStatus = "healthy" | "watch" | "risk" | "unknown";
-export type EngineeringLeadWorkerRole =
-  | "main_agent"
-  | "coding_worker"
-  | "test_worker"
-  | "reviewer"
-  | "documentation_worker"
-  | "human_approver";
-export type EngineeringLeadRoutingMode =
-  | "hold"
-  | "main_agent_execute"
-  | "explicit_handoff_ready"
-  | "needs_contract";
+export const ENGINEERING_LEAD_STATUSES = ["healthy", "watch", "risk", "unknown"] as const;
+export const ENGINEERING_LEAD_POSTURES = [
+  "lead_ready",
+  "lead_watch",
+  "lead_blocked",
+  "lead_cold_start",
+] as const;
+export const ENGINEERING_LEAD_WORKER_ROLES = [
+  "main_agent",
+  "coding_worker",
+  "test_worker",
+  "reviewer",
+  "documentation_worker",
+  "human_approver",
+] as const;
+export const ENGINEERING_LEAD_ROUTING_MODES = [
+  "hold",
+  "main_agent_execute",
+  "explicit_handoff_ready",
+  "needs_contract",
+] as const;
+
+export type EngineeringLeadStatus = (typeof ENGINEERING_LEAD_STATUSES)[number];
+export type EngineeringLeadPosture = (typeof ENGINEERING_LEAD_POSTURES)[number];
+export type EngineeringLeadWorkerRole = (typeof ENGINEERING_LEAD_WORKER_ROLES)[number];
+export type EngineeringLeadRoutingMode = (typeof ENGINEERING_LEAD_ROUTING_MODES)[number];
 
 export interface EngineeringLeadEvidenceRef {
   id: string;
@@ -206,42 +214,29 @@ function booleanValue(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
-function statusValue(value: unknown, fallback: EngineeringLeadStatus): EngineeringLeadStatus {
-  return value === "healthy" || value === "watch" || value === "risk" || value === "unknown"
-    ? value
+function enumValue<T extends string>(values: readonly T[], value: unknown, fallback: T): T {
+  return typeof value === "string" && (values as readonly string[]).includes(value)
+    ? (value as T)
     : fallback;
+}
+
+function statusValue(value: unknown, fallback: EngineeringLeadStatus): EngineeringLeadStatus {
+  return enumValue(ENGINEERING_LEAD_STATUSES, value, fallback);
 }
 
 function postureValue(value: unknown, fallback: EngineeringLeadPosture): EngineeringLeadPosture {
-  return value === "lead_ready" ||
-    value === "lead_watch" ||
-    value === "lead_blocked" ||
-    value === "lead_cold_start"
-    ? value
-    : fallback;
+  return enumValue(ENGINEERING_LEAD_POSTURES, value, fallback);
 }
 
 function roleValue(value: unknown, fallback: EngineeringLeadWorkerRole): EngineeringLeadWorkerRole {
-  return value === "main_agent" ||
-    value === "coding_worker" ||
-    value === "test_worker" ||
-    value === "reviewer" ||
-    value === "documentation_worker" ||
-    value === "human_approver"
-    ? value
-    : fallback;
+  return enumValue(ENGINEERING_LEAD_WORKER_ROLES, value, fallback);
 }
 
 function routingModeValue(
   value: unknown,
   fallback: EngineeringLeadRoutingMode
 ): EngineeringLeadRoutingMode {
-  return value === "hold" ||
-    value === "main_agent_execute" ||
-    value === "explicit_handoff_ready" ||
-    value === "needs_contract"
-    ? value
-    : fallback;
+  return enumValue(ENGINEERING_LEAD_ROUTING_MODES, value, fallback);
 }
 
 function slug(value: string, fallback: string): string {
@@ -301,7 +296,9 @@ function normalizeEvidence(value: unknown): EngineeringLeadEvidenceRef[] {
   });
 }
 
-function localSignalEvidence(localSignals: AgentReadinessLocalSignals): EngineeringLeadEvidenceRef[] {
+function localSignalEvidence(
+  localSignals: AgentReadinessLocalSignals
+): EngineeringLeadEvidenceRef[] {
   const refs: EngineeringLeadEvidenceRef[] = [];
   if (localSignals.workflow.present) {
     refs.push(
@@ -406,8 +403,7 @@ function computeScore(input: {
 }): number {
   const hasScope = Boolean(input.task) && input.changedFiles.length > 0;
   const hasPartialScope = Boolean(input.task) || input.changedFiles.length > 0;
-  const hasContext =
-    input.contextRefs.length > 0 || input.localSignals.projectInstructions.present;
+  const hasContext = input.contextRefs.length > 0 || input.localSignals.projectInstructions.present;
   const hasWorkflow =
     input.localSignals.workflow.present && input.localSignals.workflow.status === "active";
   const hasTeamSync =
@@ -424,11 +420,7 @@ function computeScore(input: {
     10 +
     (input.declaredRisks.length > 0 ? 4 : 0);
 
-  const capped = !hasPartialScope
-    ? Math.min(score, 42)
-    : !hasProof
-      ? Math.min(score, 58)
-      : score;
+  const capped = !hasPartialScope ? Math.min(score, 42) : !hasProof ? Math.min(score, 58) : score;
   return Math.min(100, Math.max(0, capped));
 }
 
@@ -472,7 +464,9 @@ function brainUpdateCandidates(input: {
   declaredRisks: string[];
 }): string[] {
   const candidates = [
-    input.task ? `Record lead-plan task outcome for "${input.task}" after verification.` : undefined,
+    input.task
+      ? `Record lead-plan task outcome for "${input.task}" after verification.`
+      : undefined,
     input.proofGates.length > 0
       ? "Attach proof receipts to the Project Brain before closing delegated work."
       : undefined,
@@ -684,9 +678,7 @@ function normalizeCockpitPlan(cockpit: Record<string, unknown>): EngineeringLead
     metrics: recordList(rawPlan.metrics).flatMap((metric) => {
       const label = stringValue(metric.label);
       const value = stringValue(metric.value) ?? numberValue(metric.value, Number.NaN);
-      return label && !(typeof value === "number" && Number.isNaN(value))
-        ? [{ label, value }]
-        : [];
+      return label && !(typeof value === "number" && Number.isNaN(value)) ? [{ label, value }] : [];
     }),
     evidence: normalizeEvidence(rawPlan.evidence),
     caveats: [
@@ -696,7 +688,10 @@ function normalizeCockpitPlan(cockpit: Record<string, unknown>): EngineeringLead
       ]),
     ],
     reasonCodes: [
-      ...new Set(["companion_imported_project_health_lead_plan", ...stringList(rawPlan.reasonCodes)]),
+      ...new Set([
+        "companion_imported_project_health_lead_plan",
+        ...stringList(rawPlan.reasonCodes),
+      ]),
     ],
   };
 }
@@ -721,7 +716,8 @@ export function buildCompanionEngineeringLeadPlanReport(
   const proofGates = unique(options.proof);
   const acceptanceCriteria = unique(options.acceptance);
   const declaredRisks = unique(options.risk);
-  const cockpit = options.cockpit ?? (options.fromCockpit ? readJsonFile(options.fromCockpit) : undefined);
+  const cockpit =
+    options.cockpit ?? (options.fromCockpit ? readJsonFile(options.fromCockpit) : undefined);
   const engineeringLeadPlan = cockpit
     ? normalizeCockpitPlan(cockpit)
     : buildLocalEngineeringLeadPlan({

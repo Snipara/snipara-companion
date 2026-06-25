@@ -210,6 +210,10 @@ export {
   agentReadinessAuditCommand,
 } from "./commands/agent-readiness";
 export {
+  ENGINEERING_LEAD_POSTURES,
+  ENGINEERING_LEAD_ROUTING_MODES,
+  ENGINEERING_LEAD_STATUSES,
+  ENGINEERING_LEAD_WORKER_ROLES,
   buildCompanionEngineeringLeadPlanReport,
   formatCompanionEngineeringLeadPlanReport,
   leadPlanCommand,
