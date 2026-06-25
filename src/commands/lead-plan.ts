@@ -8,102 +8,42 @@
 import * as fs from "fs";
 import * as path from "path";
 import {
+  PROJECT_HEALTH_COCKPIT_STATUSES,
+  PROJECT_INTELLIGENCE_ENGINEERING_LEAD_PLAN_VERSION,
+  PROJECT_INTELLIGENCE_ENGINEERING_LEAD_POSTURES,
+  PROJECT_INTELLIGENCE_ENGINEERING_LEAD_ROUTING_MODES,
+  PROJECT_INTELLIGENCE_ENGINEERING_LEAD_WORKER_ROLES,
+  type ProjectHealthCockpitStatus,
+  type ProjectIntelligenceEngineeringLeadEvidenceRef,
+  type ProjectIntelligenceEngineeringLeadPlanSummary,
+  type ProjectIntelligenceEngineeringLeadPosture,
+  type ProjectIntelligenceEngineeringLeadRoutingMode,
+  type ProjectIntelligenceEngineeringLeadWorkerContract,
+  type ProjectIntelligenceEngineeringLeadWorkerRecommendation,
+  type ProjectIntelligenceEngineeringLeadWorkerRole,
+} from "../contracts/project-intelligence";
+import {
   collectAgentReadinessLocalSignals,
   type AgentReadinessLocalSignals,
   type AgentReadinessTarget,
 } from "./agent-readiness";
 
-export const ENGINEERING_LEAD_STATUSES = ["healthy", "watch", "risk", "unknown"] as const;
-export const ENGINEERING_LEAD_POSTURES = [
-  "lead_ready",
-  "lead_watch",
-  "lead_blocked",
-  "lead_cold_start",
-] as const;
-export const ENGINEERING_LEAD_WORKER_ROLES = [
-  "main_agent",
-  "coding_worker",
-  "test_worker",
-  "reviewer",
-  "documentation_worker",
-  "human_approver",
-] as const;
-export const ENGINEERING_LEAD_ROUTING_MODES = [
-  "hold",
-  "main_agent_execute",
-  "explicit_handoff_ready",
-  "needs_contract",
-] as const;
+export const ENGINEERING_LEAD_STATUSES = PROJECT_HEALTH_COCKPIT_STATUSES;
+export const ENGINEERING_LEAD_POSTURES = PROJECT_INTELLIGENCE_ENGINEERING_LEAD_POSTURES;
+export const ENGINEERING_LEAD_WORKER_ROLES =
+  PROJECT_INTELLIGENCE_ENGINEERING_LEAD_WORKER_ROLES;
+export const ENGINEERING_LEAD_ROUTING_MODES =
+  PROJECT_INTELLIGENCE_ENGINEERING_LEAD_ROUTING_MODES;
 
-export type EngineeringLeadStatus = (typeof ENGINEERING_LEAD_STATUSES)[number];
-export type EngineeringLeadPosture = (typeof ENGINEERING_LEAD_POSTURES)[number];
-export type EngineeringLeadWorkerRole = (typeof ENGINEERING_LEAD_WORKER_ROLES)[number];
-export type EngineeringLeadRoutingMode = (typeof ENGINEERING_LEAD_ROUTING_MODES)[number];
-
-export interface EngineeringLeadEvidenceRef {
-  id: string;
-  kind:
-    | "memory"
-    | "project_decision"
-    | "shadow_signal"
-    | "context_graph"
-    | "outcome_signal"
-    | "retrieval_event"
-    | "workflow"
-    | "repository"
-    | "manual";
-  label: string;
-  sourceRef?: string | null;
-  strength?: number | null;
-  reviewStatus?: string | null;
-  authorityStatus?: string | null;
-  freshness?: string | null;
-}
-
-export interface EngineeringLeadWorkerContract {
-  writeScope: string[];
-  contextRefs: EngineeringLeadEvidenceRef[];
-  acceptanceCriteria: string[];
-  proofRequired: string[];
-  approvalRequired: boolean;
-  fallback: "main_agent";
-}
-
-export interface EngineeringLeadWorkerRecommendation {
-  id: string;
-  role: EngineeringLeadWorkerRole;
-  label: string;
-  status: EngineeringLeadStatus;
-  routingMode: EngineeringLeadRoutingMode;
-  workPackageId: string | null;
-  workPackageTitle: string | null;
-  owner: string | null;
-  rationale: string;
-  contract: EngineeringLeadWorkerContract;
-  proofGates: string[];
-  brainUpdateCandidates: string[];
-  evidence: EngineeringLeadEvidenceRef[];
-  reasonCodes: string[];
-}
-
-export interface EngineeringLeadPlanSummary {
-  version: "project-intelligence-engineering-lead-plan-v0";
-  posture: EngineeringLeadPosture;
-  status: EngineeringLeadStatus;
-  score: number;
-  headline: string;
-  operatingMode: "advisory_fail_closed";
-  nextAction: string;
-  workersSpawned: 0;
-  failClosedFallback: "main_agent";
-  workerRecommendations: EngineeringLeadWorkerRecommendation[];
-  proofGates: string[];
-  brainUpdateActions: string[];
-  metrics: Array<{ label: string; value: string | number }>;
-  evidence: EngineeringLeadEvidenceRef[];
-  caveats: string[];
-  reasonCodes: string[];
-}
+export type EngineeringLeadStatus = ProjectHealthCockpitStatus;
+export type EngineeringLeadPosture = ProjectIntelligenceEngineeringLeadPosture;
+export type EngineeringLeadWorkerRole = ProjectIntelligenceEngineeringLeadWorkerRole;
+export type EngineeringLeadRoutingMode = ProjectIntelligenceEngineeringLeadRoutingMode;
+export type EngineeringLeadEvidenceRef = ProjectIntelligenceEngineeringLeadEvidenceRef;
+export type EngineeringLeadWorkerContract = ProjectIntelligenceEngineeringLeadWorkerContract;
+export type EngineeringLeadWorkerRecommendation =
+  ProjectIntelligenceEngineeringLeadWorkerRecommendation;
+export type EngineeringLeadPlanSummary = ProjectIntelligenceEngineeringLeadPlanSummary;
 
 export interface CompanionEngineeringLeadPlanReport {
   version: "snipara.companion_engineering_lead_plan.v1";
@@ -574,7 +514,7 @@ function buildLocalEngineeringLeadPlan(input: {
   };
 
   return {
-    version: "project-intelligence-engineering-lead-plan-v0",
+    version: PROJECT_INTELLIGENCE_ENGINEERING_LEAD_PLAN_VERSION,
     posture,
     status,
     score,
@@ -661,7 +601,7 @@ function normalizeCockpitPlan(cockpit: Record<string, unknown>): EngineeringLead
     normalizeWorkerRecommendation
   );
   return {
-    version: "project-intelligence-engineering-lead-plan-v0",
+    version: PROJECT_INTELLIGENCE_ENGINEERING_LEAD_PLAN_VERSION,
     posture: postureValue(rawPlan.posture, "lead_cold_start"),
     status: statusValue(rawPlan.status, statusForScore(score)),
     score,

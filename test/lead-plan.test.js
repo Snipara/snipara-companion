@@ -15,17 +15,12 @@ const {
 } = require("../dist/index.js");
 
 const cliPath = path.join(__dirname, "..", "dist", "index.js");
-const webHealthCockpitPath = path.resolve(
+const projectIntelligenceContractsPath = path.resolve(
   __dirname,
   "..",
-  "..",
-  "..",
-  "apps",
-  "web",
   "src",
-  "lib",
-  "project-intelligence",
-  "health-cockpit.ts"
+  "contracts",
+  "project-intelligence.ts"
 );
 
 function readySignals() {
@@ -139,34 +134,37 @@ test("buildCompanionEngineeringLeadPlanReport creates a ready fail-closed handof
   );
 });
 
-if (fs.existsSync(webHealthCockpitPath)) {
-  test("lead-plan enum allowlists stay in parity with Project Health cockpit producer", () => {
+if (fs.existsSync(projectIntelligenceContractsPath)) {
+  test("lead-plan enum allowlists stay in parity with Project Intelligence contracts", () => {
     assert.deepEqual(
       ENGINEERING_LEAD_STATUSES,
-      exportedStringArray(webHealthCockpitPath, "PROJECT_HEALTH_COCKPIT_STATUSES")
+      exportedStringArray(projectIntelligenceContractsPath, "PROJECT_HEALTH_COCKPIT_STATUSES")
     );
     assert.deepEqual(
       ENGINEERING_LEAD_POSTURES,
-      exportedStringArray(webHealthCockpitPath, "PROJECT_INTELLIGENCE_ENGINEERING_LEAD_POSTURES")
+      exportedStringArray(
+        projectIntelligenceContractsPath,
+        "PROJECT_INTELLIGENCE_ENGINEERING_LEAD_POSTURES"
+      )
     );
     assert.deepEqual(
       ENGINEERING_LEAD_WORKER_ROLES,
       exportedStringArray(
-        webHealthCockpitPath,
+        projectIntelligenceContractsPath,
         "PROJECT_INTELLIGENCE_ENGINEERING_LEAD_WORKER_ROLES"
       )
     );
     assert.deepEqual(
       ENGINEERING_LEAD_ROUTING_MODES,
       exportedStringArray(
-        webHealthCockpitPath,
+        projectIntelligenceContractsPath,
         "PROJECT_INTELLIGENCE_ENGINEERING_LEAD_ROUTING_MODES"
       )
     );
   });
 } else {
-  test("lead-plan enum allowlists stay in parity with Project Health cockpit producer", {
-    skip: "monorepo-only Project Health producer source is not present",
+  test("lead-plan enum allowlists stay in parity with Project Intelligence contracts", {
+    skip: "Project Intelligence contract source is not present",
   });
 }
 
