@@ -448,6 +448,49 @@ test("top-level handoff json returns the artifact schema", () => {
   assert.ok(payload.suggestedCommands.includes("snipara-companion status"));
 });
 
+test("top-level handoff can attach an ADE adapter pack", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-agentic-handoff-adapter-"));
+
+  const result = runCli(
+    [
+      "handoff",
+      "--summary",
+      "Auth hardening ready for delegated implementation",
+      "--next",
+      "Run auth regression tests",
+      "--files",
+      "apps/web/src/lib/auth.ts",
+      "--attention",
+      "proof",
+      "--adapter-pack",
+      "--target",
+      "codex",
+      "--context",
+      "AGENTS.md",
+      "docs/features/PROJECT_INTELLIGENCE.md",
+      "--proof",
+      "pnpm test auth",
+      "--acceptance",
+      "auth tests pass",
+      "--conflict-posture",
+      "review_only",
+      "--json",
+    ],
+    { cwd: dir }
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.adapter.version, "snipara.ade_adapter_pack.v1");
+  assert.equal(payload.adapter.target.id, "codex");
+  assert.equal(payload.adapter.conflictPosture, "review_only");
+  assert.deepEqual(payload.adapter.proofGates, ["pnpm test auth"]);
+  assert.deepEqual(payload.adapter.acceptanceCriteria, ["auth tests pass"]);
+  assert.ok(payload.adapter.receiptExpectation.required);
+  assert.match(payload.adapter.receiptExpectation.command, /snipara-companion handoff/);
+  assert.match(payload.adapter.prompt, /Auth hardening ready/);
+});
+
 test("team sync summary separates active, stale, and completed work", () => {
   const state = createEmptyTeamSyncState(new Date("2026-05-17T12:00:00.000Z"));
   const stale = buildTeamSyncStartWorkRecord({

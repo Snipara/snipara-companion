@@ -76,6 +76,8 @@ import {
   automationsStatusCommand,
   automationsUpdateCommand,
 } from "./commands/automations";
+import { agentReadinessAuditCommand } from "./commands/agent-readiness";
+import { leadPlanCommand } from "./commands/lead-plan";
 import { projectIntelligenceBriefCommand } from "./commands/intelligence";
 import { referencesIngestCommand, referencesScanCommand } from "./commands/references";
 import { verifyCommand } from "./commands/verify";
@@ -201,6 +203,17 @@ export {
   retrieveContextPack,
 } from "./commands/context-pack";
 export { buildVerificationPlan, verifyCommand } from "./commands/verify";
+export {
+  buildAgentReadinessAuditReport,
+  collectAgentReadinessLocalSignals,
+  formatAgentReadinessAuditReport,
+  agentReadinessAuditCommand,
+} from "./commands/agent-readiness";
+export {
+  buildCompanionEngineeringLeadPlanReport,
+  formatCompanionEngineeringLeadPlanReport,
+  leadPlanCommand,
+} from "./commands/lead-plan";
 export { buildProjectJudgmentCard, formatProjectJudgmentCard } from "./commands/judgment-card";
 export { buildProjectIntelligenceRun, projectIntelligenceRunCommand } from "./commands/run";
 export { evaluateProjectPolicyGates, formatPolicyGateDecision } from "./commands/policy-gates";
@@ -440,6 +453,15 @@ program
   .option("--attention <attention>", "Attention level (note|watch|review|proof)")
   .option("--risk <risk>", "Compatibility alias for --attention")
   .option("--actor <actor>", "Actor or agent name")
+  .option("--adapter-pack", "Attach an ADE Adapter Pack V1 to the handoff artifact")
+  .option("--target <target>", "ADE target (codex|claude-code|cursor|orca|windsurf|custom)")
+  .option("--context <refs...>", "Context references for the adapter pack")
+  .option("--proof <proof...>", "Proof gates expected from the receiving agent")
+  .option("--acceptance <criteria...>", "Acceptance criteria for the receiving agent")
+  .option(
+    "--conflict-posture <posture>",
+    "Conflict posture (continue|wait|split_work|review_only|handoff)"
+  )
   .option("-d, --dir <directory>", "Project directory (default: current)")
   .option("-o, --output <file>", "Write the handoff artifact to Markdown or JSON")
   .option("--json", "Print raw JSON")
@@ -451,6 +473,12 @@ program
       attention: options.attention,
       risk: options.risk,
       actor: options.actor,
+      adapterPack: Boolean(options.adapterPack),
+      adapterTarget: options.target,
+      context: options.context,
+      proof: options.proof,
+      acceptance: options.acceptance,
+      conflictPosture: options.conflictPosture,
       dir: options.dir,
       output: options.output,
       json: Boolean(options.json),
@@ -479,6 +507,76 @@ program
       diffSummary: options.diffSummary,
       limit: options.limit ? parseInt(options.limit, 10) : undefined,
       skipImpact: Boolean(options.skipImpact),
+      json: Boolean(options.json),
+    });
+  });
+
+program
+  .command("agent-readiness")
+  .description("Audit whether a repo/task is ready for bounded AI agent delegation")
+  .addCommand(
+    new Command("audit")
+      .description(
+        "Create a local readiness report with proof gaps and a service-pack recommendation"
+      )
+      .option(
+        "--target <target>",
+        "Target agent or ADE (codex|claude-code|cursor|orca|windsurf|custom)"
+      )
+      .option("--task <task>", "Delegated task summary")
+      .option("--changed-files <files...>", "Changed or relevant files")
+      .option("--context <refs...>", "Context references, decisions, docs, or source facts")
+      .option("--proof <proof...>", "Required proof gates or verification evidence")
+      .option("--acceptance <criteria...>", "Acceptance criteria for the delegated work")
+      .option("--risk <risks...>", "Known risks or caveats")
+      .option("-d, --dir <directory>", "Project directory (default: current)")
+      .option("-o, --output <file>", "Write Markdown or JSON report")
+      .option("--json", "Print raw JSON")
+      .action(async (options) => {
+        await agentReadinessAuditCommand({
+          target: options.target,
+          task: options.task,
+          changedFiles: options.changedFiles,
+          context: options.context,
+          proof: options.proof,
+          acceptance: options.acceptance,
+          risk: options.risk,
+          dir: options.dir,
+          output: options.output,
+          json: Boolean(options.json),
+        });
+      })
+  );
+
+program
+  .command("lead-plan")
+  .description("Create a fail-closed Companion Engineering Lead Plan")
+  .option("--task <task>", "Current task or work package summary")
+  .option(
+    "--target <target>",
+    "Target agent or ADE (codex|claude-code|cursor|orca|windsurf|custom)"
+  )
+  .option("--changed-files <files...>", "Changed or relevant files")
+  .option("--context <refs...>", "Context references, decisions, docs, or source facts")
+  .option("--proof <proof...>", "Required proof gates or verification evidence")
+  .option("--acceptance <criteria...>", "Acceptance criteria for the delegated work")
+  .option("--risk <risks...>", "Known risks or caveats")
+  .option("--from-cockpit <file>", "Read a Project Health cockpit JSON export")
+  .option("-d, --dir <directory>", "Project directory (default: current)")
+  .option("-o, --output <file>", "Write Markdown or JSON report")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await leadPlanCommand({
+      task: options.task,
+      target: options.target,
+      changedFiles: options.changedFiles,
+      context: options.context,
+      proof: options.proof,
+      acceptance: options.acceptance,
+      risk: options.risk,
+      fromCockpit: options.fromCockpit,
+      dir: options.dir,
+      output: options.output,
       json: Boolean(options.json),
     });
   });

@@ -107,6 +107,12 @@ interface TeamSyncCommandOptions {
   next?: string;
   attention?: string;
   risk?: string;
+  adapterPack?: boolean;
+  adapterTarget?: string;
+  context?: string[];
+  proof?: string[];
+  acceptance?: string[];
+  conflictPosture?: string;
   since?: string;
   dir?: string;
   includeSessionContext?: boolean;
@@ -168,6 +174,53 @@ export interface TeamSyncSweepResult {
   summary: TeamSyncSummary;
 }
 
+export type AgenticHandoffAdapterTarget =
+  | "codex"
+  | "claude-code"
+  | "cursor"
+  | "orca"
+  | "windsurf"
+  | "custom";
+
+export type AgenticHandoffConflictPosture =
+  | "continue"
+  | "wait"
+  | "split_work"
+  | "review_only"
+  | "handoff";
+
+export interface AgenticHandoffAdapterPack {
+  version: "snipara.ade_adapter_pack.v1";
+  target: {
+    id: AgenticHandoffAdapterTarget;
+    label: string;
+    instruction: string;
+  };
+  contextPack: {
+    summary: string;
+    files: string[];
+    contextRefs: string[];
+    workflow?: {
+      goal?: string;
+      status?: string;
+      currentPhaseId?: string;
+      currentPhaseTitle?: string;
+    };
+    resumeCommands: string[];
+    constraints: string[];
+  };
+  conflictPosture: AgenticHandoffConflictPosture;
+  proofGates: string[];
+  acceptanceCriteria: string[];
+  receiptExpectation: {
+    required: boolean;
+    command: string;
+    requiredFields: string[];
+  };
+  prompt: string;
+  caveats: string[];
+}
+
 export interface TeamSyncCompletionEvidenceOptions {
   summary?: string;
   workflowGoal?: string;
@@ -196,6 +249,7 @@ export interface AgenticHandoffArtifact {
     whereToResume: string[];
   };
   suggestedCommands: string[];
+  adapter?: AgenticHandoffAdapterPack;
 }
 
 export function buildTeamSyncStartWorkRecord(input: TeamSyncRecordInput): TeamSyncWorkRecord {
@@ -618,9 +672,217 @@ function hostedHandoffTests(hosted: HostedAttempt<TeamSyncHandoffResponse>): str
   return hosted.status === "ok" ? (hosted.data?.handoff.tests ?? []) : [];
 }
 
+const ADAPTER_TARGETS: Record<AgenticHandoffAdapterTarget, { label: string; instruction: string }> =
+  {
+    codex: {
+      label: "Codex",
+      instruction: "Use Hosted MCP and AGENTS.md first; keep companion phase state visible.",
+    },
+    "claude-code": {
+      label: "Claude Code",
+      instruction: "Use generated/local instructions and return proof through companion handoff.",
+    },
+    cursor: {
+      label: "Cursor",
+      instruction: "Carry the context pack into the IDE session and keep proof gates explicit.",
+    },
+    orca: {
+      label: "Orca",
+      instruction: "Use the portable MCP plus companion handoff path; do not assume native hooks.",
+    },
+    windsurf: {
+      label: "Windsurf",
+      instruction: "Use portable context, file scope, and proof gates around the IDE workflow.",
+    },
+    custom: {
+      label: "Custom worker",
+      instruction: "Require the receiving worker to echo the receipt fields before closure.",
+    },
+  };
+
+function normalizeAdapterTarget(value: string | undefined): AgenticHandoffAdapterTarget {
+  const normalized = (value ?? "codex").trim().toLowerCase();
+  if (normalized === "claude" || normalized === "claude_code") {
+    return "claude-code";
+  }
+  if (normalized in ADAPTER_TARGETS) {
+    return normalized as AgenticHandoffAdapterTarget;
+  }
+  return "custom";
+}
+
+function normalizeAdapterValues(values: string[] | undefined): string[] {
+  return [
+    ...new Set(
+      (values ?? [])
+        .flatMap((value) => value.split(","))
+        .map((value) => value.trim())
+        .filter(Boolean)
+    ),
+  ];
+}
+
+function normalizeConflictPosture(
+  value: string | undefined,
+  payload: TeamSyncHandoffPayload
+): AgenticHandoffConflictPosture {
+  const normalized = value?.trim().toLowerCase().replace(/-/g, "_");
+  if (
+    normalized === "continue" ||
+    normalized === "wait" ||
+    normalized === "split_work" ||
+    normalized === "review_only" ||
+    normalized === "handoff"
+  ) {
+    return normalized;
+  }
+
+  if (payload.record.attention === "proof" || payload.summary.staleWorkCount > 0) {
+    return "review_only";
+  }
+
+  return "handoff";
+}
+
+function quoteCommandValue(value: string): string {
+  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+function buildReceiptCommand(record: TeamSyncHandoffRecord): string {
+  const parts = [
+    "snipara-companion handoff",
+    `--summary ${quoteCommandValue("<what changed and what was proven>")}`,
+    record.next ? `--next ${quoteCommandValue(record.next)}` : '--next "<remaining work>"',
+    "--attention proof",
+  ];
+
+  if (record.files.length > 0) {
+    parts.push(`--files ${record.files.join(" ")}`);
+  }
+
+  return parts.join(" ");
+}
+
+function buildAdapterPrompt(input: {
+  target: { label: string };
+  record: TeamSyncHandoffRecord;
+  conflictPosture: AgenticHandoffConflictPosture;
+  proofGates: string[];
+  acceptanceCriteria: string[];
+}): string {
+  return [
+    `You are receiving a Snipara ADE Adapter Pack for ${input.target.label}.`,
+    `Task: ${input.record.summary}`,
+    `Conflict posture: ${input.conflictPosture}`,
+    input.record.files.length > 0
+      ? `File scope: ${input.record.files.join(", ")}`
+      : "File scope: not declared",
+    input.proofGates.length > 0
+      ? `Proof gates: ${input.proofGates.join("; ")}`
+      : "Proof gates: provide explicit evidence before closure.",
+    input.acceptanceCriteria.length > 0
+      ? `Acceptance criteria: ${input.acceptanceCriteria.join("; ")}`
+      : "Acceptance criteria: use the next step and handoff summary as the minimum contract.",
+    "Return a companion handoff receipt with files changed, commands run, proof evidence, blockers, and next action.",
+  ].join("\n");
+}
+
+function buildAgenticHandoffAdapterPack(input: {
+  payload: TeamSyncHandoffPayload;
+  workflow:
+    | {
+        goal?: string;
+        status?: string;
+        currentPhaseId?: string;
+        currentPhaseTitle?: string;
+      }
+    | undefined;
+  gitStatus: string[];
+  whereToResume: string[];
+  options: TeamSyncCommandOptions;
+}): AgenticHandoffAdapterPack | undefined {
+  if (!input.options.adapterPack && !input.options.adapterTarget) {
+    return undefined;
+  }
+
+  const targetId = normalizeAdapterTarget(input.options.adapterTarget);
+  const target = ADAPTER_TARGETS[targetId];
+  const contextRefs = normalizeAdapterValues(input.options.context);
+  const explicitProof = normalizeAdapterValues(input.options.proof);
+  const explicitAcceptance = normalizeAdapterValues(input.options.acceptance);
+  const hostedTests = hostedHandoffTests(input.payload.hosted);
+  const proofGates =
+    explicitProof.length > 0
+      ? explicitProof
+      : hostedTests.length > 0
+        ? hostedTests
+        : input.payload.record.attention === "proof"
+          ? ["Explicit proof must be attached before closure."]
+          : [];
+  const acceptanceCriteria =
+    explicitAcceptance.length > 0
+      ? explicitAcceptance
+      : input.payload.record.next
+        ? [input.payload.record.next]
+        : [];
+  const conflictPosture = normalizeConflictPosture(input.options.conflictPosture, input.payload);
+
+  return {
+    version: "snipara.ade_adapter_pack.v1",
+    target: {
+      id: targetId,
+      label: target.label,
+      instruction: target.instruction,
+    },
+    contextPack: {
+      summary: input.payload.record.summary,
+      files: input.payload.record.files,
+      contextRefs,
+      ...(input.workflow ? { workflow: input.workflow } : {}),
+      resumeCommands: input.whereToResume,
+      constraints: [
+        "Use this artifact as a work contract, not as approval to expand scope silently.",
+        "Keep secrets out of handoff receipts and proof notes.",
+        "Do not close the task until proof gates are addressed or an explicit waiver is recorded.",
+        input.gitStatus.length > 0
+          ? `${input.gitStatus.length} dirty git file(s) existed when this pack was generated.`
+          : "No dirty git file count was added to the adapter constraints.",
+      ],
+    },
+    conflictPosture,
+    proofGates,
+    acceptanceCriteria,
+    receiptExpectation: {
+      required: true,
+      command: buildReceiptCommand(input.payload.record),
+      requiredFields: [
+        "summary",
+        "filesChanged",
+        "commandsRun",
+        "proofEvidence",
+        "blockers",
+        "nextAction",
+      ],
+    },
+    prompt: buildAdapterPrompt({
+      target,
+      record: input.payload.record,
+      conflictPosture,
+      proofGates,
+      acceptanceCriteria,
+    }),
+    caveats: [
+      "ADE Adapter Pack V1 is a portable contract; it does not control the target client runtime.",
+      "Native hooks or IDE-specific automation must be installed separately when they exist.",
+      "The receiving agent must return a receipt before Snipara can treat the work as verified.",
+    ],
+  };
+}
+
 function buildAgenticHandoffArtifact(
   rootDir: string,
-  payload: TeamSyncHandoffPayload
+  payload: TeamSyncHandoffPayload,
+  options: TeamSyncCommandOptions = {}
 ): AgenticHandoffArtifact {
   const workflow = readWorkflowSnapshot(rootDir);
   const gitStatus = readGitStatusLines(rootDir);
@@ -677,6 +939,14 @@ function buildAgenticHandoffArtifact(
     whereToResume.push(`snipara-companion workflow phase-start ${workflow.currentPhaseId}`);
   }
 
+  const adapter = buildAgenticHandoffAdapterPack({
+    payload,
+    workflow,
+    gitStatus,
+    whereToResume,
+    options,
+  });
+
   return {
     version: "snipara.agentic_handoff.v1",
     generatedAt: new Date().toISOString(),
@@ -696,6 +966,7 @@ function buildAgenticHandoffArtifact(
       whereToResume,
     },
     suggestedCommands: whereToResume,
+    ...(adapter ? { adapter } : {}),
   };
 }
 
@@ -704,7 +975,7 @@ function markdownList(values: string[]): string {
 }
 
 export function buildAgenticHandoffMarkdown(artifact: AgenticHandoffArtifact): string {
-  return [
+  const lines = [
     "# Agent Handoff",
     "",
     `Generated: ${artifact.generatedAt}`,
@@ -725,7 +996,53 @@ export function buildAgenticHandoffMarkdown(artifact: AgenticHandoffArtifact): s
     "## Where To Resume",
     markdownList(artifact.sections.whereToResume),
     "",
-  ].join("\n");
+  ];
+
+  if (artifact.adapter) {
+    lines.push(
+      "## ADE Adapter Pack",
+      `Version: ${artifact.adapter.version}`,
+      `Target: ${artifact.adapter.target.label}`,
+      `Conflict posture: ${artifact.adapter.conflictPosture}`,
+      "",
+      "### Target Instruction",
+      artifact.adapter.target.instruction,
+      "",
+      "### Context Pack",
+      markdownList([
+        `Summary: ${artifact.adapter.contextPack.summary}`,
+        `Files: ${artifact.adapter.contextPack.files.join(", ") || "none"}`,
+        `Context refs: ${artifact.adapter.contextPack.contextRefs.join(", ") || "none"}`,
+      ]),
+      "",
+      "### Proof Gates",
+      markdownList(
+        artifact.adapter.proofGates.length > 0
+          ? artifact.adapter.proofGates
+          : ["No explicit proof gates were provided."]
+      ),
+      "",
+      "### Acceptance Criteria",
+      markdownList(
+        artifact.adapter.acceptanceCriteria.length > 0
+          ? artifact.adapter.acceptanceCriteria
+          : ["No explicit acceptance criteria were provided."]
+      ),
+      "",
+      "### Receipt Expected",
+      markdownList([
+        `Required: ${artifact.adapter.receiptExpectation.required ? "yes" : "no"}`,
+        `Command: ${artifact.adapter.receiptExpectation.command}`,
+        `Fields: ${artifact.adapter.receiptExpectation.requiredFields.join(", ")}`,
+      ]),
+      "",
+      "### Adapter Prompt",
+      artifact.adapter.prompt,
+      ""
+    );
+  }
+
+  return lines.join("\n");
 }
 
 function writeAgenticHandoffArtifact(
@@ -753,7 +1070,7 @@ export async function agenticHandoffCommand(options: TeamSyncCommandOptions): Pr
     ...options,
     summary,
   });
-  const artifact = buildAgenticHandoffArtifact(rootDir, payload);
+  const artifact = buildAgenticHandoffArtifact(rootDir, payload, options);
   const outputPath = writeAgenticHandoffArtifact(rootDir, options.output, artifact);
 
   if (options.json) {

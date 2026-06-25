@@ -564,7 +564,8 @@ function formatSecretWarningMessage(samples: SecretWarningSample[]): string {
     const suffix = sample.lines.length > 5 ? ",..." : "";
     return `${sample.path}:${lines}${suffix}`;
   });
-  const more = samples.length > displayed.length ? `; ${samples.length - displayed.length} more` : "";
+  const more =
+    samples.length > displayed.length ? `; ${samples.length - displayed.length} more` : "";
   return (
     "Secret-like lines were redacted before local graph extraction; files remain visible to impact. " +
     `Samples: ${displayed.join("; ")}${more}.`

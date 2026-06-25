@@ -2,6 +2,29 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 2.1.0
+
+- Adds `snipara-companion lead-plan`, a local Companion Engineering Lead Plan
+  artifact that turns workflow state, Team Sync, file scope, context refs, proof
+  gates, and acceptance criteria into fail-closed worker recommendations.
+- Supports `--from-cockpit <file>` so a Project Health cockpit JSON export can
+  be normalized into the same CLI Markdown/JSON lead-plan report.
+- Keeps the boundary explicit: `lead-plan` recommends contracts and handoffs,
+  records `workersSpawned: 0`, uses `main_agent` fallback, and does not launch
+  autonomous workers.
+
+## New In 2.0.10
+
+- Adds `snipara-companion agent-readiness audit`, a local readiness report that
+  scores bounded agent delegation across scope, context, workflow continuity,
+  Team Sync, proof gates, verification path, and target posture.
+- Adds optional ADE Adapter Pack V1 output to `snipara-companion handoff` through
+  `--adapter-pack --target <codex|claude-code|cursor|orca|windsurf|custom>`,
+  including context refs, proof gates, acceptance criteria, conflict posture,
+  receipt expectations, and a portable prompt for the receiving agent.
+- Documents the Agent Readiness Audit and ADE Adapter Pack as service/product
+  surfaces without claiming native IDE control or automatic worker execution.
+
 ## New In 2.0.9
 
 - Aligns public package metadata with the local-first `impact` first-run

@@ -176,7 +176,9 @@ snipara-companion timeline
 snipara-companion workflow phase-commit build --summary "tests green"
 snipara-companion workflow impact-gate
 snipara-companion workflow run --adaptive-routing-dry-run --route-local-workers "document a scoped change"
+snipara-companion lead-plan --task "ship auth hardening" --changed-files src/auth.ts --proof "pnpm test auth" --acceptance "auth tests pass"
 snipara-companion verify --changed-files src/auth.ts --diff-summary "auth hardening"
+snipara-companion agent-readiness audit --target codex --task "ship auth hardening" --changed-files src/auth.ts --proof "pnpm test auth" --acceptance "auth tests pass"
 snipara-companion run --task "ship auth hardening" --changed-files src/auth.ts --release
 snipara-companion handoff --summary "status command shipped" --next "publish package"
 snipara-companion workflow resume --include-session-context
@@ -193,11 +195,19 @@ snipara-companion workflow resume --include-session-context
 - `workflow run --adaptive-routing-dry-run` prints an Adaptive Work Routing
   card. Add `--route-local-workers` when a strong planner should keep deep
   reasoning while a local worker handles scoped execution.
+- `lead-plan` turns local workflow state, Team Sync, file scope, context refs,
+  proof gates, and acceptance criteria into an advisory Engineering Lead Plan.
+  It emits worker recommendations and handoff contracts, keeps
+  `workersSpawned: 0`, and does not launch agents.
 - `verify` builds a transparent verification plan from companion code impact
   signals plus local package scripts. It recommends checks; it does not claim to
   execute them.
+- `agent-readiness audit` creates a local delegation-readiness report with proof
+  gaps and a service-pack recommendation. It reads explicit inputs plus local
+  workflow/Team Sync state; it does not validate hosted auth or launch agents.
 - `handoff` writes an agent-ready handoff artifact while persisting the same
-  local/hosted Team Sync continuity record as `team-sync handoff`.
+  local/hosted Team Sync continuity record as `team-sync handoff`. Add
+  `--adapter-pack --target <target>` to attach a portable ADE Adapter Pack V1.
 
 The mental model is intentionally close to Git:
 
@@ -281,6 +291,32 @@ Save it at `.snipara/adaptive-routing.json`. Without hosted configuration,
 `workflow run` only emits local Adaptive Work Routing metadata and handoff files:
 it does not query hosted context, call the hosted catalog, or spawn workers.
 
+## Engineering Lead Plans
+
+Use `lead-plan` when Companion should act as an engineering lead before any
+worker handoff:
+
+```bash
+snipara-companion lead-plan \
+  --target codex \
+  --task "ship auth hardening" \
+  --changed-files src/auth.ts tests/auth.test.ts \
+  --context AGENTS.md docs/features/ADAPTIVE_WORK_ROUTING.md \
+  --proof "pnpm test auth" \
+  --acceptance "auth tests pass" \
+  --json
+```
+
+The command reads local workflow state, Team Sync, project instructions, and
+explicit inputs. The output uses the same lead-plan vocabulary as Project
+Health: posture, score, routing mode, bounded worker contract, proof gates,
+candidate Project Brain updates, `workersSpawned: 0`, and `main_agent` fallback.
+
+Use `--from-cockpit <file>` when Project Health has exported a cockpit JSON
+artifact and Companion only needs to normalize it into Markdown or JSON for
+handoff. This is still advisory and fail-closed: the command does not approve
+work, execute proof gates, or spawn workers.
+
 ## Verification Plans
 
 Use `verify` when an agent asks what to prove before handoff or release:
@@ -298,6 +334,61 @@ Output includes:
 - risk level and score when code impact is available
 - missing checks and caveats
 - suggested next commands
+
+## Agent Readiness Audits
+
+Use `agent-readiness audit` when a team wants to know whether a task can be
+delegated safely to Codex, Claude Code, Cursor, Orca, Windsurf, or a custom
+worker:
+
+```bash
+snipara-companion agent-readiness audit \
+  --target codex \
+  --task "ship auth hardening" \
+  --changed-files src/auth.ts tests/auth.test.ts \
+  --context AGENTS.md docs/features/PROJECT_INTELLIGENCE.md \
+  --proof "pnpm test auth" \
+  --acceptance "auth tests pass" \
+  --json
+```
+
+The output includes:
+
+- 100-point readiness score and band;
+- pass/warning/fail checks for scope, context, workflow, Team Sync, proof,
+  verification, and target adapter;
+- blocker/high/medium/low gaps with next actions;
+- recommended service pack: launch review, enablement pack, or hardening sprint;
+- suggested companion commands for workflow, Team Sync, handoff, and verify.
+
+This is a bounded audit/report primitive. It does not execute proof gates,
+validate hosted MCP auth, create branches, or run agents.
+
+## ADE Adapter Pack Handoffs
+
+Use `handoff --adapter-pack` when the receiving execution cockpit is Codex,
+Claude Code, Cursor, Orca, Windsurf, or a custom worker:
+
+```bash
+snipara-companion handoff \
+  --summary "auth hardening ready for implementation" \
+  --next "run auth regression tests" \
+  --files apps/web/src/lib/auth.ts \
+  --attention proof \
+  --adapter-pack \
+  --target codex \
+  --context AGENTS.md docs/features/PROJECT_INTELLIGENCE.md \
+  --proof "pnpm test auth" \
+  --acceptance "auth tests pass" \
+  --conflict-posture review_only \
+  --output .snipara/handoffs/auth-codex.json \
+  --json
+```
+
+The adapter pack adds target posture, context refs, file scope, conflict posture,
+proof gates, acceptance criteria, receipt expectations, and a portable prompt.
+It is still a handoff contract: companion does not control the target runtime,
+install native hooks, or run the receiving agent.
 
 ## Supported Client Presets Today
 

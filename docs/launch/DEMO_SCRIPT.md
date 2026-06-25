@@ -1,17 +1,71 @@
-# Demo Runner
+# Demo Script
 
-This is not a script to paste by hand. The source of truth is the executable
-runner in this directory:
+Goal: produce a 15 to 30 second terminal recording that proves the first-run
+promise without depending on a private repo.
+
+## Recording Setup
+
+- Terminal size: 88 x 26 or similar.
+- Theme: high contrast, readable font, no prompt plugins that leak paths or
+  credentials.
+- Network is needed only for `npx` to fetch the package. The analysis command
+  uses `--source local`.
+- Do not record private repositories, environment variables, or secrets.
+
+## Deterministic Demo Repo
+
+Paste this into a clean shell:
 
 ```bash
-docs/launch/demo-impact.sh
-```
+DEMO_DIR="$(mktemp -d)"
+cd "$DEMO_DIR"
+git init >/dev/null
+git config user.email demo@example.com
+git config user.name Demo
 
-It creates a temporary public-safe demo repository, commits a small auth import
-graph, and runs:
+mkdir -p src/auth apps/web/src/lib/auth apps/web/src/app/api/auth/session
 
-```bash
-npx -y snipara-companion@latest impact src/auth/session.ts --source local
+cat > src/auth/cookies.ts <<'EOF'
+export function readCookie(name: string) {
+  return name;
+}
+EOF
+
+cat > src/auth/tokens.ts <<'EOF'
+export function verifyToken(token: string) {
+  return token.length > 0;
+}
+EOF
+
+cat > src/auth/session.ts <<'EOF'
+import { readCookie } from './cookies';
+import { verifyToken } from './tokens';
+
+export function readSession() {
+  return verifyToken(readCookie('session'));
+}
+EOF
+
+cat > apps/web/src/lib/auth/permissions.ts <<'EOF'
+import { readSession } from '../../../../src/auth/session';
+
+export function canReadAdmin() {
+  return readSession();
+}
+EOF
+
+cat > apps/web/src/app/api/auth/session/route.ts <<'EOF'
+import { readSession } from '../../../../../../src/auth/session';
+
+export function GET() {
+  return readSession();
+}
+EOF
+
+git add .
+git commit -m "demo repo" >/dev/null
+
+npx -y snipara-companion impact src/auth/session.ts --source local
 ```
 
 Expected output shape:
@@ -32,12 +86,12 @@ Outgoing (2) - files this depends on
 Use --json for full overlay details.
 ```
 
-## Recording
-
-For a terminal recording, run the executable and record that terminal session:
+## Asciinema
 
 ```bash
-asciinema rec -c "docs/launch/demo-impact.sh" docs/launch/impact.cast
+asciinema rec docs/launch/impact.cast
+# run the deterministic demo commands
+asciinema play docs/launch/impact.cast
 ```
 
 Optional GIF conversion if `agg` is installed:
@@ -46,19 +100,26 @@ Optional GIF conversion if `agg` is installed:
 agg docs/launch/impact.cast docs/launch/impact.gif
 ```
 
-## Options
+## VHS
 
-Use a local package path or a specific version:
+Create `docs/launch/impact.tape`:
 
-```bash
-SNIPARA_COMPANION_PACKAGE=snipara-companion@2.0.9 docs/launch/demo-impact.sh
-SNIPARA_COMPANION_PACKAGE=. docs/launch/demo-impact.sh
+```text
+Output docs/launch/impact.gif
+Set FontSize 18
+Set Width 1200
+Set Height 720
+Set TypingSpeed 50ms
+
+Type "npx -y snipara-companion impact src/auth/session.ts --source local"
+Enter
+Sleep 3s
 ```
 
-Keep the generated demo repository for debugging:
+Then run:
 
 ```bash
-KEEP_DEMO_DIR=1 docs/launch/demo-impact.sh
+vhs docs/launch/impact.tape
 ```
 
 ## Review Checklist

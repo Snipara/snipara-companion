@@ -137,4 +137,3 @@ Please open an "Impact output is wrong or surprising" issue with the command,
 package version, language, and redacted output. The most useful repro is a tiny
 public repo or file pair that shows the missing edge.
 ```
-

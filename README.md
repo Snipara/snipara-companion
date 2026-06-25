@@ -44,7 +44,7 @@ These commands are useful without hosted Snipara:
 | `code callers` / `imports` / `neighbors` / `shortest-path`   | Structural repo questions from local files                   |
 | `workflow start` / `phase-start` / `phase-commit` / `resume` | Agent continuity that survives compaction                    |
 | `context-pack`                                               | Reversible local packs for long logs, diffs, and tool output |
-| `judgment-card`, `verify`, `references`                      | Local review artifacts and source-backed references          |
+| `judgment-card`, `verify`, `lead-plan`, `agent-readiness`    | Local review artifacts and delegation contracts              |
 | `stuck-guard`, `memory-guard`, `pre-tool`, `post-tool`       | Fail-soft local guards and hook helpers                      |
 
 ## Agent Continuity
@@ -54,6 +54,7 @@ After the first impact check, keep the work resumable:
 ```bash
 npx -y snipara-companion workflow start --goal "ship auth hardening"
 npx -y snipara-companion workflow phase-start audit
+npx -y snipara-companion lead-plan --task "ship auth hardening" --changed-files src/auth/session.ts --proof "pnpm test auth" --acceptance "auth tests pass"
 npx -y snipara-companion workflow phase-commit audit --summary "mapped auth impact"
 npx -y snipara-companion handoff --summary "auth impact mapped" --next "run auth tests"
 ```
