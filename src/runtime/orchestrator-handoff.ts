@@ -83,14 +83,14 @@ export interface AdaptiveRoutingCard {
   requirements: AdaptiveModelRequirements;
   recommendedWorkerClass: string;
   costEstimate: AdaptiveRoutingCostEstimate;
-  humanApprovalRequired: true;
+  humanApprovalRequired: boolean;
   fallback: "main_agent";
   reasons: string[];
   warnings: string[];
 }
 
 export interface AdaptiveRoutingGatewayStatus {
-  source: "hosted_mcp";
+  source: "hosted_mcp" | "local_orchestrator";
   success: boolean;
   resolutionStatus?: string;
   candidateCount: number;
@@ -100,7 +100,24 @@ export interface AdaptiveRoutingGatewayStatus {
 
 export interface AdaptiveRoutingRuntimeCatalog {
   version?: string;
+  source?: string;
+  provider?: string;
+  baseUrl?: string;
+  models?: string[];
+  apiPaths?: Record<string, unknown>;
+  workerEndpoints?: Record<string, Record<string, unknown>>;
   candidates: Array<Record<string, unknown>>;
+}
+
+export interface AdaptiveRoutingResolution {
+  status?: string;
+  selected?: Record<string, unknown>;
+  policyDecision?: Record<string, unknown>;
+  evaluatedCount?: number;
+  rejectedCount?: number;
+  fallback?: string;
+  reasons?: string[];
+  warnings?: string[];
 }
 
 export interface AdaptiveWorkRoutingRecommendation {
@@ -109,6 +126,7 @@ export interface AdaptiveWorkRoutingRecommendation {
   routingCard: AdaptiveRoutingCard;
   gateway?: AdaptiveRoutingGatewayStatus;
   runtimeCatalog?: AdaptiveRoutingRuntimeCatalog;
+  resolution?: AdaptiveRoutingResolution;
 }
 
 export interface AdaptiveWorkRoutingOptions {
@@ -152,6 +170,7 @@ export interface OrchestratorHandoffArtifact {
     routingCard?: AdaptiveRoutingCard;
     gateway?: AdaptiveRoutingGatewayStatus;
     runtimeCatalog?: AdaptiveRoutingRuntimeCatalog;
+    resolution?: AdaptiveRoutingResolution;
   };
   task: {
     title: string;
@@ -266,6 +285,9 @@ export function buildOrchestratorHandoff(
               : {}),
             ...(options.adaptiveRouting.runtimeCatalog
               ? { runtimeCatalog: options.adaptiveRouting.runtimeCatalog }
+              : {}),
+            ...(options.adaptiveRouting.resolution
+              ? { resolution: options.adaptiveRouting.resolution }
               : {}),
           }
         : {}),

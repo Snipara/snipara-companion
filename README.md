@@ -55,6 +55,8 @@ After the first impact check, keep the work resumable:
 npx -y snipara-companion workflow start --goal "ship auth hardening"
 npx -y snipara-companion workflow phase-start audit
 npx -y snipara-companion lead-plan --task "ship auth hardening" --changed-files src/auth/session.ts --proof "pnpm test auth" --acceptance "auth tests pass"
+npx -y snipara-companion lead-plan --from-plan ./project-health-lead-plan.json --reconcile --changed-files src/auth/session.ts
+npx -y snipara-companion lead-plan --from-plan ./project-health-lead-plan.json --json | jq '.engineeringLeadPlan.executionReceipts'
 npx -y snipara-companion workflow phase-commit audit --summary "mapped auth impact"
 npx -y snipara-companion handoff --summary "auth impact mapped" --next "run auth tests"
 ```

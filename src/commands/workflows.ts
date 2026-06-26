@@ -85,6 +85,7 @@ const FINAL_COMMIT_RETRY_TIMEOUT_MS = 45_000;
 const FINAL_COMMIT_SUMMARY_MAX_CHARS = 1_200;
 const FINAL_COMMIT_RETRY_SUMMARY_MAX_CHARS = 600;
 const DEFAULT_ADAPTIVE_ROUTING_CATALOG_LIMIT = 20;
+const DEFAULT_LOCAL_ORCHESTRATOR_TIMEOUT_MS = 8_000;
 const ADAPTIVE_ROUTING_POLICY_RELATIVE_PATH = path.join(".snipara", "adaptive-routing.json");
 const SHARED_CONTEXT_INTENT_PATTERN =
   /\b(standard|standards|convention|conventions|guideline|guidelines|best practice|best practices|policy|policies|compliance|compliant|security rules|team rules|style guide|playbook|checklist)\b/i;
@@ -3772,11 +3773,25 @@ function printAdaptiveRoutingRecommendation(routing: AdaptiveWorkRoutingRecommen
   }
   if (routing.gateway) {
     printKeyValue(
-      "Hosted catalog:",
+      routing.gateway.source === "local_orchestrator" ? "Local route:" : "Hosted catalog:",
       routing.gateway.success
         ? `${routing.gateway.candidateCount} candidate(s), ${routing.gateway.resolutionStatus ?? "ready"}`
         : "unavailable"
     );
+  }
+  const selectedCandidate = adaptiveRoutingSelectedCandidate(routing.resolution);
+  if (selectedCandidate) {
+    printKeyValue("Selected candidate:", selectedCandidate.candidateId);
+    if (selectedCandidate.endpointType) {
+      printKeyValue("Selected endpoint:", selectedCandidate.endpointType);
+    }
+  }
+  const selectedWorkerEndpoint =
+    selectedCandidate && routing.runtimeCatalog?.workerEndpoints
+      ? routing.runtimeCatalog.workerEndpoints[selectedCandidate.candidateId]
+      : undefined;
+  if (selectedWorkerEndpoint?.model) {
+    printKeyValue("Selected model:", String(selectedWorkerEndpoint.model));
   }
   if (routing.routingCard.reasons.length > 0) {
     console.log("Reasons:");
@@ -4044,10 +4059,257 @@ function normalizeAdaptiveRoutingCatalog(value: unknown): AdaptiveRoutingRuntime
           Boolean(candidate) && typeof candidate === "object" && !Array.isArray(candidate)
       )
     : [];
+  const models = Array.isArray(record.models)
+    ? record.models.map((item) => stringValue(item)).filter((item): item is string => Boolean(item))
+    : undefined;
+  const workerEndpoints = isRecord(record.workerEndpoints)
+    ? (Object.fromEntries(
+        Object.entries(record.workerEndpoints).filter(
+          ([key, value]) => Boolean(stringValue(key)) && isRecord(value)
+        )
+      ) as Record<string, Record<string, unknown>>)
+    : undefined;
   return {
     version: stringValue(record.version),
+    source: stringValue(record.source),
+    provider: stringValue(record.provider),
+    baseUrl: stringValue(record.baseUrl),
+    ...(models && models.length > 0 ? { models } : {}),
+    ...(isRecord(record.apiPaths) ? { apiPaths: record.apiPaths } : {}),
+    ...(workerEndpoints ? { workerEndpoints } : {}),
     candidates,
   };
+}
+
+interface AdaptiveRoutingSelectedCandidateRecord {
+  candidateId: string;
+  workerClass?: string;
+  endpointType?: string;
+  catalogSource?: string;
+}
+
+function adaptiveRoutingSelectedCandidate(
+  resolution: AdaptiveWorkRoutingRecommendation["resolution"]
+): AdaptiveRoutingSelectedCandidateRecord | undefined {
+  if (!resolution || !isRecord(resolution.selected)) {
+    return undefined;
+  }
+  const candidate = isRecord(resolution.selected.candidate)
+    ? resolution.selected.candidate
+    : undefined;
+  const candidateId = stringValue(candidate?.candidateId);
+  if (!candidateId) {
+    return undefined;
+  }
+  return {
+    candidateId,
+    workerClass: stringValue(candidate?.workerClass),
+    endpointType: stringValue(candidate?.endpointType),
+    catalogSource: stringValue(candidate?.catalogSource),
+  };
+}
+
+function normalizeAdaptiveRoutingResolution(
+  value: unknown
+): AdaptiveWorkRoutingRecommendation["resolution"] {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const selected = isRecord(value.selected) ? value.selected : undefined;
+  const candidate = selected && isRecord(selected.candidate) ? selected.candidate : undefined;
+  const selectedPayload =
+    selected && candidate
+      ? {
+          candidate,
+          ...(numberValue(selected.score) !== undefined
+            ? { score: numberValue(selected.score) }
+            : {}),
+          ...(normalizeStringArray(selected.reasons)
+            ? { reasons: normalizeStringArray(selected.reasons) }
+            : {}),
+        }
+      : undefined;
+  const reasons = normalizeStringArray(value.reasons);
+  const warnings = normalizeStringArray(value.warnings);
+  return {
+    status: stringValue(value.status),
+    ...(selectedPayload ? { selected: selectedPayload } : {}),
+    ...(isRecord(value.policyDecision) ? { policyDecision: value.policyDecision } : {}),
+    ...(numberValue(value.evaluatedCount) !== undefined
+      ? { evaluatedCount: numberValue(value.evaluatedCount) }
+      : {}),
+    ...(numberValue(value.rejectedCount) !== undefined
+      ? { rejectedCount: numberValue(value.rejectedCount) }
+      : {}),
+    ...(stringValue(value.fallback) ? { fallback: stringValue(value.fallback) } : {}),
+    ...(reasons ? { reasons } : {}),
+    ...(warnings ? { warnings } : {}),
+  };
+}
+
+function shouldResolveAdaptiveRoutingLocally(
+  options: {
+    routeLocalWorkers?: boolean;
+    routingLocalBaseUrl?: string;
+    routingLocalModel?: string;
+    routingLocalPreferModel?: string;
+    routingLocalProvider?: string;
+  },
+  routing: AdaptiveWorkRoutingRecommendation | null
+): boolean {
+  if (!routing) {
+    return false;
+  }
+  if (
+    !options.routeLocalWorkers &&
+    !options.routingLocalBaseUrl &&
+    !options.routingLocalModel &&
+    !options.routingLocalPreferModel &&
+    !options.routingLocalProvider
+  ) {
+    return false;
+  }
+  const preferred = routing.requirements.preferredEndpointTypes ?? [];
+  const allowed = routing.requirements.allowedEndpointTypes ?? [];
+  return preferred.includes("local") || allowed.length === 0 || allowed.includes("local");
+}
+
+function runOrchestratorJsonCommand(
+  args: string[],
+  cwd: string = process.cwd()
+): Record<string, unknown> {
+  const output = execFileSync("snipara-orchestrator", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: DEFAULT_LOCAL_ORCHESTRATOR_TIMEOUT_MS,
+  }).trim();
+  return output ? parseJsonRecord(output, "snipara-orchestrator JSON output") : {};
+}
+
+function enrichAdaptiveRoutingWithLocalOrchestrator(
+  routing: AdaptiveWorkRoutingRecommendation,
+  options: {
+    routingLocalBaseUrl?: string;
+    routingLocalModel?: string;
+    routingLocalPreferModel?: string;
+    routingLocalProvider?: string;
+  },
+  cwd: string = process.cwd()
+): AdaptiveWorkRoutingRecommendation {
+  try {
+    const catalogArgs = [
+      "local-model-catalog",
+      "--json",
+      "--worker-role",
+      routing.requirements.workerRole,
+    ];
+    for (const writeScope of routing.requirements.writeScope ?? []) {
+      catalogArgs.push("--write-scope", writeScope);
+    }
+    if (options.routingLocalBaseUrl) {
+      catalogArgs.push("--base-url", options.routingLocalBaseUrl);
+    }
+    if (options.routingLocalModel) {
+      catalogArgs.push("--model", options.routingLocalModel);
+    } else if (options.routingLocalPreferModel) {
+      catalogArgs.push("--prefer-model", options.routingLocalPreferModel);
+    }
+    if (options.routingLocalProvider) {
+      catalogArgs.push("--provider", options.routingLocalProvider);
+    }
+
+    const runtimeCatalog = normalizeAdaptiveRoutingCatalog(
+      runOrchestratorJsonCommand(catalogArgs, cwd)
+    );
+    const routeArgs = [
+      "route",
+      "--dry-run",
+      "--json",
+      "--work-profile-json",
+      JSON.stringify(routing.workProfile),
+      "--requirements-json",
+      JSON.stringify(routing.requirements),
+    ];
+    for (const candidate of runtimeCatalog.candidates) {
+      routeArgs.push("--candidate-json", JSON.stringify(candidate));
+    }
+
+    const resolution = normalizeAdaptiveRoutingResolution(
+      runOrchestratorJsonCommand(routeArgs, cwd)
+    );
+    const selectedCandidate = adaptiveRoutingSelectedCandidate(resolution);
+    const selectedEndpoint =
+      selectedCandidate && runtimeCatalog.workerEndpoints
+        ? runtimeCatalog.workerEndpoints[selectedCandidate.candidateId]
+        : undefined;
+    const resolutionWarnings = normalizeStringArray(resolution?.warnings) ?? [];
+    const resolutionReasons = normalizeStringArray(resolution?.reasons) ?? [];
+    const approvalRequired = booleanValue(
+      isRecord(resolution?.policyDecision) ? resolution.policyDecision.approvalRequired : undefined
+    );
+    const gatewayWarnings = uniqueStrings([
+      ...resolutionWarnings,
+      ...(selectedCandidate
+        ? []
+        : ["Local orchestrator did not select a worker candidate and will fail closed."]),
+    ]);
+    const gateway: AdaptiveRoutingGatewayStatus = {
+      source: "local_orchestrator",
+      success: stringValue(resolution?.status) === "resolved",
+      resolutionStatus: stringValue(resolution?.status),
+      candidateCount: runtimeCatalog.candidates.length,
+      fallback: stringValue(resolution?.fallback) ?? routing.requirements.fallback,
+      warnings: gatewayWarnings,
+    };
+
+    return {
+      ...routing,
+      gateway,
+      runtimeCatalog,
+      ...(resolution ? { resolution } : {}),
+      routingCard: {
+        ...routing.routingCard,
+        ...(selectedCandidate?.workerClass
+          ? { recommendedWorkerClass: selectedCandidate.workerClass }
+          : {}),
+        ...(approvalRequired !== undefined ? { humanApprovalRequired: approvalRequired } : {}),
+        reasons: uniqueStrings([
+          ...routing.routingCard.reasons,
+          ...resolutionReasons,
+          ...(selectedCandidate
+            ? [
+                `local orchestrator resolved worker candidate ${selectedCandidate.candidateId}`,
+                ...(selectedCandidate.endpointType
+                  ? [`selected worker endpoint is ${selectedCandidate.endpointType}`]
+                  : []),
+                ...(stringValue(selectedEndpoint?.model)
+                  ? [`selected local model ${String(selectedEndpoint?.model)}`]
+                  : []),
+              ]
+            : ["local orchestrator could not resolve a concrete worker candidate"]),
+        ]),
+        warnings: uniqueStrings([...routing.routingCard.warnings, ...gatewayWarnings]),
+      },
+    };
+  } catch (error) {
+    const warning = `Local orchestrator routing unavailable; keeping current routing metadata (${toPreview(error)}).`;
+    return {
+      ...routing,
+      gateway: {
+        source: "local_orchestrator",
+        success: false,
+        resolutionStatus: "unavailable",
+        candidateCount: 0,
+        fallback: routing.requirements.fallback,
+        warnings: [warning],
+      },
+      routingCard: {
+        ...routing.routingCard,
+        warnings: uniqueStrings([...routing.routingCard.warnings, warning]),
+      },
+    };
+  }
 }
 
 function printUploadResult(path: string, result: Record<string, unknown>): void {
@@ -6070,6 +6332,10 @@ export async function workflowRunCommand(options: {
   routingWorkerRole?: string;
   routingPreferredEndpoints?: string[];
   routingAllowedEndpoints?: string[];
+  routingLocalBaseUrl?: string;
+  routingLocalModel?: string;
+  routingLocalPreferModel?: string;
+  routingLocalProvider?: string;
   plannerRetainsReasoning?: boolean;
   writePlanFile?: string;
   startWorkflowFromPlan?: boolean;
@@ -6102,10 +6368,13 @@ export async function workflowRunCommand(options: {
   const adaptiveRoutingDryRun = adaptiveRoutingIntent.shouldBuild
     ? buildWorkflowAdaptiveRouting(options, adaptiveRoutingPolicy, adaptiveRoutingIntent.warnings)
     : null;
-  const adaptiveRouting =
+  const adaptiveRoutingWithCatalog =
     adaptiveRoutingDryRun && adaptiveRoutingIntent.shouldUseHostedCatalog && client
       ? await enrichAdaptiveRoutingWithHostedCatalog(client, adaptiveRoutingDryRun)
       : adaptiveRoutingDryRun;
+  const adaptiveRouting = shouldResolveAdaptiveRoutingLocally(options, adaptiveRoutingWithCatalog)
+    ? enrichAdaptiveRoutingWithLocalOrchestrator(adaptiveRoutingWithCatalog!, options)
+    : adaptiveRoutingWithCatalog;
   const orchestratorRecommendation = getOrchestratorRecommendation(options.query, options.mode, {
     policyAutoRoute: options.autoRouteOrchestrator,
     policySource: options.orchestratorPolicySource,
@@ -6373,6 +6642,10 @@ function shouldBuildAdaptiveRouting(options: {
   routingWorkerRole?: string;
   routingPreferredEndpoints?: string[];
   routingAllowedEndpoints?: string[];
+  routingLocalBaseUrl?: string;
+  routingLocalModel?: string;
+  routingLocalPreferModel?: string;
+  routingLocalProvider?: string;
   plannerRetainsReasoning?: boolean;
 }): boolean {
   return Boolean(
@@ -6381,6 +6654,10 @@ function shouldBuildAdaptiveRouting(options: {
     options.routingWorkerRole ||
     options.routingPreferredEndpoints?.length ||
     options.routingAllowedEndpoints?.length ||
+    options.routingLocalBaseUrl ||
+    options.routingLocalModel ||
+    options.routingLocalPreferModel ||
+    options.routingLocalProvider ||
     options.plannerRetainsReasoning
   );
 }
@@ -6393,6 +6670,10 @@ function buildWorkflowAdaptiveRouting(
     routingWorkerRole?: string;
     routingPreferredEndpoints?: string[];
     routingAllowedEndpoints?: string[];
+    routingLocalBaseUrl?: string;
+    routingLocalModel?: string;
+    routingLocalPreferModel?: string;
+    routingLocalProvider?: string;
     plannerRetainsReasoning?: boolean;
   },
   policy: AdaptiveRoutingProjectPolicy | null = null,

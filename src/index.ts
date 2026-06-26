@@ -210,9 +210,13 @@ export {
   agentReadinessAuditCommand,
 } from "./commands/agent-readiness";
 export {
+  ENGINEERING_LEAD_EXECUTION_RECEIPT_STAGES,
+  ENGINEERING_LEAD_EXECUTION_RECEIPT_STATUSES,
   ENGINEERING_LEAD_POSTURES,
   ENGINEERING_LEAD_ROUTING_MODES,
   ENGINEERING_LEAD_STATUSES,
+  ENGINEERING_LEAD_SUPERVISION_STATUSES,
+  ENGINEERING_LEAD_WORK_PACKAGE_STATUSES,
   ENGINEERING_LEAD_WORKER_ROLES,
   buildCompanionEngineeringLeadPlanReport,
   formatCompanionEngineeringLeadPlanReport,
@@ -566,6 +570,8 @@ program
   .option("--acceptance <criteria...>", "Acceptance criteria for the delegated work")
   .option("--risk <risks...>", "Known risks or caveats")
   .option("--from-cockpit <file>", "Read a Project Health cockpit JSON export")
+  .option("--from-plan <file>", "Read a Companion or Project Health Engineering Lead Plan JSON")
+  .option("--reconcile", "Reconcile an imported lead plan against current local Companion signals")
   .option("-d, --dir <directory>", "Project directory (default: current)")
   .option("-o, --output <file>", "Write Markdown or JSON report")
   .option("--json", "Print raw JSON")
@@ -579,6 +585,8 @@ program
       acceptance: options.acceptance,
       risk: options.risk,
       fromCockpit: options.fromCockpit,
+      fromPlan: options.fromPlan,
+      reconcile: Boolean(options.reconcile),
       dir: options.dir,
       output: options.output,
       json: Boolean(options.json),
@@ -1851,6 +1859,16 @@ workflow
     []
   )
   .option(
+    "--routing-local-base-url <url>",
+    "Local OpenAI-compatible runtime base URL for explicit worker routing"
+  )
+  .option("--routing-local-model <id>", "Explicit local model id for worker routing")
+  .option(
+    "--routing-local-prefer-model <text>",
+    "Prefer a local /v1/models entry containing this text during worker routing"
+  )
+  .option("--routing-local-provider <provider>", "Provider label for local worker routing")
+  .option(
     "--planner-retains-reasoning",
     "Mark the main planner as retaining deep reasoning while the worker executes scoped work"
   )
@@ -1883,6 +1901,10 @@ workflow
       routingWorkerRole: options.routingWorkerRole,
       routingPreferredEndpoints: options.routingPreferredEndpoint,
       routingAllowedEndpoints: options.routingAllowedEndpoint,
+      routingLocalBaseUrl: options.routingLocalBaseUrl,
+      routingLocalModel: options.routingLocalModel,
+      routingLocalPreferModel: options.routingLocalPreferModel,
+      routingLocalProvider: options.routingLocalProvider,
       plannerRetainsReasoning: options.plannerRetainsReasoning ? true : undefined,
       writePlanFile: options.writePlanFile,
       startWorkflowFromPlan: Boolean(options.startWorkflowFromPlan),

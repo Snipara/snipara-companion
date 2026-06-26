@@ -81,6 +81,20 @@ function writeWorkflowPreload(dir) {
     preloadPath,
     [
       "const fs = require('node:fs');",
+      "const childProcess = require('node:child_process');",
+      "const originalExecFileSync = childProcess.execFileSync;",
+      "childProcess.execFileSync = (command, args, options) => {",
+      "  if (command === 'snipara-orchestrator') {",
+      "    const subcommand = Array.isArray(args) ? args[0] : undefined;",
+      "    if (subcommand === 'local-model-catalog' && process.env.SNIPARA_TEST_LOCAL_ORCHESTRATOR_CATALOG_RESPONSE) {",
+      "      return process.env.SNIPARA_TEST_LOCAL_ORCHESTRATOR_CATALOG_RESPONSE;",
+      "    }",
+      "    if (subcommand === 'route' && process.env.SNIPARA_TEST_LOCAL_ORCHESTRATOR_ROUTE_RESPONSE) {",
+      "      return process.env.SNIPARA_TEST_LOCAL_ORCHESTRATOR_ROUTE_RESPONSE;",
+      "    }",
+      "  }",
+      "  return originalExecFileSync(command, args, options);",
+      "};",
       "let endOfTaskCommitAttempts = 0;",
       "globalThis.fetch = async (url, init = {}) => {",
       "  const parsedUrl = new URL(String(url));",
@@ -1475,6 +1489,64 @@ test("workflow run emits adaptive routing dry-run metadata into orchestrator han
           SNIPARA_API_KEY: "snp-test",
           SNIPARA_PROJECT_ID: "project_1",
           SNIPARA_API_URL: "https://api.snipara.com",
+          SNIPARA_TEST_LOCAL_ORCHESTRATOR_CATALOG_RESPONSE: JSON.stringify({
+            schemaVersion: "snipara.orchestrator.runtime_catalog.v1",
+            source: "openai_compatible_local",
+            provider: "lm-studio",
+            baseUrl: "http://127.0.0.1:1234",
+            models: ["ggml-org/devstral-small-2-24b-instruct-2512-gguf"],
+            apiPaths: {
+              models: "/v1/models",
+              chatCompletions: "/v1/chat/completions",
+              responses: "/v1/responses",
+            },
+            candidates: [
+              {
+                candidateId: "local-devstral",
+                workerClass: "coding",
+                catalogSource: "openai_compatible_local",
+                endpointType: "local",
+                workerRoles: ["coding"],
+                capabilities: ["docs_write"],
+                isAvailable: true,
+              },
+            ],
+            workerEndpoints: {
+              "local-devstral": {
+                provider: "lm-studio",
+                baseUrl: "http://127.0.0.1:1234",
+                model: "ggml-org/devstral-small-2-24b-instruct-2512-gguf",
+                apiPaths: {
+                  responses: "/v1/responses",
+                },
+              },
+            },
+          }),
+          SNIPARA_TEST_LOCAL_ORCHESTRATOR_ROUTE_RESPONSE: JSON.stringify({
+            status: "resolved",
+            selected: {
+              candidate: {
+                candidateId: "local-devstral",
+                workerClass: "coding",
+                catalogSource: "openai_compatible_local",
+                endpointType: "local",
+              },
+              score: 0.91,
+              reasons: ["candidate satisfies local documentation route"],
+            },
+            policyDecision: {
+              mode: "approval_required",
+              approvalRequired: true,
+              executionAllowed: false,
+            },
+            evaluatedCount: 1,
+            rejectedCount: 0,
+            fallback: "main_agent",
+            reasons: ["candidate satisfies local documentation route"],
+            warnings: [
+              "Selected local worker because the planner retains deep reasoning and work is scoped.",
+            ],
+          }),
         },
         nodeArgs: ["-r", preloadPath],
       }
@@ -1486,10 +1558,21 @@ test("workflow run emits adaptive routing dry-run metadata into orchestrator han
     assert.equal(payload.adaptive_routing.requirements.plannerRetainsReasoning, true);
     assert.deepEqual(payload.adaptive_routing.requirements.preferredEndpointTypes, ["local"]);
     assert.deepEqual(payload.adaptive_routing.requirements.writeScope, ["docs/roadmap.md"]);
-    assert.equal(payload.adaptive_routing.gateway.source, "hosted_mcp");
+    assert.equal(payload.adaptive_routing.gateway.source, "local_orchestrator");
     assert.equal(payload.adaptive_routing.gateway.success, true);
     assert.equal(payload.adaptive_routing.gateway.candidateCount, 1);
-    assert.equal(payload.adaptive_routing.runtimeCatalog.candidates[0].candidateId, "local-docs");
+    assert.equal(
+      payload.adaptive_routing.runtimeCatalog.candidates[0].candidateId,
+      "local-devstral"
+    );
+    assert.equal(
+      payload.adaptive_routing.runtimeCatalog.workerEndpoints["local-devstral"].model,
+      "ggml-org/devstral-small-2-24b-instruct-2512-gguf"
+    );
+    assert.equal(
+      payload.adaptive_routing.resolution.selected.candidate.candidateId,
+      "local-devstral"
+    );
     assert.equal(payload.orchestrator_handoff.relativePath, ORCHESTRATOR_HANDOFF_RELATIVE_PATH);
     assert.equal(
       payload.orchestrator_handoff.handoff.routing.routingCard.recommendedWorkerClass,
@@ -1501,8 +1584,14 @@ test("workflow run emits adaptive routing dry-run metadata into orchestrator han
     );
     assert.equal(persisted.routing.workProfile.taskType, "documentation");
     assert.equal(persisted.routing.routingCard.humanApprovalRequired, true);
+    assert.equal(persisted.routing.gateway.source, "local_orchestrator");
     assert.equal(persisted.routing.gateway.candidateCount, 1);
     assert.equal(persisted.routing.runtimeCatalog.candidates[0].endpointType, "local");
+    assert.equal(
+      persisted.routing.runtimeCatalog.workerEndpoints["local-devstral"].model,
+      "ggml-org/devstral-small-2-24b-instruct-2512-gguf"
+    );
+    assert.equal(persisted.routing.resolution.selected.candidate.endpointType, "local");
     assert.match(
       persisted.routing.routingCard.warnings.join(" "),
       /companion does not launch or claim workers/

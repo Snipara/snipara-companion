@@ -273,6 +273,62 @@ Project credentials stay server-side behind the hosted gateway; local endpoints
 such as Ollama, LM Studio, AnythingLLM, or other OpenAI-compatible servers must
 be reachable from the worker execution environment.
 
+For a local LM Studio or OpenAI-compatible worker, use Companion to emit the
+handoff, then let `snipara-orchestrator` resolve that handoff against an explicit
+local runtime catalog. In the Codex workflow, Codex remains the chief architect,
+lead orchestrator, and quality verifier; Qwen and Devstral are bounded local
+worker candidates whose outputs still need Codex review and proof gates.
+
+Use Qwen for reflection, architecture, and documentation:
+
+```bash
+snipara-companion workflow run \
+  --mode full \
+  --adaptive-routing-dry-run \
+  --route-local-workers \
+  --routing-worker-role documentation \
+  --routing-preferred-endpoint local \
+  --routing-allowed-endpoint local \
+  --planner-retains-reasoning \
+  "Update a scoped docs surface"
+
+snipara-orchestrator local-model-catalog \
+  --base-url http://127.0.0.1:1234 \
+  --model qwen/qwen3-30b-a3b-2507 \
+  --worker-role documentation \
+  --capability documentation \
+  --capability architecture_review \
+  --capability planning \
+  --json > .snipara/local-qwen-docs-runtime-catalog.json
+
+snipara-orchestrator route --dry-run \
+  --work-profile-json '{"taskType":"documentation","risk":"low","scope":["docs/**"],"contextBudget":"small","reasoningDepth":"low"}' \
+  --requirements-json '{"workerRole":"documentation","plannerRetainsReasoning":true,"preferredEndpointTypes":["local"],"allowedEndpointTypes":["local"],"writeScope":["docs/**"],"capabilities":["documentation"]}' \
+  --catalog-file .snipara/local-qwen-docs-runtime-catalog.json \
+  --json
+```
+
+Use Devstral for development and refactoring work:
+
+```bash
+snipara-orchestrator local-model-catalog \
+  --base-url http://127.0.0.1:1234 \
+  --prefer-model devstral \
+  --worker-role coding \
+  --capability code_edit \
+  --capability refactor \
+  --json > .snipara/local-devstral-runtime-catalog.json
+```
+
+The local catalog records the OpenAI-compatible routes exposed by LM Studio:
+`GET /v1/models`, `POST /v1/responses`, `POST /v1/chat/completions`,
+`POST /v1/completions`, and `POST /v1/embeddings`. `--prefer-model devstral`
+selects the first `/v1/models` id containing `devstral`; use `--model <id>` to
+pin Qwen or any other exact local model id. This makes Qwen, Devstral, or
+another local model routable through the Companion/Orchestrator contract while
+keeping execution fail-closed: the selected candidate is a receipt-backed worker
+target, not an automatically launched process.
+
 For the open package without Snipara SaaS, add a local policy file:
 
 ```json
@@ -309,13 +365,22 @@ snipara-companion lead-plan \
 
 The command reads local workflow state, Team Sync, project instructions, and
 explicit inputs. The output uses the same lead-plan vocabulary as Project
-Health: posture, score, routing mode, bounded worker contract, proof gates,
-candidate Project Brain updates, `workersSpawned: 0`, and `main_agent` fallback.
+Health: posture, score, routing mode, bounded worker contract, supervised work
+packages, supervision/replan status, proof gates, candidate Project Brain
+updates, `workersSpawned: 0`, and `main_agent` fallback.
 
-Use `--from-cockpit <file>` when Project Health has exported a cockpit JSON
-artifact and Companion only needs to normalize it into Markdown or JSON for
-handoff. This is still advisory and fail-closed: the command does not approve
-work, execute proof gates, or spawn workers.
+Engineering Lead Execution Receipts V1 adds `executionReceipts` to that plan.
+Each receipt records the expected handoff, claim, approval, proof, outcome, and
+Project Brain update stages for a work package, plus missing requirements and
+next actions. Unknown future receipt enum values fail closed with
+`companion_dropped_unknown_execution_receipt_*` reason codes.
+
+Use `--from-cockpit <file>` or `--from-plan <file>` when Project Health has
+exported a cockpit/lead-plan JSON artifact and Companion only needs to normalize
+it into Markdown or JSON for handoff. Add `--reconcile` to compare the imported
+plan against current local workflow, Team Sync, proof, acceptance, and file
+scope signals. This is still advisory and fail-closed: the command does not
+approve work, execute proof gates, or spawn workers.
 
 ## Verification Plans
 

@@ -2,6 +2,29 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 2.3.0
+
+- Adds Engineering Lead Execution Receipts V1 to `lead-plan` output. Local and
+  imported plans now carry expected handoff, claim, approval, proof, outcome,
+  and Project Brain update receipt gates while keeping `workersSpawned: 0`.
+- Normalizes imported `executionReceipts` from Project Health or Companion
+  exports. Unknown future receipt statuses or stages fail closed and emit
+  `companion_dropped_unknown_execution_receipt_*` reason codes.
+- Adds receipt-aware reconciliation and Markdown output so missing receipt
+  requirements are visible before any worker handoff.
+
+## New In 2.2.0
+
+- Extends `snipara-companion lead-plan` to Engineering Lead Contract V1 with
+  `contractVersion`, supervised `workPackages`, and a `supervision` summary for
+  review/replan status, receipt requirements, and replan triggers.
+- Adds `--from-plan <file>` and `--reconcile` so Companion can compare an
+  imported Project Health or Companion lead plan against current local workflow,
+  Team Sync, proof, acceptance, and file-scope signals. Stale scope and missing
+  continuity fail closed into visible `companion_reconcile_*` reason codes.
+- Keeps imported enum drift observable for the new work-package and supervision
+  fields through `companion_dropped_unknown_*` reason codes.
+
 ## New In 2.1.1
 
 - Makes `lead-plan --from-cockpit` enum drift observable: unknown future

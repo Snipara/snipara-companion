@@ -1,6 +1,6 @@
 {
   "name": "snipara-companion",
-  "version": "2.1.1",
+  "version": "2.3.0",
   "description": "Local-first CLI that asks your repo what breaks before an AI coding agent edits it.",
   "main": "dist/index.js",
   "bin": {
@@ -70,6 +70,6 @@
   },
   "files": [
     "dist",
-    "docs/FULL_REFERENCE.md"
+    "docs"
   ]
 }
