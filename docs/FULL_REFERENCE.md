@@ -171,6 +171,8 @@ session with `snipara-companion`:
 
 ```bash
 snipara-companion status
+snipara-companion source init .
+snipara-companion source sync --json
 snipara-companion brief --task "ship auth hardening" --changed-files src/auth.ts
 snipara-companion timeline
 snipara-companion workflow phase-commit build --summary "tests green"
@@ -186,6 +188,9 @@ snipara-companion workflow resume --include-session-context
 
 - `status` is the Git-style local work status: workflow phase, latest phase
   commit, git dirtiness, Team Sync handoffs, local risks, and next action.
+- `source init` is the local source activation path for free/no-provider users:
+  it writes a source snapshot, previews supported document sync, and refreshes
+  the local code overlay cache without requiring GitHub.
 - `brief` is the short alias for `intelligence brief`.
 - `timeline` is the Git-style log for workflow starts, phase starts, phase
   commits, final commits, and Team Sync handoffs.
@@ -915,6 +920,7 @@ Semantics:
 - `snipara-companion workflow run --mode orchestrate` = explicit hosted orchestrator flow for deeper multi-step exploration; use the Python `snipara-orchestrator` package for production gates and htasks
 - `snipara-companion workflow run` = suggests Snipara Sandbox when the query calls for validation, execution, data transforms, or heavier FULL/orchestrated work
 - `snipara-companion status` = top-level agentic work status across local workflow state, git dirtiness, and Team Sync carryover
+- `snipara-companion source init|sync|status|snapshot|watch` = automatic local source activation for folders with or without Git metadata; writes `.snipara/source/latest.json`, previews document sync, and refreshes the local code overlay cache
 - `snipara-companion brief` = short alias for `snipara-companion intelligence brief`
 - `snipara-companion timeline` = local timeline of workflow starts, phase starts, phase commits, final commits, and Team Sync handoffs
 - `snipara-companion handoff` = top-level agent-ready Markdown/JSON handoff artifact plus the same local/hosted Team Sync handoff persistence
@@ -942,7 +948,7 @@ Semantics:
 - `snipara-companion upload --metadata/--metadata-file` = single-file upload with the same business/client metadata fields supported by bulk sync
 - `snipara-companion business-collections` = manage reusable Team Business Context collections (Business Response Playbook, Business Library, Offer Templates, Company Presentations, Reference Diagrams)
 - `snipara-companion client-projects` = create/list project-scoped client context workspaces before uploading current client files
-- `snipara-companion onboard-folder` = business-first import for a local or LLM-materialized folder; it still detects code/mixed folders, but code repositories should use the GitHub OAuth/code onboarding path
+- `snipara-companion onboard-folder` = business-first import for a local or LLM-materialized folder; use `source init` for automatic local source activation when a code folder has no connected provider yet
 - `snipara-companion sync-documents` = bulk `snipara_sync_documents` for text and supported binary parser documents from a JSON payload or directory
 - `snipara-companion sync-documents --dry-run` = validate the local payload and business-context freshness metadata without uploading
 - `snipara-companion business-health` = hosted `snipara_index_health`, with the `business_context` section surfaced for stale/reupload signals
@@ -1124,6 +1130,30 @@ Dry-runs are local only: they validate payload shape, known metadata fields,
 and freshness signals such as expired snapshots or changed source hashes. They
 do not call hosted MCP and therefore cannot know remote `created`, `updated`,
 or `unchanged` counts until a real sync runs.
+
+### Local source activation
+
+`source` is the automatic local fallback for users who have not approved GitHub
+or are working in a folder without Git metadata:
+
+```bash
+snipara-companion source init .
+snipara-companion source status --json
+snipara-companion source sync --json
+snipara-companion source watch --once --json
+```
+
+`source init` and `source sync` write `.snipara/source/latest.json`, build a
+document sync dry-run from supported docs, and refresh
+`.snipara/code-overlay/latest.json`. By default this is local-only and does not
+call hosted MCP. Add `--apply` only when you want supported documents uploaded
+through hosted `snipara_sync_documents`; code remains a local non-canonical
+overlay until a provider sync creates canonical hosted CODE documents.
+
+This is the right first step for free users because it creates immediate agent
+value without a GitHub App install. GitHub automation is still the shared,
+canonical repository path for hosted code graph freshness, team context, and PR
+Answer Packs after browser approval.
 
 For release-hardening and local packaging checks:
 

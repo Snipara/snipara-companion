@@ -7,10 +7,11 @@
 
 **Ask your repo what breaks if you touch this.**
 
-No global install. No `init`. No account. Your code stays on your machine.
+No global install. No account. Your code stays on your machine.
 
 ```bash
 npx -y snipara-companion impact src/auth/session.ts --source local
+npx -y snipara-companion source init .
 ```
 
 Example output excerpt:
@@ -40,6 +41,7 @@ These commands are useful without hosted Snipara:
 
 | Command                                                      | What it gives you locally                                    |
 | ------------------------------------------------------------ | ------------------------------------------------------------ |
+| `source init` / `source sync` / `source status`              | Local source snapshot, document preview, and code overlay    |
 | `impact` / `code impact`                                     | File-level blast-radius from the local code overlay          |
 | `code callers` / `imports` / `neighbors` / `shortest-path`   | Structural repo questions from local files                   |
 | `workflow start` / `phase-start` / `phase-commit` / `resume` | Agent continuity that survives compaction                    |
@@ -73,6 +75,7 @@ Snipara is the upgrade path for team and cross-project intelligence.
 | Need                                            | Local companion           | Hosted Snipara                      |
 | ----------------------------------------------- | ------------------------- | ----------------------------------- |
 | Inspect this repo before editing                | Yes, no account           | Optional hosted code graph          |
+| Activate docs and code without GitHub           | Yes, `source init`        | Provider sync after approval        |
 | Keep code private on this machine               | Yes                       | Use only when explicitly configured |
 | Preserve agent workflow state                   | Yes, `.snipara/` files    | Syncs across machines and agents    |
 | Store/retrieve long tool output                 | Yes, `context-pack`       | Metadata and receipts can be shared |
@@ -84,6 +87,17 @@ Use hosted mode when you want shared memory, semantic retrieval, cloud code
 graph, cross-machine presence, outcome learning, team coordination, or dashboard
 proof. Keep local mode when the question is simply: "what does this repo say
 will break if I touch this file?"
+
+For folders without Git metadata or users who have not approved GitHub yet, run:
+
+```bash
+npx -y snipara-companion source init .
+npx -y snipara-companion source status --json
+```
+
+This writes `.snipara/source/latest.json`, builds a local document sync preview,
+and refreshes `.snipara/code-overlay/latest.json`. The hosted code graph remains
+the canonical shared graph after provider sync.
 
 ## Install
 

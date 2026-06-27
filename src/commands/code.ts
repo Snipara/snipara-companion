@@ -288,6 +288,7 @@ const HOOK_BLOCK_PREFIX = "snipara:code-overlay";
 const DEFAULT_EXCLUDED_PREFIXES = [
   ".git/",
   ".snipara/code-overlay/",
+  ".snipara/source/",
   "node_modules/",
   "dist/",
   "build/",
@@ -295,6 +296,22 @@ const DEFAULT_EXCLUDED_PREFIXES = [
   ".turbo/",
   "coverage/",
 ];
+const DEFAULT_EXCLUDED_DIR_NAMES = new Set([
+  ".git",
+  ".snipara",
+  ".next",
+  ".turbo",
+  ".cache",
+  ".venv",
+  ".idea",
+  ".vscode",
+  "__pycache__",
+  "build",
+  "coverage",
+  "dist",
+  "node_modules",
+  "venv",
+]);
 
 const SECRET_PATTERNS = [/-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/];
 
@@ -517,6 +534,17 @@ function isIgnored(filePath: string, sniparaIgnore: string[]): boolean {
   return sniparaIgnore.some((pattern) => matchesIgnorePattern(normalized, pattern));
 }
 
+function shouldSkipFilesystemDirectory(relativePath: string, sniparaIgnore: string[]): boolean {
+  const normalized = normalizeRepoPath(relativePath);
+  if (!normalized) {
+    return false;
+  }
+  if (DEFAULT_EXCLUDED_DIR_NAMES.has(path.basename(normalized))) {
+    return true;
+  }
+  return isIgnored(`${normalized}/`, sniparaIgnore);
+}
+
 function findUnsafeSecretAssignment(line: string): { value: string } | null {
   const match = line.match(SECRET_ASSIGNMENT_PATTERN);
   if (!match) {
@@ -592,7 +620,45 @@ function formatSecretRedactionWarning(samples: SecretRedactionSample[]): LocalCo
 
 function listWorkingTreeFiles(repoRoot: string): string[] {
   const files = splitNul(runGitBuffer(["ls-files", "-co", "--exclude-standard", "-z"], repoRoot));
-  return [...new Set(files.map(normalizeRepoPath))].sort();
+  if (files.length > 0) {
+    return [...new Set(files.map(normalizeRepoPath))].sort();
+  }
+
+  const sniparaIgnore = readSniparaIgnore(repoRoot);
+  const scanned: string[] = [];
+  const stack = [repoRoot];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) {
+      continue;
+    }
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      const absolutePath = path.join(current, entry.name);
+      const relativePath = normalizeRepoPath(path.relative(repoRoot, absolutePath));
+      if (!relativePath) {
+        continue;
+      }
+      if (entry.isDirectory()) {
+        if (!shouldSkipFilesystemDirectory(relativePath, sniparaIgnore)) {
+          stack.push(absolutePath);
+        }
+        continue;
+      }
+      if (!entry.isFile()) {
+        continue;
+      }
+      scanned.push(relativePath);
+    }
+  }
+
+  return [...new Set(scanned)].sort();
 }
 
 function listCommitFiles(repoRoot: string, commit: string): string[] {
@@ -785,6 +851,7 @@ function determineOverlayKind(args: {
   baseSha: string | null;
   localHeadSha: string | null;
   dirtyStatus: string;
+  hasWorkingTreeFiles: boolean;
 }): LocalCodeOverlayKind {
   const hasLocalCommit =
     Boolean(args.localHeadSha) && Boolean(args.baseSha) && args.localHeadSha !== args.baseSha;
@@ -792,7 +859,10 @@ function determineOverlayKind(args: {
   if (args.mode === "working_tree" && isDirty && hasLocalCommit) {
     return "mixed";
   }
-  if (args.mode === "working_tree" && isDirty) {
+  if (
+    args.mode === "working_tree" &&
+    (isDirty || (!args.localHeadSha && args.hasWorkingTreeFiles))
+  ) {
     return "working_tree";
   }
   if (hasLocalCommit || args.mode === "local_commit") {
@@ -912,7 +982,14 @@ export function buildLocalCodeOverlay(
     imports.push(...extracted.imports);
   }
 
-  if (mode === "working_tree" && dirtyStatus.trim()) {
+  if (mode === "working_tree" && !localHeadSha && files.length > 0) {
+    warnings.push({
+      code: "local_folder_overlay",
+      severity: "info",
+      message:
+        "This overlay was built from a local folder without Git commit metadata; it is local-only until synced through GitHub, GitLab, or hosted source upload.",
+    });
+  } else if (mode === "working_tree" && dirtyStatus.trim()) {
     warnings.push({
       code: "local_working_tree_overlay",
       severity: "info",
@@ -932,7 +1009,7 @@ export function buildLocalCodeOverlay(
   }
 
   const dirtyTreeHash =
-    mode === "working_tree" && dirtyStatus.trim()
+    mode === "working_tree" && (dirtyStatus.trim() || (!localHeadSha && files.length > 0))
       ? shortHash(
           JSON.stringify({
             dirtyStatus,
@@ -952,7 +1029,13 @@ export function buildLocalCodeOverlay(
     localHeadSha,
     commit: mode === "local_commit" ? commit : localHeadSha,
     dirtyTreeHash,
-    overlayKind: determineOverlayKind({ mode, baseSha, localHeadSha, dirtyStatus }),
+    overlayKind: determineOverlayKind({
+      mode,
+      baseSha,
+      localHeadSha,
+      dirtyStatus,
+      hasWorkingTreeFiles: files.length > 0,
+    }),
     canonicalIndexedSha: null,
     currentWorkingTreeVisible: mode === "working_tree",
     canonical: false,

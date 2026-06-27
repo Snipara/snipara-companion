@@ -15,7 +15,7 @@
  *   - Guards:            stuck-guard, memory-guard
  *   - Hosted context:    query, shared-context, plan, multi-query, orchestrate, chunk, reindex
  *   - Docs / knowledge:  upload, references, business-collections, client-projects,
- *                        onboard-folder, sync-documents
+ *                        onboard-folder, sync-documents, source
  *   - Code graph:        impact, code (local impact/callers/imports + optional hosted overlay)
  *   - Automation:        automations, events, memory
  *
@@ -70,6 +70,12 @@ import {
   codeSyncCommand,
   codeUploadCommand,
 } from "./commands/code";
+import {
+  sourceSnapshotCommand,
+  sourceStatusCommand,
+  sourceSyncCommand,
+  sourceWatchCommand,
+} from "./commands/source";
 import {
   automationsDiffCommand,
   automationsInstallCommand,
@@ -245,6 +251,15 @@ export {
   writeLocalCodeOverlayCache,
   writeLocalCodePromotionState,
 } from "./commands/code";
+export {
+  buildLocalSourceSnapshot,
+  buildLocalSourceStatus,
+  buildLocalSourceSyncResult,
+  compareLocalSourceSnapshots,
+  getLocalSourceSnapshotPath,
+  readLocalSourceSnapshot,
+  writeLocalSourceSnapshot,
+} from "./commands/source";
 export { getPlanStepDisplayTitle } from "./commands/workflows";
 export {
   ingestReferences,
@@ -1495,6 +1510,140 @@ program
       reindexKind: options.reindexKind,
       reindexMode: options.reindexMode,
       json: options.json,
+    });
+  });
+
+const source = program
+  .command("source")
+  .description("Activate local folder source context without requiring hosted Git");
+
+source
+  .command("init")
+  .description("Create the initial local source snapshot, document preview, and code overlay")
+  .argument("[dir]", "Folder to activate", ".")
+  .option("--no-recursive", "Only scan top-level files")
+  .option("--max-files <number>", "Maximum files to snapshot or inspect", "5000")
+  .option("--max-file-bytes <number>", "Maximum bytes per snapshot file", "5242880")
+  .option("--json", "Print raw JSON")
+  .action(async (dir, options) => {
+    await sourceSyncCommand({
+      dir,
+      recursive: options.recursive !== false,
+      maxFiles: parseInt(options.maxFiles, 10),
+      maxFileBytes: parseInt(options.maxFileBytes, 10),
+      json: Boolean(options.json),
+    });
+  });
+
+source
+  .command("snapshot")
+  .description("Write a deterministic local source snapshot")
+  .argument("[dir]", "Folder to snapshot", ".")
+  .option("--no-recursive", "Only scan top-level files")
+  .option("--max-files <number>", "Maximum files to snapshot", "5000")
+  .option("--max-file-bytes <number>", "Maximum bytes per snapshot file", "5242880")
+  .option("--json", "Print raw JSON")
+  .action(async (dir, options) => {
+    await sourceSnapshotCommand({
+      dir,
+      recursive: options.recursive !== false,
+      maxFiles: parseInt(options.maxFiles, 10),
+      maxFileBytes: parseInt(options.maxFileBytes, 10),
+      json: Boolean(options.json),
+    });
+  });
+
+source
+  .command("status")
+  .description("Compare the current folder against the latest local source snapshot")
+  .argument("[dir]", "Folder to inspect", ".")
+  .option("--no-recursive", "Only scan top-level files")
+  .option("--max-files <number>", "Maximum files to snapshot", "5000")
+  .option("--max-file-bytes <number>", "Maximum bytes per snapshot file", "5242880")
+  .option("--json", "Print raw JSON")
+  .action(async (dir, options) => {
+    await sourceStatusCommand({
+      dir,
+      recursive: options.recursive !== false,
+      maxFiles: parseInt(options.maxFiles, 10),
+      maxFileBytes: parseInt(options.maxFileBytes, 10),
+      json: Boolean(options.json),
+    });
+  });
+
+source
+  .command("sync")
+  .description("Refresh local source snapshot, document manifest, and local code overlay")
+  .argument("[dir]", "Folder to sync", ".")
+  .option("-p, --prefix <prefix>", "Destination path prefix for documents")
+  .option(
+    "-m, --mode <mode>",
+    "Document classification mode: auto|business_context|code_project|mixed",
+    "mixed"
+  )
+  .option("--no-recursive", "Only scan top-level files")
+  .option("--delete-missing", "Delete remote documents missing from this sync set when applying")
+  .option("--apply", "Upload supported documents through hosted Snipara")
+  .option("--no-reindex", "Do not trigger document reindex after apply")
+  .option("--reindex-kind <kind>", "Reindex kind (doc|code)", "doc")
+  .option("--reindex-mode <mode>", "Reindex mode (incremental|full)", "incremental")
+  .option("--max-files <number>", "Maximum files to snapshot or inspect", "5000")
+  .option("--max-file-bytes <number>", "Maximum bytes per snapshot file", "5242880")
+  .option("--json", "Print raw JSON")
+  .action(async (dir, options) => {
+    await sourceSyncCommand({
+      dir,
+      prefix: options.prefix,
+      mode: options.mode,
+      recursive: options.recursive !== false,
+      deleteMissing: options.deleteMissing === true,
+      apply: Boolean(options.apply),
+      reindex: options.reindex !== false,
+      reindexKind: options.reindexKind,
+      reindexMode: options.reindexMode,
+      maxFiles: parseInt(options.maxFiles, 10),
+      maxFileBytes: parseInt(options.maxFileBytes, 10),
+      json: Boolean(options.json),
+    });
+  });
+
+source
+  .command("watch")
+  .description("Refresh local source context continuously, or once with --once")
+  .argument("[dir]", "Folder to watch", ".")
+  .option("-p, --prefix <prefix>", "Destination path prefix for documents")
+  .option(
+    "-m, --mode <mode>",
+    "Document classification mode: auto|business_context|code_project|mixed",
+    "mixed"
+  )
+  .option("--no-recursive", "Only scan top-level files")
+  .option("--delete-missing", "Delete remote documents missing from this sync set when applying")
+  .option("--apply", "Upload supported documents through hosted Snipara")
+  .option("--no-reindex", "Do not trigger document reindex after apply")
+  .option("--reindex-kind <kind>", "Reindex kind (doc|code)", "doc")
+  .option("--reindex-mode <mode>", "Reindex mode (incremental|full)", "incremental")
+  .option("--max-files <number>", "Maximum files to snapshot or inspect", "5000")
+  .option("--max-file-bytes <number>", "Maximum bytes per snapshot file", "5242880")
+  .option("--interval-ms <number>", "Watch interval in milliseconds", "5000")
+  .option("--once", "Run one sync cycle and exit")
+  .option("--json", "Print raw JSON")
+  .action(async (dir, options) => {
+    await sourceWatchCommand({
+      dir,
+      prefix: options.prefix,
+      mode: options.mode,
+      recursive: options.recursive !== false,
+      deleteMissing: options.deleteMissing === true,
+      apply: Boolean(options.apply),
+      reindex: options.reindex !== false,
+      reindexKind: options.reindexKind,
+      reindexMode: options.reindexMode,
+      maxFiles: parseInt(options.maxFiles, 10),
+      maxFileBytes: parseInt(options.maxFileBytes, 10),
+      intervalMs: parseInt(options.intervalMs, 10),
+      once: Boolean(options.once),
+      json: Boolean(options.json),
     });
   });
 
@@ -3261,6 +3410,7 @@ program.addHelpText(
 Context vs Memory
 
   Context commands:
+    source          Activate local folder context without hosted Git
     onboard-folder  Business folder onboarding without using the dashboard
     references      Scan and ingest external URLs as source-backed context snapshots
     query           Search project documents, parsed business files, and current truth

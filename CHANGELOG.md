@@ -2,6 +2,29 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 3.0.0
+
+- Adds `snipara-companion source init|snapshot|status|sync|watch`, the local
+  source activation path for folders with or without Git metadata.
+- Builds deterministic `.snipara/source/latest.json` snapshots, supported
+  document sync dry-runs, and refreshed local code overlays before any hosted
+  provider approval.
+- Makes non-Git folders first-class for local code overlays, including
+  filesystem scanning, local-only overlay warnings, and stable dirty tree hashes.
+- Repositions local source activation as the default free/no-provider first
+  value path, while keeping hosted provider sync as the canonical shared CODE
+  graph path.
+
+## New In 2.3.1
+
+- Hardens local Adaptive Work Routing handoffs so Companion preserves
+  `workerProfiles` and resolver `scoreBreakdown` metadata from local
+  orchestrator catalogs.
+- Infers preferred local worker strengths and structured-output requirements
+  from the workflow task before routing.
+- Asks the local orchestrator to compare all discovered local models when local
+  worker routing is requested and no explicit model is pinned.
+
 ## New In 2.3.0
 
 - Adds Engineering Lead Execution Receipts V1 to `lead-plan` output. Local and

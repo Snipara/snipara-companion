@@ -198,6 +198,48 @@ test("working tree overlay includes dirty hash and redacts secret-like files wit
   );
 });
 
+test("working tree overlay scans a local folder without Git metadata", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-code-overlay-no-git-"));
+  fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+  fs.mkdirSync(path.join(dir, "node_modules", "ignored"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "package.json"), '{"name":"local-folder"}\n', "utf8");
+  fs.writeFileSync(
+    path.join(dir, "src", "index.ts"),
+    [
+      "import { helper } from './helper';",
+      "export function run() {",
+      "  return helper();",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(dir, "src", "helper.ts"),
+    ["export function helper() {", "  return 'ok';", "}", ""].join("\n"),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(dir, "node_modules", "ignored", "index.ts"),
+    "export const ignored = true;\n",
+    "utf8"
+  );
+
+  const manifest = buildLocalCodeOverlay({ cwd: dir, mode: "working_tree" });
+
+  assert.equal(manifest.localHeadSha, null);
+  assert.equal(manifest.baseSha, null);
+  assert.equal(manifest.overlayKind, "working_tree");
+  assert.ok(manifest.dirtyTreeHash);
+  assert.ok(manifest.warnings.some((warning) => warning.code === "local_folder_overlay"));
+  assert.deepEqual(
+    manifest.files.map((file) => file.path),
+    ["src/helper.ts", "src/index.ts"]
+  );
+  assert.ok(manifest.symbols.some((symbol) => symbol.name === "run"));
+  assert.ok(manifest.imports.some((item) => item.specifier === "./helper"));
+});
+
 test("local overlay cache round-trips through .snipara/code-overlay/latest.json", () => {
   const repo = makeTempRepo();
   const manifest = buildLocalCodeOverlay({ cwd: repo, mode: "working_tree" });

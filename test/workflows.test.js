@@ -85,6 +85,10 @@ function writeWorkflowPreload(dir) {
       "const originalExecFileSync = childProcess.execFileSync;",
       "childProcess.execFileSync = (command, args, options) => {",
       "  if (command === 'snipara-orchestrator') {",
+      "    const argsLogPath = process.env.SNIPARA_TEST_ORCHESTRATOR_ARGS_LOG;",
+      "    if (argsLogPath) {",
+      "      fs.appendFileSync(argsLogPath, `${JSON.stringify({ command, args })}\\n`, 'utf8');",
+      "    }",
       "    const subcommand = Array.isArray(args) ? args[0] : undefined;",
       "    if (subcommand === 'local-model-catalog' && process.env.SNIPARA_TEST_LOCAL_ORCHESTRATOR_CATALOG_RESPONSE) {",
       "      return process.env.SNIPARA_TEST_LOCAL_ORCHESTRATOR_CATALOG_RESPONSE;",
@@ -1434,6 +1438,30 @@ test("adaptive work routing handoff remains recommendation-only and local-capabl
   assert.doesNotMatch(JSON.stringify(artifact.routing), /api[_-]?key|secret value/i);
 });
 
+test("adaptive routing infers profile strengths and structured output for local coding work", () => {
+  const routing = buildAdaptiveWorkRoutingRecommendation({
+    query: "Implement a cross-file refactor with structured JSON patch output across the repo",
+    mode: "full",
+    changedFiles: [
+      "packages/cli/src/index.ts",
+      "packages/cli/src/runtime/orchestrator-handoff.ts",
+      "packages/cli/test/workflows.test.js",
+      "packages/agentic-orchestrator/src/snipara_orchestrator/cli.py",
+      "packages/agentic-orchestrator/src/snipara_orchestrator/routing/resolver.py",
+      "docs/benchmarks/LOCAL_MODEL_CONTEXT_BENCHMARK_20260626.md",
+    ],
+    preferredEndpointTypes: ["local"],
+    workerRole: "coding",
+  });
+
+  assert.equal(routing.requirements.structuredOutputRequired, true);
+  assert.ok(routing.workProfile.preferredProfileStrengths.includes("code"));
+  assert.ok(routing.workProfile.preferredProfileStrengths.includes("structured_output"));
+  assert.ok(routing.workProfile.preferredProfileStrengths.includes("refactor"));
+  assert.ok(routing.workProfile.preferredProfileStrengths.includes("long_context"));
+  assert.ok(routing.workProfile.preferredProfileStrengths.includes("repo_scan"));
+});
+
 test("workflow run emits adaptive routing dry-run metadata into orchestrator handoff", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-adaptive-routing-run-"));
   try {
@@ -1468,6 +1496,7 @@ test("workflow run emits adaptive routing dry-run metadata into orchestrator han
     );
 
     const preloadPath = writeWorkflowPreload(dir);
+    const orchestratorArgsLog = path.join(dir, "orchestrator-args.jsonl");
     const result = runCli(
       [
         "workflow",
@@ -1489,6 +1518,7 @@ test("workflow run emits adaptive routing dry-run metadata into orchestrator han
           SNIPARA_API_KEY: "snp-test",
           SNIPARA_PROJECT_ID: "project_1",
           SNIPARA_API_URL: "https://api.snipara.com",
+          SNIPARA_TEST_ORCHESTRATOR_ARGS_LOG: orchestratorArgsLog,
           SNIPARA_TEST_LOCAL_ORCHESTRATOR_CATALOG_RESPONSE: JSON.stringify({
             schemaVersion: "snipara.orchestrator.runtime_catalog.v1",
             source: "openai_compatible_local",
@@ -1509,6 +1539,7 @@ test("workflow run emits adaptive routing dry-run metadata into orchestrator han
                 workerRoles: ["coding"],
                 capabilities: ["docs_write"],
                 isAvailable: true,
+                workerProfileId: "local-devstral-refactor",
               },
             ],
             workerEndpoints: {
@@ -1519,6 +1550,15 @@ test("workflow run emits adaptive routing dry-run metadata into orchestrator han
                 apiPaths: {
                   responses: "/v1/responses",
                 },
+                workerProfileId: "local-devstral-refactor",
+              },
+            },
+            workerProfiles: {
+              "local-devstral-refactor": {
+                profileId: "local-devstral-refactor",
+                strengths: ["code", "refactor", "agentic_exploration"],
+                structuredOutputFit: "medium",
+                timeoutRisk: "high",
               },
             },
           }),
@@ -1532,6 +1572,11 @@ test("workflow run emits adaptive routing dry-run metadata into orchestrator han
                 endpointType: "local",
               },
               score: 0.91,
+              scoreBreakdown: {
+                capabilityFit: 0.2,
+                preferredStrengthFit: 0.3,
+                timeoutPenalty: -0.1,
+              },
               reasons: ["candidate satisfies local documentation route"],
             },
             policyDecision: {
@@ -1562,6 +1607,10 @@ test("workflow run emits adaptive routing dry-run metadata into orchestrator han
     assert.equal(payload.adaptive_routing.gateway.success, true);
     assert.equal(payload.adaptive_routing.gateway.candidateCount, 1);
     assert.equal(
+      payload.adaptive_routing.runtimeCatalog.workerProfiles["local-devstral-refactor"].profileId,
+      "local-devstral-refactor"
+    );
+    assert.equal(
       payload.adaptive_routing.runtimeCatalog.candidates[0].candidateId,
       "local-devstral"
     );
@@ -1573,6 +1622,11 @@ test("workflow run emits adaptive routing dry-run metadata into orchestrator han
       payload.adaptive_routing.resolution.selected.candidate.candidateId,
       "local-devstral"
     );
+    assert.deepEqual(payload.adaptive_routing.resolution.selected.scoreBreakdown, {
+      capabilityFit: 0.2,
+      preferredStrengthFit: 0.3,
+      timeoutPenalty: -0.1,
+    });
     assert.equal(payload.orchestrator_handoff.relativePath, ORCHESTRATOR_HANDOFF_RELATIVE_PATH);
     assert.equal(
       payload.orchestrator_handoff.handoff.routing.routingCard.recommendedWorkerClass,
@@ -1588,14 +1642,35 @@ test("workflow run emits adaptive routing dry-run metadata into orchestrator han
     assert.equal(persisted.routing.gateway.candidateCount, 1);
     assert.equal(persisted.routing.runtimeCatalog.candidates[0].endpointType, "local");
     assert.equal(
+      persisted.routing.runtimeCatalog.workerProfiles["local-devstral-refactor"].profileId,
+      "local-devstral-refactor"
+    );
+    assert.equal(
       persisted.routing.runtimeCatalog.workerEndpoints["local-devstral"].model,
       "ggml-org/devstral-small-2-24b-instruct-2512-gguf"
     );
     assert.equal(persisted.routing.resolution.selected.candidate.endpointType, "local");
+    assert.deepEqual(persisted.routing.resolution.selected.scoreBreakdown, {
+      capabilityFit: 0.2,
+      preferredStrengthFit: 0.3,
+      timeoutPenalty: -0.1,
+    });
     assert.match(
       persisted.routing.routingCard.warnings.join(" "),
       /companion does not launch or claim workers/
     );
+    const orchestratorCalls = fs
+      .readFileSync(orchestratorArgsLog, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    const catalogCall = orchestratorCalls.find(
+      (entry) =>
+        entry.command === "snipara-orchestrator" && entry.args?.[0] === "local-model-catalog"
+    );
+    assert.ok(catalogCall, "expected local-model-catalog to be invoked");
+    assert.ok(catalogCall.args.includes("--all-models"));
     assert.doesNotMatch(JSON.stringify(persisted.routing), /api[_-]?key|secret value/i);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

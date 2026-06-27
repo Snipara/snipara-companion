@@ -4069,6 +4069,13 @@ function normalizeAdaptiveRoutingCatalog(value: unknown): AdaptiveRoutingRuntime
         )
       ) as Record<string, Record<string, unknown>>)
     : undefined;
+  const workerProfiles = isRecord(record.workerProfiles)
+    ? (Object.fromEntries(
+        Object.entries(record.workerProfiles).filter(
+          ([key, value]) => Boolean(stringValue(key)) && isRecord(value)
+        )
+      ) as Record<string, Record<string, unknown>>)
+    : undefined;
   return {
     version: stringValue(record.version),
     source: stringValue(record.source),
@@ -4077,6 +4084,7 @@ function normalizeAdaptiveRoutingCatalog(value: unknown): AdaptiveRoutingRuntime
     ...(models && models.length > 0 ? { models } : {}),
     ...(isRecord(record.apiPaths) ? { apiPaths: record.apiPaths } : {}),
     ...(workerEndpoints ? { workerEndpoints } : {}),
+    ...(workerProfiles ? { workerProfiles } : {}),
     candidates,
   };
 }
@@ -4124,6 +4132,7 @@ function normalizeAdaptiveRoutingResolution(
           ...(numberValue(selected.score) !== undefined
             ? { score: numberValue(selected.score) }
             : {}),
+          ...(isRecord(selected.scoreBreakdown) ? { scoreBreakdown: selected.scoreBreakdown } : {}),
           ...(normalizeStringArray(selected.reasons)
             ? { reasons: normalizeStringArray(selected.reasons) }
             : {}),
@@ -4190,6 +4199,7 @@ function runOrchestratorJsonCommand(
 function enrichAdaptiveRoutingWithLocalOrchestrator(
   routing: AdaptiveWorkRoutingRecommendation,
   options: {
+    routeLocalWorkers?: boolean;
     routingLocalBaseUrl?: string;
     routingLocalModel?: string;
     routingLocalPreferModel?: string;
@@ -4214,6 +4224,8 @@ function enrichAdaptiveRoutingWithLocalOrchestrator(
       catalogArgs.push("--model", options.routingLocalModel);
     } else if (options.routingLocalPreferModel) {
       catalogArgs.push("--prefer-model", options.routingLocalPreferModel);
+    } else if (options.routeLocalWorkers) {
+      catalogArgs.push("--all-models");
     }
     if (options.routingLocalProvider) {
       catalogArgs.push("--provider", options.routingLocalProvider);
