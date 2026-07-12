@@ -2,6 +2,378 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 3.2.24
+
+- Adds a validated full `commitSha` to successful commit, amend, revert, and
+  cherry-pick `tool_result` events so Outcome Intelligence can mature commit
+  evidence without parsing raw command text.
+- Keeps the signal fail-closed: non-commit commands, failed or no-op results,
+  quiet or masked results without the current SHA prefix, reflog mismatches,
+  and invalid object IDs emit no commit SHA.
+- Rejects compound or shell-ambiguous commit commands and redacts bounded
+  command previews, including named environment tokens and secrets, before an
+  automation event leaves the process.
+
+## New In 3.2.23
+
+- Preserves the canonical project profile and the authenticated owner operating
+  profile at the front of session bootstrap briefs, even when those durable
+  profiles are older than ordinary carryover.
+- Keeps profile selection bounded by the requested entry and token budgets,
+  then ranks recent carryover and relevant decisions into the remaining space.
+
+## New In 3.2.22
+
+- Clarifies Snipara Sandbox manual install guidance to use
+  `python -m pip install "snipara-sandbox[all]"`, where `[all]` is the pip
+  extra on the package spec, not a separate argument.
+
+## New In 3.2.19
+
+- Adds `snipara-companion workflow sync-policy-ledger`, which uploads local
+  Project Policy Decision Requests, resolution receipts, apply receipts, and
+  policy drafts into the hosted Project Policy ledger for audit visibility.
+- Keeps hosted sync observational: synced receipts are stored as bounded JSON
+  documents and do not approve, refuse, activate, or edit canonical Project
+  Policy automatically.
+
+## New In 3.2.17
+
+- Adds `snipara-companion workflow policy-ledger`, a local Project Policy
+  decision ledger that summarizes pending, approved, refused, modified, and
+  deferred policy artifacts for the LLM agent.
+- Includes agent-facing prompts for pending Project Policy decisions while
+  keeping approval explicit through `workflow decide`; the ledger never applies
+  policy changes automatically.
+
+## New In 3.2.16
+
+- Adds an `operationalLoop` section to `snipara-companion status --json` and
+  text status output. It composes local workflow state, Team Sync handoff
+  attention, pending Decision Requests, and receipt gaps into concrete next
+  actions.
+- Keeps the loop advisory and agent-first: it points agents toward
+  `workflow decisions`, `workflow decide`, `phase-commit`, and
+  `outcome-capture preview --emit-outcome-receipt` without editing Project
+  Policy, approving memory, or bypassing verification.
+
+## New In 3.2.15
+
+- Adds `snipara-companion run --emit-policy-decisions` so Project Policy
+  `require_review` and `block` verdicts can become local Decision Requests in
+  the agent workflow.
+- Keeps Project Policy administration review-only: resolving the request records
+  the human choice, while policy edits, stale marking, exceptions, or memory
+  invalidation still require explicit follow-up action.
+
+## New In 3.2.12
+
+- Adds `snipara-companion workers execute` as the Controlled Worker Execution
+  V0 receipt path. It defaults to dry-run, writes
+  `snipara.controlled_worker_execution.receipt.v0` JSON, and records bounded
+  task, worker, write-scope, acceptance, proof, approval, command, and
+  execution evidence.
+- Keeps execution fail-closed: `--execute` requires an explicit approval
+  receipt, high-risk commands are blocked locally, and successful commands move
+  to `verification_required` instead of being treated as reviewed work.
+- Documents hosted Outcome Intelligence receipt ingestion as a project API
+  surface while keeping aggregation advisory, reviewable, and task-profile
+  scoped.
+
+## New In 3.2.11
+
+- Adds Outcome Intelligence V0 receipt emission to
+  `outcome-capture preview --emit-outcome-receipt`, producing a typed
+  `snipara.outcome_intelligence.receipt.v0` artifact from review, test, deploy,
+  guard, and workflow events.
+- Adds `snipara-companion run --outcome-receipts <files...>` so production
+  judgment runs can ingest local receipt JSON and print reason-code/task-profile
+  calibration buckets.
+- Keeps Outcome Intelligence advisory and sample-gated: receipts are
+  calibration evidence, not causal proof, global agent trust, or a Project
+  Policy override.
+
+## New In 3.2.9
+
+- Deduplicates near-identical `session-bootstrap` text brief entries by content
+  similarity, so workflow final commits and their checkpoint echoes do not both
+  consume pushed-brief slots.
+- Reserves brief capacity for relevant decision entries when available, while
+  filtering checkpoint-like `DECISION` records that do not match the brief's
+  active topic.
+- Makes `session-bootstrap --include-session-context` a silent no-op in
+  unconfigured projects, preserving the hook contract that an empty brief emits
+  no header or decorative output.
+
+## New In 3.2.8
+
+- Ranks `session-bootstrap --include-session-context` text briefs by recent
+  carryover, authority, and release/deploy signal before older durable memory,
+  so high-signal handoffs surface ahead of stale trivia.
+- Enforces the pushed brief budget at selection time, caps the default text
+  brief to four entries, and keeps full hosted diagnostics available through
+  `--json` instead of truncating noisy output after the fact.
+- Filters stale/low-confidence/test bootstrap entries when fresh candidates are
+  available, including legacy repo-path and old memory-injection references.
+
+## New In 3.2.7
+
+- Makes `workflow run --mode lite` a true zero-cost local path with no mandatory
+  hosted recall, context query, or bootstrap calls.
+- Lets `workflow run --mode auto` route small diffs to LITE, rationale/source
+  questions to STANDARD, and release/deploy/architecture work to FULL or
+  ORCHESTRATED.
+- Changes `session-bootstrap` text output into a compact pushed brief that is
+  silent when no high-signal memory or carryover item is available.
+- Updates Companion and agent-facing docs to treat recall, context query, code
+  impact, and end-of-task memory as on-demand escalations instead of entry
+  ceremony.
+
+## New In 3.2.5
+
+- Updates `doctor` guidance for the lean hosted MCP agent surface: a compact
+  Snipara tool set is expected, `snipara_help(query=...)` is the routed guidance
+  path, and `snipara_help(list_all=true)` is for inspecting specialist opt-in
+  surfaces.
+
+## New In 3.2.4
+
+- Renders the selected human choice into `manual_apply_required` apply hints
+  emitted by `workflow decide`, so memory review decisions no longer leave the
+  literal `<human-choice>` placeholder in follow-up commands.
+- Documents Worker Registry local commands in the package README, including
+  `workers local probe`, `add`, `list`, `status --json`, and `remove`.
+- Adds `snipara-companion workers local list`, `workers local remove`, and
+  `workers local probe` for persisted worker profiles and easier registry
+  maintenance.
+- Moves local worker declarations from a single `.snipara/workers/local.json`
+  payload to per-worker profile files under `.snipara/workers/<worker-id>.json`
+  with a shared `index.json` for the default worker id.
+- Documents that tracked worker profiles are durable team-visible project state
+  shared by worktrees through Git, and that secrets must be referenced through
+  environment variables instead of committed in registry files.
+- Adds CLI transport support for explicit OpenAI-compatible declarations as
+  well as declared CLI workers.
+- Adds automatic migration from legacy `workers/local.json` into per-worker
+  profile files and keeps compatibility for existing `workflow run` routing flows.
+
+## New In 3.2.3
+
+- Promotes Intent Detection V0 from a snapshot stub to an advisory session
+  intelligence contract with weighted signals, reason codes, evidence counts,
+  and suggested workflow mode hints.
+- Shows detected intent, confidence, advisory suggested mode, and signals in
+  `workflow session`, `workflow resume --include-session-context`, and Project
+  Intelligence briefs.
+- Keeps all Intent Detection V0 output fail-closed: `hardRoutingAllowed=false`,
+  no worker spawning, no merges, no canonical memory writes, and no blocking
+  gates from intent alone.
+
+## New In 3.2.2
+
+- Adds Activity Timeline V0 under `.snipara/activity/timeline.jsonl` and a fast
+  Session Snapshot V0 at `.snipara/activity/session.json` for local workflow,
+  Team Sync, Producer Loop, and Decision Request visibility.
+- Adds `workflow timeline` and `workflow session` so agents can inspect the
+  append-only local activity log and session snapshot directly.
+- Adds `workflow timeline --export md` for redacted publishable timeline
+  artifacts, includes local Session Snapshot summaries in `workflow resume` and
+  Project Intelligence briefs, and attaches advisory-only Intent Detection V0
+  to the snapshot with `hardRoutingAllowed=false`.
+- Emits review-only policy suggestion decision requests when repeated resolved
+  receipts show the same human choice and rationale; suggestions remain manual
+  apply only and are never auto-applied.
+- Keeps Session Snapshot routing fail-closed with `hardRoutingAllowed=false`.
+
+## New In 3.2.1
+
+- Hardens Companion and orchestrator handoff interop. `lead-plan --json` now
+  writes a default JSON artifact under `.snipara/lead-plans/` and returns the
+  next `snipara-orchestrator team-sync gate` command.
+- Preserves comma-containing `--acceptance` criteria as one criterion across
+  lead-plan, agent-readiness, and adapter handoff flows.
+- Makes `workflow decision-producer memory` inherit hosted `memory reviews`
+  evidence when available and rejects internal review item types as human
+  actions.
+- Makes recurring policy suggestions group by producer kind, human choice, and
+  target category instead of exact note text, fixes inherited memory decision
+  apply hints to use the selected action, and reports emitted request ids from
+  `memory reviews --emit-decisions`.
+- Improves `doctor` orchestrator diagnostics with path/source/version mismatch
+  detail, and gives local worker routing cards an actionable worker declaration
+  hint.
+
+## New In 3.2.0
+
+- Adds `memory reviews`, a read-only connector for hosted human-review memory
+  surfaces. It reads `snipara_memory_review_queue`,
+  `snipara_memory_clean_candidates`, and
+  `snipara_memory_duplicate_candidates`, then summarizes reviewable memories
+  into agent-ready items.
+- Adds `memory reviews --emit-decisions` to write local Decision Request V0
+  artifacts with readable memory evidence items. It does not mutate hosted
+  memory; requests still require explicit `workflow decide` resolution and use
+  the existing hosted/manual apply paths.
+
+## New In 3.1.1
+
+- Improves Decision Request triage UX: batched Producer Loop requests now embed
+  readable evidence items with workflow, phase, summary, status, file hints, and
+  artifact path metadata, so a human can decide without manually opening every
+  opaque artifact id first.
+- Ignores local `.snipara/decisions/` receipts in Git by default.
+
+## New In 3.1.0
+
+- Adds Decision Request V0 local review routing under `.snipara/decisions/`.
+  `workflow decisions` lists pending questions for an LLM client to ask the
+  human, and `workflow decide` records a `decision_response` receipt with the
+  explicit reviewer choice.
+- Adds `workflow producer-triage` for unreviewed Producer Loop samples. Triage
+  emits a batched decision request and never marks samples reviewed by itself;
+  `workflow decide --choose accept_all|reject_all` applies the existing
+  `producer-review` path and records the applied actions.
+- Adds decision-request producers for `outcome-capture preview --emit-decisions`,
+  hosted memory review actions, and stale context risks. These requests declare
+  the existing apply path and do not gain any new canonical memory write
+  capability.
+
+## New In 3.0.14
+
+- Adds `workflow producer-review` to mark local Producer Loop samples as
+  reviewed or rejected with reviewer, outcome, and note metadata.
+- Updates `workflow producer-report` so calibration status depends on reviewed
+  samples, with separate reviewed, rejected, and unreviewed counts plus outcome
+  counts. `hardGateReady` remains false in V0.
+
+## New In 3.0.13
+
+- Extends Producer Loop V0 reporting beyond the initial workflow producer:
+  `workflow producer-report` now accepts PR Answer Pack decision-capture
+  artifacts with producer kind `pr_answer_pack_decision_capture`.
+- Keeps multi-producer calibration advisory-only. PR Answer Pack samples remain
+  review-pending evidence and do not approve durable memory, launch workers, or
+  become server-side compliance attestation.
+
+## New In 3.0.12
+
+- Makes `workflow phase-commit` and `workflow final-commit` emit local Producer
+  Loop V0 artifacts under `.snipara/producer-loop/`, backed by the redacted
+  Coding Intelligence Ledger builder.
+- Adds `workflow producer-report` to summarize local Producer Loop adoption,
+  producer kinds, workflow ids, latest artifact, reason-code counts, invalid
+  artifacts, sample size, and calibration caveats before any hard gate.
+- Keeps the boundary explicit: Producer Loop artifacts are local review
+  evidence only. They do not launch workers, approve Project Brain memory, or
+  provide server-side compliance attestation.
+
+## New In 3.0.11
+
+- Updates generated agent workflow guidance so FULL-mode audits use
+  `snipara_plan`, `snipara_decompose`, and `snipara_multi_query` deliberately
+  while simple one-shot lookups stay on targeted context queries.
+
+## New In 3.0.10
+
+- Hardens Intent Ledger extraction in `reality-check` so source-backed intent
+  uses structured fields or explicit labeled sections before falling back to
+  legacy prose.
+- Stops inferring anti-goals and rejected alternatives from generic free-text
+  words; those fields now require `Anti-goals:` / `Rejected alternatives:` or
+  structured contract input.
+- Makes the Intent Ledger freshness horizon configurable through contract
+  policy instead of relying on an implementation-local constant.
+
+## New In 3.0.9
+
+- Fixes Unknown Registry IDs in `reality-check` so unknowns use the stable
+  `unknown:` prefix instead of accidentally keeping a `reality:` finding prefix.
+- Splits the shared Project Intelligence contracts into dedicated Reality
+  Check, Intent Ledger, Unknown Registry, engineering lead, and shared-helper
+  modules while preserving the public barrel exports used by Companion and PR
+  Answer Packs.
+- Hardens Intent Ledger extraction internals with named status/phrase extractor
+  rules and a contract-level freshness horizon constant.
+
+## New In 3.0.8
+
+- Adds Intent Ledger V1 to `reality-check` output so local CLI and PR Answer
+  Packs can show source-backed repository intent coverage, confidence, and
+  stale or review-pending assumptions.
+- Adds Unknown Registry V1 to surface missing intent, missing verification,
+  stale intent, architecture drift, dirty local evidence, and heuristic
+  calibration gaps as explicit project unknowns.
+- Hardens PR Answer Pack release readiness with named scoring weights,
+  structured blocking detection, and bounded related-document content filters.
+- Clarifies that `reality-check --enforce` is a strict opt-in gate for
+  calibrated hooks because V1 heuristics remain advisory-grade.
+
+## New In 3.0.7
+
+- Adds `snipara-companion reality-check` plus the
+  `snipara-companion intelligence reality-check` alias for local
+  contradiction-to-reality checks over Git-derived or supplied changed files.
+- Adds `--enforce` so local hooks or CI adapters can fail on
+  review-required/blocking Project Reality Check findings.
+
+## New In 3.0.6
+
+- Adds `snipara-companion intelligence ledger-export`, a local structured
+  Coding Intelligence Ledger JSON export with schema versioning, bounded
+  sections, confidence/calibration metadata, and redaction for secret-like
+  content plus local repo paths.
+- Documents the ledger export in the full Companion reference so packaged docs
+  and the installed CLI stay aligned.
+
+## New In 3.0.5
+
+- Normalizes workflow closure with Team Sync: completed workflows now close
+  active Team Sync work when the workflow goal is slug-like but the files and
+  meaningful tokens still match the active work item.
+
+## New In 3.0.4
+
+- Adds compact memory audit summaries with auto-compact status, candidate
+  counts, and follow-up commands for safe cleanup.
+- Adds Team Sync hygiene actions to stale-work summaries so dry-run archive,
+  completion, and handoff paths are visible without deleting data.
+- Fixes Python toolchain inference in `verify` and detects
+  `snipara-orchestrator` installed inside common project virtualenvs.
+
+## New In 3.0.3
+
+- Adds `snipara-companion workers local add|status` so a project can declare a
+  local OpenAI-compatible worker such as LM Studio once and reuse it from
+  workflow runs.
+- Lets `workflow run --routing-local-worker <id>` load the declared worker,
+  prefer local endpoints, pin the local model, and hand the resolved runtime
+  metadata to `snipara-orchestrator`.
+- Makes project-policy rejection explicit when local worker routing is
+  requested but the effective Adaptive Work Routing policy does not allow local
+  endpoints.
+- Clarifies Team Sync stale-work and `team-sync sweep --dry-run` output so
+  candidates, actual archive count, and remaining stale work are visible before
+  cleanup.
+
+## New In 3.0.2
+
+- Adds adapter-neutral `proofVerification` status to Engineering Lead execution
+  receipts so provided proof evidence is not treated as verified until a source
+  validation is recorded.
+- Fails imported closed receipts back to verification-required when proof is
+  present but unverified.
+- Limits ADE Adapter Pack V1 generation to first-party Codex and Claude Code
+  packs while Cursor, Orca, Windsurf, and custom packs remain planned.
+
+## New In 3.0.1
+
+- Hardens local source activation validation so invalid numeric options fail
+  visibly instead of silently falling back to defaults.
+- Keeps local source snapshots deterministic and structurally validated before
+  refreshes are used for code overlays.
+- Removes the placeholder `DEC-002` memory decision from orchestrator handoffs
+  and emits only workflow/context-derived decision IDs.
+
 ## New In 3.0.0
 
 - Adds `snipara-companion source init|snapshot|status|sync|watch`, the local
@@ -98,6 +470,13 @@ Release notes for `snipara-companion`, newest first.
 
 ## New In 2.0.7
 
+- Adds Project Policy / Decision Consistency V0 contracts to Project
+  Intelligence, including deterministic `allow`, `warn`, `require_review`, and
+  `block` verdicts with receipts.
+- Surfaces conservative Project Policy decisions in `snipara-companion
+intelligence brief` when approved resume-context decisions match the task or
+  changed files, and folds those receipts into `snipara-companion run` policy
+  gates.
 - Reframes the package README around the account-free local `impact` first run,
   with the full reference moved to `docs/FULL_REFERENCE.md`.
 - Makes `impact` available as a top-level command and keeps code graph `auto`

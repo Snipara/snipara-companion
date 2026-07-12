@@ -392,7 +392,7 @@ function printDoctorReport(
     "- This doctor confirms local auth and hosted reachability; it does not prove how a specific agent UI ranked or exposed tools."
   );
   console.log(
-    "- If an agent session shows only a subset of Snipara tools, call snipara_help(list_all=true) in that session before concluding a tool is unavailable."
+    "- A lean Snipara tool set is expected in normal agent sessions. Use snipara_help(query=...) for routed guidance and snipara_help(list_all=true) to inspect specialist opt-in surfaces."
   );
   if (toolCatalog.available && toolCatalog.htaskToolCount) {
     console.log(
@@ -424,7 +424,9 @@ function printDoctorReport(
   } else {
     console.log("- Existing project: npx create-snipara repair --with-runtime.");
     console.log("- Fresh setup: npx create-snipara --profile full-stack --advanced.");
-    console.log("- Manual install: pip install 'snipara-sandbox[all]'.");
+    console.log(
+      '- Manual install: python -m pip install "snipara-sandbox[all]" (`[all]` is the pip extra, not a separate argument).'
+    );
   }
 
   console.log("");
@@ -488,7 +490,16 @@ function runtimeVersionSummary(report: RuntimeDetectionReport): string {
 }
 
 function orchestratorVersionSummary(report: RuntimeDetectionReport): string {
-  return report.orchestrator.version ? `available (${report.orchestrator.version})` : "available";
+  const parts = [
+    report.orchestrator.version ?? "version unknown",
+    report.orchestrator.command ? `path ${report.orchestrator.command}` : null,
+    report.orchestrator.source ? `source ${report.orchestrator.source}` : null,
+    report.orchestrator.workspacePackageVersion
+      ? `workspace ${report.orchestrator.workspacePackageVersion}`
+      : null,
+    report.orchestrator.versionMismatch ? "source/install mismatch" : null,
+  ].filter((value): value is string => Boolean(value));
+  return `available (${parts.join(", ")})`;
 }
 
 function sourceLabel(source: string | undefined): string {

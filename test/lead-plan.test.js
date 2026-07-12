@@ -10,6 +10,8 @@ const {
   ENGINEERING_LEAD_EXECUTION_RECEIPT_STAGES,
   ENGINEERING_LEAD_EXECUTION_RECEIPT_STATUSES,
   ENGINEERING_LEAD_POSTURES,
+  ENGINEERING_LEAD_PROOF_VERIFICATION_SOURCES,
+  ENGINEERING_LEAD_PROOF_VERIFICATION_STATUSES,
   ENGINEERING_LEAD_ROUTING_MODES,
   ENGINEERING_LEAD_STATUSES,
   ENGINEERING_LEAD_SUPERVISION_STATUSES,
@@ -23,9 +25,10 @@ const cliPath = path.join(__dirname, "..", "dist", "index.js");
 const sharedContractsPath = path.resolve(
   __dirname,
   "..",
+  "..",
+  "project-intelligence-contracts",
   "src",
-  "contracts",
-  "project-intelligence.ts"
+  "index.ts"
 );
 
 function readySignals() {
@@ -54,6 +57,78 @@ function readySignals() {
   };
 }
 
+function cockpitWithProofReceipt(receiptOverrides = {}) {
+  const proofCommand = "node --test packages/cli/test/lead-plan.test.js";
+  return {
+    engineeringLeadPlan: {
+      version: "project-intelligence-engineering-lead-plan-v0",
+      contractVersion: "engineering-lead-contract-v1",
+      posture: "lead_ready",
+      status: "healthy",
+      score: 90,
+      headline: "Imported proof receipt",
+      operatingMode: "advisory_fail_closed",
+      nextAction: "Validate proof source",
+      workersSpawned: 0,
+      failClosedFallback: "main_agent",
+      workPackages: [
+        {
+          id: "wp:proof",
+          title: "Verify proof semantics",
+          status: "closed",
+          health: "healthy",
+          owner: "codex",
+          dependencies: [],
+          writeScope: ["packages/cli/src/commands/lead-plan.ts"],
+          acceptanceCriteria: ["proof state remains explicit"],
+          proofRequired: [proofCommand],
+          resultExpectation: "Return verified proof",
+          nextAction: "Validate proof source",
+          replanTriggers: [],
+          evidence: [],
+          reasonCodes: [],
+        },
+      ],
+      supervision: {
+        status: "on_track",
+        summary: "Proof receipt imported.",
+        openWorkPackages: 0,
+        blockedWorkPackages: 0,
+        readyWorkPackages: 0,
+        executingWorkPackages: 0,
+        verifyingWorkPackages: 0,
+        closedWorkPackages: 1,
+        reviewRequired: false,
+        replanRequired: false,
+        nextCheck: "Validate proof source.",
+        replanTriggers: [],
+        receiptsRequired: ["proof_receipt"],
+        reasonCodes: [],
+      },
+      executionReceipts: [
+        {
+          id: "engineering-lead-receipt:wp:proof",
+          workPackageId: "wp:proof",
+          workPackageTitle: "Verify proof semantics",
+          status: "closed",
+          requiredStages: ["proof"],
+          completedStages: ["proof"],
+          proofReceiptIds: [],
+          proofRequired: [proofCommand],
+          proofExecuted: [],
+          missingRequirements: [],
+          nextAction: "Close",
+          ...receiptOverrides,
+        },
+      ],
+      workerRecommendations: [],
+      proofGates: [proofCommand],
+      brainUpdateActions: [],
+      reasonCodes: [],
+    },
+  };
+}
+
 function runCli(args, options = {}) {
   const env = {
     ...process.env,
@@ -76,7 +151,12 @@ function runCli(args, options = {}) {
   });
 }
 
-function exportedStringArray(filePath, exportName) {
+function findExportedStringArray(filePath, exportName, visited = new Set()) {
+  if (visited.has(filePath)) {
+    return undefined;
+  }
+  visited.add(filePath);
+
   const source = ts.createSourceFile(
     filePath,
     fs.readFileSync(filePath, "utf8"),
@@ -110,6 +190,50 @@ function exportedStringArray(filePath, exportName) {
     }
   }
 
+  for (const statement of source.statements) {
+    if (
+      !ts.isExportDeclaration(statement) ||
+      !statement.moduleSpecifier ||
+      !ts.isStringLiteral(statement.moduleSpecifier)
+    ) {
+      continue;
+    }
+
+    const exportClause = statement.exportClause;
+    if (exportClause && ts.isNamedExports(exportClause)) {
+      const exportsName = exportClause.elements.some(
+        (element) => (element.propertyName ?? element.name).text === exportName
+      );
+      if (!exportsName) {
+        continue;
+      }
+    }
+
+    const modulePath = statement.moduleSpecifier.text;
+    if (!modulePath.startsWith(".")) {
+      continue;
+    }
+
+    const resolvedPath = path.resolve(path.dirname(filePath), `${modulePath}.ts`);
+    if (!fs.existsSync(resolvedPath)) {
+      continue;
+    }
+
+    const value = findExportedStringArray(resolvedPath, exportName, visited);
+    if (value) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function exportedStringArray(filePath, exportName) {
+  const value = findExportedStringArray(filePath, exportName);
+  if (value) {
+    return value;
+  }
+
   assert.fail(`Could not find exported string array ${exportName} in ${filePath}`);
 }
 
@@ -137,6 +261,10 @@ test("buildCompanionEngineeringLeadPlanReport creates a ready fail-closed handof
   assert.equal(report.engineeringLeadPlan.supervision.replanRequired, false);
   assert.equal(report.engineeringLeadPlan.executionReceipts.length, 1);
   assert.equal(report.engineeringLeadPlan.executionReceipts[0].status, "handoff_ready");
+  assert.equal(
+    report.engineeringLeadPlan.executionReceipts[0].proofVerification.status,
+    "declared"
+  );
   assert.deepEqual(report.engineeringLeadPlan.executionReceipts[0].requiredStages, [
     "handoff",
     "claim",
@@ -161,7 +289,185 @@ test("buildCompanionEngineeringLeadPlanReport creates a ready fail-closed handof
   const markdown = formatCompanionEngineeringLeadPlanReport(report);
   assert.match(markdown, /Execution Receipts/);
   assert.match(markdown, /handoff receipt: missing/);
+  assert.match(markdown, /proof verification: declared \(unknown\)/);
   assert.match(markdown, /brain_update_receipt/);
+});
+
+test("lead-plan treats executed proof as provided until source verification is recorded", () => {
+  const report = buildCompanionEngineeringLeadPlanReport({
+    target: "codex",
+    cockpit: {
+      engineeringLeadPlan: {
+        version: "project-intelligence-engineering-lead-plan-v0",
+        contractVersion: "engineering-lead-contract-v1",
+        posture: "lead_ready",
+        status: "healthy",
+        score: 90,
+        headline: "Imported proof receipt",
+        operatingMode: "advisory_fail_closed",
+        nextAction: "Validate proof source",
+        workersSpawned: 0,
+        failClosedFallback: "main_agent",
+        workPackages: [
+          {
+            id: "wp:proof",
+            title: "Verify proof semantics",
+            status: "closed",
+            health: "healthy",
+            owner: "codex",
+            dependencies: [],
+            writeScope: ["packages/cli/src/commands/lead-plan.ts"],
+            acceptanceCriteria: ["proof state remains explicit"],
+            proofRequired: ["node --test packages/cli/test/lead-plan.test.js"],
+            resultExpectation: "Return verified proof",
+            nextAction: "Validate proof source",
+            replanTriggers: [],
+            evidence: [],
+            reasonCodes: [],
+          },
+        ],
+        supervision: {
+          status: "on_track",
+          summary: "Proof receipt imported.",
+          openWorkPackages: 0,
+          blockedWorkPackages: 0,
+          readyWorkPackages: 0,
+          executingWorkPackages: 0,
+          verifyingWorkPackages: 0,
+          closedWorkPackages: 1,
+          reviewRequired: false,
+          replanRequired: false,
+          nextCheck: "Validate proof source.",
+          replanTriggers: [],
+          receiptsRequired: ["proof_receipt"],
+          reasonCodes: [],
+        },
+        executionReceipts: [
+          {
+            id: "engineering-lead-receipt:wp:proof",
+            workPackageId: "wp:proof",
+            workPackageTitle: "Verify proof semantics",
+            status: "closed",
+            requiredStages: ["proof"],
+            completedStages: ["proof"],
+            proofReceiptIds: ["receipt:agent-report"],
+            proofRequired: ["node --test packages/cli/test/lead-plan.test.js"],
+            proofExecuted: ["node --test packages/cli/test/lead-plan.test.js"],
+            missingRequirements: [],
+            nextAction: "Close",
+          },
+        ],
+        workerRecommendations: [],
+        proofGates: ["node --test packages/cli/test/lead-plan.test.js"],
+        brainUpdateActions: [],
+        reasonCodes: [],
+      },
+    },
+    localSignals: readySignals(),
+  });
+
+  const receipt = report.engineeringLeadPlan.executionReceipts[0];
+  assert.equal(receipt.proofVerification.status, "provided");
+  assert.notEqual(receipt.status, "closed");
+  assert.ok(receipt.missingRequirements.includes("verified_proof"));
+});
+
+test("lead-plan keeps self-attested proofExecuted fail-closed", () => {
+  const report = buildCompanionEngineeringLeadPlanReport({
+    now: new Date("2026-06-30T12:00:00.000Z"),
+    target: "codex",
+    cockpit: cockpitWithProofReceipt({
+      proofExecuted: ["node --test packages/cli/test/lead-plan.test.js"],
+      proofReceiptIds: [],
+    }),
+    localSignals: readySignals(),
+  });
+
+  const receipt = report.engineeringLeadPlan.executionReceipts[0];
+  assert.equal(receipt.status, "verification_required");
+  assert.equal(receipt.proofVerification.status, "declared");
+  assert.ok(receipt.missingRequirements.includes("proof_receipt"));
+  assert.ok(
+    receipt.proofVerification.reasonCodes.includes(
+      "proof_verification_self_attested_proof_not_source_backed"
+    )
+  );
+});
+
+test("lead-plan downgrades forged verified proof receipts without source backing", () => {
+  const report = buildCompanionEngineeringLeadPlanReport({
+    now: new Date("2026-06-30T12:00:00.000Z"),
+    target: "codex",
+    cockpit: cockpitWithProofReceipt({
+      proofReceiptIds: ["receipt:agent-report"],
+      proofVerification: {
+        status: "verified",
+        source: "unknown",
+        sourceRef: null,
+        verifiedAt: null,
+        evidenceHash: null,
+      },
+    }),
+    localSignals: readySignals(),
+  });
+
+  const receipt = report.engineeringLeadPlan.executionReceipts[0];
+  assert.equal(receipt.status, "verification_required");
+  assert.equal(receipt.proofVerification.status, "provided");
+  assert.ok(receipt.missingRequirements.includes("verified_proof"));
+  assert.ok(
+    receipt.proofVerification.reasonCodes.includes("proof_verification_downgraded_verified")
+  );
+  assert.ok(
+    receipt.proofVerification.reasonCodes.includes("proof_verification_missing_trusted_source")
+  );
+});
+
+test("lead-plan downgrades stale verified proof receipts", () => {
+  const report = buildCompanionEngineeringLeadPlanReport({
+    now: new Date("2026-06-30T12:00:00.000Z"),
+    target: "codex",
+    cockpit: cockpitWithProofReceipt({
+      proofReceiptIds: ["receipt:ci"],
+      proofVerification: {
+        status: "verified",
+        source: "ci",
+        sourceRef: "ci:lead-plan",
+        verifiedAt: "2026-05-01T12:00:00.000Z",
+        evidenceHash: "sha256:lead-plan-proof",
+      },
+    }),
+    localSignals: readySignals(),
+  });
+
+  const receipt = report.engineeringLeadPlan.executionReceipts[0];
+  assert.equal(receipt.proofVerification.status, "provided");
+  assert.ok(receipt.missingRequirements.includes("verified_proof"));
+  assert.ok(receipt.proofVerification.reasonCodes.includes("proof_verification_stale"));
+});
+
+test("lead-plan accepts fresh source-backed verified proof receipts", () => {
+  const report = buildCompanionEngineeringLeadPlanReport({
+    now: new Date("2026-06-30T12:00:00.000Z"),
+    target: "codex",
+    cockpit: cockpitWithProofReceipt({
+      proofReceiptIds: [],
+      proofVerification: {
+        status: "verified",
+        source: "ci",
+        sourceRef: "ci:lead-plan",
+        verifiedAt: "2026-06-30T11:58:00.000Z",
+        evidenceHash: "sha256:lead-plan-proof",
+      },
+    }),
+    localSignals: readySignals(),
+  });
+
+  const receipt = report.engineeringLeadPlan.executionReceipts[0];
+  assert.equal(receipt.status, "closed");
+  assert.equal(receipt.proofVerification.status, "verified");
+  assert.deepEqual(receipt.missingRequirements, []);
+  assert.ok(receipt.proofVerification.reasonCodes.includes("proof_verification_source_backed"));
 });
 
 if (fs.existsSync(sharedContractsPath)) {
@@ -211,6 +517,20 @@ if (fs.existsSync(sharedContractsPath)) {
       exportedStringArray(
         sharedContractsPath,
         "PROJECT_INTELLIGENCE_ENGINEERING_LEAD_EXECUTION_RECEIPT_STAGES"
+      )
+    );
+    assert.deepEqual(
+      ENGINEERING_LEAD_PROOF_VERIFICATION_STATUSES,
+      exportedStringArray(
+        sharedContractsPath,
+        "PROJECT_INTELLIGENCE_ENGINEERING_LEAD_PROOF_VERIFICATION_STATUSES"
+      )
+    );
+    assert.deepEqual(
+      ENGINEERING_LEAD_PROOF_VERIFICATION_SOURCES,
+      exportedStringArray(
+        sharedContractsPath,
+        "PROJECT_INTELLIGENCE_ENGINEERING_LEAD_PROOF_VERIFICATION_SOURCES"
       )
     );
   });
@@ -306,9 +626,38 @@ test("lead-plan command reads local workflow state and prints JSON", () => {
   assert.ok(
     payload.engineeringLeadPlan.executionReceipts[0].missingRequirements.includes("proof_receipt")
   );
+  assert.deepEqual(payload.explicitInputs.acceptanceCriteria, ["adapter artifact generated"]);
+  assert.match(payload.relativeOutputPath, /^\.snipara\/lead-plans\/.+ship-adapter-handoff\.json$/);
+  assert.equal(fs.existsSync(payload.outputPath), true);
   assert.equal(payload.engineeringLeadPlan.supervision.status, "on_track");
   assert.equal(payload.engineeringLeadPlan.workerRecommendations[0].owner, "Orca");
   assert.equal(payload.engineeringLeadPlan.workersSpawned, 0);
+});
+
+test("lead-plan preserves commas inside one acceptance criterion", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-lead-plan-acceptance-comma-"));
+
+  const result = runCli(
+    [
+      "lead-plan",
+      "--task",
+      "Preserve acceptance text",
+      "--changed-files",
+      "src/adapter.ts",
+      "--proof",
+      "pnpm test adapter",
+      "--acceptance",
+      "schema validates routing, coordination, and validation fields",
+      "--json",
+    ],
+    { cwd: dir }
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.deepEqual(payload.explicitInputs.acceptanceCriteria, [
+    "schema validates routing, coordination, and validation fields",
+  ]);
 });
 
 test("lead-plan command round-trips a Project Health cockpit lead plan", () => {
@@ -495,6 +844,21 @@ test("lead-plan command round-trips a Project Health cockpit lead plan", () => {
   assert.equal(payload.source, "project_health_cockpit");
   assert.deepEqual(payload.engineeringLeadPlan, {
     ...sourcePlan,
+    executionReceipts: [
+      {
+        ...sourcePlan.executionReceipts[0],
+        proofVerification: {
+          status: "declared",
+          source: "unknown",
+          sourceRef: null,
+          adapterTarget: null,
+          verifiedBy: null,
+          verifiedAt: null,
+          evidenceHash: null,
+          reasonCodes: ["proof_verification_declared", "proof_verification_pending_validation"],
+        },
+      },
+    ],
     caveats: [
       "Imported from Project Health",
       "Imported cockpit plans remain advisory and fail-closed inside Companion.",

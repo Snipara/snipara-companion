@@ -64,11 +64,17 @@ const LEASE_MODES = new Set<CollaborationLeaseMode>([
 
 const DEFAULT_WATCH_INTERVAL_SECONDS = 15;
 const DEFAULT_WATCH_HEARTBEAT_TTL_SECONDS = 300;
+const DEFAULT_WORKFLOW_CLAIM_TTL_SECONDS = 4 * 60 * 60;
 const DEFAULT_LOCAL_CODE_MAX_FILES = 2000;
 const HOSTED_GUARD_MAX_FILES = 450;
 const HOSTED_GUARD_MAX_RESOURCES = 850;
 const HOSTED_GUARD_MAX_SYMBOL_RESOURCES = 160;
 const HOOK_BLOCK_PREFIX = "snipara:collaboration-guard";
+const CHECKOUT_GIT_WRITE_RESOURCE: CollaborationResource = {
+  kind: "SURFACE",
+  id: "checkout-git-write",
+  label: "Checkout git write access",
+};
 
 type CollaborationGuardProfile =
   | "edit"
@@ -159,6 +165,33 @@ interface HostedAttempt<T> {
   error?: string;
 }
 
+export interface WorkflowCollaborationStartOptions {
+  rootDir?: string;
+  workflowId: string;
+  goal: string;
+  files?: string[];
+  mode: "standard" | "full" | "orchestrate";
+}
+
+export interface WorkflowCollaborationReleaseOptions {
+  rootDir?: string;
+  workflowId?: string;
+  reason?: string;
+}
+
+export interface WorkflowCollaborationReceipt {
+  workSessionId?: string;
+  hostedSessionStatus: HostedAttempt<CollaborationSessionResponse>["status"];
+  hostedClaimStatus?: HostedAttempt<CollaborationLeaseResponse>["status"];
+  hostedReleaseStatus?: HostedAttempt<Array<{ lease: CollaborationLeaseSummary }>>["status"];
+  hostedError?: string;
+  files: string[];
+  resourceCount: number;
+  leaseCount: number;
+  statePath: string;
+  recordedAt: string;
+}
+
 interface CollaborationCommandOptions {
   summary?: string;
   files?: string[];
@@ -191,6 +224,7 @@ interface CollaborationCommandOptions {
   ackReviewOnly?: boolean;
   dir?: string;
   json?: boolean;
+  verbose?: boolean;
 }
 
 interface CollaborationHooksInstallOptions {
@@ -207,6 +241,7 @@ export interface CollaborationLocalLeaseRecord {
   reason?: string;
   claimedAt?: string;
   expiresAt?: string | null;
+  workSessionId?: string;
 }
 
 export interface CollaborationLocalState {
@@ -273,7 +308,7 @@ export function loadCollaborationState(rootDir = process.cwd()): CollaborationLo
   } catch {
     return createEmptyCollaborationState();
   }
-  return {
+  const state: CollaborationLocalState = {
     schemaVersion: "snipara.collaboration.v1",
     updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(),
     workSessionId: normalizeOptionalString(parsed.workSessionId),
@@ -291,12 +326,15 @@ export function loadCollaborationState(rootDir = process.cwd()): CollaborationLo
     leases: normalizeLocalLeases(parsed.leases),
     lastGuard: normalizeLastGuard(parsed.lastGuard),
   };
+  expireLocalLeases(state);
+  return state;
 }
 
 export function saveCollaborationState(
   state: CollaborationLocalState,
   rootDir = process.cwd()
 ): void {
+  expireLocalLeases(state);
   const statePath = getCollaborationStatePath(rootDir);
   fs.mkdirSync(path.dirname(statePath), { recursive: true });
   const tempPath = `${statePath}.${process.pid}.${Date.now()}.tmp`;
@@ -496,7 +534,8 @@ export async function collaborationStartCommand(
       state,
       hosted,
     },
-    options.json
+    options.json,
+    options.verbose
   );
 }
 
@@ -544,8 +583,140 @@ export async function collaborationClaimCommand(
       state,
       hosted,
     },
-    options.json
+    options.json,
+    options.verbose
   );
+}
+
+export async function workflowCollaborationStart(
+  options: WorkflowCollaborationStartOptions
+): Promise<WorkflowCollaborationReceipt> {
+  const rootDir = path.resolve(options.rootDir ?? process.cwd());
+  const workSessionId = workflowWorkSessionId(options.workflowId);
+  const context = resolveCollaborationContext({
+    dir: rootDir,
+    workSessionId,
+    client: "snipara-companion:workflow",
+  });
+  const state = loadCollaborationState(rootDir);
+  const files = normalizeCollaborationFiles(options.files);
+  const resources = deriveLocalCollaborationResourcesFromFiles(files, rootDir);
+  const hostedSession = await maybeStartHostedSession(context, {
+    workSessionId,
+    task: options.goal,
+    files,
+    resources,
+  });
+  const session = hostedSession.status === "ok" ? hostedSession.data?.session : undefined;
+  const effectiveResources =
+    hostedSession.status === "ok" ? (hostedSession.data?.resources ?? resources) : resources;
+  let hostedClaim: HostedAttempt<CollaborationLeaseResponse> = { status: "skipped" };
+  const shouldClaim = options.mode === "full" || options.mode === "orchestrate";
+
+  if (shouldClaim && (files.length > 0 || effectiveResources.length > 0)) {
+    hostedClaim = await maybeCreateHostedLeases(context, {
+      workSessionId,
+      files,
+      resources: effectiveResources,
+      mode: "ADVISORY",
+      reason: `Workflow start: ${options.goal}`,
+      ttlSeconds: DEFAULT_WORKFLOW_CLAIM_TTL_SECONDS,
+    });
+  }
+
+  const now = new Date().toISOString();
+  Object.assign(state, {
+    updatedAt: now,
+    workSessionId: session?.id ?? workSessionId,
+    sessionId: context.actor.sessionId ?? state.sessionId,
+    actorId: context.actor.actorId,
+    actorType: context.actor.actorType,
+    actorLabel: context.actor.actorLabel,
+    client: context.client,
+    repository: context.repository,
+    branch: context.branch,
+    worktree: context.worktree,
+    task: options.goal,
+    files: mergeStrings(state.files, files),
+    resources: mergeResources(state.resources, effectiveResources),
+  });
+
+  if (hostedClaim.status === "ok") {
+    mergeLocalLeaseState(state, hostedClaim.data?.leases ?? [], hostedClaim.data?.resources ?? []);
+  } else if (shouldClaim && (files.length > 0 || effectiveResources.length > 0)) {
+    mergeLocalFallbackLeaseState(state, {
+      workSessionId,
+      mode: "ADVISORY",
+      reason: `Workflow start: ${options.goal}`,
+      resources: effectiveResources,
+      ttlSeconds: DEFAULT_WORKFLOW_CLAIM_TTL_SECONDS,
+      now,
+    });
+  }
+  saveCollaborationState(state, rootDir);
+
+  return {
+    workSessionId: state.workSessionId,
+    hostedSessionStatus: hostedSession.status,
+    hostedClaimStatus: hostedClaim.status,
+    hostedError: hostedSession.error ?? hostedClaim.error,
+    files,
+    resourceCount: effectiveResources.length,
+    leaseCount: state.leases.filter((lease) => lease.workSessionId === workSessionId).length,
+    statePath: getCollaborationStatePath(rootDir),
+    recordedAt: now,
+  };
+}
+
+export async function workflowCollaborationRelease(
+  options: WorkflowCollaborationReleaseOptions
+): Promise<WorkflowCollaborationReceipt> {
+  const rootDir = path.resolve(options.rootDir ?? process.cwd());
+  const context = resolveCollaborationContext({
+    dir: rootDir,
+    client: "snipara-companion:workflow",
+  });
+  const state = loadCollaborationState(rootDir);
+  const targetSessionId = options.workflowId
+    ? workflowWorkSessionId(options.workflowId)
+    : state.workSessionId;
+  const activeLeases = state.leases.filter(
+    (lease) =>
+      lease.status === "ACTIVE" &&
+      (lease.workSessionId === targetSessionId ||
+        (!lease.workSessionId &&
+          Boolean(targetSessionId) &&
+          state.workSessionId === targetSessionId))
+  );
+  const leaseIds = activeLeases.map((lease) => lease.id);
+  const hosted = await releaseHostedLeases(context, leaseIds, {
+    reason: options.reason ?? "workflow coordination release",
+  });
+  const releasedIds =
+    hosted.status === "ok"
+      ? new Set((hosted.data ?? []).map((release) => release.lease.id))
+      : new Set(leaseIds);
+  const now = new Date().toISOString();
+
+  for (const lease of state.leases) {
+    if (releasedIds.has(lease.id)) {
+      lease.status = "RELEASED";
+    }
+  }
+  state.updatedAt = now;
+  saveCollaborationState(state, rootDir);
+
+  return {
+    workSessionId: targetSessionId,
+    hostedSessionStatus: "skipped",
+    hostedReleaseStatus: hosted.status,
+    hostedError: hosted.error,
+    files: state.files,
+    resourceCount: state.resources.length,
+    leaseCount: leaseIds.length,
+    statePath: getCollaborationStatePath(rootDir),
+    recordedAt: now,
+  };
 }
 
 export async function collaborationGuardCommand(
@@ -592,9 +763,12 @@ export async function collaborationGuardCommand(
     ackReviewOnly: Boolean(options.ackReviewOnly),
     reviewOnlyAcknowledged,
   });
-  const guardFailed =
-    hosted.status !== "ok" ||
-    shouldFailGuard(evaluation, Boolean(options.enforce), Boolean(options.ackReviewOnly));
+  const guardFailed = shouldFailCollaborationGuard({
+    hostedStatus: hosted.status,
+    evaluation,
+    enforce: Boolean(options.enforce),
+    ackReviewOnly: Boolean(options.ackReviewOnly),
+  });
 
   if (guardFailed) {
     process.exitCode = 2;
@@ -614,7 +788,8 @@ export async function collaborationGuardCommand(
         failed: guardFailed,
       },
     },
-    options.json
+    options.json,
+    options.verbose
   );
 }
 
@@ -1284,6 +1459,9 @@ function deriveGuardProfileResources(
   files: string[]
 ): CollaborationResource[] {
   const resources: CollaborationResource[] = [];
+  if (profile === "pre-commit" || profile === "pre-push") {
+    resources.push(CHECKOUT_GIT_WRITE_RESOURCE);
+  }
   if (profile === "pre-deploy") {
     resources.push(
       { kind: "DEPLOY", id: "production-deployment", label: "Production deployment" },
@@ -1558,14 +1736,22 @@ function buildCollaborationGitHookBlock(hookName: "pre-commit" | "pre-push"): st
   const profile = hookName === "pre-push" ? "pre-push" : "pre-commit";
   return [
     collaborationHookBlockMarker(hookName, "start"),
-    "# Block unsafe parallel edits before code leaves the local worktree.",
+    "# Atomically claim checkout git writes, then block unsafe parallel edits.",
     'if [ "${SNIPARA_COLLABORATION_GUARD:-1}" = "0" ]; then',
     '  echo "Snipara collaboration guard bypassed by SNIPARA_COLLABORATION_GUARD=0" >&2',
-    "elif command -v snipara-companion >/dev/null 2>&1; then",
-    `  snipara-companion collaboration guard --profile ${profile} --action ${profile} --enforce --json >/dev/null`,
     "else",
-    '  echo "snipara-companion is required for the Snipara collaboration guard. Install it or set SNIPARA_COLLABORATION_GUARD=0 for an explicit emergency bypass." >&2',
-    "  exit 1",
+    "  snipara_companion_hook() {",
+    '    if [ -f "packages/cli/src/index.ts" ] && command -v pnpm >/dev/null 2>&1; then',
+    '      pnpm --filter snipara-companion exec tsx src/index.ts "$@"',
+    "    elif command -v snipara-companion >/dev/null 2>&1; then",
+    '      snipara-companion "$@"',
+    "    else",
+    '      echo "snipara-companion is required for the Snipara collaboration guard. Install it or set SNIPARA_COLLABORATION_GUARD=0 for an explicit emergency bypass." >&2',
+    "      return 127",
+    "    fi",
+    "  }",
+    `  snipara_companion_hook collaboration claim --resource SURFACE:checkout-git-write --mode EXCLUSIVE --ttl-seconds 300 --reason "${profile} git write" --json >/dev/null || true`,
+    `  snipara_companion_hook collaboration guard --profile ${profile} --action ${profile} --resource SURFACE:checkout-git-write --enforce --json >/dev/null`,
     "fi",
     collaborationHookBlockMarker(hookName, "end"),
   ].join("\n");
@@ -1647,9 +1833,60 @@ function mergeLocalLeaseState(
       reason: lease.reason ?? undefined,
       claimedAt: lease.claimedAt,
       expiresAt: lease.expiresAt,
+      workSessionId: lease.workSessionId ?? state.workSessionId,
     });
   }
   state.leases = Array.from(byId.values()).sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function mergeLocalFallbackLeaseState(
+  state: CollaborationLocalState,
+  input: {
+    workSessionId: string;
+    mode: CollaborationLeaseMode;
+    reason?: string;
+    resources: CollaborationResource[];
+    ttlSeconds: number;
+    now: string;
+  }
+): void {
+  const expiresAt = new Date(new Date(input.now).getTime() + input.ttlSeconds * 1000).toISOString();
+  const leases = input.resources.map<CollaborationLocalLeaseRecord>((resource) => ({
+    id: `local:${input.workSessionId}:${localResourceKey(resource)}`,
+    mode: input.mode,
+    status: "ACTIVE",
+    resources: [resource],
+    reason: input.reason,
+    claimedAt: input.now,
+    expiresAt,
+    workSessionId: input.workSessionId,
+  }));
+  const byId = new Map(state.leases.map((lease) => [lease.id, lease]));
+  for (const lease of leases) {
+    byId.set(lease.id, lease);
+  }
+  state.leases = Array.from(byId.values()).sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function expireLocalLeases(state: CollaborationLocalState, now = new Date()): void {
+  let changed = false;
+  for (const lease of state.leases) {
+    if (lease.status !== "ACTIVE" || !lease.expiresAt) {
+      continue;
+    }
+    const expiresAt = new Date(lease.expiresAt).getTime();
+    if (Number.isFinite(expiresAt) && expiresAt <= now.getTime()) {
+      lease.status = "EXPIRED";
+      changed = true;
+    }
+  }
+  if (changed) {
+    state.updatedAt = now.toISOString();
+  }
+}
+
+function workflowWorkSessionId(workflowId: string): string {
+  return `workflow:${workflowId}`;
 }
 
 function localResourceKey(resource: CollaborationResource): string {
@@ -1674,7 +1911,11 @@ function resolveReleaseLeaseIds(
   throw new Error("No collaboration lease id provided and no active local lease was found");
 }
 
-function printCollaborationResult(payload: Record<string, unknown>, json?: boolean): void {
+function printCollaborationResult(
+  payload: Record<string, unknown>,
+  json?: boolean,
+  verbose?: boolean
+): void {
   if (json) {
     console.log(JSON.stringify(payload, null, 2));
     return;
@@ -1691,6 +1932,11 @@ function printCollaborationResult(payload: Record<string, unknown>, json?: boole
         | Array<{ lease: CollaborationLeaseSummary }>
       >
     | undefined;
+
+  if (!verbose && action === "guard" && isQuietCollaborationGuardSuccess(payload, hosted)) {
+    console.log("Collaboration guard: go");
+    return;
+  }
 
   console.log(getCollaborationHeading(action));
   console.log(`State: ${payload.statePath}`);
@@ -1719,6 +1965,29 @@ function printCollaborationResult(payload: Record<string, unknown>, json?: boole
     printGuardEnforcementSummary(payload);
     printGuardActionCards(payload.actionCards as CollaborationGuardActionCard[] | undefined);
   }
+}
+
+function isQuietCollaborationGuardSuccess(
+  payload: Record<string, unknown>,
+  hosted:
+    | HostedAttempt<
+        | CollaborationSessionResponse
+        | CollaborationLeaseResponse
+        | CollaborationGuardResponse
+        | CollaborationStateResponse
+        | Array<{ lease: CollaborationLeaseSummary }>
+      >
+    | undefined
+): boolean {
+  const guard = hosted?.status === "ok" ? (hosted.data as CollaborationGuardResponse) : undefined;
+  if (!guard || guard.evaluation.decision !== "CLEAR") {
+    return false;
+  }
+  if (guard.evaluation.conflicts.length > 0 || guard.evaluation.recommendedActions.length > 0) {
+    return false;
+  }
+  const actionCards = payload.actionCards as CollaborationGuardActionCard[] | undefined;
+  return !actionCards || actionCards.length === 0;
 }
 
 function printHostedCollaboration(
@@ -2012,6 +2281,19 @@ function ensureFilesOrResources(
   }
 }
 
+export function shouldFailCollaborationGuard(input: {
+  hostedStatus: HostedAttempt<unknown>["status"];
+  evaluation: CollaborationGuardEvaluation | undefined;
+  enforce: boolean;
+  ackReviewOnly: boolean;
+}): boolean {
+  if (input.hostedStatus !== "ok") {
+    return false;
+  }
+
+  return shouldFailGuard(input.evaluation, input.enforce, input.ackReviewOnly);
+}
+
 function shouldFailGuard(
   evaluation: CollaborationGuardEvaluation | undefined,
   enforce: boolean,
@@ -2181,11 +2463,15 @@ function normalizeLocalLeases(value: unknown): CollaborationLocalLeaseRecord[] {
       };
       const reason = normalizeOptionalString(parsed.reason);
       const claimedAt = normalizeOptionalString(parsed.claimedAt);
+      const workSessionId = normalizeOptionalString(parsed.workSessionId);
       if (reason) {
         lease.reason = reason;
       }
       if (claimedAt) {
         lease.claimedAt = claimedAt;
+      }
+      if (workSessionId) {
+        lease.workSessionId = workSessionId;
       }
       return lease;
     })

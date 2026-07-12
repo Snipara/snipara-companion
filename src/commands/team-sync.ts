@@ -30,6 +30,7 @@ import {
   writeOrchestratorHandoff,
   type WrittenOrchestratorHandoff,
 } from "../runtime/orchestrator-handoff";
+import { appendActivityEvent, writeSessionSnapshot } from "./activity";
 import { appendJournalCheckpoint, type JournalWriteResult } from "./journal";
 
 export const TEAM_SYNC_STATE_RELATIVE_PATH = path.join(".snipara", "team-sync", "session.json");
@@ -91,11 +92,31 @@ export interface TeamSyncSummary {
   archivedWorkCount: number;
   handoffCount: number;
   files: string[];
+  staleWorkExplanation: TeamSyncStaleWorkExplanation;
+  hygieneActions: TeamSyncHygieneAction[];
   latestActiveWork?: TeamSyncWorkRecord;
   latestStaleWork?: TeamSyncWorkRecord;
   latestCompletedWork?: TeamSyncWorkRecord;
   latestArchivedWork?: TeamSyncWorkRecord;
   latestHandoff?: TeamSyncHandoffRecord;
+}
+
+export interface TeamSyncStaleWorkExplanation {
+  staleAfterHours: number;
+  autoArchiveAfterDays: number;
+  activeStaleCount: number;
+  autoArchivableCount: number;
+  completedIgnoredCount: number;
+  archivedIgnoredCount: number;
+  latestStaleWorkAgeHours?: number;
+  message: string;
+}
+
+export interface TeamSyncHygieneAction {
+  kind: "sweep-preview" | "sweep-archive" | "complete-work" | "handoff";
+  command: string;
+  reason: string;
+  mutates: boolean;
 }
 
 interface TeamSyncCommandOptions {
@@ -163,6 +184,18 @@ interface TeamSyncHandoffPayload {
   orchestratorHandoff: WrittenOrchestratorHandoff | null;
 }
 
+export interface TeamSyncStartWorkPayload {
+  action: "start-work";
+  record: TeamSyncWorkRecord;
+  journal: JournalWriteResult;
+  statePath: string;
+  summary: TeamSyncSummary;
+  hosted: HostedAttempt<TeamSyncWorkBriefResponse>;
+  startWorkBriefStatus: StartWorkBriefStatus;
+  orchestratorRecommendation: OrchestratorRecommendation | null;
+  orchestratorHandoff: WrittenOrchestratorHandoff | null;
+}
+
 export interface TeamSyncSweepResult {
   action: "sweep";
   statePath: string;
@@ -171,7 +204,16 @@ export interface TeamSyncSweepResult {
   thresholdMs: number;
   archivedCount: number;
   archivedWork: TeamSyncWorkRecord[];
+  explanation: TeamSyncSweepExplanation;
   summary: TeamSyncSummary;
+}
+
+export interface TeamSyncSweepExplanation {
+  mode: "preview" | "archive";
+  candidateCount: number;
+  archivedCount: number;
+  remainingStaleCount: number;
+  message: string;
 }
 
 export type AgenticHandoffAdapterTarget =
@@ -194,7 +236,9 @@ export interface AgenticHandoffAdapterPack {
   target: {
     id: AgenticHandoffAdapterTarget;
     label: string;
+    profile: string;
     instruction: string;
+    runtimeControl: "handoff_only";
   };
   contextPack: {
     summary: string;
@@ -319,6 +363,14 @@ export function buildTeamSyncSummary(
     }
   }
 
+  const staleWorkExplanation = buildStaleWorkExplanation(
+    work,
+    staleWork,
+    completedWork,
+    archivedWork,
+    now
+  );
+
   return {
     activeWorkCount: activeWork.length,
     staleWorkCount: staleWork.length,
@@ -326,11 +378,94 @@ export function buildTeamSyncSummary(
     archivedWorkCount: archivedWork.length,
     handoffCount: handoffs.length,
     files: Array.from(files).sort(),
+    staleWorkExplanation,
+    hygieneActions: buildTeamSyncHygieneActions(staleWork, staleWorkExplanation),
     latestActiveWork: activeWork[activeWork.length - 1],
     latestStaleWork: staleWork[staleWork.length - 1],
     latestCompletedWork: completedWork[completedWork.length - 1],
     latestArchivedWork: archivedWork[archivedWork.length - 1],
     latestHandoff: handoffs[handoffs.length - 1],
+  };
+}
+
+function buildTeamSyncHygieneActions(
+  staleWork: TeamSyncWorkRecord[],
+  explanation: TeamSyncStaleWorkExplanation
+): TeamSyncHygieneAction[] {
+  if (staleWork.length === 0) {
+    return [];
+  }
+
+  const actions: TeamSyncHygieneAction[] = [];
+  if (explanation.autoArchivableCount > 0) {
+    actions.push({
+      kind: "sweep-preview",
+      command: `snipara-companion team-sync sweep --days ${explanation.autoArchiveAfterDays} --dry-run`,
+      reason: `${explanation.autoArchivableCount} stale active item(s) are old enough to archive.`,
+      mutates: false,
+    });
+    actions.push({
+      kind: "sweep-archive",
+      command: `snipara-companion team-sync sweep --days ${explanation.autoArchiveAfterDays}`,
+      reason: "Archive stale local Team Sync work without deleting history.",
+      mutates: true,
+    });
+  }
+
+  const latest = staleWork[staleWork.length - 1];
+  if (latest) {
+    actions.push({
+      kind: "complete-work",
+      command: `snipara-companion team-sync complete-work --id ${latest.id} --next '<completion reason>'`,
+      reason: "Close the latest stale item if the work is actually done.",
+      mutates: true,
+    });
+    actions.push({
+      kind: "handoff",
+      command:
+        "snipara-companion team-sync handoff --summary '<current state>' --next '<next action>' --attention watch",
+      reason: "Refresh continuity if the stale work is still active.",
+      mutates: true,
+    });
+  }
+
+  return actions;
+}
+
+function buildStaleWorkExplanation(
+  work: TeamSyncWorkRecord[],
+  staleWork: TeamSyncWorkRecord[],
+  completedWork: TeamSyncWorkRecord[],
+  archivedWork: TeamSyncWorkRecord[],
+  now: Date
+): TeamSyncStaleWorkExplanation {
+  const autoArchivableCount = work.filter(
+    (item) =>
+      item.status === "active" &&
+      now.getTime() - getWorkTimestamp(item) > TEAM_SYNC_AUTO_ARCHIVE_WORK_MS
+  ).length;
+  const latestStaleWork = staleWork[staleWork.length - 1];
+  const latestStaleWorkAgeHours = latestStaleWork
+    ? Math.floor((now.getTime() - getWorkTimestamp(latestStaleWork)) / (60 * 60 * 1000))
+    : undefined;
+  const staleAfterHours = Math.round(TEAM_SYNC_STALE_WORK_MS / (60 * 60 * 1000));
+  const autoArchiveAfterDays = Math.round(TEAM_SYNC_AUTO_ARCHIVE_WORK_MS / (24 * 60 * 60 * 1000));
+  let message = "No active Team Sync work is stale.";
+  if (staleWork.length > 0 && autoArchivableCount > 0) {
+    message = `${staleWork.length} active item(s) are stale; ${autoArchivableCount} are eligible for team-sync sweep auto-archive.`;
+  } else if (staleWork.length > 0) {
+    message = `${staleWork.length} active item(s) are stale after ${staleAfterHours}h but not old enough for ${autoArchiveAfterDays}d sweep auto-archive. Complete, hand off, or leave them active intentionally.`;
+  }
+
+  return {
+    staleAfterHours,
+    autoArchiveAfterDays,
+    activeStaleCount: staleWork.length,
+    autoArchivableCount,
+    completedIgnoredCount: completedWork.length,
+    archivedIgnoredCount: archivedWork.length,
+    ...(latestStaleWorkAgeHours !== undefined ? { latestStaleWorkAgeHours } : {}),
+    message,
   };
 }
 
@@ -370,11 +505,16 @@ export function completeTeamSyncWorkFromEvidence(
   const workflowGoalText = normalizeCompletionText(options.workflowGoal);
   const summaryText = normalizeCompletionText(options.summary);
   const evidenceFiles = normalizeFiles(options.files);
-  const candidates = state.work.filter(
-    (item) =>
-      item.status === "active" &&
-      matchesCompletionEvidence(item, { workflowGoalText, summaryText, files: evidenceFiles })
+  const activeCandidates = state.work.filter((item) => item.status === "active");
+  const directCandidates = activeCandidates.filter((item) =>
+    matchesDirectCompletionEvidence(item, { workflowGoalText, summaryText })
   );
+  const candidates =
+    directCandidates.length > 0
+      ? directCandidates
+      : activeCandidates.filter((item) =>
+          matchesCompletionEvidence(item, { workflowGoalText, summaryText, files: evidenceFiles })
+        );
 
   if (!options.dryRun) {
     for (const item of candidates) {
@@ -441,8 +581,10 @@ export function getTeamSyncStatePath(rootDir = process.cwd()): string {
   return path.join(rootDir, TEAM_SYNC_STATE_RELATIVE_PATH);
 }
 
-export async function teamSyncStartWorkCommand(options: TeamSyncCommandOptions): Promise<void> {
-  const rootDir = resolveRootDir(options.dir);
+export async function createTeamSyncStartWorkPayload(
+  rootDir: string,
+  options: TeamSyncCommandOptions
+): Promise<TeamSyncStartWorkPayload> {
   const state = loadTeamSyncState(rootDir);
   archiveInactiveTeamSyncWork(state);
   const branch =
@@ -499,21 +641,41 @@ export async function teamSyncStartWorkCommand(options: TeamSyncCommandOptions):
     files: record.files,
     cwd: rootDir,
   });
-
-  printTeamSyncResult(
-    {
-      action: "start-work",
-      record,
-      journal,
-      statePath: getTeamSyncStatePath(rootDir),
-      summary,
-      hosted,
-      startWorkBriefStatus,
-      orchestratorRecommendation,
-      orchestratorHandoff,
+  appendActivityEvent({
+    cwd: rootDir,
+    source: "team-sync",
+    kind: "team-sync-start",
+    title: record.summary,
+    actor: record.actor,
+    files: record.files,
+    refs: [record.id],
+    timestamp: record.createdAt,
+    metadata: {
+      branch: record.branch,
+      hostedStatus: hosted.status,
+      journalStatus: journal.status,
+      orchestratorHandoffPath: orchestratorHandoff?.relativePath,
     },
-    options.json
-  );
+  });
+  writeSessionSnapshot({ cwd: rootDir });
+
+  return {
+    action: "start-work",
+    record,
+    journal,
+    statePath: getTeamSyncStatePath(rootDir),
+    summary,
+    hosted,
+    startWorkBriefStatus,
+    orchestratorRecommendation,
+    orchestratorHandoff,
+  };
+}
+
+export async function teamSyncStartWorkCommand(options: TeamSyncCommandOptions): Promise<void> {
+  const rootDir = resolveRootDir(options.dir);
+  const payload = await createTeamSyncStartWorkPayload(rootDir, options);
+  printTeamSyncResult(payload as unknown as Record<string, unknown>, options.json);
 }
 
 export async function teamSyncHandoffCommand(options: TeamSyncCommandOptions): Promise<void> {
@@ -588,6 +750,24 @@ async function createTeamSyncHandoffPayload(
     files: record.files,
     cwd: rootDir,
   });
+  appendActivityEvent({
+    cwd: rootDir,
+    source: "team-sync",
+    kind: "team-sync-handoff",
+    title: record.summary,
+    summary: record.next,
+    actor: record.actor,
+    files: record.files,
+    refs: [record.id],
+    timestamp: record.createdAt,
+    metadata: {
+      attention: record.attention,
+      hostedStatus: hosted.status,
+      journalStatus: journal.status,
+      orchestratorHandoffPath: orchestratorHandoff?.relativePath,
+    },
+  });
+  writeSessionSnapshot({ cwd: rootDir });
 
   return {
     action: "handoff",
@@ -672,33 +852,46 @@ function hostedHandoffTests(hosted: HostedAttempt<TeamSyncHandoffResponse>): str
   return hosted.status === "ok" ? (hosted.data?.handoff.tests ?? []) : [];
 }
 
-const ADAPTER_TARGETS: Record<AgenticHandoffAdapterTarget, { label: string; instruction: string }> =
-  {
-    codex: {
-      label: "Codex",
-      instruction: "Use Hosted MCP and AGENTS.md first; keep companion phase state visible.",
-    },
-    "claude-code": {
-      label: "Claude Code",
-      instruction: "Use generated/local instructions and return proof through companion handoff.",
-    },
-    cursor: {
-      label: "Cursor",
-      instruction: "Carry the context pack into the IDE session and keep proof gates explicit.",
-    },
-    orca: {
-      label: "Orca",
-      instruction: "Use the portable MCP plus companion handoff path; do not assume native hooks.",
-    },
-    windsurf: {
-      label: "Windsurf",
-      instruction: "Use portable context, file scope, and proof gates around the IDE workflow.",
-    },
-    custom: {
-      label: "Custom worker",
-      instruction: "Require the receiving worker to echo the receipt fields before closure.",
-    },
-  };
+const ADAPTER_TARGETS: Record<
+  AgenticHandoffAdapterTarget,
+  { label: string; profile: string; instruction: string }
+> = {
+  codex: {
+    label: "Codex",
+    profile: "Hosted MCP-aware coding agent",
+    instruction:
+      "Use Hosted MCP and AGENTS.md first; keep companion phase state visible and return the canonical proof receipt.",
+  },
+  "claude-code": {
+    label: "Claude Code",
+    profile: "CLI coding agent with generated local instructions",
+    instruction:
+      "Use generated/local instructions and return proof through companion handoff using the canonical receipt fields.",
+  },
+  cursor: {
+    label: "Cursor",
+    profile: "IDE coding assistant with project-rule context handoff",
+    instruction:
+      "Carry the context pack into the IDE session, respect the file scope, and keep proof gates explicit.",
+  },
+  orca: {
+    label: "Orca",
+    profile: "External ADE worker using portable MCP and receipt echo",
+    instruction:
+      "Use the portable MCP plus companion handoff path, echo the receipt fields, and do not assume native hooks.",
+  },
+  windsurf: {
+    label: "Windsurf",
+    profile: "IDE coding assistant with portable context and proof gates",
+    instruction:
+      "Use portable context, file scope, and proof gates around the IDE workflow; return evidence through companion handoff.",
+  },
+  custom: {
+    label: "Custom worker",
+    profile: "Explicit external worker contract",
+    instruction: "Require the receiving worker to echo the receipt fields before closure.",
+  },
+};
 
 function normalizeAdapterTarget(value: string | undefined): AgenticHandoffAdapterTarget {
   const normalized = (value ?? "codex").trim().toLowerCase();
@@ -712,14 +905,7 @@ function normalizeAdapterTarget(value: string | undefined): AgenticHandoffAdapte
 }
 
 function normalizeAdapterValues(values: string[] | undefined): string[] {
-  return [
-    ...new Set(
-      (values ?? [])
-        .flatMap((value) => value.split(","))
-        .map((value) => value.trim())
-        .filter(Boolean)
-    ),
-  ];
+  return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))];
 }
 
 function normalizeConflictPosture(
@@ -783,7 +969,8 @@ function buildAdapterPrompt(input: {
     input.acceptanceCriteria.length > 0
       ? `Acceptance criteria: ${input.acceptanceCriteria.join("; ")}`
       : "Acceptance criteria: use the next step and handoff summary as the minimum contract.",
-    "Return a companion handoff receipt with files changed, commands run, proof evidence, blockers, and next action.",
+    "Return a companion handoff receipt with files changed, commands run, proof evidence, blockers, next action, and proofVerification status.",
+    "Treat proof evidence as unverified until Snipara validates a source-backed proofVerification.status=verified receipt.",
   ].join("\n");
 }
 
@@ -832,7 +1019,9 @@ function buildAgenticHandoffAdapterPack(input: {
     target: {
       id: targetId,
       label: target.label,
+      profile: target.profile,
       instruction: target.instruction,
+      runtimeControl: "handoff_only",
     },
     contextPack: {
       summary: input.payload.record.summary,
@@ -843,7 +1032,7 @@ function buildAgenticHandoffAdapterPack(input: {
       constraints: [
         "Use this artifact as a work contract, not as approval to expand scope silently.",
         "Keep secrets out of handoff receipts and proof notes.",
-        "Do not close the task until proof gates are addressed or an explicit waiver is recorded.",
+        "Do not close the task until proof gates are addressed and proofVerification.status is verified or an explicit waiver is recorded.",
         input.gitStatus.length > 0
           ? `${input.gitStatus.length} dirty git file(s) existed when this pack was generated.`
           : "No dirty git file count was added to the adapter constraints.",
@@ -860,6 +1049,8 @@ function buildAgenticHandoffAdapterPack(input: {
         "filesChanged",
         "commandsRun",
         "proofEvidence",
+        "proofVerificationStatus",
+        "proofSource",
         "blockers",
         "nextAction",
       ],
@@ -873,8 +1064,9 @@ function buildAgenticHandoffAdapterPack(input: {
     }),
     caveats: [
       "ADE Adapter Pack V1 is a portable contract; it does not control the target client runtime.",
+      "All adapter targets share the same receipt contract; target-specific native hooks or IDE automation are separate setup steps.",
       "Native hooks or IDE-specific automation must be installed separately when they exist.",
-      "The receiving agent must return a receipt before Snipara can treat the work as verified.",
+      "The receiving agent can provide proof evidence, but Snipara must validate the source before treating proof as verified.",
     ],
   };
 }
@@ -1185,6 +1377,22 @@ export async function teamSyncCompleteWorkCommand(options: TeamSyncCommandOption
     files: record.files,
     cwd: rootDir,
   });
+  appendActivityEvent({
+    cwd: rootDir,
+    source: "team-sync",
+    kind: "team-sync-complete",
+    title: record.summary,
+    summary: record.completionReason,
+    actor: record.actor,
+    outcome: "completed",
+    files: record.files,
+    refs: [record.id],
+    timestamp: record.completedAt,
+    metadata: {
+      journalStatus: journal.status,
+    },
+  });
+  writeSessionSnapshot({ cwd: rootDir });
 
   printTeamSyncResult(
     {
@@ -1269,6 +1477,12 @@ export async function teamSyncSweepCommand(options: TeamSyncCommandOptions): Pro
     saveTeamSyncState(state, rootDir);
   }
   const summary = buildTeamSyncSummary(state);
+  const explanation = buildTeamSyncSweepExplanation({
+    dryRun: Boolean(options.dryRun),
+    thresholdDays,
+    archivedWork,
+    summary,
+  });
   const payload: TeamSyncSweepResult = {
     action: "sweep",
     statePath: getTeamSyncStatePath(rootDir),
@@ -1277,10 +1491,39 @@ export async function teamSyncSweepCommand(options: TeamSyncCommandOptions): Pro
     thresholdMs,
     archivedCount: archivedWork.length,
     archivedWork,
+    explanation,
     summary,
   };
 
   printTeamSyncSweepResult(payload, options.json);
+}
+
+function buildTeamSyncSweepExplanation(input: {
+  dryRun: boolean;
+  thresholdDays: number;
+  archivedWork: TeamSyncWorkRecord[];
+  summary: TeamSyncSummary;
+}): TeamSyncSweepExplanation {
+  const candidateCount = input.archivedWork.length;
+  const remainingStaleCount = input.dryRun
+    ? Math.max(input.summary.staleWorkCount - candidateCount, 0)
+    : input.summary.staleWorkCount;
+  let message = input.dryRun ? "Dry-run only: no Team Sync work was archived." : "Sweep completed.";
+  if (candidateCount > 0) {
+    message = input.dryRun
+      ? `${candidateCount} active stale item(s) would be archived because they have no update for ${input.thresholdDays} day(s); ${remainingStaleCount} stale item(s) would remain active.`
+      : `${candidateCount} active stale item(s) were archived; ${remainingStaleCount} stale item(s) remain active.`;
+  } else if (input.summary.staleWorkCount > 0) {
+    message = `${input.summary.staleWorkCount} active stale item(s) remain, but none reached the ${input.thresholdDays} day archive threshold.`;
+  }
+
+  return {
+    mode: input.dryRun ? "preview" : "archive",
+    candidateCount,
+    archivedCount: input.dryRun ? 0 : candidateCount,
+    remainingStaleCount,
+    message,
+  };
 }
 
 function printTeamSyncResult(payload: Record<string, unknown>, json?: boolean): void {
@@ -1298,6 +1541,16 @@ function printTeamSyncResult(payload: Record<string, unknown>, json?: boolean): 
   console.log(`Completed work: ${summary.completedWorkCount}`);
   console.log(`Archived work: ${summary.archivedWorkCount}`);
   console.log(`Handoffs: ${summary.handoffCount}`);
+  if (summary.staleWorkCount > 0) {
+    console.log(`Stale detail: ${summary.staleWorkExplanation.message}`);
+  }
+
+  if (summary.hygieneActions.length > 0) {
+    console.log("Hygiene actions:");
+    for (const action of summary.hygieneActions.slice(0, 4)) {
+      console.log(`- ${action.command} (${action.reason})`);
+    }
+  }
 
   if (summary.files.length > 0) {
     console.log(`Files: ${summary.files.slice(0, 8).join(", ")}`);
@@ -1404,6 +1657,7 @@ function printTeamSyncSweepResult(payload: TeamSyncSweepResult, json?: boolean):
     );
   }
   console.log(`Remaining stale work: ${payload.summary.staleWorkCount}`);
+  console.log(`Sweep detail: ${payload.explanation.message}`);
 }
 
 function printHostedWorkBrief(brief: TeamSyncWorkBriefResponse["brief"]): void {
@@ -1909,6 +2163,29 @@ function matchesCompletionEvidence(
   item: TeamSyncWorkRecord,
   evidence: { workflowGoalText?: string; summaryText?: string; files: string[] }
 ): boolean {
+  if (matchesDirectCompletionEvidence(item, evidence)) {
+    return true;
+  }
+
+  const itemText = normalizeCompletionText(item.summary);
+  if (!itemText) {
+    return false;
+  }
+
+  const evidenceTexts = [evidence.workflowGoalText, evidence.summaryText].filter(
+    (value): value is string => Boolean(value)
+  );
+  if (!teamSyncFilesOverlap(item.files, evidence.files)) {
+    return false;
+  }
+
+  return evidenceTexts.some((text) => significantTokenOverlap(itemText, text));
+}
+
+function matchesDirectCompletionEvidence(
+  item: TeamSyncWorkRecord,
+  evidence: { workflowGoalText?: string; summaryText?: string }
+): boolean {
   const itemText = normalizeCompletionText(item.summary);
   if (!itemText) {
     return false;
@@ -1920,15 +2197,7 @@ function matchesCompletionEvidence(
   if (evidenceTexts.some((text) => completionTextsMatch(itemText, text))) {
     return true;
   }
-
-  if (evidence.workflowGoalText) {
-    return false;
-  }
-  if (!teamSyncFilesOverlap(item.files, evidence.files)) {
-    return false;
-  }
-
-  return Boolean(evidence.summaryText && significantTokenOverlap(itemText, evidence.summaryText));
+  return false;
 }
 
 function normalizeCompletionText(value: string | undefined): string | undefined {

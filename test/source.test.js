@@ -7,6 +7,7 @@ const { spawnSync } = require("node:child_process");
 
 const {
   buildLocalSourceSnapshot,
+  buildLocalSourceSyncResult,
   buildLocalSourceStatus,
   compareLocalSourceSnapshots,
   getLocalCodeOverlayCachePath,
@@ -74,6 +75,10 @@ test("buildLocalSourceSnapshot classifies docs, code, config, and ignores depend
   assert.equal(snapshot.summary.byKind.CONFIG, 1);
   assert.equal(snapshot.summary.byKind.BINARY, 0);
   assert.ok(!snapshot.files.some((file) => file.path.includes("node_modules")));
+  assert.deepEqual(
+    snapshot.files.map((file) => file.path),
+    snapshot.files.map((file) => file.path).sort()
+  );
 });
 
 test("buildLocalSourceStatus compares current folder to cached snapshot", () => {
@@ -108,6 +113,42 @@ test("compareLocalSourceSnapshots treats first snapshot as all added", () => {
   assert.equal(comparison.unchanged, 0);
 });
 
+test("readLocalSourceSnapshot rejects structurally invalid cached snapshots", () => {
+  const dir = makeLocalSourceFolder();
+  fs.mkdirSync(path.dirname(getLocalSourceSnapshotPath(dir)), { recursive: true });
+  fs.writeFileSync(
+    getLocalSourceSnapshotPath(dir),
+    JSON.stringify({ version: "snipara.local_source_snapshot.v1", files: null }),
+    "utf8"
+  );
+
+  assert.equal(readLocalSourceSnapshot(dir), null);
+  const status = buildLocalSourceStatus({ dir });
+  assert.equal(status.previous, null);
+  assert.equal(status.comparison.added.length, status.current.files.length);
+});
+
+test("buildLocalSourceSyncResult reports delta against previous cached snapshot", async () => {
+  const dir = makeLocalSourceFolder();
+  const before = buildLocalSourceSnapshot({ dir });
+  fs.mkdirSync(path.dirname(getLocalSourceSnapshotPath(dir)), { recursive: true });
+  fs.writeFileSync(getLocalSourceSnapshotPath(dir), `${JSON.stringify(before, null, 2)}\n`, "utf8");
+
+  fs.appendFileSync(path.join(dir, "docs", "spec.md"), "\nupdated\n", "utf8");
+  fs.writeFileSync(path.join(dir, "docs", "new.md"), "# New\n", "utf8");
+  fs.unlinkSync(path.join(dir, "README.md"));
+
+  const result = await buildLocalSourceSyncResult({ dir });
+
+  assert.deepEqual(result.comparison.added, ["docs/new.md"]);
+  assert.deepEqual(result.comparison.modified, ["docs/spec.md"]);
+  assert.deepEqual(result.comparison.deleted, ["README.md"]);
+  assert.equal(
+    result.comparison.unchanged,
+    before.files.length - result.comparison.modified.length - result.comparison.deleted.length
+  );
+});
+
 test("source sync writes local source and code overlay caches without hosted config", () => {
   const dir = makeLocalSourceFolder();
 
@@ -126,6 +167,15 @@ test("source sync writes local source and code overlay caches without hosted con
 
   const cached = readLocalSourceSnapshot(dir);
   assert.equal(cached.revision, payload.snapshot.revision);
+});
+
+test("source commands reject invalid positive integer options", () => {
+  const dir = makeLocalSourceFolder();
+
+  const result = runCli(["source", "snapshot", "--max-files", "0", "--json"], { cwd: dir });
+
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stderr}\n${result.stdout}`, /--max-files must be a positive integer/);
 });
 
 test("source watch --once performs a single sync cycle", () => {

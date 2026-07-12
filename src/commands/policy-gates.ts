@@ -1,4 +1,13 @@
 import type { ProjectIntelligenceJudgmentCard } from "./judgment-card";
+import type {
+  ProjectPolicyDecision,
+  ProjectPolicyRule,
+  ProjectPolicyRuleScope,
+} from "../contracts/project-intelligence";
+import {
+  evaluateProjectPolicyDecision,
+  projectPolicyVerdictToGateSeverity,
+} from "../contracts/project-intelligence";
 
 export type ProjectPolicyGateSeverity = "advisory" | "required_action" | "block";
 export type ProjectPolicyGateSurface =
@@ -7,7 +16,8 @@ export type ProjectPolicyGateSurface =
   | "auth"
   | "billing"
   | "deploy"
-  | "package_surface";
+  | "package_surface"
+  | "project_policy";
 export type ProjectPolicyGateSampleMode =
   | "not_applicable"
   | "structural"
@@ -58,6 +68,7 @@ export interface ProjectPolicyGatesResult {
   release: boolean;
   summary: ProjectPolicyGatesSummary;
   gates: ProjectPolicyGateDecision[];
+  projectPolicyDecision?: ProjectPolicyDecision;
   suggestedCommands: string[];
 }
 
@@ -80,6 +91,10 @@ export interface EvaluateProjectPolicyGatesInput {
     command?: string;
   };
   judgmentCard?: ProjectIntelligenceJudgmentCard;
+  projectPolicy?: {
+    rules?: ProjectPolicyRule[];
+    decision?: ProjectPolicyDecision;
+  };
 }
 
 const REGISTRY_VERSION = "project-intelligence.policy-gates.registry.v1" as const;
@@ -222,11 +237,68 @@ function packageReviewCommand(input: EvaluateProjectPolicyGatesInput): string {
   return input.packageReview?.command ?? "npm view snipara-companion version bin dist-tags --json";
 }
 
+function gateSurfaceFromPolicyScope(scope: ProjectPolicyRuleScope): ProjectPolicyGateSurface {
+  if (
+    scope === "release" ||
+    scope === "schema" ||
+    scope === "auth" ||
+    scope === "billing" ||
+    scope === "deploy" ||
+    scope === "package_surface"
+  ) {
+    return scope;
+  }
+  return "project_policy";
+}
+
 export function evaluateProjectPolicyGates(
   input: EvaluateProjectPolicyGatesInput
 ): ProjectPolicyGatesResult {
   const changedFiles = normalizeChangedFiles(input.changedFiles);
   const gates: ProjectPolicyGateDecision[] = [];
+  const projectPolicyDecision =
+    input.projectPolicy?.decision ??
+    (input.projectPolicy?.rules?.length
+      ? evaluateProjectPolicyDecision({
+          action: {
+            summary: [input.task, input.diffSummary].filter(Boolean).join("\n"),
+            changedFiles,
+          },
+          rules: input.projectPolicy.rules,
+        })
+      : undefined);
+
+  if (projectPolicyDecision && projectPolicyDecision.verdict !== "allow") {
+    const strongestRule = projectPolicyDecision.matchedRules[0];
+    gates.push(
+      gate({
+        id: "policy:project:decision-consistency",
+        surface: strongestRule ? gateSurfaceFromPolicyScope(strongestRule.scope) : "project_policy",
+        severity: projectPolicyVerdictToGateSeverity(projectPolicyDecision.verdict),
+        title: "Project Policy decision consistency",
+        rationale:
+          "Approved project policy and decision memories can require review or block when the proposed action contradicts high-confidence constraints.",
+        evidence: [
+          `verdict ${projectPolicyDecision.verdict}`,
+          `receipt ${projectPolicyDecision.receipt.receiptId}`,
+          ...projectPolicyDecision.matchedRules.map((rule) => `${rule.source.ref}: ${rule.title}`),
+        ],
+        requiredActions:
+          projectPolicyDecision.requiredActions.length > 0
+            ? projectPolicyDecision.requiredActions
+            : ["Review the matching project policy decision before proceeding."],
+        suggestedCommands:
+          projectPolicyDecision.verdict === "block"
+            ? ["snipara-companion decisions request --help"]
+            : ["snipara-companion memory reviews --emit-decisions"],
+        sampleGate: explicitContractSampleGate(
+          "Project Policy gates are driven by reviewed decisions and explicit receipts, not statistical outcome thresholds."
+        ),
+        source: "project_policy_decision",
+        reasonCodes: projectPolicyDecision.reasonCodes,
+      })
+    );
+  }
 
   if (input.release) {
     gates.push(
@@ -531,6 +603,7 @@ export function evaluateProjectPolicyGates(
     release: Boolean(input.release),
     summary,
     gates,
+    ...(projectPolicyDecision ? { projectPolicyDecision } : {}),
     suggestedCommands,
   };
 }

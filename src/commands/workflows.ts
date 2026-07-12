@@ -32,7 +32,6 @@ import {
   type SharedContextResult,
   type SessionMemoriesResult,
   type SessionMemoryEntry,
-  type SessionMemoryTier,
   type SyncDocumentInput,
   type TeamSyncResumeResponse,
 } from "../api/client";
@@ -58,20 +57,57 @@ import {
   buildLocalContextPackReceipts,
   type LocalContextPackReceiptPayload,
 } from "./events";
+import {
+  appendActivityEvent,
+  readActivityTimeline,
+  readSessionSnapshot,
+  writeSessionSnapshot,
+  type ActivityEventSource,
+  type SessionSnapshot,
+} from "./activity";
 import { appendJournalCheckpoint, type JournalWriteResult } from "./journal";
+import { buildCodingIntelligenceLedger, type CodingIntelligenceLedger } from "./coding-ledger";
 import { buildLocalImpactResult } from "./code";
+import {
+  DECISION_RESPONSE_VERSION,
+  buildDecisionRequest,
+  stableDecisionJsonStringify,
+  type DecisionRequest,
+} from "../contracts/project-intelligence";
+import {
+  decisionPendingCount,
+  listResolvedDecisionRecords,
+  listPendingDecisionRequests,
+  resolveDecisionRequest,
+  writeDecisionRequest,
+} from "./decision-requests";
+import { buildDecisionApplyReport, type DecisionApplyItem } from "./decision-apply";
 import { memoryGuardCheckCommand } from "./memory-guard";
+import {
+  workflowCollaborationRelease,
+  workflowCollaborationStart,
+  type WorkflowCollaborationReceipt,
+} from "./collaboration";
+import {
+  buildMemoryReviewConnector,
+  buildMemoryReviewDecisionRequest,
+  type MemoryReviewConnectorItem,
+} from "./memory";
 import {
   autoArchiveTeamSyncState,
   buildTeamSyncHandoffRecord,
   buildTeamSyncSummary,
   completeTeamSyncStateFromEvidence,
+  createTeamSyncStartWorkPayload,
   getTeamSyncStatePath,
   loadTeamSyncState,
   saveTeamSyncState,
   type TeamSyncHandoffRecord,
+  type TeamSyncSummary,
+  type TeamSyncStaleWorkExplanation,
   type TeamSyncWorkRecord,
 } from "./team-sync";
+import { resolveLocalWorkerRoutingDefaults, type LocalWorkerRoutingDefaults } from "./workers";
 
 const DEFAULT_SESSION_CONTEXT_TOKENS = 1000;
 const DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS = 2000;
@@ -79,14 +115,26 @@ const DEFAULT_SHARED_CONTEXT_TOKENS = 2000;
 const DEFAULT_WORKFLOW_RUN_TOKENS = 8000;
 const MIN_WORKFLOW_SURFACE_TOKENS = 200;
 const STALE_BOOTSTRAP_MEMORY_DAYS = 90;
+const PROJECT_PROFILE_CATEGORY = "tenant_profile";
+const OWNER_OPERATING_PROFILE_CATEGORY = "owner_operating_profile";
 const TASK_COMMIT_TIMEOUT_MS = 30_000;
 const FINAL_COMMIT_TIMEOUT_MS = 90_000;
+const COMPANION_CONTINUITY_CONTRACT_VERSION = "snipara.companion.continuity.v1";
 const FINAL_COMMIT_RETRY_TIMEOUT_MS = 45_000;
 const FINAL_COMMIT_SUMMARY_MAX_CHARS = 1_200;
 const FINAL_COMMIT_RETRY_SUMMARY_MAX_CHARS = 600;
 const DEFAULT_ADAPTIVE_ROUTING_CATALOG_LIMIT = 20;
 const DEFAULT_LOCAL_ORCHESTRATOR_TIMEOUT_MS = 8_000;
 const ADAPTIVE_ROUTING_POLICY_RELATIVE_PATH = path.join(".snipara", "adaptive-routing.json");
+const MEMORY_DECISION_PRODUCER_ACTIONS = new Set([
+  "accept",
+  "reject",
+  "archive",
+  "invalidate",
+  "merge",
+  "supersede",
+  "verify",
+]);
 const SHARED_CONTEXT_INTENT_PATTERN =
   /\b(standard|standards|convention|conventions|guideline|guidelines|best practice|best practices|policy|policies|compliance|compliant|security rules|team rules|style guide|playbook|checklist)\b/i;
 type SyncDocumentKind = "DOC" | "BINARY";
@@ -197,6 +245,175 @@ interface AdaptiveRoutingIntent {
 
 export const WORKFLOW_STATE_RELATIVE_PATH = path.join(".snipara", "workflow", "current.json");
 export const WORKFLOW_PLANS_RELATIVE_DIR = path.join(".snipara", "workflow", "plans");
+export const PRODUCER_LOOP_ARTIFACT_VERSION = "snipara.producer_loop_artifact.v0" as const;
+export const PRODUCER_LOOP_REPORT_VERSION = "snipara.producer_loop_report.v0" as const;
+export const PRODUCER_LOOP_RELATIVE_DIR = path.join(".snipara", "producer-loop");
+const PRODUCER_LOOP_MIN_REVIEW_SAMPLE_SIZE = 5;
+
+export type ProducerLoopProducerKind =
+  | "workflow_phase_commit"
+  | "workflow_final_commit"
+  | "pr_answer_pack_decision_capture";
+
+export type ProducerLoopCommand =
+  | "workflow phase-commit"
+  | "workflow final-commit"
+  | "github-pr-answer-pack decision-capture";
+
+export type ProducerLoopSampleReviewStatus =
+  | "sample_unreviewed"
+  | "sample_reviewed"
+  | "sample_rejected";
+
+export type ProducerLoopReviewOutcome =
+  | "useful"
+  | "false_positive"
+  | "missing_context"
+  | "unsafe"
+  | "duplicate"
+  | "other";
+
+export interface ProducerLoopArtifactReview {
+  status: Exclude<ProducerLoopSampleReviewStatus, "sample_unreviewed">;
+  reviewedAt: string;
+  reviewer?: string;
+  outcome?: ProducerLoopReviewOutcome;
+  notes: string[];
+}
+
+export interface ProducerLoopArtifact {
+  schemaVersion: typeof PRODUCER_LOOP_ARTIFACT_VERSION;
+  artifactId: string;
+  generatedAt: string;
+  producer: {
+    kind: ProducerLoopProducerKind;
+    command: ProducerLoopCommand;
+    workflowId?: string;
+    phaseId?: string;
+    phaseTitle?: string;
+    repository?: string;
+    pullNumber?: number;
+    sourceRef?: string;
+    category: string;
+    outcome?: TaskCommitOutcome | string;
+    files: string[];
+    candidateCount?: number;
+    createdDecisionCount?: number;
+    duplicateDecisionCount?: number;
+    failedDecisionCount?: number;
+  };
+  source: {
+    goal?: string;
+    summary: string;
+    status?: ManagedWorkflowStatus;
+    sourceRef?: string;
+  };
+  ledger: CodingIntelligenceLedger | Record<string, unknown>;
+  ledgerHash: string;
+  localEvidence: {
+    durableMemoryAttempted: boolean;
+    journalAttempted?: boolean;
+    teamSyncCompletionAttempted?: boolean;
+    decisionCaptureAttempted?: boolean;
+    serverSide?: boolean;
+  };
+  calibration: {
+    status: ProducerLoopSampleReviewStatus;
+    sampleSize: 1;
+    hardGateReady: false;
+    notes: string[];
+  };
+  review?: ProducerLoopArtifactReview;
+  caveats: string[];
+}
+
+export interface ProducerLoopArtifactWriteResult {
+  status: "written" | "error";
+  schemaVersion: typeof PRODUCER_LOOP_ARTIFACT_VERSION;
+  artifactId?: string;
+  path?: string;
+  relativePath?: string;
+  artifactHash?: string;
+  ledgerHash?: string;
+  error?: string;
+  caveats: string[];
+}
+
+export interface ProducerLoopArtifactReviewResult {
+  status: "reviewed";
+  schemaVersion: typeof PRODUCER_LOOP_ARTIFACT_VERSION;
+  artifactId: string;
+  path: string;
+  relativePath: string;
+  artifactHash: string;
+  ledgerHash?: string;
+  review: ProducerLoopArtifactReview;
+  calibration: {
+    status: ProducerLoopSampleReviewStatus;
+    hardGateReady: false;
+  };
+  caveats: string[];
+}
+
+export interface ProducerLoopArtifactReportSummary {
+  artifactId: string;
+  generatedAt: string;
+  producerKind: ProducerLoopProducerKind;
+  workflowId?: string;
+  phaseId?: string;
+  phaseTitle?: string;
+  outcome?: TaskCommitOutcome;
+  summary?: string;
+  path: string;
+  relativePath: string;
+  artifactHash: string;
+  ledgerHash?: string;
+  reasonCodes: string[];
+  files: string[];
+  calibrationStatus?: string;
+  reviewStatus: ProducerLoopSampleReviewStatus;
+  reviewOutcome?: string;
+  reviewedAt?: string;
+  reviewer?: string;
+}
+
+export interface ProducerLoopReport {
+  version: typeof PRODUCER_LOOP_REPORT_VERSION;
+  generatedAt: string;
+  source: {
+    directory: string;
+    localOnly: true;
+  };
+  adoption: {
+    status: "missing" | "active";
+    artifactCount: number;
+    producerKinds: ProducerLoopProducerKind[];
+    workflowIds: string[];
+  };
+  artifacts: ProducerLoopArtifactReportSummary[];
+  latestArtifact?: ProducerLoopArtifactReportSummary;
+  invalidArtifacts: Array<{
+    path: string;
+    relativePath: string;
+    error: string;
+  }>;
+  reasonCodes: {
+    counts: Record<string, number>;
+  };
+  calibration: {
+    status: "no_samples" | "insufficient_samples" | "reviewable_sample_set";
+    sampleSize: number;
+    reviewedSampleSize: number;
+    rejectedSampleSize: number;
+    unreviewedSampleSize: number;
+    minReviewSampleSize: number;
+    reviewOutcomes: Record<string, number>;
+    hardGateReady: false;
+    notes: string[];
+  };
+  recommendedActions: string[];
+  caveats: string[];
+}
 
 export type WorkflowPlanPreset =
   | "memory-backend-unification"
@@ -256,6 +473,19 @@ export interface ManagedWorkflowRuntimeState {
   };
 }
 
+export type ManagedWorkflowCoordinationMode = "standard" | "full" | "orchestrate";
+
+export interface ManagedWorkflowCoordinationState {
+  mode: ManagedWorkflowCoordinationMode;
+  autoPublish: boolean;
+  startedAt?: string;
+  lastUpdatedAt?: string;
+  workSessionId?: string;
+  startReceipt?: WorkflowCollaborationReceipt;
+  teamSyncReceipt?: Record<string, unknown>;
+  releaseReceipt?: WorkflowCollaborationReceipt;
+}
+
 export interface ManagedWorkflowPhase {
   id: string;
   title: string;
@@ -283,6 +513,7 @@ export interface ManagedWorkflowState {
   updatedAt: string;
   phases: ManagedWorkflowPhase[];
   runtime?: ManagedWorkflowRuntimeState;
+  coordination?: ManagedWorkflowCoordinationState;
   lastCommit?: {
     category: string;
     outcome: TaskCommitOutcome;
@@ -322,6 +553,7 @@ export interface AgenticWorkStatus {
   teamSync: {
     activeWorkCount: number;
     staleWorkCount: number;
+    staleWorkExplanation: TeamSyncStaleWorkExplanation;
     archivedWorkCount: number;
     handoffCount: number;
     latestHandoff?: {
@@ -336,22 +568,23 @@ export interface AgenticWorkStatus {
     count?: number;
     note: string;
   };
+  operationalLoop: {
+    status: "clear" | "attention" | "blocked";
+    decisionRequestCount: number;
+    receiptGapCount: number;
+    nextActions: string[];
+    receiptActions: string[];
+    caveats: string[];
+  };
   suggestedNextAction: string;
 }
 
 export interface AgenticTimelineEvent {
   time: string;
-  kind:
-    | "workflow-start"
-    | "phase-start"
-    | "phase-commit"
-    | "final-commit"
-    | "team-sync-start"
-    | "team-sync-complete"
-    | "team-sync-handoff";
+  kind: string;
   title: string;
   detail?: string;
-  source: "workflow" | "team-sync";
+  source: ActivityEventSource;
   files?: string[];
 }
 
@@ -877,6 +1110,14 @@ export interface SessionBootstrapQualityReport {
   oldest_memory_age_days?: number;
 }
 
+export interface SessionBootstrapBrief {
+  entries: SessionMemoryEntry[];
+  availableCount: number;
+  hiddenCount: number;
+  estimatedTokens: number;
+  budgetTokens: number;
+}
+
 export interface GeneratedWorkflowPlanDocument {
   mode: "full";
   goal: string;
@@ -1250,6 +1491,410 @@ function isLikelyTestMemory(entry: SessionMemoryEntry): boolean {
   const category = typeof entry.category === "string" ? entry.category.toLowerCase() : "";
   const text = readBootstrapEntryText(entry).toLowerCase();
   return type === "test" || category === "test" || /^test memory\b/.test(text);
+}
+
+function readBootstrapEntryId(entry: SessionMemoryEntry): string {
+  return (
+    stringValue(entry.id) ??
+    stringValue(entry.memory_id) ??
+    `${stringValue(entry.type) ?? "memory"}:${readBootstrapEntryText(entry).slice(0, 80)}`
+  );
+}
+
+function isSessionCarryoverEntry(entry: SessionMemoryEntry): boolean {
+  const category = typeof entry.category === "string" ? entry.category.toLowerCase() : "";
+  const text = readBootstrapEntryText(entry).toLowerCase();
+  return (
+    category.includes("team_sync_handoff") ||
+    category.includes("journal:") ||
+    category.includes("workflow-phase") ||
+    text.includes("checkpoint: workflow:final-commit") ||
+    text.includes("final commit") ||
+    text.includes("phase-commit") ||
+    text.includes("handoff")
+  );
+}
+
+function isOwnerOperatingProfileEntry(entry: SessionMemoryEntry): boolean {
+  return (
+    typeof entry.category === "string" &&
+    entry.category.toLowerCase() === OWNER_OPERATING_PROFILE_CATEGORY
+  );
+}
+
+function isProjectProfileEntry(entry: SessionMemoryEntry): boolean {
+  return (
+    typeof entry.category === "string" && entry.category.toLowerCase() === PROJECT_PROFILE_CATEGORY
+  );
+}
+
+function isPinnedBootstrapProfileEntry(entry: SessionMemoryEntry): boolean {
+  return isProjectProfileEntry(entry) || isOwnerOperatingProfileEntry(entry);
+}
+
+function isLikelyStaleBootstrapEntry(entry: SessionMemoryEntry, now: Date): boolean {
+  const age = entryAgeDays(entry, now);
+  const text = readBootstrapEntryText(entry).toLowerCase();
+  return (
+    (typeof age === "number" &&
+      age > STALE_BOOTSTRAP_MEMORY_DAYS &&
+      !isPinnedBootstrapProfileEntry(entry)) ||
+    (typeof entry.confidence === "number" && entry.confidence < 0.5) ||
+    text.includes("/users/alopez/devs/snipara/.env") ||
+    text.includes("rlm_remember") ||
+    text.includes("rlm_recall") ||
+    text.includes("railway") ||
+    text.includes("vercel") ||
+    text.includes("memory injection feature is complete") ||
+    text.includes("infotooltip component created") ||
+    text.includes("mcp performance optimizations (jan 2026)")
+  );
+}
+
+function scoreBootstrapBriefEntry(
+  entry: SessionMemoryEntry,
+  source: "critical" | "daily",
+  now: Date
+): number {
+  let score = source === "daily" ? 100 : 0;
+  const age = entryAgeDays(entry, now);
+  const type = typeof entry.type === "string" ? entry.type.toLowerCase() : "";
+  const category = typeof entry.category === "string" ? entry.category.toLowerCase() : "";
+  const text = readBootstrapEntryText(entry).toLowerCase();
+
+  if (isSessionCarryoverEntry(entry)) {
+    score += 90;
+  }
+  if (type === "decision") {
+    score += 25;
+    const authorityStatus = bootstrapAuthorityStatus(entry);
+    if (authorityStatus === "canonical") {
+      score += 55;
+    } else if (authorityStatus === "approved" || authorityStatus === "authoritative") {
+      score += 20;
+    }
+  } else if (type === "context") {
+    score += 20;
+  } else if (type === "learning") {
+    score += 10;
+  }
+  if (category.includes("journal:") || category.includes("workflow-phase")) {
+    score += 40;
+  }
+  if (category.includes("team_sync_handoff")) {
+    score += 55;
+  }
+  if (text.includes("control plane") || text.includes("control-plane") || text.includes("lite")) {
+    score += 35;
+  }
+  if (text.includes("published") || text.includes("deployed") || text.includes("data-dpl-id")) {
+    score += 25;
+  }
+  if (typeof entry.confidence === "number") {
+    score += Math.max(0, Math.min(25, entry.confidence * 25));
+    if (entry.confidence < 0.5) {
+      score -= 90;
+    }
+  }
+  if (typeof age === "number") {
+    if (age <= 1) {
+      score += 65;
+    } else if (age <= 7) {
+      score += 45;
+    } else if (age <= 30) {
+      score += 20;
+    } else if (age > STALE_BOOTSTRAP_MEMORY_DAYS) {
+      score -= 100;
+    }
+  }
+  if (isLikelyTestMemory(entry)) {
+    score -= 120;
+  }
+  if (isLikelyStaleBootstrapEntry(entry, now)) {
+    score -= 80;
+  }
+  return score;
+}
+
+function estimateBootstrapEntryTokens(entry: SessionMemoryEntry): number {
+  return Math.max(8, Math.ceil(compactSessionEntryLine(entry).length / 4));
+}
+
+function bootstrapEntryType(entry: SessionMemoryEntry): string {
+  return typeof entry.type === "string" ? entry.type.toLowerCase() : "";
+}
+
+function isBootstrapDecisionEntry(entry: SessionMemoryEntry): boolean {
+  return bootstrapEntryType(entry) === "decision";
+}
+
+function bootstrapAuthorityStatus(entry: SessionMemoryEntry): string {
+  const authority = isRecord(entry.authority) ? entry.authority : undefined;
+  return (
+    stringValue(entry.authority_status) ??
+    stringValue(authority?.authorityStatus) ??
+    stringValue(authority?.level) ??
+    ""
+  ).toLowerCase();
+}
+
+function bootstrapSimilarityTokens(entry: SessionMemoryEntry): Set<string> {
+  const stopWords = new Set([
+    "checkpoint",
+    "workflow",
+    "final",
+    "commit",
+    "phase",
+    "summary",
+    "context",
+    "team",
+    "sync",
+    "handoff",
+    "released",
+    "release",
+  ]);
+  const text = readSessionEntryPreview(entry)
+    .toLowerCase()
+    .replace(/snipara-companion@\d+\.\d+\.\d+/g, "snipara-companion")
+    .replace(/[^a-z0-9]+/g, " ");
+  return new Set(text.split(/\s+/).filter((token) => token.length >= 4 && !stopWords.has(token)));
+}
+
+function buildBootstrapTopicTokens(
+  ranked: Array<{ entry: SessionMemoryEntry; source: "critical" | "daily"; score: number }>
+): Set<string> {
+  const tokens = new Set<string>();
+  for (const candidate of ranked) {
+    if (tokens.size >= 48) {
+      break;
+    }
+    if (candidate.score <= 0 || !isSessionCarryoverEntry(candidate.entry)) {
+      continue;
+    }
+    for (const token of bootstrapSimilarityTokens(candidate.entry)) {
+      tokens.add(token);
+    }
+  }
+  return tokens;
+}
+
+function isDecisionRelevantToBootstrap(
+  entry: SessionMemoryEntry,
+  topicTokens: Set<string>,
+  hasCarryoverCandidate: boolean
+): boolean {
+  if (!isBootstrapDecisionEntry(entry)) {
+    return false;
+  }
+  if (!hasCarryoverCandidate) {
+    return true;
+  }
+  const text = readBootstrapEntryText(entry).toLowerCase();
+  const hasExplicitTopic =
+    text.includes("control plane") ||
+    text.includes("control-plane") ||
+    text.includes("lite") ||
+    text.includes("session-bootstrap") ||
+    text.includes("bootstrap brief");
+  if (hasExplicitTopic) {
+    return true;
+  }
+  const category = typeof entry.category === "string" ? entry.category.toLowerCase() : "";
+  if (
+    category.includes("workflow-phase") ||
+    category.includes("final-commit") ||
+    category.includes("journal:") ||
+    category.includes("team_sync")
+  ) {
+    return false;
+  }
+  let overlap = 0;
+  for (const token of bootstrapSimilarityTokens(entry)) {
+    if (topicTokens.has(token)) {
+      overlap += 1;
+    }
+  }
+  return overlap >= 3;
+}
+
+function areBootstrapEntriesSimilar(a: SessionMemoryEntry, b: SessionMemoryEntry): boolean {
+  const aTokens = bootstrapSimilarityTokens(a);
+  const bTokens = bootstrapSimilarityTokens(b);
+  if (aTokens.size === 0 || bTokens.size === 0) {
+    return false;
+  }
+  let overlap = 0;
+  for (const token of aTokens) {
+    if (bTokens.has(token)) {
+      overlap += 1;
+    }
+  }
+  const smaller = Math.min(aTokens.size, bTokens.size);
+  const larger = Math.max(aTokens.size, bTokens.size);
+  return overlap / smaller >= 0.6 || (overlap >= 8 && overlap / larger >= 0.5);
+}
+
+export function buildSessionBootstrapBrief(
+  result: SessionMemoriesResult,
+  options: {
+    includeSessionContext: boolean;
+    maxTokens?: number;
+    maxEntries?: number;
+    now?: Date;
+  }
+): SessionBootstrapBrief {
+  const normalized = normalizeSessionMemoriesResult(result);
+  const now = options.now ?? new Date();
+  const maxEntries = Math.max(1, Math.min(options.maxEntries ?? 4, 5));
+  const budgetTokens = normalizePositiveTokenBudget(options.maxTokens, 600, true);
+  const candidates = [
+    ...normalized.critical.memories.map((entry) => ({ entry, source: "critical" as const })),
+    ...(options.includeSessionContext
+      ? normalized.daily.memories.map((entry) => ({ entry, source: "daily" as const }))
+      : []),
+  ];
+  const projectProfile = candidates.find(
+    (candidate) =>
+      (normalized.profiles?.project_memory_id &&
+        readBootstrapEntryId(candidate.entry) === normalized.profiles.project_memory_id) ||
+      isProjectProfileEntry(candidate.entry)
+  )?.entry;
+  const ownerProfile = candidates.find(
+    (candidate) =>
+      (normalized.profiles?.owner_memory_id &&
+        readBootstrapEntryId(candidate.entry) === normalized.profiles.owner_memory_id) ||
+      isOwnerOperatingProfileEntry(candidate.entry)
+  )?.entry;
+  const pinnedProfiles = [projectProfile, ownerProfile].filter(
+    (entry): entry is SessionMemoryEntry => Boolean(entry)
+  );
+  const seen = new Set<string>();
+  const entries: SessionMemoryEntry[] = [];
+  let estimatedTokens = 0;
+  for (const profile of pinnedProfiles) {
+    const profileTokens = estimateBootstrapEntryTokens(profile);
+    const profileId = readBootstrapEntryId(profile);
+    const profileText = readBootstrapEntryText(profile).slice(0, 140).toLowerCase();
+    const key = profileId || profileText;
+    if (
+      entries.length < maxEntries &&
+      !seen.has(key) &&
+      estimatedTokens + profileTokens <= budgetTokens
+    ) {
+      seen.add(key);
+      entries.push(profile);
+      estimatedTokens += profileTokens;
+    }
+  }
+  const reservedEntryCount = entries.length;
+  const remainingEntrySlots = maxEntries - reservedEntryCount;
+  const selectedProjectProfileId = projectProfile
+    ? readBootstrapEntryId(projectProfile)
+    : undefined;
+  const ranked = candidates
+    .filter(
+      (candidate) =>
+        !isOwnerOperatingProfileEntry(candidate.entry) &&
+        candidate.entry !== projectProfile &&
+        !(
+          selectedProjectProfileId &&
+          readBootstrapEntryId(candidate.entry) === selectedProjectProfileId
+        )
+    )
+    .map((candidate, index) => ({
+      ...candidate,
+      index,
+      score: scoreBootstrapBriefEntry(candidate.entry, candidate.source, now),
+    }))
+    .sort((a, b) => b.score - a.score || b.index - a.index);
+  const hasFreshCandidate =
+    ranked.some(
+      (candidate) =>
+        candidate.score > 0 &&
+        !isLikelyStaleBootstrapEntry(candidate.entry, now) &&
+        !isLikelyTestMemory(candidate.entry)
+    ) || reservedEntryCount > 0;
+  const topicTokens = buildBootstrapTopicTokens(ranked);
+  const hasCarryoverCandidate = ranked.some(
+    (candidate) =>
+      candidate.score > 0 &&
+      isSessionCarryoverEntry(candidate.entry) &&
+      !isLikelyStaleBootstrapEntry(candidate.entry, now) &&
+      !isLikelyTestMemory(candidate.entry)
+  );
+  const hasFreshDecisionCandidate =
+    maxEntries >= 4 &&
+    remainingEntrySlots > 0 &&
+    ranked.some(
+      (candidate) =>
+        candidate.score > 0 &&
+        isDecisionRelevantToBootstrap(candidate.entry, topicTokens, hasCarryoverCandidate) &&
+        !isLikelyStaleBootstrapEntry(candidate.entry, now) &&
+        !isLikelyTestMemory(candidate.entry)
+    );
+  let selectedCarryoverCount = 0;
+  let selectedDecisionCount = 0;
+
+  for (const candidate of ranked) {
+    if (entries.length >= maxEntries) {
+      break;
+    }
+    if (
+      hasFreshCandidate &&
+      (isLikelyStaleBootstrapEntry(candidate.entry, now) || isLikelyTestMemory(candidate.entry))
+    ) {
+      continue;
+    }
+    const id = readBootstrapEntryId(candidate.entry);
+    const textKey = readBootstrapEntryText(candidate.entry).slice(0, 140).toLowerCase();
+    const key = id || textKey;
+    if (seen.has(key)) {
+      continue;
+    }
+    if (entries.some((entry) => areBootstrapEntriesSimilar(entry, candidate.entry))) {
+      continue;
+    }
+    const isCarryover = isSessionCarryoverEntry(candidate.entry);
+    const isDecision = isBootstrapDecisionEntry(candidate.entry);
+    if (
+      isDecision &&
+      !isDecisionRelevantToBootstrap(candidate.entry, topicTokens, hasCarryoverCandidate)
+    ) {
+      continue;
+    }
+    if (
+      hasFreshDecisionCandidate &&
+      selectedDecisionCount === 0 &&
+      isCarryover &&
+      selectedCarryoverCount >= Math.max(0, remainingEntrySlots - 1)
+    ) {
+      continue;
+    }
+    const entryTokens = estimateBootstrapEntryTokens(candidate.entry);
+    if (entries.length > 0 && estimatedTokens + entryTokens > budgetTokens) {
+      continue;
+    }
+    seen.add(key);
+    entries.push(candidate.entry);
+    estimatedTokens += entryTokens;
+    if (isCarryover) {
+      selectedCarryoverCount += 1;
+    }
+    if (isDecision) {
+      selectedDecisionCount += 1;
+    }
+    if (entries.length >= maxEntries) {
+      break;
+    }
+  }
+
+  return {
+    entries,
+    availableCount: candidates.length,
+    hiddenCount: Math.max(0, candidates.length - entries.length),
+    estimatedTokens,
+    budgetTokens,
+  };
 }
 
 export function buildSessionBootstrapQuality(
@@ -1945,6 +2590,34 @@ function readWorkflowPlanFile(planFile: string, fallbackGoal: string): ManagedWo
   return normalizeWorkflowPlanInput(content, fallbackGoal);
 }
 
+function readWorkflowPlanMode(planFile?: string): ManagedWorkflowCoordinationMode | undefined {
+  if (!planFile || !planFile.toLowerCase().endsWith(".json") || !fs.existsSync(planFile)) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(planFile, "utf-8")) as { mode?: unknown };
+    return normalizeWorkflowCoordinationMode(parsed.mode);
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeWorkflowCoordinationMode(
+  value: unknown
+): ManagedWorkflowCoordinationMode | undefined {
+  const normalized = typeof value === "string" ? value.toLowerCase().trim() : "";
+  if (normalized === "standard" || normalized === "full" || normalized === "orchestrate") {
+    return normalized;
+  }
+  return undefined;
+}
+
+function inferWorkflowCoordinationMode(options: {
+  planFile?: string;
+}): ManagedWorkflowCoordinationMode {
+  return readWorkflowPlanMode(options.planFile) ?? (options.planFile ? "full" : "standard");
+}
+
 function getWorkflowStatePath(cwd: string = process.cwd()): string {
   return path.join(cwd, WORKFLOW_STATE_RELATIVE_PATH);
 }
@@ -2026,6 +2699,1545 @@ function writeWorkflowState(state: ManagedWorkflowState): void {
     runtime: normalizeManagedWorkflowRuntimeState(state.runtime),
   };
   fs.writeFileSync(statePath, `${JSON.stringify(normalized, null, 2)}\n`, "utf-8");
+}
+
+function sortJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortJsonValue);
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  return Object.keys(value)
+    .sort()
+    .reduce<Record<string, unknown>>((sorted, key) => {
+      sorted[key] = sortJsonValue(value[key]);
+      return sorted;
+    }, {});
+}
+
+function stableJsonStringify(value: unknown): string {
+  return `${JSON.stringify(sortJsonValue(value), null, 2)}\n`;
+}
+
+function hashJsonValue(value: unknown): string {
+  return `sha256:${hashContent(stableJsonStringify(value))}`;
+}
+
+function getProducerLoopDir(cwd: string = process.cwd()): string {
+  return path.join(cwd, PRODUCER_LOOP_RELATIVE_DIR);
+}
+
+function buildProducerLoopArtifactId(options: {
+  kind: ProducerLoopProducerKind;
+  workflowId?: string;
+  phaseId?: string;
+  generatedAt: string;
+  ledgerHash: string;
+}): string {
+  const source = [
+    options.kind,
+    options.workflowId ?? "no-workflow",
+    options.phaseId ?? "final",
+    options.generatedAt,
+    options.ledgerHash,
+  ].join(":");
+  return `producer-${hashContent(source).slice(0, 16)}`;
+}
+
+function buildProducerLoopArtifact(options: {
+  kind: ProducerLoopProducerKind;
+  command: "workflow phase-commit" | "workflow final-commit";
+  state?: ManagedWorkflowState;
+  phase?: ManagedWorkflowPhase;
+  category: string;
+  outcome: TaskCommitOutcome;
+  summary: string;
+  files?: string[];
+  journalAttempted: boolean;
+  teamSyncCompletionAttempted: boolean;
+  now?: Date;
+}): ProducerLoopArtifact {
+  const generatedAt = (options.now ?? new Date()).toISOString();
+  const files =
+    uniqueStringList((options.files ?? options.phase?.files ?? []).map(normalizeRepoFilePath)) ??
+    [];
+  const workflowId = options.state?.workflowId;
+  const sourceRef = [
+    "workflow",
+    workflowId ?? "unmanaged",
+    options.phase?.id ? `phase:${options.phase.id}` : "final",
+  ].join(":");
+  const reasonCodes = uniqueStrings([
+    "producer_loop_v0",
+    options.kind,
+    `outcome_${options.outcome}`,
+    files.length > 0 ? "files_declared" : "files_not_declared",
+    options.state ? "managed_workflow_state" : "no_managed_workflow_state",
+  ]);
+  const planItems = [
+    options.state?.goal ? `Workflow goal: ${options.state.goal}` : undefined,
+    options.phase ? `Phase ${options.phase.id}: ${options.phase.title}` : undefined,
+    options.phase?.acceptance ? `Acceptance: ${options.phase.acceptance}` : undefined,
+  ].filter((item): item is string => Boolean(item));
+  const outcomeItems = [
+    options.summary,
+    `Outcome: ${options.outcome}`,
+    options.category ? `Category: ${options.category}` : undefined,
+  ].filter((item): item is string => Boolean(item));
+  const ledger = buildCodingIntelligenceLedger({
+    dir: process.cwd(),
+    task: options.state?.goal ?? options.summary,
+    prompt: options.phase?.query ?? options.summary,
+    sourceRef,
+    changedFiles: files,
+    recentFiles: files,
+    plan: planItems,
+    outcome: outcomeItems,
+    influenceReceipt: [
+      `${options.command} advanced local workflow evidence and emitted Producer Loop V0 local review evidence.`,
+    ],
+    reasonCode: reasonCodes,
+    confidence: "unknown",
+    calibration: [
+      "Producer Loop V0 sample is local review evidence.",
+      "Sample is not calibrated advisor-grade confidence.",
+      "Review artifacts before any future hard gate uses these signals.",
+    ],
+  });
+  const ledgerHash = hashJsonValue(ledger);
+  const artifactId = buildProducerLoopArtifactId({
+    kind: options.kind,
+    workflowId,
+    phaseId: options.phase?.id,
+    generatedAt,
+    ledgerHash,
+  });
+
+  return {
+    schemaVersion: PRODUCER_LOOP_ARTIFACT_VERSION,
+    artifactId,
+    generatedAt,
+    producer: {
+      kind: options.kind,
+      command: options.command,
+      ...(workflowId ? { workflowId } : {}),
+      ...(options.phase?.id ? { phaseId: options.phase.id } : {}),
+      ...(options.phase?.title ? { phaseTitle: options.phase.title } : {}),
+      category: options.category,
+      outcome: options.outcome,
+      files,
+    },
+    source: {
+      ...(options.state?.goal ? { goal: options.state.goal } : {}),
+      summary: options.summary,
+      ...(options.state?.status ? { status: options.state.status } : {}),
+    },
+    ledger,
+    ledgerHash,
+    localEvidence: {
+      durableMemoryAttempted: true,
+      journalAttempted: options.journalAttempted,
+      teamSyncCompletionAttempted: options.teamSyncCompletionAttempted,
+    },
+    calibration: {
+      status: "sample_unreviewed",
+      sampleSize: 1,
+      hardGateReady: false,
+      notes: [
+        "This artifact is one local workflow sample.",
+        "Confidence remains uncalibrated until reviewed samples accumulate.",
+      ],
+    },
+    caveats: [
+      "Local review evidence only; this is not server-side attestation.",
+      "The embedded ledger is redacted local context, not canonical durable memory.",
+      "Producer Loop V0 does not execute workers or write approved memory automatically.",
+    ],
+  };
+}
+
+export function writeProducerLoopArtifact(options: {
+  kind: ProducerLoopProducerKind;
+  command: "workflow phase-commit" | "workflow final-commit";
+  state?: ManagedWorkflowState;
+  phase?: ManagedWorkflowPhase;
+  category: string;
+  outcome: TaskCommitOutcome;
+  summary: string;
+  files?: string[];
+  journalAttempted: boolean;
+  teamSyncCompletionAttempted: boolean;
+}): ProducerLoopArtifactWriteResult {
+  try {
+    const artifact = buildProducerLoopArtifact(options);
+    const artifactHash = hashJsonValue(artifact);
+    const fileName = `${artifact.generatedAt.replace(/[:.]/g, "-")}-${artifact.artifactId}.json`;
+    const outputPath = path.join(getProducerLoopDir(), fileName);
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+    fs.writeFileSync(outputPath, stableJsonStringify(artifact), "utf-8");
+    return {
+      status: "written",
+      schemaVersion: PRODUCER_LOOP_ARTIFACT_VERSION,
+      artifactId: artifact.artifactId,
+      path: outputPath,
+      relativePath: toProjectRelativePath(outputPath),
+      artifactHash,
+      ledgerHash: artifact.ledgerHash,
+      caveats: artifact.caveats,
+    };
+  } catch (error) {
+    return {
+      status: "error",
+      schemaVersion: PRODUCER_LOOP_ARTIFACT_VERSION,
+      error: error instanceof Error ? error.message : String(error),
+      caveats: [
+        "Producer Loop artifact write failed; workflow state and hosted memory result should be reviewed separately.",
+      ],
+    };
+  }
+}
+
+function countStringOccurrences(values: string[]): Record<string, number> {
+  return values.reduce<Record<string, number>>((counts, value) => {
+    counts[value] = (counts[value] ?? 0) + 1;
+    return counts;
+  }, {});
+}
+
+function isProducerLoopProducerKind(value: string | undefined): value is ProducerLoopProducerKind {
+  return (
+    value === "workflow_phase_commit" ||
+    value === "workflow_final_commit" ||
+    value === "pr_answer_pack_decision_capture"
+  );
+}
+
+function isProducerLoopSampleReviewStatus(
+  value: string | undefined
+): value is ProducerLoopSampleReviewStatus {
+  return (
+    value === "sample_unreviewed" || value === "sample_reviewed" || value === "sample_rejected"
+  );
+}
+
+function normalizeProducerLoopSampleReviewStatus(value: unknown): ProducerLoopSampleReviewStatus {
+  const status = stringValue(value);
+  return isProducerLoopSampleReviewStatus(status) ? status : "sample_unreviewed";
+}
+
+function isProducerLoopReviewOutcome(
+  value: string | undefined
+): value is ProducerLoopReviewOutcome {
+  return (
+    value === "useful" ||
+    value === "false_positive" ||
+    value === "missing_context" ||
+    value === "unsafe" ||
+    value === "duplicate" ||
+    value === "other"
+  );
+}
+
+function isTaskCommitOutcome(value: string | undefined): value is TaskCommitOutcome {
+  return ["completed", "partial", "blocked", "abandoned"].includes(value ?? "");
+}
+
+function stringArrayValue(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map((item) => stringValue(item)).filter((item): item is string => Boolean(item));
+}
+
+function summarizeProducerLoopArtifactFile(
+  filePath: string,
+  cwd: string
+):
+  | { artifact: ProducerLoopArtifactReportSummary; invalid?: undefined }
+  | { artifact?: undefined; invalid: ProducerLoopReport["invalidArtifacts"][number] } {
+  const relativePath = toProjectRelativePath(filePath, cwd);
+  try {
+    const content = fs.readFileSync(filePath, "utf-8");
+    const parsed: unknown = JSON.parse(content);
+    if (!isRecord(parsed)) {
+      throw new Error("artifact must be a JSON object");
+    }
+    if (parsed.schemaVersion !== PRODUCER_LOOP_ARTIFACT_VERSION) {
+      throw new Error(
+        `unsupported schemaVersion '${stringValue(parsed.schemaVersion) ?? "unknown"}'`
+      );
+    }
+    const producer = isRecord(parsed.producer) ? parsed.producer : undefined;
+    const source = isRecord(parsed.source) ? parsed.source : undefined;
+    const ledger = isRecord(parsed.ledger) ? parsed.ledger : undefined;
+    const calibration = isRecord(parsed.calibration) ? parsed.calibration : undefined;
+    const review = isRecord(parsed.review) ? parsed.review : undefined;
+    if (!producer) {
+      throw new Error("artifact is missing producer metadata");
+    }
+    const producerKind = stringValue(producer.kind);
+    if (!isProducerLoopProducerKind(producerKind)) {
+      throw new Error(`unsupported producer kind '${producerKind ?? "unknown"}'`);
+    }
+    const artifactId = stringValue(parsed.artifactId);
+    const generatedAt = stringValue(parsed.generatedAt);
+    if (!artifactId || !generatedAt) {
+      throw new Error("artifact is missing artifactId or generatedAt");
+    }
+    const outcome = stringValue(producer.outcome);
+    const reviewStatus = normalizeProducerLoopSampleReviewStatus(
+      stringValue(review?.status) ?? stringValue(calibration?.status)
+    );
+
+    return {
+      artifact: {
+        artifactId,
+        generatedAt,
+        producerKind,
+        workflowId: stringValue(producer.workflowId),
+        phaseId: stringValue(producer.phaseId),
+        phaseTitle: stringValue(producer.phaseTitle),
+        outcome: isTaskCommitOutcome(outcome) ? outcome : undefined,
+        summary: stringValue(source?.summary),
+        path: filePath,
+        relativePath,
+        artifactHash: `sha256:${hashContent(content)}`,
+        ledgerHash: stringValue(parsed.ledgerHash),
+        reasonCodes: uniqueStrings(stringArrayValue(ledger?.reasonCodes)),
+        files: uniqueStrings(stringArrayValue(producer.files)),
+        calibrationStatus: stringValue(calibration?.status),
+        reviewStatus,
+        reviewOutcome: stringValue(review?.outcome),
+        reviewedAt: stringValue(review?.reviewedAt),
+        reviewer: stringValue(review?.reviewer),
+      },
+    };
+  } catch (error) {
+    return {
+      invalid: {
+        path: filePath,
+        relativePath,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    };
+  }
+}
+
+function listProducerLoopArtifactFiles(cwd: string): string[] {
+  const dir = getProducerLoopDir(cwd);
+  if (!fs.existsSync(dir)) {
+    return [];
+  }
+  return fs
+    .readdirSync(dir)
+    .filter((fileName) => fileName.endsWith(".json"))
+    .map((fileName) => path.join(dir, fileName))
+    .sort();
+}
+
+function producerLoopCalibrationStatus(
+  sampleSize: number,
+  reviewedSampleSize: number,
+  minReviewSampleSize: number
+) {
+  if (sampleSize === 0) {
+    return "no_samples" as const;
+  }
+  if (reviewedSampleSize < minReviewSampleSize) {
+    return "insufficient_samples" as const;
+  }
+  return "reviewable_sample_set" as const;
+}
+
+export function buildProducerLoopReport(
+  options: {
+    cwd?: string;
+    minReviewSampleSize?: number;
+  } = {}
+): ProducerLoopReport {
+  const cwd = path.resolve(options.cwd ?? process.cwd());
+  const minReviewSampleSize = Math.max(
+    1,
+    Math.floor(options.minReviewSampleSize ?? PRODUCER_LOOP_MIN_REVIEW_SAMPLE_SIZE)
+  );
+  const summaries = listProducerLoopArtifactFiles(cwd).map((filePath) =>
+    summarizeProducerLoopArtifactFile(filePath, cwd)
+  );
+  const artifacts = summaries
+    .map((entry) => entry.artifact)
+    .filter((entry): entry is ProducerLoopArtifactReportSummary => Boolean(entry))
+    .sort((left, right) =>
+      left.generatedAt === right.generatedAt
+        ? left.relativePath.localeCompare(right.relativePath)
+        : left.generatedAt.localeCompare(right.generatedAt)
+    );
+  const invalidArtifacts = summaries
+    .map((entry) => entry.invalid)
+    .filter((entry): entry is ProducerLoopReport["invalidArtifacts"][number] => Boolean(entry));
+  const producerKinds = uniqueStrings(artifacts.map((artifact) => artifact.producerKind)).filter(
+    (kind): kind is ProducerLoopProducerKind => isProducerLoopProducerKind(kind)
+  );
+  const workflowIds = uniqueStrings(
+    artifacts.map((artifact) => artifact.workflowId).filter((id): id is string => Boolean(id))
+  );
+  const reasonCodeCounts = countStringOccurrences(
+    artifacts.flatMap((artifact) => artifact.reasonCodes)
+  );
+  const latestArtifact = artifacts[artifacts.length - 1];
+  const reviewedSampleSize = artifacts.filter(
+    (artifact) => artifact.reviewStatus === "sample_reviewed"
+  ).length;
+  const rejectedSampleSize = artifacts.filter(
+    (artifact) => artifact.reviewStatus === "sample_rejected"
+  ).length;
+  const unreviewedSampleSize = artifacts.filter(
+    (artifact) => artifact.reviewStatus === "sample_unreviewed"
+  ).length;
+  const reviewOutcomes = countStringOccurrences(
+    artifacts
+      .map((artifact) => artifact.reviewOutcome)
+      .filter((outcome): outcome is string => Boolean(outcome))
+  );
+  const calibrationStatus = producerLoopCalibrationStatus(
+    artifacts.length,
+    reviewedSampleSize,
+    minReviewSampleSize
+  );
+  const recommendedActions = [
+    artifacts.length === 0
+      ? "Run a current Producer Loop producer, such as workflow phase-commit/final-commit or PR Answer Pack decision capture, to create samples."
+      : undefined,
+    artifacts.length > 0 && reviewedSampleSize < minReviewSampleSize
+      ? `Review at least ${minReviewSampleSize} local Producer Loop samples before considering any calibration signal.`
+      : undefined,
+    unreviewedSampleSize > 0
+      ? "Mark local samples with workflow producer-review after checking the embedded evidence."
+      : undefined,
+    rejectedSampleSize > 0
+      ? "Inspect rejected Producer Loop samples for false positives, missing context, or reason-code drift."
+      : undefined,
+    invalidArtifacts.length > 0
+      ? "Inspect invalid Producer Loop artifacts before trusting adoption counts."
+      : undefined,
+    "Review false positives, missing outcomes, and reason-code drift before any future enforcement.",
+  ].filter((item): item is string => Boolean(item));
+
+  return {
+    version: PRODUCER_LOOP_REPORT_VERSION,
+    generatedAt: new Date().toISOString(),
+    source: {
+      directory: toProjectRelativePath(getProducerLoopDir(cwd), cwd),
+      localOnly: true,
+    },
+    adoption: {
+      status: artifacts.length > 0 ? "active" : "missing",
+      artifactCount: artifacts.length,
+      producerKinds,
+      workflowIds,
+    },
+    artifacts,
+    ...(latestArtifact ? { latestArtifact } : {}),
+    invalidArtifacts,
+    reasonCodes: {
+      counts: reasonCodeCounts,
+    },
+    calibration: {
+      status: calibrationStatus,
+      sampleSize: artifacts.length,
+      reviewedSampleSize,
+      rejectedSampleSize,
+      unreviewedSampleSize,
+      minReviewSampleSize,
+      reviewOutcomes,
+      hardGateReady: false,
+      notes: [
+        "Producer Loop V0 reports local or exported producer samples only.",
+        "Only samples marked sample_reviewed count toward calibration review size.",
+        "sample_rejected records operator review but does not count as positive calibration evidence.",
+        "hardGateReady remains false in V0 even when enough samples exist.",
+      ],
+    },
+    recommendedActions,
+    caveats: [
+      "Local report only; this is not server-side compliance attestation.",
+      "Reason-code counts describe observed artifacts, not calibrated probabilities.",
+      "Producer Loop V0 does not prove command execution beyond the evidence embedded in each artifact.",
+    ],
+  };
+}
+
+function resolveProducerLoopReviewTarget(cwd: string, selector?: string, latest?: boolean): string {
+  const files = listProducerLoopArtifactFiles(cwd);
+  if (files.length === 0) {
+    throw new Error(`No Producer Loop artifacts found under ${PRODUCER_LOOP_RELATIVE_DIR}.`);
+  }
+  const normalizedSelector = selector?.trim();
+  if (!normalizedSelector) {
+    if (!latest) {
+      throw new Error("Pass --artifact <path|file|artifactId> or --latest.");
+    }
+    const summaries = files
+      .map((filePath) => summarizeProducerLoopArtifactFile(filePath, cwd).artifact)
+      .filter((entry): entry is ProducerLoopArtifactReportSummary => Boolean(entry))
+      .sort((left, right) =>
+        left.generatedAt === right.generatedAt
+          ? left.relativePath.localeCompare(right.relativePath)
+          : left.generatedAt.localeCompare(right.generatedAt)
+      );
+    const latestArtifact = summaries[summaries.length - 1];
+    if (!latestArtifact) {
+      throw new Error("No valid Producer Loop artifacts found to review.");
+    }
+    return latestArtifact.path;
+  }
+
+  const directCandidates = [
+    path.resolve(cwd, normalizedSelector),
+    path.resolve(cwd, PRODUCER_LOOP_RELATIVE_DIR, normalizedSelector),
+  ];
+  const directMatch = directCandidates.find((candidate) => fs.existsSync(candidate));
+  if (directMatch) {
+    return directMatch;
+  }
+
+  const normalizedPathSelector = normalizedSelector.replace(/\\/g, "/").replace(/^\.\//, "");
+  const matches = files.filter((filePath) => {
+    const relativePath = toProjectRelativePath(filePath, cwd).replace(/\\/g, "/");
+    const basename = path.basename(filePath);
+    if (
+      basename === normalizedSelector ||
+      relativePath === normalizedPathSelector ||
+      relativePath.replace(/^\.\//, "") === normalizedPathSelector
+    ) {
+      return true;
+    }
+    try {
+      const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+      return isRecord(parsed) && stringValue(parsed.artifactId) === normalizedSelector;
+    } catch {
+      return false;
+    }
+  });
+
+  if (matches.length === 0) {
+    throw new Error(`No Producer Loop artifact matched '${normalizedSelector}'.`);
+  }
+  if (matches.length > 1) {
+    throw new Error(
+      `Producer Loop artifact selector '${normalizedSelector}' matched multiple files: ${matches
+        .map((filePath) => toProjectRelativePath(filePath, cwd))
+        .join(", ")}`
+    );
+  }
+  return matches[0];
+}
+
+function readProducerLoopArtifactForReview(filePath: string): ProducerLoopArtifact {
+  const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+  if (!isRecord(parsed)) {
+    throw new Error("artifact must be a JSON object");
+  }
+  if (parsed.schemaVersion !== PRODUCER_LOOP_ARTIFACT_VERSION) {
+    throw new Error(
+      `unsupported schemaVersion '${stringValue(parsed.schemaVersion) ?? "unknown"}'`
+    );
+  }
+  const artifactId = stringValue(parsed.artifactId);
+  const generatedAt = stringValue(parsed.generatedAt);
+  if (!artifactId || !generatedAt) {
+    throw new Error("artifact is missing artifactId or generatedAt");
+  }
+  if (!isRecord(parsed.producer)) {
+    throw new Error("artifact is missing producer metadata");
+  }
+  const producerKind = stringValue(parsed.producer.kind);
+  if (!isProducerLoopProducerKind(producerKind)) {
+    throw new Error(`unsupported producer kind '${producerKind ?? "unknown"}'`);
+  }
+  return parsed as unknown as ProducerLoopArtifact;
+}
+
+function applyProducerLoopArtifactReview(
+  artifact: ProducerLoopArtifact,
+  options: {
+    status: Exclude<ProducerLoopSampleReviewStatus, "sample_unreviewed">;
+    reviewedAt: string;
+    reviewer?: string;
+    outcome?: ProducerLoopReviewOutcome;
+    notes?: string[];
+  }
+): ProducerLoopArtifact {
+  const reviewNotes = uniqueStrings(options.notes ?? []);
+  const reviewNote =
+    options.status === "sample_rejected"
+      ? "Sample rejected by local operator review."
+      : "Sample reviewed by local operator.";
+  const existingCalibration = artifact.calibration ?? {
+    status: "sample_unreviewed" as const,
+    sampleSize: 1 as const,
+    hardGateReady: false as const,
+    notes: [],
+  };
+  return {
+    ...artifact,
+    calibration: {
+      ...existingCalibration,
+      status: options.status,
+      sampleSize: 1,
+      hardGateReady: false,
+      notes: uniqueStrings([
+        ...stringArrayValue(existingCalibration.notes),
+        reviewNote,
+        ...reviewNotes.map((note) => `Review note: ${note}`),
+      ]),
+    },
+    review: {
+      status: options.status,
+      reviewedAt: options.reviewedAt,
+      ...(options.reviewer ? { reviewer: options.reviewer } : {}),
+      ...(options.outcome ? { outcome: options.outcome } : {}),
+      notes: reviewNotes,
+    },
+  };
+}
+
+function reviewProducerLoopArtifact(options: {
+  cwd?: string;
+  artifact?: string;
+  latest?: boolean;
+  reject?: boolean;
+  outcome?: string;
+  reviewer?: string;
+  notes?: string[];
+}): ProducerLoopArtifactReviewResult {
+  const cwd = path.resolve(options.cwd ?? process.cwd());
+  const targetPath = resolveProducerLoopReviewTarget(cwd, options.artifact, options.latest);
+  const artifact = readProducerLoopArtifactForReview(targetPath);
+  const rawOutcome = stringValue(options.outcome);
+  if (rawOutcome && !isProducerLoopReviewOutcome(rawOutcome)) {
+    throw new Error(
+      `Unsupported producer review outcome '${rawOutcome}'. Use useful, false_positive, missing_context, unsafe, duplicate, or other.`
+    );
+  }
+  const outcome = rawOutcome as ProducerLoopReviewOutcome | undefined;
+  const status = options.reject ? "sample_rejected" : "sample_reviewed";
+  const reviewer = stringValue(options.reviewer);
+  const reviewedAt = new Date().toISOString();
+  const reviewed = applyProducerLoopArtifactReview(artifact, {
+    status,
+    reviewedAt,
+    ...(reviewer ? { reviewer } : {}),
+    ...(outcome ? { outcome } : {}),
+    notes: options.notes ?? [],
+  });
+  fs.writeFileSync(targetPath, stableJsonStringify(reviewed), "utf-8");
+  const content = fs.readFileSync(targetPath, "utf-8");
+  return {
+    status: "reviewed",
+    schemaVersion: PRODUCER_LOOP_ARTIFACT_VERSION,
+    artifactId: reviewed.artifactId,
+    path: targetPath,
+    relativePath: toProjectRelativePath(targetPath, cwd),
+    artifactHash: `sha256:${hashContent(content)}`,
+    ledgerHash: reviewed.ledgerHash,
+    review: reviewed.review as ProducerLoopArtifactReview,
+    calibration: {
+      status: reviewed.calibration.status,
+      hardGateReady: false,
+    },
+    caveats: [
+      "Local operator review only; this is not server-side attestation.",
+      "Producer Loop V0 keeps hardGateReady=false after review.",
+    ],
+  };
+}
+
+function printProducerLoopReviewResult(result: ProducerLoopArtifactReviewResult): void {
+  console.log(chalk.bold("Producer Loop Review"));
+  printKeyValue("Artifact:", result.relativePath);
+  printKeyValue("Status:", result.review.status);
+  if (result.review.outcome) {
+    printKeyValue("Outcome:", result.review.outcome);
+  }
+  printKeyValue("Hard gate ready:", result.calibration.hardGateReady ? "yes" : "no");
+}
+
+function printProducerLoopReport(report: ProducerLoopReport): void {
+  console.log(chalk.bold("Producer Loop Report"));
+  printKeyValue("Status:", report.adoption.status);
+  printKeyValue("Artifacts:", report.adoption.artifactCount);
+  printKeyValue("Calibration:", report.calibration.status);
+  printKeyValue("Reviewed:", report.calibration.reviewedSampleSize);
+  printKeyValue("Rejected:", report.calibration.rejectedSampleSize);
+  printKeyValue("Unreviewed:", report.calibration.unreviewedSampleSize);
+  printKeyValue("Hard gate ready:", report.calibration.hardGateReady ? "yes" : "no");
+  if (report.adoption.producerKinds.length > 0) {
+    printKeyValue("Producers:", report.adoption.producerKinds.join(", "));
+  }
+  if (report.latestArtifact) {
+    printKeyValue("Latest:", report.latestArtifact.relativePath);
+  }
+  if (report.invalidArtifacts.length > 0) {
+    printKeyValue("Invalid artifacts:", report.invalidArtifacts.length);
+  }
+  if (report.recommendedActions.length > 0) {
+    console.log("");
+    console.log(chalk.bold("Recommended Actions"));
+    for (const action of report.recommendedActions) {
+      console.log(`- ${action}`);
+    }
+  }
+}
+
+export async function workflowProducerReportCommand(options: {
+  minReviewSamples?: number;
+  json?: boolean;
+}): Promise<void> {
+  const report = buildProducerLoopReport({
+    minReviewSampleSize: options.minReviewSamples,
+  });
+  if (options.json) {
+    printJson(report);
+    return;
+  }
+  printProducerLoopReport(report);
+}
+
+export async function workflowProducerReviewCommand(options: {
+  artifact?: string;
+  latest?: boolean;
+  reject?: boolean;
+  outcome?: string;
+  reviewer?: string;
+  note?: string[];
+  json?: boolean;
+}): Promise<void> {
+  const result = reviewProducerLoopArtifact({
+    artifact: options.artifact,
+    latest: Boolean(options.latest),
+    reject: Boolean(options.reject),
+    outcome: options.outcome,
+    reviewer: options.reviewer,
+    notes: options.note ?? [],
+  });
+  if (options.json) {
+    printJson(result);
+    return;
+  }
+  printProducerLoopReviewResult(result);
+}
+
+function compactDecisionRequest(request: DecisionRequest, status: "pending" | "expired_pending") {
+  return {
+    requestId: request.requestId,
+    fingerprint: request.fingerprint,
+    status,
+    blocking: request.blocking,
+    producer: request.producer,
+    decision: request.decision,
+    question: request.question,
+    options: request.options,
+    recommendation: request.recommendation,
+    rationale: request.rationale,
+    evidence: request.evidence,
+    createdAt: request.createdAt,
+    expiresAt: request.expiresAt,
+  };
+}
+
+type PolicyLedgerStatus =
+  | "pending"
+  | "expired_pending"
+  | "approved"
+  | "refused"
+  | "modified"
+  | "deferred";
+
+interface PolicyLedgerEntry {
+  requestId: string;
+  fingerprint: string;
+  status: PolicyLedgerStatus;
+  producerKind: DecisionRequest["producer"]["kind"];
+  decision: string;
+  question: string;
+  recommendation?: string;
+  humanChoice?: string;
+  reviewer?: string;
+  note?: string;
+  evidenceSummary: string;
+  reasonCodes: string[];
+  files: string[];
+  applyPath?: string;
+  applyCommand?: string;
+  createdAt: string;
+  resolvedAt?: string;
+}
+
+function isPolicyDecisionRequest(request: DecisionRequest): boolean {
+  return (
+    request.producer.kind === "project_policy_review" ||
+    request.producer.kind === "policy_suggestion" ||
+    request.evidence.reasonCodes.some((code) => /policy/i.test(code)) ||
+    /project policy|policy suggestion|policy/i.test(
+      [
+        request.decision,
+        request.question,
+        request.evidence.summary,
+        request.evidence.applyPath ?? "",
+      ].join(" ")
+    )
+  );
+}
+
+function classifyResolvedPolicyDecisionChoice(choice: string): PolicyLedgerStatus {
+  switch (choice) {
+    case "approve_once":
+    case "accept":
+    case "accept_all":
+    case "create_policy_suggestion":
+    case "keep_advisory":
+      return "approved";
+    case "reject":
+    case "reject_all":
+    case "reject_policy_suggestion":
+    case "require_changes":
+    case "respect_block":
+      return "refused";
+    case "mark_policy_stale":
+    case "request_exception":
+      return "modified";
+    case "ignore_once":
+    case "inspect":
+    case "defer":
+    default:
+      return "deferred";
+  }
+}
+
+function buildPolicyLedgerEntries(): PolicyLedgerEntry[] {
+  const pending = listPendingDecisionRequests()
+    .filter((entry) => isPolicyDecisionRequest(entry.request))
+    .map((entry): PolicyLedgerEntry => {
+      const request = entry.request;
+      return {
+        requestId: request.requestId,
+        fingerprint: request.fingerprint,
+        status: entry.status,
+        producerKind: request.producer.kind,
+        decision: request.decision,
+        question: request.question,
+        recommendation: request.recommendation,
+        evidenceSummary: request.evidence.summary,
+        reasonCodes: request.evidence.reasonCodes,
+        files: request.evidence.files ?? [],
+        applyPath: request.evidence.applyPath,
+        applyCommand: request.evidence.applyCommand,
+        createdAt: request.createdAt,
+      };
+    });
+  const resolved = listResolvedDecisionRecords()
+    .filter((record) => isPolicyDecisionRequest(record.request))
+    .map((record): PolicyLedgerEntry => {
+      const request = record.request;
+      return {
+        requestId: request.requestId,
+        fingerprint: request.fingerprint,
+        status: classifyResolvedPolicyDecisionChoice(record.response.choice),
+        producerKind: request.producer.kind,
+        decision: request.decision,
+        question: request.question,
+        recommendation: request.recommendation,
+        humanChoice: record.response.choice,
+        reviewer: record.response.reviewer,
+        note: record.response.note,
+        evidenceSummary: request.evidence.summary,
+        reasonCodes: request.evidence.reasonCodes,
+        files: request.evidence.files ?? [],
+        applyPath: request.evidence.applyPath,
+        applyCommand: request.evidence.applyCommand,
+        createdAt: request.createdAt,
+        resolvedAt: record.response.resolvedAt,
+      };
+    });
+
+  return [...pending, ...resolved].sort((left, right) => {
+    const leftTime = left.resolvedAt ?? left.createdAt;
+    const rightTime = right.resolvedAt ?? right.createdAt;
+    return rightTime.localeCompare(leftTime) || left.requestId.localeCompare(right.requestId);
+  });
+}
+
+function summarizePolicyLedger(entries: PolicyLedgerEntry[]) {
+  const counts: Record<PolicyLedgerStatus, number> = {
+    pending: 0,
+    expired_pending: 0,
+    approved: 0,
+    refused: 0,
+    modified: 0,
+    deferred: 0,
+  };
+  for (const entry of entries) {
+    counts[entry.status] += 1;
+  }
+  return {
+    total: entries.length,
+    pending: counts.pending,
+    expiredPending: counts.expired_pending,
+    approved: counts.approved,
+    refused: counts.refused,
+    modified: counts.modified,
+    deferred: counts.deferred,
+  };
+}
+
+function buildPolicyLedgerAgentPrompt(entries: PolicyLedgerEntry[]): string[] {
+  const active = entries.filter(
+    (entry) => entry.status === "pending" || entry.status === "expired_pending"
+  );
+  if (active.length === 0) {
+    return ["No pending Project Policy decision needs a human response right now."];
+  }
+  return active.slice(0, 5).map((entry) => {
+    const options = entry.recommendation ? ` Recommended: ${entry.recommendation}.` : "";
+    return `Ask the user: ${entry.question} Options are recorded in the pending Decision Request.${options} Resolve with snipara-companion workflow decide ${entry.requestId} --choose <human-choice> --reviewer <name>.`;
+  });
+}
+
+export async function workflowPolicyLedgerCommand(options: { json?: boolean }): Promise<void> {
+  const entries = buildPolicyLedgerEntries();
+  const summary = summarizePolicyLedger(entries);
+  const payload = {
+    version: "snipara.workflow_policy_ledger.v0",
+    generatedAt: new Date().toISOString(),
+    summary,
+    entries,
+    agentPrompt: buildPolicyLedgerAgentPrompt(entries),
+    caveats: [
+      "Policy ledger is observational; it never applies or edits Project Policy automatically.",
+      "The LLM agent must ask the user for pending policy decisions and resolve them with workflow decide.",
+      "The dashboard is for auditability and administration, not a replacement for explicit human approval.",
+    ],
+  };
+  if (options.json) {
+    printJson(payload);
+    return;
+  }
+  console.log(chalk.bold("Project Policy Ledger"));
+  printKeyValue("Pending:", String(summary.pending));
+  printKeyValue("Approved:", String(summary.approved));
+  printKeyValue("Refused:", String(summary.refused));
+  printKeyValue("Modified:", String(summary.modified));
+  if (entries.length === 0) {
+    console.log("No Project Policy decision artifacts found.");
+    return;
+  }
+  for (const entry of entries.slice(0, 20)) {
+    const actor = entry.reviewer ? ` by ${entry.reviewer}` : "";
+    console.log(`- ${entry.requestId} [${entry.status}${actor}] ${entry.question}`);
+    if (entry.humanChoice) {
+      console.log(`  choice: ${entry.humanChoice}`);
+    }
+    console.log(`  evidence: ${entry.evidenceSummary}`);
+    if (entry.status === "pending" || entry.status === "expired_pending") {
+      console.log(
+        `  ask: snipara-companion workflow decide ${entry.requestId} --choose <human-choice> --reviewer <name>`
+      );
+    }
+  }
+}
+
+export async function workflowApplyDecisionsCommand(options: {
+  dryRun?: boolean;
+  json?: boolean;
+}): Promise<void> {
+  const dryRun = options.dryRun ?? false;
+  const report = buildDecisionApplyReport({ dryRun });
+  if (options.json) {
+    printJson(report);
+    return;
+  }
+
+  console.log(chalk.bold(`Decision Apply Pipeline${dryRun ? " (dry-run)" : ""}`));
+  printKeyValue("Resolved policy decisions:", report.summary.totalResolvedPolicyDecisions);
+  printKeyValue("Needs apply:", report.summary.needsApply);
+  printKeyValue("Applied:", report.summary.applied);
+  printKeyValue("Manual follow-up:", report.summary.manualFollowUpRequired);
+  printKeyValue("No apply:", report.summary.noApply);
+  if (!dryRun) {
+    printKeyValue("Written:", report.summary.written);
+  }
+  if (report.items.length === 0) {
+    console.log("No resolved Project Policy decisions found.");
+    return;
+  }
+  for (const item of report.items.slice(0, 20)) {
+    printDecisionApplyItem(item);
+  }
+}
+
+function printDecisionApplyItem(item: DecisionApplyItem): void {
+  console.log(`- ${item.requestId} [${item.state}] ${item.question}`);
+  console.log(`  choice: ${item.choice} (${item.choiceClass}) by ${item.reviewer}`);
+  if (item.plannedActions.length > 0) {
+    console.log(`  actions: ${item.plannedActions.join(", ")}`);
+  }
+  if (item.policyDraftPath) {
+    console.log(`  draft: ${item.policyDraftPath}`);
+  }
+  if (item.applyCommand && item.state === "manual_follow_up_required") {
+    console.log(`  manual: ${renderManualApplyCommand(item.applyCommand, item.choice)}`);
+  }
+  for (const caveat of item.caveats) {
+    console.log(`  note: ${caveat}`);
+  }
+}
+
+function printDecisionRequests(entries: ReturnType<typeof listPendingDecisionRequests>): void {
+  console.log(chalk.bold("Pending Decision Requests"));
+  if (entries.length === 0) {
+    console.log("No pending decision requests.");
+    return;
+  }
+  for (const entry of entries) {
+    const request = entry.request;
+    console.log(`- ${request.requestId} [${entry.status}] ${request.question}`);
+    console.log(`  producer: ${request.producer.kind} via ${request.producer.command}`);
+    console.log(`  options: ${request.options.join(", ")}`);
+    if (request.recommendation) {
+      console.log(`  recommendation: ${request.recommendation}`);
+    }
+    console.log(`  evidence: ${request.evidence.summary}`);
+    if (request.evidence.items?.length) {
+      console.log("  items:");
+      for (const item of request.evidence.items) {
+        console.log(`    - ${item.ref}${item.title ? `: ${item.title}` : ""}`);
+        if (item.status || item.kind) {
+          console.log(`      ${[item.kind, item.status].filter(Boolean).join(" | ")}`);
+        }
+        if (item.summary) {
+          console.log(`      ${item.summary}`);
+        }
+        if (item.files?.length) {
+          console.log(
+            `      files: ${item.files.slice(0, 5).join(", ")}${item.files.length > 5 ? ` (+${item.files.length - 5})` : ""}`
+          );
+        }
+      }
+    }
+    if (request.evidence.applyCommand) {
+      console.log(`  apply: ${request.evidence.applyCommand}`);
+    }
+  }
+}
+
+export async function workflowDecisionsCommand(options: { json?: boolean }): Promise<void> {
+  const entries = listPendingDecisionRequests();
+  if (options.json) {
+    printJson({
+      version: "snipara.workflow_decisions.v0",
+      generatedAt: new Date().toISOString(),
+      pendingCount: entries.filter((entry) => entry.status === "pending").length,
+      expiredPendingCount: entries.filter((entry) => entry.status === "expired_pending").length,
+      requests: entries.map((entry) => compactDecisionRequest(entry.request, entry.status)),
+      caveats: [
+        "Decision requests never resolve by timeout or default.",
+        "The LLM client renders the question; Companion only stores auditable request/response artifacts.",
+      ],
+    });
+    return;
+  }
+  printDecisionRequests(entries);
+}
+
+function shouldApplyProducerReview(choice: string): boolean {
+  return ["accept", "accept_all", "reject", "reject_all"].includes(choice);
+}
+
+function isRejectChoice(choice: string): boolean {
+  return choice === "reject" || choice === "reject_all";
+}
+
+function renderManualApplyCommand(command: string, choice: string): string {
+  return command.replaceAll("<human-choice>", choice);
+}
+
+function applyDecisionRequestLocally(options: {
+  request: DecisionRequest;
+  choice: string;
+  reviewer: string;
+  note?: string;
+}): string[] {
+  const request = options.request;
+  if (request.evidence.applyPath !== "workflow producer-review") {
+    return request.evidence.applyCommand
+      ? [
+          `manual_apply_required: ${renderManualApplyCommand(request.evidence.applyCommand, options.choice)}`,
+        ]
+      : ["manual_apply_required"];
+  }
+  if (!shouldApplyProducerReview(options.choice)) {
+    return ["no_apply: human chose inspection or deferral"];
+  }
+  const applied: string[] = [];
+  for (const ref of request.evidence.refs) {
+    const review = reviewProducerLoopArtifact({
+      artifact: ref,
+      reject: isRejectChoice(options.choice),
+      outcome: isRejectChoice(options.choice) ? "false_positive" : "useful",
+      reviewer: options.reviewer,
+      notes: uniqueStrings([
+        `decision_request:${request.requestId}`,
+        ...(options.note ? [options.note] : []),
+      ]),
+    });
+    applied.push(
+      `workflow producer-review ${review.artifactId} ${review.review.status}${
+        review.review.outcome ? ` ${review.review.outcome}` : ""
+      }`
+    );
+  }
+  return applied;
+}
+
+function recurringPolicySuggestionKey(record: {
+  request: DecisionRequest;
+  response: { choice: string; note?: string };
+}): string {
+  return stableDecisionJsonStringify({
+    producer: record.request.producer.kind,
+    choice: record.response.choice,
+    targetCategory: recurringPolicySuggestionTargetCategory(record.request),
+  });
+}
+
+function recurringPolicySuggestionTargetCategory(request: DecisionRequest): string {
+  const evidenceCategories =
+    request.evidence.items
+      ?.map((item) => {
+        const metadata = isRecord(item.metadata) ? item.metadata : undefined;
+        return stringValue(metadata?.category) ?? stringValue(metadata?.type) ?? item.kind;
+      })
+      .filter((value): value is string => Boolean(value)) ?? [];
+  return (
+    uniqueStrings(evidenceCategories).sort().join("|") ||
+    request.evidence.applyPath ||
+    request.decision
+  );
+}
+
+function buildRecurringDecisionPolicySuggestionRequest(
+  resolvedRecords: ReturnType<typeof listResolvedDecisionRecords>
+): DecisionRequest | null {
+  const grouped = new Map<string, ReturnType<typeof listResolvedDecisionRecords>>();
+  for (const record of resolvedRecords) {
+    const key = recurringPolicySuggestionKey(record);
+    const group = grouped.get(key) ?? [];
+    group.push(record);
+    grouped.set(key, group);
+  }
+  const repeated = [...grouped.values()]
+    .filter((group) => group.length >= 2)
+    .sort((left, right) => right.length - left.length)[0];
+  if (!repeated) {
+    return null;
+  }
+  const latest = repeated[repeated.length - 1];
+  const refs = repeated.map((record) => record.request.requestId);
+  const note = compactWhitespace(latest.response.note ?? "");
+  const policyTitle = note
+    ? `Never ask twice for: ${note}`
+    : `Never ask twice for ${latest.request.decision} -> ${latest.response.choice}`;
+  const targetCategory = recurringPolicySuggestionTargetCategory(latest.request);
+
+  return buildDecisionRequest({
+    producer: {
+      kind: "policy_suggestion",
+      command: "workflow decide",
+      sourceRef: ".snipara/decisions/resolved",
+    },
+    decision: "promote_recurring_decision_policy",
+    question: `Create a reusable triage policy for recurring decision '${latest.request.decision}'?`,
+    evidence: {
+      summary: `${repeated.length} resolved decision receipts share the same choice and rationale. Suggested policy: ${policyTitle}`,
+      refs,
+      items: repeated.map((record) => ({
+        ref: record.request.requestId,
+        title: record.request.question,
+        summary: record.response.note ?? record.response.choice,
+        kind: record.request.producer.kind,
+        status: record.response.choice,
+        files: record.request.evidence.files?.slice(0, 12),
+      })),
+      reasonCodes: uniqueStrings([
+        "recurring_decision_receipts",
+        "never_ask_twice_candidate",
+        ...latest.request.evidence.reasonCodes,
+      ]),
+      files: uniqueStrings(repeated.flatMap((record) => record.request.evidence.files ?? [])),
+      applyPath: "manual_context_review",
+      applyCommand:
+        "Review the suggested rule and add it to the appropriate project policy or AGENTS.md section manually.",
+    },
+    options: ["create_policy_suggestion", "ignore_once", "reject_policy_suggestion"],
+    recommendation: "create_policy_suggestion",
+    rationale:
+      "Repeated human decisions should become explicit reviewable policy suggestions, never silent auto-applied rules.",
+    fingerprintParts: [
+      "recurring_decision_policy_suggestion",
+      repeated.length,
+      latest.request.producer.kind,
+      latest.response.choice,
+      targetCategory,
+    ],
+  });
+}
+
+export async function workflowDecideCommand(options: {
+  requestId: string;
+  choice: string;
+  reviewer: string;
+  note?: string;
+  json?: boolean;
+}): Promise<void> {
+  if (!options.reviewer?.trim()) {
+    throw new Error("workflow decide requires --reviewer <name>.");
+  }
+  const pending = listPendingDecisionRequests().find(
+    (entry) =>
+      entry.request.requestId === options.requestId ||
+      entry.request.fingerprint === options.requestId
+  );
+  if (!pending) {
+    throw new Error(`No pending decision request matched '${options.requestId}'.`);
+  }
+  if (!pending.request.options.includes(options.choice)) {
+    throw new Error(
+      `Invalid choice '${options.choice}'. Valid options: ${pending.request.options.join(", ")}.`
+    );
+  }
+  const appliedActions = applyDecisionRequestLocally({
+    request: pending.request,
+    choice: options.choice,
+    reviewer: options.reviewer,
+    note: options.note,
+  });
+  const resolved = resolveDecisionRequest({
+    requestId: pending.request.requestId,
+    choice: options.choice,
+    reviewer: options.reviewer,
+    note: options.note,
+    appliedActions,
+  });
+  const policySuggestionRequest = buildRecurringDecisionPolicySuggestionRequest(
+    listResolvedDecisionRecords()
+  );
+  const policySuggestionWrite = policySuggestionRequest
+    ? writeDecisionRequest(policySuggestionRequest)
+    : undefined;
+  appendActivityEvent({
+    source: "decision",
+    kind: "decision-resolved",
+    title: resolved.request.question,
+    summary: resolved.response.note ?? resolved.response.choice,
+    actor: resolved.response.reviewer,
+    outcome: resolved.response.choice,
+    files: resolved.request.evidence.files,
+    refs: [resolved.request.requestId, resolved.request.fingerprint],
+    timestamp: resolved.response.resolvedAt,
+    metadata: {
+      producer: resolved.request.producer.kind,
+      decision: resolved.request.decision,
+      appliedActions,
+      policySuggestionStatus: policySuggestionWrite?.status,
+      policySuggestionRequestId: policySuggestionWrite?.requestId,
+    },
+  });
+  if (policySuggestionWrite?.status === "written" && policySuggestionRequest) {
+    appendActivityEvent({
+      source: "decision",
+      kind: "policy-suggestion-created",
+      title: policySuggestionRequest.question,
+      summary: policySuggestionRequest.evidence.summary,
+      files: policySuggestionRequest.evidence.files,
+      refs: [policySuggestionRequest.requestId, policySuggestionRequest.fingerprint],
+      timestamp: policySuggestionRequest.createdAt,
+      metadata: {
+        recommendation: policySuggestionRequest.recommendation,
+        manualApplyRequired: true,
+      },
+    });
+  }
+  writeSessionSnapshot();
+  const payload = {
+    version: DECISION_RESPONSE_VERSION,
+    request: resolved.request,
+    response: resolved.response,
+    resolvedPath: toProjectRelativePath(resolved.resolvedPath),
+    policySuggestion: policySuggestionRequest,
+    policySuggestionWrite,
+  };
+  if (options.json) {
+    printJson(payload);
+    return;
+  }
+  console.log(chalk.bold("Decision Resolved"));
+  printKeyValue("Request:", resolved.request.requestId);
+  printKeyValue("Choice:", resolved.response.choice);
+  printKeyValue("Reviewer:", resolved.response.reviewer);
+  for (const action of resolved.response.appliedActions) {
+    console.log(`- ${action}`);
+  }
+  if (policySuggestionWrite?.status === "written") {
+    console.log(`Policy suggestion: ${policySuggestionWrite.relativePath}`);
+  }
+}
+
+function buildProducerTriageRequest(report: ProducerLoopReport): DecisionRequest | null {
+  const candidates = report.artifacts.filter(
+    (artifact) => artifact.reviewStatus === "sample_unreviewed"
+  );
+  if (candidates.length === 0) {
+    return null;
+  }
+  const refs = candidates.map((artifact) => artifact.artifactId);
+  const items = candidates.map((artifact) => ({
+    ref: artifact.artifactId,
+    title: producerLoopTriageItemTitle(artifact),
+    summary: artifact.summary ?? `${artifact.producerKind} sample for review.`,
+    kind: artifact.producerKind,
+    status: artifact.reviewStatus,
+    files: artifact.files.slice(0, 12),
+    metadata: {
+      generatedAt: artifact.generatedAt,
+      workflowId: artifact.workflowId ?? null,
+      phaseId: artifact.phaseId ?? null,
+      outcome: artifact.outcome ?? null,
+      artifactHash: artifact.artifactHash,
+      ledgerHash: artifact.ledgerHash ?? null,
+      relativePath: artifact.relativePath,
+    },
+  }));
+  return buildDecisionRequest({
+    producer: {
+      kind: "producer_loop_triage",
+      command: "workflow producer-triage",
+      sourceRef: PRODUCER_LOOP_RELATIVE_DIR,
+    },
+    decision: "accept_triage_batch",
+    question: `Accept ${candidates.length} Producer Loop samples as reviewed?`,
+    evidence: {
+      summary: `${candidates.length} unreviewed Producer Loop samples; ${report.invalidArtifacts.length} invalid artifacts; hardGateReady remains false.`,
+      refs,
+      items,
+      reasonCodes: uniqueStrings([
+        "triage_rules_v0",
+        "producer_loop_report_valid",
+        ...(report.invalidArtifacts.length === 0
+          ? ["no_invalid_artifacts"]
+          : ["invalid_artifacts_present"]),
+      ]),
+      files: uniqueStrings(candidates.flatMap((artifact) => artifact.files)),
+      applyPath: "workflow producer-review",
+      applyCommand:
+        "snipara-companion workflow decide <request-id> --choose accept_all --reviewer <name>",
+    },
+    options: ["accept_all", "inspect_each", "reject_all"],
+    recommendation: report.invalidArtifacts.length === 0 ? "accept_all" : "inspect_each",
+    rationale:
+      report.invalidArtifacts.length === 0
+        ? "All candidate artifacts parsed successfully; review remains an explicit human decision."
+        : "Invalid artifacts are present, so inspect before accepting.",
+    fingerprintParts: [
+      "producer_loop_triage",
+      "triage_rules_v0",
+      candidates.map((artifact) => [artifact.artifactId, artifact.artifactHash]),
+    ],
+  });
+}
+
+function producerLoopTriageItemTitle(artifact: ProducerLoopArtifactReportSummary): string {
+  const workflow = artifact.workflowId ?? "producer-loop";
+  const phase = artifact.phaseTitle ?? artifact.phaseId;
+  return phase ? `${workflow} / ${phase}` : workflow;
+}
+
+export async function workflowProducerTriageCommand(options: {
+  minReviewSamples?: number;
+  json?: boolean;
+}): Promise<void> {
+  const report = buildProducerLoopReport({ minReviewSampleSize: options.minReviewSamples });
+  const request = buildProducerTriageRequest(report);
+  const write = request ? writeDecisionRequest(request) : undefined;
+  const payload = {
+    version: "snipara.producer_loop_triage.v0",
+    generatedAt: new Date().toISOString(),
+    candidateCount: report.artifacts.filter(
+      (artifact) => artifact.reviewStatus === "sample_unreviewed"
+    ).length,
+    request,
+    write,
+    caveats: [
+      "Triage emits a decision request only; it never marks samples reviewed by itself.",
+      "Resolve the request with workflow decide so the response receipt records the human choice.",
+    ],
+  };
+  if (options.json) {
+    printJson(payload);
+    return;
+  }
+  if (!request || !write) {
+    console.log("No unreviewed Producer Loop samples need triage.");
+    return;
+  }
+  console.log(`Decision request ${write.status}: ${write.requestId}`);
+  console.log(request.question);
+}
+
+export async function workflowDecisionProducerMemoryCommand(options: {
+  memoryId: string;
+  action: string;
+  summary?: string;
+  reviewerHint?: string;
+  json?: boolean;
+}): Promise<void> {
+  const action = options.action.trim();
+  if (!MEMORY_DECISION_PRODUCER_ACTIONS.has(action)) {
+    throw new Error(
+      `Invalid memory decision action '${action}'. Use one of: ${[
+        ...MEMORY_DECISION_PRODUCER_ACTIONS,
+      ].join(", ")}. Internal review item types such as review_queue_item are not human actions.`
+    );
+  }
+  const reviewItem = await findMemoryReviewConnectorItem(options.memoryId);
+  if (reviewItem) {
+    const request = buildMemoryReviewDecisionRequest({
+      ...reviewItem,
+      action,
+      recommendation: options.reviewerHint ?? action,
+      options:
+        action === "verify"
+          ? ["verify", "keep_pending", "invalidate"]
+          : action === "invalidate"
+            ? ["invalidate", "keep", "inspect"]
+            : reviewItem.options.includes(action)
+              ? reviewItem.options
+              : [action, ...reviewItem.options.filter((option) => option !== action)],
+    });
+    const write = writeDecisionRequest(request);
+    if (options.json) {
+      printJson({ request, write, inheritedFrom: "memory reviews" });
+      return;
+    }
+    console.log(`Decision request ${write.status}: ${write.requestId}`);
+    console.log(request.question);
+    return;
+  }
+  const applyPath =
+    action === "verify"
+      ? "snipara_memory_verify"
+      : action === "invalidate"
+        ? "snipara_memory_invalidate"
+        : "snipara_memory_resolve_queue_item";
+  const request = buildDecisionRequest({
+    producer: {
+      kind:
+        action === "verify"
+          ? "memory_verify"
+          : action === "invalidate"
+            ? "memory_invalidate"
+            : "memory_review_queue",
+      command: "workflow decision-producer memory",
+      sourceRef: `memory:${options.memoryId}`,
+    },
+    decision: `memory_${action}`,
+    question: `${action} memory ${options.memoryId}?`,
+    evidence: {
+      summary:
+        options.summary ?? `Memory ${options.memoryId} needs human review for action ${action}.`,
+      refs: [`memory:${options.memoryId}`],
+      reasonCodes: ["memory_human_review", `memory_action_${action}`],
+      applyPath,
+      applyCommand:
+        applyPath === "snipara_memory_verify"
+          ? `snipara_memory_verify({ memory_id: "${options.memoryId}" })`
+          : applyPath === "snipara_memory_invalidate"
+            ? `snipara_memory_invalidate({ memory_id: "${options.memoryId}" })`
+            : `snipara_memory_resolve_queue_item({ memory_id: "${options.memoryId}", action: "${action}" })`,
+    },
+    options:
+      action === "verify"
+        ? ["verify", "keep_pending", "invalidate"]
+        : action === "invalidate"
+          ? ["invalidate", "keep", "inspect"]
+          : [action, "keep_pending", "reject"],
+    recommendation: options.reviewerHint,
+    fingerprintParts: ["memory", options.memoryId, action],
+  });
+  const write = writeDecisionRequest(request);
+  if (options.json) {
+    printJson({ request, write });
+    return;
+  }
+  console.log(`Decision request ${write.status}: ${write.requestId}`);
+}
+
+async function findMemoryReviewConnectorItem(
+  memoryId: string
+): Promise<MemoryReviewConnectorItem | null> {
+  try {
+    const result = await buildMemoryReviewConnector({
+      limit: 50,
+      includeCleanCandidates: false,
+      includeDuplicates: false,
+    });
+    return (
+      result.items.find(
+        (item) =>
+          item.memoryId === memoryId ||
+          item.evidenceItem.ref === memoryId ||
+          item.evidenceItem.ref === `memory:${memoryId}`
+      ) ?? null
+    );
+  } catch {
+    return null;
+  }
+}
+
+export async function workflowDecisionProducerContextRiskCommand(options: {
+  ref: string;
+  summary?: string;
+  kind?: string;
+  json?: boolean;
+}): Promise<void> {
+  const kind =
+    options.kind === "document_tombstone" ? "document_tombstone" : "unknown_registry_risk";
+  const request = buildDecisionRequest({
+    producer: {
+      kind,
+      command: "workflow decision-producer context-risk",
+      sourceRef: options.ref,
+    },
+    decision: "validate_context_risk",
+    question: `Is this context risk still true: ${options.ref}?`,
+    evidence: {
+      summary: options.summary ?? `Context risk ${options.ref} needs human validation.`,
+      refs: [options.ref],
+      reasonCodes: [kind, "stale_context_human_review"],
+      applyPath: "manual_context_review",
+      applyCommand: "Update or invalidate the cited context source after review.",
+    },
+    options: ["still_true", "invalidate", "needs_rewrite", "ignore"],
+    recommendation: "still_true",
+    fingerprintParts: ["context-risk", kind, options.ref],
+  });
+  const write = writeDecisionRequest(request);
+  if (options.json) {
+    printJson({ request, write });
+    return;
+  }
+  console.log(`Decision request ${write.status}: ${write.requestId}`);
 }
 
 export async function workflowScaffoldCommand(options: {
@@ -2288,12 +4500,62 @@ function phaseQuery(state: ManagedWorkflowState, phase: ManagedWorkflowPhase): s
   return phase.query || `${state.goal}: ${phase.title}`;
 }
 
-function effectiveWorkflowMode(mode: WorkflowMode): Exclude<WorkflowMode, "auto"> {
-  return mode === "auto" ? "standard" : mode;
+export function resolveAutoWorkflowMode(query: string): Exclude<WorkflowMode, "auto"> {
+  const normalized = query.toLowerCase();
+
+  if (
+    /\b(orchestrate|swarm|htask|handoff|multi-agent|multi agent|worker|proof gate|proof-gate|drift check|release gate|production gate)\b/.test(
+      normalized
+    )
+  ) {
+    return "orchestrate";
+  }
+
+  if (
+    /\b(deploy|deployment|release|merge|push|migration|schema|auth|billing|security|architecture|architectural|multi-phase|multiphase|phase commit|final commit|managed workflow|roadmap|plan)\b/.test(
+      normalized
+    )
+  ) {
+    return "full";
+  }
+
+  if (
+    /\b(why|pourquoi|decision|décision|rationale|positioning|positionnement|strategy|stratégie|cross-session|previous decision|prior decision|historical context)\b/.test(
+      normalized
+    )
+  ) {
+    return "standard";
+  }
+
+  if (
+    /\b(status|show|list|read|lookup|recall|brief|summarize|summary|what changed|question|docs?|documentation)\b/.test(
+      normalized
+    ) &&
+    !/\b(implement|change|fix|ship|code|refactor|test|write|create|build)\b/.test(normalized)
+  ) {
+    return "lite";
+  }
+
+  if (
+    /\b(typo|copy edit|small diff|tiny diff|one-line|one line|known file|obvious fix|quick fix|format|formatting|rename)\b/.test(
+      normalized
+    ) &&
+    !/\b(architecture|release|deploy|migration|schema|auth|billing|security|multi-file|many files|5\+ files|cross-session|decision|décision)\b/.test(
+      normalized
+    )
+  ) {
+    return "lite";
+  }
+
+  return "standard";
 }
 
-function shouldFollowWorkflowRecommendations(mode: WorkflowMode): boolean {
-  const effectiveMode = effectiveWorkflowMode(mode);
+function effectiveWorkflowMode(mode: WorkflowMode, query = ""): Exclude<WorkflowMode, "auto"> {
+  return mode === "auto" ? resolveAutoWorkflowMode(query) : mode;
+}
+
+function shouldFollowWorkflowRecommendations(mode: WorkflowMode, query = ""): boolean {
+  const effectiveMode = effectiveWorkflowMode(mode, query);
   return effectiveMode === "standard" || effectiveMode === "full";
 }
 
@@ -2301,6 +4563,10 @@ function printManagedWorkflowState(state: ManagedWorkflowState): void {
   printKeyValue("Workflow:", `${state.workflowId} (${state.status})`);
   printKeyValue("Goal:", state.goal);
   printKeyValue("State file:", WORKFLOW_STATE_RELATIVE_PATH);
+  const pendingDecisions = safeDecisionPendingCount();
+  if (pendingDecisions > 0) {
+    printKeyValue("Pending decisions:", String(pendingDecisions));
+  }
   if (state.currentPhaseId) {
     printKeyValue("Current phase:", state.currentPhaseId);
     const runtimeBinding = findSandboxRuntimeBinding(state, state.currentPhaseId);
@@ -2324,17 +4590,26 @@ function printManagedWorkflowState(state: ManagedWorkflowState): void {
   console.log("");
 }
 
+function safeDecisionPendingCount(): number {
+  try {
+    return decisionPendingCount(process.cwd());
+  } catch {
+    return 0;
+  }
+}
+
 function printManagedWorkflowDiscipline(): void {
   console.log(chalk.bold("Coding workflow mode"));
   console.log(
-    "- LITE: small single-phase edits still start with Snipara recall/context and end with local verification."
+    "- LITE: small single-phase edits have no mandatory Snipara calls; use local verification and escalate on demand."
   );
   console.log(
-    "- STANDARD: normal coding work uses context plus recommended code-graph follow-up; --mode auto is a compatibility alias."
+    "- STANDARD: normal coding work uses context or code graph when the task needs source truth or prior rationale."
   );
   console.log(
     "- FULL: use this managed workflow with phases/chunks for multi-file, risky, release/deploy, architectural, or compaction-prone coding work."
   );
+  console.log("- --mode auto routes by task intent; a nudge is advisory, not a gate.");
   console.log(
     "- FULL + ORCHESTRATED: use explicit snipara-orchestrator handoff only for production gates, drift checks, htasks, or multi-agent coordination."
   );
@@ -3670,7 +5945,21 @@ function printRuntimeHint(query: string, mode: WorkflowMode): void {
   console.log("Need sandboxed execution or autonomous Sandbox jobs?");
   console.log("Existing project: npx create-snipara repair --with-runtime");
   console.log("Fresh setup: npx create-snipara --profile full-stack --advanced");
-  console.log("Manual install: pip install 'snipara-sandbox[all]'");
+  console.log(
+    'Manual install: python -m pip install "snipara-sandbox[all]" (`[all]` is the pip extra, not a separate argument).'
+  );
+}
+
+function printLiteWorkflowRun(query: string, requestedMode: WorkflowMode): void {
+  console.log(chalk.bold("Workflow Lite"));
+  printKeyValue("Requested mode:", requestedMode);
+  printKeyValue("Effective mode:", "lite");
+  printKeyValue("Task:", query);
+  console.log("No Snipara recall, context query, or bootstrap call was run.");
+  console.log(
+    "Escalate with recall, context_query, code impact, or task-commit only when the task creates that need."
+  );
+  console.log("");
 }
 
 function runtimeHintVersionLabel(report: ReturnType<typeof detectRuntimeEnvironment>): string {
@@ -3768,6 +6057,9 @@ function printAdaptiveRoutingRecommendation(routing: AdaptiveWorkRoutingRecommen
   if (routing.requirements.preferredEndpointTypes?.length) {
     printKeyValue("Preferred endpoints:", routing.requirements.preferredEndpointTypes.join(", "));
   }
+  if (routing.requirements.allowedEndpointTypes?.length) {
+    printKeyValue("Allowed endpoints:", routing.requirements.allowedEndpointTypes.join(", "));
+  }
   if (routing.requirements.plannerRetainsReasoning) {
     printKeyValue("Planner retains reasoning:", "yes");
   }
@@ -3803,6 +6095,18 @@ function printAdaptiveRoutingRecommendation(routing: AdaptiveWorkRoutingRecommen
     console.log("Warnings:");
     for (const warning of routing.routingCard.warnings) {
       console.log(`- ${warning}`);
+    }
+  }
+  if (routing.routingCard.rejectedReasons) {
+    const entries = Object.entries(routing.routingCard.rejectedReasons);
+    if (entries.length > 0) {
+      console.log("Rejected candidates:");
+      for (const [candidateId, reasons] of entries) {
+        console.log(`- ${candidateId}`);
+        for (const reason of reasons) {
+          console.log(`    - ${reason}`);
+        }
+      }
     }
   }
 }
@@ -3929,6 +6233,7 @@ function resolveAdaptiveRoutingIntent(
   options: {
     adaptiveRoutingDryRun?: boolean;
     routeLocalWorkers?: boolean;
+    routingLocalWorker?: string;
     routingWorkerRole?: string;
     routingPreferredEndpoints?: string[];
     routingAllowedEndpoints?: string[];
@@ -3943,6 +6248,16 @@ function resolveAdaptiveRoutingIntent(
       shouldBuild: cliRequested,
       shouldUseHostedCatalog: cliRequested,
       warnings: [],
+    };
+  }
+
+  if (options.routingLocalWorker) {
+    return {
+      shouldBuild: true,
+      shouldUseHostedCatalog: false,
+      warnings: [
+        `Declared local worker ${options.routingLocalWorker} selected; hosted adaptive catalog lookup is disabled for this run.`,
+      ],
     };
   }
 
@@ -4125,6 +6440,9 @@ function normalizeAdaptiveRoutingResolution(
   }
   const selected = isRecord(value.selected) ? value.selected : undefined;
   const candidate = selected && isRecord(selected.candidate) ? selected.candidate : undefined;
+  const rejectedReasons = normalizeStringArrayRecord(
+    value.rejectedReasons ?? value.rejected_reasons
+  );
   const selectedPayload =
     selected && candidate
       ? {
@@ -4153,12 +6471,37 @@ function normalizeAdaptiveRoutingResolution(
     ...(stringValue(value.fallback) ? { fallback: stringValue(value.fallback) } : {}),
     ...(reasons ? { reasons } : {}),
     ...(warnings ? { warnings } : {}),
+    ...(rejectedReasons ? { rejectedReasons } : {}),
   };
+}
+
+function normalizeStringArrayRecord(value: unknown): Record<string, string[]> | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const output: Record<string, string[]> = {};
+  for (const [candidateId, candidateReasons] of Object.entries(value)) {
+    const normalizedReasons = normalizeStringArray(candidateReasons);
+    const candidateIdValue = stringValue(candidateId);
+    if (!candidateIdValue || !normalizedReasons || normalizedReasons.length === 0) {
+      continue;
+    }
+    output[candidateIdValue] = normalizedReasons;
+  }
+
+  if (Object.keys(output).length === 0) {
+    return undefined;
+  }
+
+  return output;
 }
 
 function shouldResolveAdaptiveRoutingLocally(
   options: {
     routeLocalWorkers?: boolean;
+    routingLocalWorker?: string;
+    routingPreferredEndpoints?: string[];
+    routingAllowedEndpoints?: string[];
     routingLocalBaseUrl?: string;
     routingLocalModel?: string;
     routingLocalPreferModel?: string;
@@ -4171,6 +6514,7 @@ function shouldResolveAdaptiveRoutingLocally(
   }
   if (
     !options.routeLocalWorkers &&
+    !options.routingLocalWorker &&
     !options.routingLocalBaseUrl &&
     !options.routingLocalModel &&
     !options.routingLocalPreferModel &&
@@ -4181,6 +6525,66 @@ function shouldResolveAdaptiveRoutingLocally(
   const preferred = routing.requirements.preferredEndpointTypes ?? [];
   const allowed = routing.requirements.allowedEndpointTypes ?? [];
   return preferred.includes("local") || allowed.length === 0 || allowed.includes("local");
+}
+
+function hasLocalRoutingRequest(options: {
+  routeLocalWorkers?: boolean;
+  routingLocalWorker?: string;
+  routingPreferredEndpoints?: string[];
+  routingAllowedEndpoints?: string[];
+  routingLocalBaseUrl?: string;
+  routingLocalModel?: string;
+  routingLocalPreferModel?: string;
+  routingLocalProvider?: string;
+}): boolean {
+  return (
+    options.routeLocalWorkers === true ||
+    Boolean(options.routingLocalWorker) ||
+    Boolean(options.routingLocalBaseUrl) ||
+    Boolean(options.routingLocalModel) ||
+    Boolean(options.routingLocalPreferModel) ||
+    Boolean(options.routingLocalProvider) ||
+    normalizeRoutingEndpointTypes(options.routingPreferredEndpoints).includes("local") ||
+    normalizeRoutingEndpointTypes(options.routingAllowedEndpoints).includes("local")
+  );
+}
+
+function applyLocalWorkerRoutingDefaults<
+  T extends {
+    routeLocalWorkers?: boolean;
+    routingLocalWorker?: string;
+    routingWorkerRole?: string;
+    routingPreferredEndpoints?: string[];
+    routingAllowedEndpoints?: string[];
+    routingLocalBaseUrl?: string;
+    routingLocalModel?: string;
+    routingLocalPreferModel?: string;
+    routingLocalProvider?: string;
+    plannerRetainsReasoning?: boolean;
+  },
+>(options: T, defaults: LocalWorkerRoutingDefaults | null): T {
+  if (!defaults) {
+    return options;
+  }
+
+  return {
+    ...options,
+    routeLocalWorkers: options.routeLocalWorkers ?? defaults.routeLocalWorkers,
+    routingWorkerRole: options.routingWorkerRole ?? defaults.routingWorkerRole,
+    routingPreferredEndpoints:
+      options.routingPreferredEndpoints && options.routingPreferredEndpoints.length > 0
+        ? options.routingPreferredEndpoints
+        : defaults.routingPreferredEndpoints,
+    routingAllowedEndpoints:
+      options.routingAllowedEndpoints && options.routingAllowedEndpoints.length > 0
+        ? options.routingAllowedEndpoints
+        : defaults.routingAllowedEndpoints,
+    routingLocalBaseUrl: options.routingLocalBaseUrl ?? defaults.routingLocalBaseUrl,
+    routingLocalModel: options.routingLocalModel ?? defaults.routingLocalModel,
+    routingLocalPreferModel: options.routingLocalPreferModel ?? defaults.routingLocalPreferModel,
+    routingLocalProvider: options.routingLocalProvider ?? defaults.routingLocalProvider,
+    plannerRetainsReasoning: options.plannerRetainsReasoning ?? defaults.plannerRetainsReasoning,
+  };
 }
 
 function runOrchestratorJsonCommand(
@@ -4257,6 +6661,9 @@ function enrichAdaptiveRoutingWithLocalOrchestrator(
         : undefined;
     const resolutionWarnings = normalizeStringArray(resolution?.warnings) ?? [];
     const resolutionReasons = normalizeStringArray(resolution?.reasons) ?? [];
+    const resolutionRejectedReasons = normalizeStringArrayRecord(
+      (resolution as { rejectedReasons?: Record<string, string[]> })?.rejectedReasons
+    );
     const approvalRequired = booleanValue(
       isRecord(resolution?.policyDecision) ? resolution.policyDecision.approvalRequired : undefined
     );
@@ -4285,6 +6692,7 @@ function enrichAdaptiveRoutingWithLocalOrchestrator(
         ...(selectedCandidate?.workerClass
           ? { recommendedWorkerClass: selectedCandidate.workerClass }
           : {}),
+        ...(resolutionRejectedReasons ? { rejectedReasons: resolutionRejectedReasons } : {}),
         ...(approvalRequired !== undefined ? { humanApprovalRequired: approvalRequired } : {}),
         reasons: uniqueStrings([
           ...routing.routingCard.reasons,
@@ -4495,50 +6903,84 @@ function printChunkResult(chunkId: string, result: Record<string, unknown>): voi
 }
 
 function readSessionEntryPreview(entry: SessionMemoryEntry): string {
+  for (const value of [entry.summary, entry.text, entry.content, entry.title]) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    const trimmed = value.trim();
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        if (isRecord(parsed)) {
+          const summary = stringValue(parsed.summary);
+          const nextStep = stringValue(parsed.nextStep);
+          const task = stringValue(parsed.task);
+          const readable = [summary, nextStep ? `Next: ${nextStep}` : undefined, task]
+            .filter((item): item is string => Boolean(item))
+            .join(" ");
+          if (readable.length > 0) {
+            return toPreview(readable, 220);
+          }
+        }
+      } catch {
+        // Fall back to the raw preview below.
+      }
+    }
+    if (trimmed.length > 0) {
+      return toPreview(trimmed, 220);
+    }
+  }
   return toPreview(entry.text ?? entry.content ?? entry.summary ?? entry.title, 220);
 }
 
-function printSessionTier(label: string, tier: SessionMemoryTier): void {
-  if (tier.memories.length === 0) {
-    return;
-  }
-
-  console.log(chalk.bold(label));
-  for (const entry of tier.memories.slice(0, 5)) {
-    console.log(`- ${readSessionEntryPreview(entry)}`);
-  }
-  console.log("");
+function compactSessionEntryLine(entry: SessionMemoryEntry): string {
+  const label =
+    typeof entry.type === "string" && entry.type.trim().length > 0
+      ? entry.type.trim()
+      : typeof entry.category === "string" && entry.category.trim().length > 0
+        ? entry.category.trim()
+        : "memory";
+  return `- ${label}: ${readSessionEntryPreview(entry)}`;
 }
 
 function printSessionBootstrap(
   result: SessionMemoriesResult,
-  options: { includeSessionContext: boolean }
-): void {
-  const normalized = normalizeSessionMemoriesResult(result);
+  options: { includeSessionContext: boolean; maxTokens?: number }
+): SessionBootstrapBrief | null {
+  const brief = buildSessionBootstrapBrief(result, {
+    includeSessionContext: options.includeSessionContext,
+    maxTokens: options.maxTokens,
+  });
+  const entries = brief.entries;
 
-  printKeyValue("Durable memory:", normalized.critical.count);
-  printKeyValue(
-    "Session context:",
-    options.includeSessionContext
-      ? normalized.daily.count
-      : "skipped by default (use --include-session-context)"
-  );
-  if (typeof normalized.total_tokens === "number") {
-    printKeyValue("Tokens:", normalized.total_tokens);
+  if (entries.length === 0) {
+    return null;
   }
-  if (typeof normalized.message === "string" && normalized.message.length > 0) {
-    printKeyValue("Message:", normalized.message);
+
+  console.log(chalk.bold("Snipara Bootstrap Brief"));
+  for (const entry of entries) {
+    console.log(compactSessionEntryLine(entry));
   }
   console.log("");
+  return brief;
+}
 
-  printSessionTier("Durable Memory", normalized.critical);
-  if (options.includeSessionContext) {
-    printSessionTier("Session Context (weak carryover)", normalized.daily);
-  }
-
-  if (normalized.critical.count === 0 && normalized.daily.count === 0) {
-    printJson(normalized);
-  }
+function buildPrintedBootstrapQuality(
+  brief: SessionBootstrapBrief,
+  now?: Date
+): SessionBootstrapQualityReport {
+  return buildSessionBootstrapQuality(
+    {
+      critical: {
+        memories: brief.entries,
+        count: brief.entries.length,
+        tokens: brief.estimatedTokens,
+      },
+      daily: { memories: [], count: 0, tokens: 0 },
+      total_tokens: brief.estimatedTokens,
+    },
+    { expectedMaxTokens: brief.budgetTokens, now }
+  );
 }
 
 function printSessionBootstrapQuality(report: SessionBootstrapQualityReport): void {
@@ -4810,12 +7252,15 @@ export async function planCommand(options: {
       const planFile = writeGeneratedWorkflowPlanFile(result, options.query, options.writePlanFile);
       payload.generated_plan_file = planFile;
       if (options.startWorkflow) {
-        const state = startManagedWorkflowState({
-          goal: options.query,
-          planFile: planFile.path,
-          id: options.workflowId,
-          force: options.force,
-        });
+        const state = await publishWorkflowStartCoordination(
+          startManagedWorkflowState({
+            goal: options.query,
+            planFile: planFile.path,
+            id: options.workflowId,
+            force: options.force,
+          }),
+          inferWorkflowCoordinationMode({ planFile: planFile.path })
+        );
         payload.managed_workflow = state;
       }
     }
@@ -6341,6 +8786,7 @@ export async function workflowRunCommand(options: {
   orchestratorPolicySource?: string;
   adaptiveRoutingDryRun?: boolean;
   routeLocalWorkers?: boolean;
+  routingLocalWorker?: string;
   routingWorkerRole?: string;
   routingPreferredEndpoints?: string[];
   routingAllowedEndpoints?: string[];
@@ -6356,38 +8802,57 @@ export async function workflowRunCommand(options: {
   json?: boolean;
 }): Promise<void> {
   const hostedConfigured = isConfigured();
+  const effectiveMode = effectiveWorkflowMode(options.mode, options.query);
   const localAdaptiveRoutingPolicy = readLocalAdaptiveRoutingProjectPolicy();
   const localAdaptiveRoutingRequested = shouldBuildAdaptiveRouting(options);
   const canRunLocalAdaptiveRouting =
     !hostedConfigured &&
-    options.mode !== "orchestrate" &&
+    effectiveMode !== "orchestrate" &&
     (localAdaptiveRoutingRequested ||
       (localAdaptiveRoutingPolicy !== null && localAdaptiveRoutingPolicy.mode !== "off"));
 
-  if (!hostedConfigured && !canRunLocalAdaptiveRouting) {
+  if (!hostedConfigured && !canRunLocalAdaptiveRouting && effectiveMode !== "lite") {
     ensureConfigured();
   }
 
   const client = hostedConfigured ? createClient(20000) : null;
-  const adaptiveRoutingPolicy = hostedConfigured
+  const loadedAdaptiveRoutingPolicy = hostedConfigured
     ? await loadAdaptiveRoutingProjectPolicy(client, localAdaptiveRoutingPolicy)
     : localAdaptiveRoutingPolicy;
+  const adaptiveRoutingPolicy =
+    options.routingLocalWorker && localAdaptiveRoutingPolicy
+      ? localAdaptiveRoutingPolicy
+      : loadedAdaptiveRoutingPolicy;
   const adaptiveRoutingIntent = resolveAdaptiveRoutingIntent(
     options,
     adaptiveRoutingPolicy,
     hostedConfigured
   );
+  const localWorkerRoutingDefaults = adaptiveRoutingIntent.shouldBuild
+    ? resolveLocalWorkerRoutingDefaults({
+        workerId: options.routingLocalWorker,
+        workerRole: options.routingWorkerRole,
+      })
+    : null;
+  const routingOptions = applyLocalWorkerRoutingDefaults(options, localWorkerRoutingDefaults);
   const adaptiveRoutingDryRun = adaptiveRoutingIntent.shouldBuild
-    ? buildWorkflowAdaptiveRouting(options, adaptiveRoutingPolicy, adaptiveRoutingIntent.warnings)
+    ? buildWorkflowAdaptiveRouting(
+        routingOptions,
+        adaptiveRoutingPolicy,
+        adaptiveRoutingIntent.warnings
+      )
     : null;
   const adaptiveRoutingWithCatalog =
     adaptiveRoutingDryRun && adaptiveRoutingIntent.shouldUseHostedCatalog && client
       ? await enrichAdaptiveRoutingWithHostedCatalog(client, adaptiveRoutingDryRun)
       : adaptiveRoutingDryRun;
-  const adaptiveRouting = shouldResolveAdaptiveRoutingLocally(options, adaptiveRoutingWithCatalog)
-    ? enrichAdaptiveRoutingWithLocalOrchestrator(adaptiveRoutingWithCatalog!, options)
+  const adaptiveRouting = shouldResolveAdaptiveRoutingLocally(
+    routingOptions,
+    adaptiveRoutingWithCatalog
+  )
+    ? enrichAdaptiveRoutingWithLocalOrchestrator(adaptiveRoutingWithCatalog!, routingOptions)
     : adaptiveRoutingWithCatalog;
-  const orchestratorRecommendation = getOrchestratorRecommendation(options.query, options.mode, {
+  const orchestratorRecommendation = getOrchestratorRecommendation(options.query, effectiveMode, {
     policyAutoRoute: options.autoRouteOrchestrator,
     policySource: options.orchestratorPolicySource,
     adaptiveRoutingDryRun: Boolean(adaptiveRouting),
@@ -6402,7 +8867,7 @@ export async function workflowRunCommand(options: {
           query: options.query,
           summary: options.query,
           title: options.query,
-          mode: options.mode,
+          mode: effectiveMode,
           adaptiveRouting,
         })
       : null;
@@ -6410,15 +8875,28 @@ export async function workflowRunCommand(options: {
   if (!hostedConfigured) {
     const payload = {
       mode: options.mode,
-      effective_mode: effectiveWorkflowMode(options.mode),
+      effective_mode: effectiveMode,
       local_only: true,
       local_policy_path: localAdaptiveRoutingPolicy ? ADAPTIVE_ROUTING_POLICY_RELATIVE_PATH : null,
+      retrieval_policy:
+        effectiveMode === "lite"
+          ? {
+              mandatory_calls: [],
+              escalation:
+                "Run recall, context_query, or code impact only when the task needs them.",
+              persistence: "Use task-commit only when reusable durable knowledge was learned.",
+            }
+          : undefined,
       orchestrator_recommendation: orchestratorRecommendation,
       orchestrator_handoff: preparedHandoff,
       adaptive_routing: adaptiveRouting,
-      warnings: [
-        "Hosted Snipara is not configured; workflow run is limited to local Adaptive Work Routing metadata.",
-      ],
+      local_worker: localWorkerRoutingDefaults?.worker,
+      warnings:
+        effectiveMode === "lite"
+          ? []
+          : [
+              "Hosted Snipara is not configured; workflow run is limited to local Adaptive Work Routing metadata.",
+            ],
     };
 
     if (options.json) {
@@ -6426,10 +8904,47 @@ export async function workflowRunCommand(options: {
       return;
     }
 
-    console.log(chalk.bold("Local Adaptive Work Routing"));
-    console.log(
-      "Hosted Snipara is not configured; no context query, hosted catalog, or planner call ran."
-    );
+    if (effectiveMode === "lite") {
+      printLiteWorkflowRun(options.query, options.mode);
+    } else {
+      console.log(chalk.bold("Local Adaptive Work Routing"));
+      console.log(
+        "Hosted Snipara is not configured; no context query, hosted catalog, or planner call ran."
+      );
+    }
+    if (adaptiveRouting) {
+      printAdaptiveRoutingRecommendation(adaptiveRouting);
+    }
+    if (preparedHandoff) {
+      printPreparedOrchestratorHandoff(preparedHandoff);
+    }
+    return;
+  }
+
+  if (effectiveMode === "lite") {
+    const payload = {
+      mode: options.mode,
+      effective_mode: effectiveMode,
+      retrieval_policy: {
+        mandatory_calls: [],
+        escalation: "Run recall, context_query, or code impact only when the task needs them.",
+        persistence: "Use task-commit only when reusable durable knowledge was learned.",
+      },
+      orchestrator_recommendation: orchestratorRecommendation,
+      orchestrator_handoff: preparedHandoff,
+      adaptive_routing: adaptiveRouting,
+      local_worker: localWorkerRoutingDefaults?.worker,
+    };
+
+    if (options.json) {
+      printJson(payload);
+      return;
+    }
+
+    printLiteWorkflowRun(options.query, options.mode);
+    if (options.runtimeHint !== false) {
+      printRuntimeHint(options.query, effectiveMode);
+    }
     if (adaptiveRouting) {
       printAdaptiveRoutingRecommendation(adaptiveRouting);
     }
@@ -6443,7 +8958,7 @@ export async function workflowRunCommand(options: {
     throw new Error("Hosted Snipara client unavailable after configuration check.");
   }
 
-  if (options.mode === "orchestrate") {
+  if (effectiveMode === "orchestrate") {
     const result = await client.orchestrate(options.query, options.maxTokens);
     if (options.json) {
       printJson({
@@ -6452,13 +8967,14 @@ export async function workflowRunCommand(options: {
         orchestrator_recommendation: orchestratorRecommendation,
         orchestrator_handoff: preparedHandoff,
         adaptive_routing: adaptiveRouting,
+        local_worker: localWorkerRoutingDefaults?.worker,
       });
       return;
     }
     printOrchestrateResult(result);
     if (options.runtimeHint !== false) {
-      printRuntimeHint(options.query, options.mode);
-      printOrchestratorHandoffHint(options.query, options.mode, orchestratorRecommendation);
+      printRuntimeHint(options.query, effectiveMode);
+      printOrchestratorHandoffHint(options.query, effectiveMode, orchestratorRecommendation);
     }
     if (adaptiveRouting) {
       printAdaptiveRoutingRecommendation(adaptiveRouting);
@@ -6469,9 +8985,9 @@ export async function workflowRunCommand(options: {
     return;
   }
 
-  const effectiveMode = effectiveWorkflowMode(options.mode);
   const shouldRequestSharedContext =
-    shouldFollowWorkflowRecommendations(options.mode) && hasSharedContextIntent(options.query);
+    shouldFollowWorkflowRecommendations(options.mode, options.query) &&
+    hasSharedContextIntent(options.query);
   const workflowBudget =
     effectiveMode === "full"
       ? resolveFullWorkflowTokenBudget({
@@ -6488,6 +9004,7 @@ export async function workflowRunCommand(options: {
     orchestrator_recommendation: orchestratorRecommendation,
     orchestrator_handoff: preparedHandoff,
     adaptive_routing: adaptiveRouting,
+    local_worker: localWorkerRoutingDefaults?.worker,
   };
   if (workflowBudget) {
     payload.workflow_budget = workflowBudget;
@@ -6528,7 +9045,10 @@ export async function workflowRunCommand(options: {
     });
   }
 
-  if (context.recommended_tool && shouldFollowWorkflowRecommendations(options.mode)) {
+  if (
+    context.recommended_tool &&
+    shouldFollowWorkflowRecommendations(options.mode, options.query)
+  ) {
     payload.executed_recommended_tool = await runRecommendedTool(context);
   }
 
@@ -6545,12 +9065,15 @@ export async function workflowRunCommand(options: {
         const planFile = writeGeneratedWorkflowPlanFile(plan, options.query, options.writePlanFile);
         payload.generated_plan_file = planFile;
         if (options.startWorkflowFromPlan) {
-          payload.managed_workflow = startManagedWorkflowState({
-            goal: options.query,
-            planFile: planFile.path,
-            id: options.workflowId,
-            force: options.force,
-          });
+          payload.managed_workflow = await publishWorkflowStartCoordination(
+            startManagedWorkflowState({
+              goal: options.query,
+              planFile: planFile.path,
+              id: options.workflowId,
+              force: options.force,
+            }),
+            inferWorkflowCoordinationMode({ planFile: planFile.path })
+          );
         }
       } else if (!quality.valid) {
         payload.plan_error = {
@@ -6575,17 +9098,22 @@ export async function workflowRunCommand(options: {
   }
 
   if (effectiveMode === "full" && payload.session_bootstrap) {
-    console.log(chalk.bold("Workflow Bootstrap"));
-    printSessionBootstrap(payload.session_bootstrap as SessionMemoriesResult, {
-      includeSessionContext: Boolean(workflowBudget?.include_session_context),
-    });
+    const printedBootstrap = printSessionBootstrap(
+      payload.session_bootstrap as SessionMemoriesResult,
+      {
+        includeSessionContext: Boolean(workflowBudget?.include_session_context),
+        maxTokens:
+          (workflowBudget?.allocations.critical_memory_tokens ??
+            DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS) +
+          (workflowBudget?.allocations.session_context_tokens ?? 0),
+      }
+    );
     if (
+      printedBootstrap &&
       payload.session_bootstrap_quality &&
       typeof payload.session_bootstrap_quality === "object"
     ) {
-      printSessionBootstrapQuality(
-        payload.session_bootstrap_quality as SessionBootstrapQualityReport
-      );
+      printSessionBootstrapQuality(buildPrintedBootstrapQuality(printedBootstrap));
     }
     if (workflowBudget?.warnings.length) {
       console.log(chalk.bold("Workflow Budget Warnings"));
@@ -6637,8 +9165,8 @@ export async function workflowRunCommand(options: {
   }
 
   if (options.runtimeHint !== false) {
-    printRuntimeHint(options.query, options.mode);
-    printOrchestratorHandoffHint(options.query, options.mode, orchestratorRecommendation);
+    printRuntimeHint(options.query, effectiveMode);
+    printOrchestratorHandoffHint(options.query, effectiveMode, orchestratorRecommendation);
   }
   if (adaptiveRouting) {
     printAdaptiveRoutingRecommendation(adaptiveRouting);
@@ -6651,6 +9179,7 @@ export async function workflowRunCommand(options: {
 function shouldBuildAdaptiveRouting(options: {
   adaptiveRoutingDryRun?: boolean;
   routeLocalWorkers?: boolean;
+  routingLocalWorker?: string;
   routingWorkerRole?: string;
   routingPreferredEndpoints?: string[];
   routingAllowedEndpoints?: string[];
@@ -6663,6 +9192,7 @@ function shouldBuildAdaptiveRouting(options: {
   return Boolean(
     options.adaptiveRoutingDryRun ||
     options.routeLocalWorkers ||
+    options.routingLocalWorker ||
     options.routingWorkerRole ||
     options.routingPreferredEndpoints?.length ||
     options.routingAllowedEndpoints?.length ||
@@ -6679,6 +9209,7 @@ function buildWorkflowAdaptiveRouting(
     query: string;
     mode: WorkflowMode;
     routeLocalWorkers?: boolean;
+    routingLocalWorker?: string;
     routingWorkerRole?: string;
     routingPreferredEndpoints?: string[];
     routingAllowedEndpoints?: string[];
@@ -6722,8 +9253,16 @@ function buildWorkflowAdaptiveRouting(
   const removedPreferredEndpointTypes = initialPreferredEndpointTypes.filter(
     (type) => !preferredEndpointTypes.includes(type)
   );
+  const localRoutingRequested = hasLocalRoutingRequest(options);
+  const localRoutingAllowed =
+    allowedEndpointTypes.length === 0 || allowedEndpointTypes.includes("local");
   const policyWarnings = [
     ...intentWarnings,
+    ...(localRoutingRequested && !localRoutingAllowed
+      ? [
+          "Local worker routing was requested, but the effective Adaptive Work Routing policy does not allow local endpoints; Companion skipped local orchestrator routing and will use fallback main_agent.",
+        ]
+      : []),
     ...(requestedAllowedEndpointTypes.length > 0 &&
     policyAllowedEndpointTypes.length > 0 &&
     requestedPolicyEndpointIntersection.length === 0
@@ -6919,6 +9458,97 @@ function startManagedWorkflowState(options: {
   return state;
 }
 
+function plannedWorkflowFiles(state: ManagedWorkflowState): string[] {
+  return (
+    uniqueStringList(
+      state.phases.flatMap((phase) => phase.files ?? []).map(normalizeRepoFilePath)
+    ) ?? []
+  );
+}
+
+async function publishWorkflowStartCoordination(
+  state: ManagedWorkflowState,
+  mode: ManagedWorkflowCoordinationMode
+): Promise<ManagedWorkflowState> {
+  const files = mode === "standard" ? [] : plannedWorkflowFiles(state);
+  const startReceipt = await workflowCollaborationStart({
+    workflowId: state.workflowId,
+    goal: state.goal,
+    files,
+    mode,
+  });
+  const teamSyncReceipt =
+    mode === "full" || mode === "orchestrate"
+      ? await createTeamSyncStartWorkPayload(process.cwd(), {
+          summary: state.goal,
+          files,
+        })
+      : undefined;
+  const now = new Date().toISOString();
+
+  state.coordination = {
+    mode,
+    autoPublish: true,
+    startedAt: state.coordination?.startedAt ?? now,
+    lastUpdatedAt: now,
+    workSessionId: startReceipt.workSessionId,
+    startReceipt,
+    ...(teamSyncReceipt ? { teamSyncReceipt: readHostedStatus(teamSyncReceipt) } : {}),
+  };
+  state.updatedAt = now;
+  writeWorkflowState(state);
+  appendActivityEvent({
+    source: "workflow",
+    kind: "workflow-start-coordination",
+    title: `Workflow coordination: ${state.goal}`,
+    workflowId: state.workflowId,
+    files,
+    refs: [startReceipt.workSessionId].filter(Boolean) as string[],
+    metadata: {
+      mode,
+      hostedSessionStatus: startReceipt.hostedSessionStatus,
+      hostedClaimStatus: startReceipt.hostedClaimStatus,
+      teamSyncHostedStatus: readHostedStatus(teamSyncReceipt)?.hostedStatus,
+    },
+    timestamp: now,
+  });
+  writeSessionSnapshot();
+  return state;
+}
+
+async function releaseWorkflowCoordination(
+  state: ManagedWorkflowState,
+  reason: string
+): Promise<WorkflowCollaborationReceipt | undefined> {
+  if (!state.coordination?.workSessionId || state.coordination.releaseReceipt) {
+    return state.coordination?.releaseReceipt;
+  }
+  const releaseReceipt = await workflowCollaborationRelease({
+    workflowId: state.workflowId,
+    reason,
+  });
+  state.coordination = {
+    ...state.coordination,
+    releaseReceipt,
+    lastUpdatedAt: releaseReceipt.recordedAt,
+  };
+  state.updatedAt = releaseReceipt.recordedAt;
+  writeWorkflowState(state);
+  return releaseReceipt;
+}
+
+function readHostedStatus(payload: unknown): Record<string, unknown> | undefined {
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+  const hosted = (payload as { hosted?: { status?: string; error?: string } }).hosted;
+  return {
+    action: (payload as { action?: string }).action,
+    hostedStatus: hosted?.status ?? "skipped",
+    hostedError: hosted?.error,
+  };
+}
+
 export async function workflowStartCommand(options: {
   goal?: string;
   planFile?: string;
@@ -6926,12 +9556,29 @@ export async function workflowStartCommand(options: {
   force?: boolean;
   json?: boolean;
 }): Promise<void> {
-  const state = startManagedWorkflowState({
-    goal: options.goal,
-    planFile: options.planFile,
-    id: options.id,
-    force: options.force,
+  const state = await publishWorkflowStartCoordination(
+    startManagedWorkflowState({
+      goal: options.goal,
+      planFile: options.planFile,
+      id: options.id,
+      force: options.force,
+    }),
+    inferWorkflowCoordinationMode({ planFile: options.planFile })
+  );
+  appendActivityEvent({
+    source: "workflow",
+    kind: "workflow-start",
+    title: state.goal,
+    workflowId: state.workflowId,
+    refs: [state.planFile].filter(Boolean) as string[],
+    metadata: {
+      planSource: state.planSource,
+      phaseCount: state.phases.length,
+      status: state.status,
+    },
+    timestamp: state.createdAt,
   });
+  writeSessionSnapshot();
 
   if (options.json) {
     printJson(state);
@@ -6944,7 +9591,10 @@ export async function workflowStartCommand(options: {
 export async function workflowStatusCommand(options: { json?: boolean }): Promise<void> {
   const state = readRequiredWorkflowState();
   if (options.json) {
-    printJson(state);
+    printJson({
+      ...state,
+      pendingDecisionCount: safeDecisionPendingCount(),
+    });
     return;
   }
   printManagedWorkflowState(state);
@@ -6971,6 +9621,7 @@ function buildAgenticStatusRisks(args: {
   state?: ManagedWorkflowState;
   dirtyFileCount: number;
   staleWorkCount: number;
+  staleWorkExplanation: TeamSyncStaleWorkExplanation;
   latestHandoff?: TeamSyncHandoffRecord;
 }): string[] {
   const risks: string[] = [];
@@ -6983,7 +9634,7 @@ function buildAgenticStatusRisks(args: {
     risks.push(`${args.dirtyFileCount} dirty git file(s) need review before handoff or commit.`);
   }
   if (args.staleWorkCount > 0) {
-    risks.push(`${args.staleWorkCount} stale Team Sync work item(s) are still active.`);
+    risks.push(args.staleWorkExplanation.message);
   }
   if (currentPhase?.status === "blocked") {
     risks.push(`Current phase '${currentPhase.id}' is blocked.`);
@@ -7015,6 +9666,85 @@ function buildSuggestedAgenticNextAction(
   return "Run snipara-companion workflow status to inspect the managed workflow.";
 }
 
+function buildAgenticOperationalLoop(args: {
+  state?: ManagedWorkflowState;
+  dirtyFileCount: number;
+  risks: string[];
+  pendingDecisionCount: number;
+  teamSyncSummary: TeamSyncSummary;
+  latestHandoff?: TeamSyncHandoffRecord;
+}): AgenticWorkStatus["operationalLoop"] {
+  const phase = args.state ? currentWorkflowPhase(args.state) : undefined;
+  const nextActions: string[] = [];
+  const receiptActions: string[] = [];
+  const caveats = [
+    "Operational Loop is local and advisory; it does not edit Project Policy, approve memory, or bypass verification.",
+  ];
+  let receiptGapCount = 0;
+
+  if (args.pendingDecisionCount > 0) {
+    nextActions.push(
+      `Resolve ${args.pendingDecisionCount} local Decision Request${args.pendingDecisionCount === 1 ? "" : "s"} with snipara-companion workflow decisions and workflow decide.`
+    );
+  }
+  if (args.teamSyncSummary.staleWorkCount > 0) {
+    nextActions.push(
+      "Review stale Team Sync work with snipara-companion team-sync sweep --dry-run before continuing."
+    );
+  }
+  if (args.dirtyFileCount > 0) {
+    nextActions.push("Review dirty git state and run the relevant checks before phase-commit.");
+  }
+  if (args.latestHandoff?.next) {
+    nextActions.push(
+      `Continue latest handoff next step: ${toPreview(args.latestHandoff.next, 160)}`
+    );
+  }
+  if (phase?.status === "blocked") {
+    nextActions.push(`Unblock current phase '${phase.id}' before new implementation work.`);
+  } else if (phase) {
+    nextActions.push(
+      `Continue phase '${phase.id}' and close it with snipara-companion workflow phase-commit ${phase.id}.`
+    );
+  } else if (!args.state) {
+    nextActions.push("Start a managed workflow before multi-step implementation work.");
+  }
+
+  if (args.state && args.state.status !== "completed") {
+    receiptGapCount += 1;
+    receiptActions.push(
+      "Before closing the phase, capture why/outcome evidence with snipara-companion outcome-capture preview --emit-outcome-receipt."
+    );
+  }
+  if (args.latestHandoff && args.latestHandoff.attention !== "note") {
+    receiptGapCount += 1;
+    receiptActions.push(
+      "Treat the latest Team Sync handoff as needing proof/review evidence before final-commit."
+    );
+  }
+  if (args.pendingDecisionCount > 0) {
+    receiptActions.push(
+      "Decision Request resolution records the human choice; follow-up policy edits remain explicit."
+    );
+  }
+
+  const status =
+    phase?.status === "blocked"
+      ? "blocked"
+      : args.risks.length > 0 || args.pendingDecisionCount > 0 || receiptGapCount > 0
+        ? "attention"
+        : "clear";
+
+  return {
+    status,
+    decisionRequestCount: args.pendingDecisionCount,
+    receiptGapCount,
+    nextActions: uniqueStrings(nextActions).slice(0, 6),
+    receiptActions: uniqueStrings(receiptActions).slice(0, 4),
+    caveats,
+  };
+}
+
 export function buildAgenticWorkStatus(cwd: string = process.cwd()): AgenticWorkStatus {
   const state = readWorkflowState(cwd);
   const git = readLocalGitState(cwd);
@@ -7025,10 +9755,12 @@ export function buildAgenticWorkStatus(cwd: string = process.cwd()): AgenticWork
   const currentPhase = state ? currentWorkflowPhase(state) : undefined;
   const lastPhaseCommit = lastCompletedWorkflowPhase(state);
   const dirtyFileCount = git.statusLines?.length ?? 0;
+  const pendingDecisionCount = decisionPendingCount(cwd);
   const risks = buildAgenticStatusRisks({
     state,
     dirtyFileCount,
     staleWorkCount: teamSyncSummary.staleWorkCount,
+    staleWorkExplanation: teamSyncSummary.staleWorkExplanation,
     latestHandoff,
   });
 
@@ -7073,6 +9805,7 @@ export function buildAgenticWorkStatus(cwd: string = process.cwd()): AgenticWork
     teamSync: {
       activeWorkCount: teamSyncSummary.activeWorkCount,
       staleWorkCount: teamSyncSummary.staleWorkCount,
+      staleWorkExplanation: teamSyncSummary.staleWorkExplanation,
       archivedWorkCount: teamSyncSummary.archivedWorkCount,
       handoffCount: teamSyncSummary.handoffCount,
       ...(latestHandoff
@@ -7088,8 +9821,17 @@ export function buildAgenticWorkStatus(cwd: string = process.cwd()): AgenticWork
     },
     risks,
     openDecisions: {
+      count: pendingDecisionCount,
       note: "Run snipara-companion brief for hosted decisions and memory authority signals.",
     },
+    operationalLoop: buildAgenticOperationalLoop({
+      state,
+      dirtyFileCount,
+      risks,
+      pendingDecisionCount,
+      teamSyncSummary,
+      latestHandoff,
+    }),
     suggestedNextAction: buildSuggestedAgenticNextAction(state, risks),
   };
 }
@@ -7131,6 +9873,9 @@ function printAgenticWorkStatus(status: AgenticWorkStatus): void {
   console.log(`Stale work: ${status.teamSync.staleWorkCount}`);
   console.log(`Archived work: ${status.teamSync.archivedWorkCount}`);
   console.log(`Handoffs: ${status.teamSync.handoffCount}`);
+  if (status.teamSync.staleWorkCount > 0) {
+    console.log(`Stale detail: ${status.teamSync.staleWorkExplanation.message}`);
+  }
   if (status.teamSync.latestHandoff) {
     console.log(`Latest handoff: ${toPreview(status.teamSync.latestHandoff.summary, 120)}`);
     if (status.teamSync.latestHandoff.next) {
@@ -7150,7 +9895,24 @@ function printAgenticWorkStatus(status: AgenticWorkStatus): void {
 
   console.log("");
   console.log(chalk.bold("Open Decisions"));
+  if (typeof status.openDecisions.count === "number") {
+    console.log(`Local pending Decision Requests: ${status.openDecisions.count}`);
+  }
   console.log(status.openDecisions.note);
+
+  console.log("");
+  console.log(chalk.bold("Operational Loop"));
+  console.log(`Status: ${status.operationalLoop.status}`);
+  console.log(`Receipt gaps: ${status.operationalLoop.receiptGapCount}`);
+  for (const action of status.operationalLoop.nextActions) {
+    console.log(`- ${action}`);
+  }
+  for (const action of status.operationalLoop.receiptActions) {
+    console.log(`- ${action}`);
+  }
+  for (const caveat of status.operationalLoop.caveats) {
+    console.log(`- ${caveat}`);
+  }
 
   console.log("");
   printKeyValue("Next suggested action:", status.suggestedNextAction);
@@ -7274,12 +10036,30 @@ export function buildAgenticTimeline(
   const limit = options.limit && options.limit > 0 ? options.limit : 20;
   const state = readWorkflowState(options.cwd);
   const teamSyncState = loadTeamSyncState(options.cwd ?? process.cwd());
+  const activityEvents = readActivityTimeline({ cwd: options.cwd }).map((event) => ({
+    time: event.timestamp,
+    kind: event.kind,
+    title: event.title,
+    detail: event.summary ?? event.outcome,
+    source: event.source,
+    files: event.files,
+  }));
+  const seen = new Set<string>();
   const events = [
+    ...activityEvents,
     ...workflowTimelineEvents(state),
     ...teamSyncState.work.flatMap(teamSyncWorkEvents),
     ...teamSyncState.handoffs.map(teamSyncHandoffEvent),
   ]
     .sort((left, right) => String(right.time).localeCompare(String(left.time)))
+    .filter((event) => {
+      const key = [event.time, event.kind, event.title, event.source].join("\u0000");
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
     .slice(0, limit);
 
   return {
@@ -7308,8 +10088,83 @@ function printAgenticTimeline(timeline: AgenticTimeline): void {
   console.log("");
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function localWorkspacePathAliases(): string[] {
+  const cwd = process.cwd();
+  const aliases = new Set([cwd]);
+  try {
+    aliases.add(fs.realpathSync(cwd));
+  } catch {
+    // Best-effort redaction only.
+  }
+  for (const alias of [...aliases]) {
+    if (alias.startsWith("/private/var/")) aliases.add(alias.replace(/^\/private/, ""));
+    else if (alias.startsWith("/var/")) aliases.add(`/private${alias}`);
+  }
+  return [...aliases].filter(Boolean).sort((left, right) => right.length - left.length);
+}
+
+function redactTimelineText(value: unknown, maxLength = 180): string {
+  let text = toPreview(value, maxLength);
+  for (const alias of localWorkspacePathAliases()) {
+    text = text.replace(new RegExp(escapeRegExp(alias), "g"), "[workspace]");
+  }
+  return text
+    .replace(/\/Users\/[^/\s)]+/g, "[home]")
+    .replace(/\.snipara\/[^\s,)]+/g, "[local-state]")
+    .replace(/\b(api[_-]?key|token|secret|password)=\S+/gi, "$1=[redacted]");
+}
+
+function redactTimelineFile(file: string): string {
+  const workspaceAlias = localWorkspacePathAliases().find(
+    (alias) => path.isAbsolute(file) && file.startsWith(alias)
+  );
+  const relative = workspaceAlias ? path.relative(workspaceAlias, file) : file;
+  if (relative.startsWith(".snipara/") || relative === ".snipara") {
+    return "[local-state]";
+  }
+  return redactTimelineText(relative, 120);
+}
+
+function formatAgenticTimelineMarkdown(timeline: AgenticTimeline): string {
+  const lines = [
+    "# Workflow Timeline",
+    "",
+    `Generated: ${timeline.generatedAt}`,
+    `Events: ${timeline.events.length}`,
+    "",
+    "> Redacted local export. Absolute paths, local state paths, and secret-like fragments are removed.",
+    "",
+  ];
+
+  for (const event of timeline.events) {
+    lines.push(`## ${redactTimelineText(event.time, 40)} - ${redactTimelineText(event.kind, 80)}`);
+    lines.push("");
+    lines.push(`- Source: ${redactTimelineText(event.source, 80)}`);
+    lines.push(`- Title: ${redactTimelineText(event.title, 180)}`);
+    if (event.detail) {
+      lines.push(`- Summary: ${redactTimelineText(event.detail, 220)}`);
+    }
+    if (event.files?.length) {
+      lines.push(
+        `- Files: ${event.files
+          .slice(0, 6)
+          .map(redactTimelineFile)
+          .join(", ")}${event.files.length > 6 ? ` (+${event.files.length - 6})` : ""}`
+      );
+    }
+    lines.push("");
+  }
+
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
 export async function workflowTimelineCommand(options: {
   limit?: number;
+  exportFormat?: string;
   json?: boolean;
 }): Promise<void> {
   const timeline = buildAgenticTimeline({ limit: options.limit });
@@ -7317,7 +10172,65 @@ export async function workflowTimelineCommand(options: {
     printJson(timeline);
     return;
   }
+  if (options.exportFormat) {
+    if (options.exportFormat !== "md") {
+      throw new Error("Unsupported workflow timeline export format. Use --export md.");
+    }
+    process.stdout.write(formatAgenticTimelineMarkdown(timeline));
+    return;
+  }
   printAgenticTimeline(timeline);
+}
+
+export async function workflowSessionCommand(options: {
+  limit?: number;
+  json?: boolean;
+}): Promise<void> {
+  const snapshot = writeSessionSnapshot({ limit: options.limit });
+  if (options.json) {
+    printJson(snapshot);
+    return;
+  }
+  console.log(chalk.bold("Workflow Session Snapshot"));
+  if (snapshot.workflow) {
+    printKeyValue(
+      "Workflow:",
+      `${snapshot.workflow.id ?? "unknown"} (${snapshot.workflow.status ?? "unknown"})`
+    );
+    if (snapshot.workflow.currentPhaseId) {
+      printKeyValue(
+        "Current phase:",
+        `${snapshot.workflow.currentPhaseId}${
+          snapshot.workflow.currentPhaseTitle ? ` - ${snapshot.workflow.currentPhaseTitle}` : ""
+        }`
+      );
+    }
+  } else {
+    console.log("No local workflow state found.");
+  }
+  printKeyValue("Activity events:", snapshot.activity.totalEvents);
+  if (snapshot.activity.latestEventAt) {
+    printKeyValue("Latest event:", snapshot.activity.latestEventAt);
+  }
+  printKeyValue("Pending decisions:", snapshot.decisions.pendingCount);
+  printKeyValue("Resolved decisions:", snapshot.decisions.resolvedCount);
+  printKeyValue("Producer artifacts:", snapshot.producerLoop.artifactCount);
+  printKeyValue("Team Sync active work:", snapshot.teamSync.activeWorkCount);
+  printKeyValue(
+    "Intent:",
+    `${snapshot.intentDetection.intent} (${snapshot.intentDetection.confidence})`
+  );
+  printKeyValue(
+    "Suggested mode:",
+    `${snapshot.intentDetection.advisoryRouting.suggestedWorkflowMode} (advisory)`
+  );
+  if (snapshot.intentDetection.signals.length > 0) {
+    console.log(`Intent signals: ${snapshot.intentDetection.signals.slice(0, 5).join(", ")}`);
+  }
+  printKeyValue("Hard routing allowed:", String(snapshot.routing.hardRoutingAllowed));
+  console.log(`Reason: ${snapshot.routing.reason}`);
+  printKeyValue("Snapshot:", snapshot.source.snapshotPath);
+  printKeyValue("Build time:", `${snapshot.performance.buildMs}ms`);
 }
 
 export async function workflowPhaseStartCommand(options: {
@@ -7336,6 +10249,20 @@ export async function workflowPhaseStartCommand(options: {
     : undefined;
   state.updatedAt = now;
   writeWorkflowState(state);
+  appendActivityEvent({
+    source: "workflow",
+    kind: "phase-start",
+    title: phase.title,
+    workflowId: state.workflowId,
+    phaseId: phase.id,
+    files: phase.files,
+    timestamp: phase.startedAt,
+    metadata: {
+      status: phase.status,
+      needsRuntime: Boolean(phase.needsRuntime),
+    },
+  });
+  writeSessionSnapshot();
 
   if (options.json) {
     printJson({ workflow: state, current_phase: phase });
@@ -7500,6 +10427,25 @@ export async function workflowRuntimeCheckpointCommand(options: {
   binding.lastCheckpoint = checkpoint;
   state.updatedAt = now;
   writeWorkflowState(state);
+  appendActivityEvent({
+    source: "workflow",
+    kind: "runtime-checkpoint",
+    title: phase.title,
+    summary: checkpoint.summary,
+    workflowId: state.workflowId,
+    phaseId: phase.id,
+    files: checkpoint.files,
+    refs: [binding.sessionId, hostedEvent?.id].filter(Boolean) as string[],
+    timestamp: checkpoint.capturedAt,
+    metadata: {
+      sandboxSessionId: binding.sessionId,
+      hostedEventId: hostedEvent?.id,
+      environment: checkpoint.environment,
+      profile: checkpoint.profile,
+      artifactCount: checkpoint.artifacts?.length ?? 0,
+    },
+  });
+  writeSessionSnapshot();
 
   if (options.json) {
     printJson({
@@ -7568,10 +10514,13 @@ export async function workflowResumeCommand(options: {
   });
   const teamSyncResume = await loadWorkflowTeamSyncResume(state);
   const runtimeResume = await loadWorkflowRuntimeResumePlan(state);
+  const localSessionSnapshot = writeSessionSnapshot({ limit: 8 });
 
   if (options.json) {
     printJson({
       workflow: state,
+      pending_decision_count: safeDecisionPendingCount(),
+      local_session_snapshot: localSessionSnapshot,
       session_bootstrap: bootstrap,
       session_bootstrap_quality: bootstrapQuality,
       team_sync_resume: teamSyncResume?.data ?? null,
@@ -7588,10 +10537,14 @@ export async function workflowResumeCommand(options: {
 
   console.log(chalk.bold("Workflow Resume"));
   printManagedWorkflowState(state);
-  printSessionBootstrap(bootstrap, {
+  const printedBootstrap = printSessionBootstrap(bootstrap, {
     includeSessionContext: resolvedContextTokens > 0,
+    maxTokens: resolvedCriticalTokens + resolvedContextTokens,
   });
-  printSessionBootstrapQuality(bootstrapQuality);
+  if (printedBootstrap) {
+    printSessionBootstrapQuality(buildPrintedBootstrapQuality(printedBootstrap));
+  }
+  printWorkflowLocalSessionSnapshot(localSessionSnapshot);
   printWorkflowTeamSyncResume(teamSyncResume);
   printWorkflowRuntimeResumePlan(runtimeResume);
   printManagedWorkflowResumeBoundary();
@@ -7624,6 +10577,38 @@ async function loadWorkflowTeamSyncResume(
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+function printWorkflowLocalSessionSnapshot(snapshot: SessionSnapshot): void {
+  console.log("");
+  console.log(chalk.bold("Local Session Snapshot"));
+  if (snapshot.summary.latestActivityAt) {
+    printKeyValue("Latest activity:", snapshot.summary.latestActivityAt);
+  }
+  if (snapshot.summary.latestActivityTitle) {
+    printKeyValue("Latest title:", toPreview(snapshot.summary.latestActivityTitle, 160));
+  }
+  printKeyValue("Risk:", snapshot.summary.risk);
+  if (snapshot.summary.riskReasons.length > 0) {
+    console.log(`Risk reasons: ${snapshot.summary.riskReasons.slice(0, 3).join("; ")}`);
+  }
+  if (snapshot.summary.touchedFiles.length > 0) {
+    console.log(`Touched files: ${snapshot.summary.touchedFiles.slice(0, 8).join(", ")}`);
+  }
+  printKeyValue(
+    "Intent:",
+    `${snapshot.intentDetection.intent} (${snapshot.intentDetection.confidence})`
+  );
+  printKeyValue(
+    "Suggested mode:",
+    `${snapshot.intentDetection.advisoryRouting.suggestedWorkflowMode} (advisory)`
+  );
+  if (snapshot.intentDetection.signals.length > 0) {
+    console.log(`Intent signals: ${snapshot.intentDetection.signals.slice(0, 5).join(", ")}`);
+  }
+  printKeyValue("Hard routing allowed:", String(snapshot.intentDetection.hardRoutingAllowed));
+  printKeyValue("Next action:", snapshot.summary.recommendedNextAction);
+  printKeyValue("Snapshot:", snapshot.source.snapshotPath);
 }
 
 function printWorkflowTeamSyncResume(
@@ -7855,6 +10840,16 @@ function printTeamSyncCompletionNotice(completedWork: TeamSyncWorkRecord[]): voi
   console.log(`Team Sync completed work: ${completedWork.map((item) => item.summary).join(", ")}`);
 }
 
+function printProducerLoopArtifactNotice(result: ProducerLoopArtifactWriteResult): void {
+  if (result.status === "written" && result.relativePath) {
+    console.log(`Producer Loop artifact: ${result.relativePath}`);
+    return;
+  }
+  if (result.status === "error" && result.error) {
+    console.log(chalk.yellow(`Producer Loop artifact failed: ${result.error}`));
+  }
+}
+
 export async function workflowPhaseCommitCommand(options: {
   phaseId: string;
   summary: string;
@@ -7866,6 +10861,7 @@ export async function workflowPhaseCommitCommand(options: {
   const state = readRequiredWorkflowState();
   const phase = findWorkflowPhase(state, options.phaseId);
   const outcome = options.outcome ?? "completed";
+  const category = options.category ?? "workflow-phase";
   const files = options.files && options.files.length > 0 ? options.files : phase.files;
 
   await memoryGuardCheckCommand({
@@ -7881,7 +10877,7 @@ export async function workflowPhaseCommitCommand(options: {
   });
   const result = await commitPhaseTaskMemory({
     summary: durableSummary,
-    category: options.category ?? "workflow-phase",
+    category,
     outcome,
     files,
   });
@@ -7906,21 +10902,21 @@ export async function workflowPhaseCommitCommand(options: {
       : "active";
   state.updatedAt = now;
   state.lastCommit = {
-    category: options.category ?? "workflow-phase",
+    category,
     outcome,
     summary: options.summary,
     committedAt: now,
   };
   writeWorkflowState(state);
-  const completedTeamSyncWork =
-    outcome === "completed" && state.status === "completed"
-      ? completeTeamSyncStateFromEvidence(process.cwd(), {
-          workflowGoal: state.goal,
-          summary: options.summary,
-          files,
-          reason: `Workflow ${state.workflowId} completed after phase ${phase.id} phase-commit.`,
-        })
-      : [];
+  const shouldCompleteTeamSyncWork = outcome === "completed" && state.status === "completed";
+  const completedTeamSyncWork = shouldCompleteTeamSyncWork
+    ? completeTeamSyncStateFromEvidence(process.cwd(), {
+        workflowGoal: state.goal,
+        summary: options.summary,
+        files,
+        reason: `Workflow ${state.workflowId} completed after phase ${phase.id} phase-commit.`,
+      })
+    : [];
   const journal = await appendJournalCheckpoint({
     action: "workflow:phase-commit",
     summary: options.summary,
@@ -7930,6 +10926,63 @@ export async function workflowPhaseCommitCommand(options: {
     phaseTitle: phase.title,
     files,
   });
+  const producerLoopArtifact = writeProducerLoopArtifact({
+    kind: "workflow_phase_commit",
+    command: "workflow phase-commit",
+    state,
+    phase,
+    category,
+    outcome,
+    summary: options.summary,
+    files,
+    journalAttempted: true,
+    teamSyncCompletionAttempted: shouldCompleteTeamSyncWork,
+  });
+  const coordinationRelease = await releaseWorkflowCoordination(
+    state,
+    `Workflow ${state.workflowId} phase ${phase.id} phase-commit.`
+  );
+  appendActivityEvent({
+    source: "workflow",
+    kind: "phase-commit",
+    title: phase.title,
+    summary: options.summary,
+    workflowId: state.workflowId,
+    phaseId: phase.id,
+    outcome,
+    files,
+    refs: [producerLoopArtifact.artifactId, producerLoopArtifact.relativePath].filter(
+      Boolean
+    ) as string[],
+    timestamp: now,
+    metadata: {
+      category,
+      workflowStatus: state.status,
+      producerLoopStatus: producerLoopArtifact.status,
+      journalStatus: journal.status,
+      teamSyncCompletedCount: completedTeamSyncWork.length,
+      coordinationReleaseStatus: coordinationRelease?.hostedReleaseStatus,
+    },
+  });
+  if (producerLoopArtifact.status === "written") {
+    appendActivityEvent({
+      source: "producer-loop",
+      kind: "producer-loop-artifact",
+      title: producerLoopArtifact.artifactId ?? "producer-loop-artifact",
+      summary: options.summary,
+      workflowId: state.workflowId,
+      phaseId: phase.id,
+      outcome,
+      files,
+      refs: [producerLoopArtifact.relativePath].filter(Boolean) as string[],
+      timestamp: now,
+      metadata: {
+        artifactHash: producerLoopArtifact.artifactHash,
+        ledgerHash: producerLoopArtifact.ledgerHash,
+      },
+    });
+  }
+  writeSessionSnapshot();
 
   if (options.json) {
     printJson({
@@ -7937,12 +10990,15 @@ export async function workflowPhaseCommitCommand(options: {
       commit: result,
       journal,
       teamSyncCompletedWork: completedTeamSyncWork,
+      producerLoopArtifact,
+      coordinationRelease,
     });
     return;
   }
   printTaskCommitResult(result);
   printJournalWarning(journal);
   printTeamSyncCompletionNotice(completedTeamSyncWork);
+  printProducerLoopArtifactNotice(producerLoopArtifact);
   printManagedWorkflowState(state);
   printManagedWorkflowNextCommands(state);
 }
@@ -8002,6 +11058,59 @@ export async function finalCommitCommand(options: {
     workflowId: state?.workflowId,
     files: options.files,
   });
+  const producerLoopArtifact = writeProducerLoopArtifact({
+    kind: "workflow_final_commit",
+    command: "workflow final-commit",
+    state,
+    category,
+    outcome,
+    summary: options.summary,
+    files: options.files,
+    journalAttempted: true,
+    teamSyncCompletionAttempted: outcome === "completed",
+  });
+  const coordinationRelease = state
+    ? await releaseWorkflowCoordination(state, `Workflow ${state.workflowId} final-commit.`)
+    : undefined;
+  const now = state?.lastCommit?.committedAt ?? new Date().toISOString();
+  appendActivityEvent({
+    source: "workflow",
+    kind: "final-commit",
+    title: state?.goal ?? "final-commit",
+    summary: options.summary,
+    workflowId: state?.workflowId,
+    outcome,
+    files: options.files,
+    refs: [producerLoopArtifact.artifactId, producerLoopArtifact.relativePath].filter(
+      Boolean
+    ) as string[],
+    timestamp: now,
+    metadata: {
+      category,
+      producerLoopStatus: producerLoopArtifact.status,
+      journalStatus: journal.status,
+      teamSyncCompletedCount: completedTeamSyncWork.length,
+      coordinationReleaseStatus: coordinationRelease?.hostedReleaseStatus,
+    },
+  });
+  if (producerLoopArtifact.status === "written") {
+    appendActivityEvent({
+      source: "producer-loop",
+      kind: "producer-loop-artifact",
+      title: producerLoopArtifact.artifactId ?? "producer-loop-artifact",
+      summary: options.summary,
+      workflowId: state?.workflowId,
+      outcome,
+      files: options.files,
+      refs: [producerLoopArtifact.relativePath].filter(Boolean) as string[],
+      timestamp: now,
+      metadata: {
+        artifactHash: producerLoopArtifact.artifactHash,
+        ledgerHash: producerLoopArtifact.ledgerHash,
+      },
+    });
+  }
+  writeSessionSnapshot();
 
   if (options.json) {
     printJson({
@@ -8009,12 +11118,15 @@ export async function finalCommitCommand(options: {
       commit: result,
       journal,
       teamSyncCompletedWork: completedTeamSyncWork,
+      producerLoopArtifact,
+      coordinationRelease,
     });
     return;
   }
   printTaskCommitResult(result);
   printJournalWarning(journal);
   printTeamSyncCompletionNotice(completedTeamSyncWork);
+  printProducerLoopArtifactNotice(producerLoopArtifact);
   if (state) {
     printManagedWorkflowState(state);
   }
@@ -8041,7 +11153,25 @@ export async function sessionBootstrapCommand(options: {
   includeSessionContext?: boolean;
   json?: boolean;
 }): Promise<void> {
-  ensureConfigured();
+  if (!isConfigured()) {
+    if (options.json) {
+      printJson({
+        critical: { memories: [], count: 0, tokens: 0 },
+        daily: { memories: [], count: 0, tokens: 0 },
+        total_tokens: 0,
+        session_context: {
+          included: Boolean(options.includeSessionContext),
+          max_tokens: options.includeSessionContext ? DEFAULT_SESSION_CONTEXT_TOKENS : 0,
+        },
+        session_bootstrap_quality: buildSessionBootstrapQuality({
+          critical: { memories: [], count: 0, tokens: 0 },
+          daily: { memories: [], count: 0, tokens: 0 },
+          total_tokens: 0,
+        }),
+      });
+    }
+    return;
+  }
 
   const resolvedContextTokens =
     options.maxContextTokens !== undefined
@@ -8076,17 +11206,251 @@ export async function sessionBootstrapCommand(options: {
     });
     return;
   }
-  printSessionBootstrap(result, {
+  const printedBootstrap = printSessionBootstrap(result, {
     includeSessionContext: resolvedContextTokens > 0,
+    maxTokens:
+      (options.maxCriticalTokens ?? DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS) + resolvedContextTokens,
   });
-  printSessionBootstrapQuality(bootstrapQuality);
-  if (warmSnapshot.storedEntries > 0) {
-    printKeyValue(
-      "Warm cache:",
-      `${warmSnapshot.storedEntries} bootstrap memory/context entries primed locally`
-    );
-    console.log("");
+  if (printedBootstrap) {
+    printSessionBootstrapQuality(buildPrintedBootstrapQuality(printedBootstrap));
   }
+}
+
+function emptySessionMemoriesResult(): SessionMemoriesResult {
+  return {
+    critical: { memories: [], count: 0, tokens: 0 },
+    daily: { memories: [], count: 0, tokens: 0 },
+    total_tokens: 0,
+  };
+}
+
+function readLocalJsonFile(relativePath: string): Record<string, unknown> | null {
+  const absolutePath = path.join(process.cwd(), relativePath);
+  if (!fs.existsSync(absolutePath)) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(absolutePath, "utf-8")) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function summarizeSourceSnapshot(
+  snapshot: Record<string, unknown> | null
+): Record<string, unknown> {
+  if (!snapshot) {
+    return {
+      status: "missing",
+      snapshotPath: path.join(".snipara", "source", "latest.json"),
+      nextAction:
+        "Run snipara-companion source sync --json after meaningful local code or docs movement.",
+    };
+  }
+
+  const summary =
+    snapshot.summary && typeof snapshot.summary === "object" && !Array.isArray(snapshot.summary)
+      ? (snapshot.summary as Record<string, unknown>)
+      : {};
+  return {
+    status: "present",
+    snapshotPath: path.join(".snipara", "source", "latest.json"),
+    generatedAt: snapshot.generatedAt,
+    revision: snapshot.revision,
+    totalFiles: summary.totalFiles,
+    totalBytes: summary.totalBytes,
+    skipped: summary.skipped,
+  };
+}
+
+function summarizeWorkflowStateForContinuity(
+  workflow: ManagedWorkflowState | undefined
+): Record<string, unknown> {
+  if (!workflow) {
+    return {
+      status: "missing",
+      statePath: WORKFLOW_STATE_RELATIVE_PATH,
+      nextAction: "Run snipara-companion workflow start for multi-phase work.",
+    };
+  }
+
+  return {
+    status: workflow.status,
+    workflowId: workflow.workflowId,
+    goal: workflow.goal,
+    currentPhaseId: workflow.currentPhaseId,
+    statePath: WORKFLOW_STATE_RELATIVE_PATH,
+    phases: workflow.phases.map((phase) => ({
+      id: phase.id,
+      title: phase.title,
+      status: phase.status,
+    })),
+  };
+}
+
+function summarizeTeamSyncForContinuity(): Record<string, unknown> {
+  const state = loadTeamSyncState();
+  const summary = buildTeamSyncSummary(state);
+  const latestHandoff = state.handoffs.at(-1);
+
+  return {
+    statePath: path.relative(process.cwd(), getTeamSyncStatePath()),
+    activeWorkCount: summary.activeWorkCount,
+    staleWorkCount: summary.staleWorkCount,
+    completedWorkCount: summary.completedWorkCount,
+    archivedWorkCount: summary.archivedWorkCount,
+    handoffCount: summary.handoffCount,
+    latestHandoff: latestHandoff
+      ? {
+          summary: latestHandoff.summary,
+          next: latestHandoff.next,
+          attention: latestHandoff.attention,
+          createdAt: latestHandoff.createdAt,
+        }
+      : null,
+  };
+}
+
+function buildCompanionContinuityPayload(args: {
+  configured: boolean;
+  bootstrap: SessionMemoriesResult;
+  bootstrapQuality: SessionBootstrapQualityReport;
+  includeSessionContext: boolean;
+  maxContextTokens: number;
+  warmSnapshotStoredEntries: number;
+}): Record<string, unknown> {
+  const config = args.configured ? loadConfig() : null;
+  const workflow = readWorkflowState();
+  const sessionSnapshot = readSessionSnapshot();
+  const sourceSnapshot = readLocalJsonFile(path.join(".snipara", "source", "latest.json"));
+
+  return {
+    version: COMPANION_CONTINUITY_CONTRACT_VERSION,
+    generatedAt: new Date().toISOString(),
+    configured: args.configured,
+    project: config
+      ? {
+          projectId: config.projectId,
+          apiUrl: config.apiUrl,
+          sessionId: config.sessionId,
+        }
+      : null,
+    artifacts: {
+      workflowStatePath: WORKFLOW_STATE_RELATIVE_PATH,
+      teamSyncStatePath: path.relative(process.cwd(), getTeamSyncStatePath()),
+      sessionSnapshotPath: path.join(".snipara", "activity", "session.json"),
+      sourceSnapshotPath: path.join(".snipara", "source", "latest.json"),
+    },
+    bootstrap: args.bootstrap,
+    bootstrapQuality: args.bootstrapQuality,
+    localWarmSnapshot: {
+      storedEntries: args.warmSnapshotStoredEntries,
+    },
+    sessionContext: {
+      included: args.includeSessionContext,
+      maxTokens: args.maxContextTokens,
+    },
+    workflow: summarizeWorkflowStateForContinuity(workflow),
+    teamSync: summarizeTeamSyncForContinuity(),
+    source: summarizeSourceSnapshot(sourceSnapshot),
+    sessionSnapshot: sessionSnapshot
+      ? {
+          latestActivityAt: sessionSnapshot.summary.latestActivityAt,
+          latestTitle: sessionSnapshot.summary.latestActivityTitle,
+          latestKind: sessionSnapshot.summary.latestActivityKind,
+          risk: sessionSnapshot.summary.risk,
+          riskReasons: sessionSnapshot.summary.riskReasons,
+          touchedFiles: sessionSnapshot.summary.touchedFiles,
+          nextAction: sessionSnapshot.summary.recommendedNextAction,
+        }
+      : null,
+    nextActions: [
+      {
+        id: "open_bootstrap_brief",
+        label: "Open bootstrap brief",
+        command:
+          "snipara-companion session-bootstrap --include-session-context --max-context-tokens 1000",
+        when: "bootstrap has entries or session context is included",
+      },
+      {
+        id: "refresh_source_snapshot",
+        label: "Refresh source snapshot",
+        command: "snipara-companion source sync --json",
+        when: "source.status is missing or local code/docs changed",
+      },
+      {
+        id: "run_impact_gate",
+        label: "Run code impact before risky edits",
+        command: 'snipara-companion code impact --changed-files <files> --diff-summary "next edit"',
+        when: "the next edit is multi-file, risky, or user-visible",
+      },
+      {
+        id: "commit_task_context",
+        label: "Commit durable task context",
+        command: 'snipara-companion task-commit --summary "<done>" --files <files>',
+        when: "a durable phase or task is complete",
+      },
+    ],
+  };
+}
+
+export async function continueWorkspaceCommand(options: {
+  maxCriticalTokens?: number;
+  maxContextTokens?: number;
+  includeSessionContext?: boolean;
+  json?: boolean;
+}): Promise<void> {
+  const configured = isConfigured();
+  const resolvedContextTokens =
+    options.maxContextTokens !== undefined
+      ? options.maxContextTokens
+      : options.includeSessionContext
+        ? DEFAULT_SESSION_CONTEXT_TOKENS
+        : 0;
+
+  let bootstrap = emptySessionMemoriesResult();
+  let warmSnapshotStoredEntries = 0;
+
+  if (configured) {
+    const client = createClient(15000);
+    bootstrap = await client.getSessionMemories(options.maxCriticalTokens, resolvedContextTokens);
+    const config = loadConfig();
+    const warmSnapshot = createLocalQueryCache({
+      cwd: process.cwd(),
+      projectId: config.projectId,
+      sessionId: config.sessionId,
+    }).storeWarmSnapshot(bootstrap);
+    warmSnapshotStoredEntries = warmSnapshot.storedEntries;
+  }
+
+  const bootstrapQuality = buildSessionBootstrapQuality(bootstrap, {
+    expectedMaxTokens:
+      (options.maxCriticalTokens ?? DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS) + resolvedContextTokens,
+  });
+  const payload = buildCompanionContinuityPayload({
+    configured,
+    bootstrap,
+    bootstrapQuality,
+    includeSessionContext: resolvedContextTokens > 0,
+    maxContextTokens: resolvedContextTokens,
+    warmSnapshotStoredEntries,
+  });
+
+  if (options.json) {
+    printJson(payload);
+    return;
+  }
+
+  console.log(chalk.bold("Snipara Companion Continuity"));
+  console.log(`Version: ${COMPANION_CONTINUITY_CONTRACT_VERSION}`);
+  console.log(`Configured: ${configured ? "yes" : "no"}`);
+  console.log(`Workflow: ${(payload.workflow as Record<string, unknown>).status ?? "unknown"}`);
+  console.log(`Source: ${(payload.source as Record<string, unknown>).status ?? "unknown"}`);
+  console.log("Next: snipara-companion continue-workspace --json for editor integrations");
 }
 
 export async function recallCommand(options: {

@@ -281,6 +281,7 @@ const SUPPORTED_EXTENSIONS = new Map<string, LocalCodeOverlayFile["language"]>([
 const DEFAULT_MAX_FILES = 2000;
 const DEFAULT_MAX_FILE_BYTES = 1024 * 1024;
 const DEFAULT_HOSTED_OVERLAY_TTL_HOURS = 48;
+const MAX_HOSTED_OVERLAY_TTL_HOURS = 168;
 const DEFAULT_HOOK_REINDEX_DELAY_SECONDS = 5;
 const CACHE_RELATIVE_PATH = path.join(".snipara", "code-overlay", "latest.json");
 const PROMOTION_RELATIVE_PATH = path.join(".snipara", "code-overlay", "promotion.json");
@@ -368,8 +369,14 @@ function ensureTrailingNewline(content: string): string {
   return content.endsWith("\n") ? content : `${content}\n`;
 }
 
-function positiveInteger(value: number | undefined, fallback: number): number {
-  return Number.isFinite(value) && value !== undefined && value > 0 ? Math.floor(value) : fallback;
+function positiveInteger(value: number | undefined, fallback: number, label = "value"): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (Number.isFinite(value) && value > 0) {
+    return Math.floor(value);
+  }
+  throw new Error(`${label} must be a positive integer.`);
 }
 
 function nonNegativeInteger(value: number | undefined, fallback: number): number {
@@ -899,8 +906,12 @@ export function buildLocalCodeOverlay(
   const repoRoot = resolveRepoRoot(options.cwd ?? process.cwd());
   const mode = options.mode ?? "working_tree";
   const commit = mode === "local_commit" ? (options.commit ?? "HEAD") : (options.commit ?? "HEAD");
-  const maxFiles = positiveInteger(options.maxFiles, DEFAULT_MAX_FILES);
-  const maxFileBytes = positiveInteger(options.maxFileBytes, DEFAULT_MAX_FILE_BYTES);
+  const maxFiles = positiveInteger(options.maxFiles, DEFAULT_MAX_FILES, "--max-files");
+  const maxFileBytes = positiveInteger(
+    options.maxFileBytes,
+    DEFAULT_MAX_FILE_BYTES,
+    "--max-file-bytes"
+  );
   const now = new Date().toISOString();
   const branch = readBranch(repoRoot);
   const localHeadSha = readHeadSha(repoRoot);
@@ -1945,7 +1956,14 @@ export function buildHostedCodeOverlayUploadPayload(
       maxFiles: options.maxFiles,
     });
   const cachePath = writeLocalCodeOverlayCache(manifest);
-  const ttlHours = positiveInteger(options.ttlHours, DEFAULT_HOSTED_OVERLAY_TTL_HOURS);
+  const ttlHours = positiveInteger(
+    options.ttlHours,
+    DEFAULT_HOSTED_OVERLAY_TTL_HOURS,
+    "--ttl-hours"
+  );
+  if (ttlHours > MAX_HOSTED_OVERLAY_TTL_HOURS) {
+    throw new Error(`--ttl-hours must be less than or equal to ${MAX_HOSTED_OVERLAY_TTL_HOURS}.`);
+  }
   return {
     manifest,
     cachePath,

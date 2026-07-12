@@ -166,14 +166,7 @@ function normalizeTarget(target: string | undefined): AgentReadinessTarget {
 }
 
 function unique(values: string[] | undefined): string[] {
-  return [
-    ...new Set(
-      (values ?? [])
-        .flatMap((value) => value.split(","))
-        .map((value) => value.trim())
-        .filter(Boolean)
-    ),
-  ];
+  return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))];
 }
 
 function normalizeTask(task: string | undefined): string | undefined {

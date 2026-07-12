@@ -67,6 +67,24 @@ export const PROJECT_INTELLIGENCE_ENGINEERING_LEAD_EXECUTION_RECEIPT_STAGES = [
   "brain_update",
 ] as const;
 
+export const PROJECT_INTELLIGENCE_ENGINEERING_LEAD_PROOF_VERIFICATION_STATUSES = [
+  "declared",
+  "provided",
+  "verified",
+  "rejected",
+  "unknown",
+] as const;
+
+export const PROJECT_INTELLIGENCE_ENGINEERING_LEAD_PROOF_VERIFICATION_SOURCES = [
+  "agent_report",
+  "companion_handoff",
+  "local_command",
+  "ci",
+  "htask",
+  "manual",
+  "unknown",
+] as const;
+
 export type ProjectHealthCockpitStatus = (typeof PROJECT_HEALTH_COCKPIT_STATUSES)[number];
 
 export type ProjectIntelligenceEngineeringLeadPosture =
@@ -89,6 +107,12 @@ export type ProjectIntelligenceEngineeringLeadExecutionReceiptStatus =
 
 export type ProjectIntelligenceEngineeringLeadExecutionReceiptStage =
   (typeof PROJECT_INTELLIGENCE_ENGINEERING_LEAD_EXECUTION_RECEIPT_STAGES)[number];
+
+export type ProjectIntelligenceEngineeringLeadProofVerificationStatus =
+  (typeof PROJECT_INTELLIGENCE_ENGINEERING_LEAD_PROOF_VERIFICATION_STATUSES)[number];
+
+export type ProjectIntelligenceEngineeringLeadProofVerificationSource =
+  (typeof PROJECT_INTELLIGENCE_ENGINEERING_LEAD_PROOF_VERIFICATION_SOURCES)[number];
 
 export type ProjectIntelligenceEngineeringLeadEvidenceKind =
   | "memory"
@@ -181,6 +205,17 @@ export interface ProjectIntelligenceEngineeringLeadSupervision {
   reasonCodes: string[];
 }
 
+export interface ProjectIntelligenceEngineeringLeadProofVerification {
+  status: ProjectIntelligenceEngineeringLeadProofVerificationStatus;
+  source: ProjectIntelligenceEngineeringLeadProofVerificationSource;
+  sourceRef: string | null;
+  adapterTarget: string | null;
+  verifiedBy: string | null;
+  verifiedAt: string | null;
+  evidenceHash: string | null;
+  reasonCodes: string[];
+}
+
 export interface ProjectIntelligenceEngineeringLeadExecutionReceipt<
   EvidenceRef extends ProjectIntelligenceEngineeringLeadEvidenceRef =
     ProjectIntelligenceEngineeringLeadEvidenceRef,
@@ -200,6 +235,7 @@ export interface ProjectIntelligenceEngineeringLeadExecutionReceipt<
   brainUpdateReceiptId: string | null;
   proofRequired: string[];
   proofExecuted: string[];
+  proofVerification?: ProjectIntelligenceEngineeringLeadProofVerification;
   missingRequirements: string[];
   nextAction: string;
   replanTriggers: string[];

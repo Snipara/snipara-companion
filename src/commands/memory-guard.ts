@@ -69,6 +69,7 @@ export interface MemoryGuardCheckOptions {
   confirmedByUser?: string;
   strict?: boolean;
   json?: boolean;
+  verbose?: boolean;
   limit?: number;
   categories?: string[];
   includeContext?: boolean;
@@ -657,6 +658,21 @@ function printMemoryGuardResult(result: MemoryGuardCheckResult): void {
   }
 }
 
+function shouldPrintCompactMemoryGuardSuccess(
+  result: MemoryGuardCheckResult,
+  options: MemoryGuardCheckOptions
+): boolean {
+  return (
+    !options.verbose &&
+    result.triggered &&
+    !result.shouldBlock &&
+    !result.requiresConfirmation &&
+    result.contradictions.length === 0 &&
+    result.recentFailures.length === 0 &&
+    result.warnings.length === 0
+  );
+}
+
 /**
  * Recall and evaluate guard guidance before a risky action.
  *
@@ -933,6 +949,8 @@ export async function memoryGuardCheckCommand(options: MemoryGuardCheckOptions):
   const result = await runMemoryGuardCheck(options);
   if (options.json) {
     console.log(JSON.stringify(result, null, 2));
+  } else if (shouldPrintCompactMemoryGuardSuccess(result, options)) {
+    console.log(`Snipara Memory Guard: checked (${result.trigger})`);
   } else if (result.triggered || options.trigger === "manual") {
     printMemoryGuardResult(result);
   }

@@ -3,9 +3,11 @@ const test = require("node:test");
 
 const {
   buildJournalCheckpointEntry,
+  appendActivityEvent,
   buildAdaptiveWorkRoutingRecommendation,
   buildAgenticTimeline,
   buildAgenticWorkStatus,
+  buildSessionSnapshot,
   buildGeneratedWorkflowPlanDocument,
   buildSessionBootstrapQuality,
   buildTeamSyncStartWorkRecord,
@@ -13,6 +15,7 @@ const {
   buildOrchestratorHandoff,
   buildWorkflowPlanScaffold,
   buildWorkflowPhaseCommitSummary,
+  buildSessionBootstrapBrief,
   createEmptyTeamSyncState,
   createClient,
   detectReleaseSurfacesFromFiles,
@@ -23,13 +26,19 @@ const {
   ORCHESTRATOR_HANDOFF_RELATIVE_PATH,
   normalizeWorkflowPlanInput,
   packContext,
+  PRODUCER_LOOP_ARTIFACT_VERSION,
+  PRODUCER_LOOP_REPORT_VERSION,
+  PRODUCER_LOOP_RELATIVE_DIR,
+  resolveAutoWorkflowMode,
   resolveFullWorkflowTokenBudget,
   validatePlanResult,
   runMemoryGuardCheck,
+  readActivityTimeline,
   saveTeamSyncState,
   WORKFLOW_PLANS_RELATIVE_DIR,
   WORKFLOW_STATE_RELATIVE_PATH,
   writeOrchestratorHandoff,
+  writeSessionSnapshot,
 } = require("../dist/index.js");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -62,6 +71,14 @@ function runCli(args, options = {}) {
     delete env.SNIPARA_AUTOMATION_CLIENT;
   }
 
+  const isLocalWorkerCommand = args.includes("workers") && args.includes("local");
+  if (isLocalWorkerCommand && !Object.prototype.hasOwnProperty.call(env, "SNIPARA_WORKSPACE_DIR")) {
+    const workspaceDir = options.cwd
+      ? path.resolve(options.cwd)
+      : fs.mkdtempSync(path.join(os.tmpdir(), "snipara-cli-test-"));
+    env.SNIPARA_WORKSPACE_DIR = workspaceDir;
+  }
+
   return spawnSync(process.execPath, [...(options.nodeArgs ?? []), cliPath, ...args], {
     encoding: "utf8",
     cwd: options.cwd,
@@ -73,6 +90,24 @@ function runGit(cwd, args) {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   return result.stdout.trim();
+}
+
+function stableTestJson(value) {
+  if (Array.isArray(value)) {
+    return value.map(stableTestJson);
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, child]) => [key, stableTestJson(child)])
+    );
+  }
+  return value;
+}
+
+function stableTestJsonStringify(value) {
+  return JSON.stringify(stableTestJson(value), null, 2);
 }
 
 function writeWorkflowPreload(dir) {
@@ -106,6 +141,10 @@ function writeWorkflowPreload(dir) {
       "  if (pathname.includes('/mcp/')) {",
       "    const body = JSON.parse(init.body || '{}');",
       "    const toolName = body.params?.name;",
+      "    const toolLogPath = process.env.SNIPARA_TEST_TOOL_LOG;",
+      "    if (toolLogPath && toolName) {",
+      "      fs.appendFileSync(toolLogPath, `${toolName}\\n`, 'utf8');",
+      "    }",
       "    if (toolName === 'snipara_journal_append') {",
       "      const logPath = process.env.SNIPARA_TEST_JOURNAL_LOG;",
       "      if (logPath) {",
@@ -176,6 +215,19 @@ function writeWorkflowPreload(dir) {
       "        }),",
       "      };",
       "    }",
+      "    if (toolName === 'snipara_session_memories') {",
+      "      const sessionMemories = process.env.SNIPARA_TEST_SESSION_MEMORIES ? JSON.parse(process.env.SNIPARA_TEST_SESSION_MEMORIES) : { critical: { memories: [], count: 0, tokens: 0 }, daily: { memories: [], count: 0, tokens: 0 }, total_tokens: 0 };",
+      "      return {",
+      "        ok: true,",
+      "        status: 200,",
+      "        statusText: 'OK',",
+      "        json: async () => ({",
+      "          jsonrpc: '2.0',",
+      "          id: 1,",
+      "          result: { content: [{ type: 'text', text: JSON.stringify(sessionMemories) }] },",
+      "        }),",
+      "      };",
+      "    }",
       "    if (toolName === 'snipara_adaptive_routing_catalog') {",
       "      const catalogResponse = process.env.SNIPARA_TEST_ADAPTIVE_CATALOG_RESPONSE ? JSON.parse(process.env.SNIPARA_TEST_ADAPTIVE_CATALOG_RESPONSE) : { success: true, catalog: { version: 'test.catalog.v1', candidates: [{ candidateId: 'local-docs', workerClass: 'coding', endpointType: 'local', capabilities: ['docs'], isAvailable: true }] }, resolution: { status: 'candidate_catalog', candidate_count: 1, fallback: 'main_agent' }, fallback: 'main_agent', warnings: [] };",
       "      return {",
@@ -195,6 +247,31 @@ function writeWorkflowPreload(dir) {
       "      statusText: 'OK',",
       "      json: async () => ({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '{}' }] } }),",
       "    };",
+      "  }",
+      "  const body = init.body ? JSON.parse(init.body) : {};",
+      "  const collaborationLogPath = process.env.SNIPARA_TEST_COLLAB_LOG;",
+      "  if (collaborationLogPath && pathname.includes('/collaboration/')) {",
+      "    fs.appendFileSync(collaborationLogPath, `${JSON.stringify({ pathname, method: init.method, body })}\\n`, 'utf8');",
+      "  }",
+      "  const teamSyncLogPath = process.env.SNIPARA_TEST_TEAM_SYNC_LOG;",
+      "  if (teamSyncLogPath && pathname.includes('/team-sync/')) {",
+      "    fs.appendFileSync(teamSyncLogPath, `${JSON.stringify({ pathname, method: init.method, body })}\\n`, 'utf8');",
+      "  }",
+      "  const project = { id: 'project_1', name: 'App', slug: 'app' };",
+      "  if (pathname.endsWith('/collaboration/sessions') && init.method === 'POST') {",
+      "    const resources = [...(body.resources || []), ...(body.files || []).map((file) => ({ kind: 'FILE', id: file, sourcePath: file }))];",
+      "    return { ok: true, status: 201, statusText: 'Created', json: async () => ({ success: true, data: { project, session: { id: body.workSessionId || 'workflow:test', actorId: body.actorId || 'agent_1', actorType: body.actorType || 'AGENT', actorLabel: body.actorLabel || 'Codex', sessionId: body.sessionId || 'session_1', client: body.client || 'snipara-companion', repository: body.repository || 'acme/app', branch: body.branch || 'dev', task: body.task || null, status: 'ACTIVE', dirtyFiles: body.files || [], startedAt: '2026-06-09T12:00:00.000Z', lastHeartbeatAt: '2026-06-09T12:00:00.000Z' }, resources } }) };",
+      "  }",
+      "  if (pathname.endsWith('/collaboration/leases') && init.method === 'POST') {",
+      "    const resources = [...(body.resources || []), ...(body.files || []).map((file) => ({ kind: 'FILE', id: file, sourcePath: file }))];",
+      "    return { ok: true, status: 201, statusText: 'Created', json: async () => ({ success: true, data: { project, resources, leases: resources.map((resource, index) => ({ id: `lease_${index + 1}`, workSessionId: body.workSessionId || 'workflow:test', resourceKind: resource.kind, resourceId: resource.id, resourceLabel: resource.label || null, mode: body.mode || 'ADVISORY', status: 'ACTIVE', claimedByActorId: body.actorId || 'agent_1', claimedByActorType: body.actorType || 'AGENT', claimedByLabel: body.actorLabel || 'Codex', reason: body.reason || null, claimedAt: '2026-06-09T12:01:00.000Z', heartbeatAt: '2026-06-09T12:01:00.000Z', expiresAt: body.ttlSeconds ? '2099-06-09T16:01:00.000Z' : null })) } }) };",
+      "  }",
+      "  if (pathname.includes('/collaboration/leases/') && init.method === 'PATCH') {",
+      "    const leaseId = pathname.split('/').pop();",
+      "    return { ok: true, status: 200, statusText: 'OK', json: async () => ({ success: true, data: { project, lease: { id: leaseId, resourceKind: 'FILE', resourceId: 'packages/cli/src/index.ts', mode: 'ADVISORY', status: 'RELEASED', claimedByActorId: 'agent_1', claimedByActorType: 'AGENT' } } }) };",
+      "  }",
+      "  if (pathname.endsWith('/team-sync/work-briefs') && init.method === 'POST') {",
+      "    return { ok: true, status: 201, statusText: 'Created', json: async () => ({ success: true, data: { project, brief: { id: 'brief_1', task: body.task || 'workflow', generatedAt: '2026-06-09T12:00:00.000Z', evidenceLevel: 'hosted', activeCollisions: [], staleAssumptions: [], failedJobs: [], recommendedActions: ['Continue workflow'] }, whatChanged: { generatedAt: '2026-06-09T12:00:00.000Z', changes: [], decisions: [], nextActions: [], recommendedActions: ['Continue workflow'], summary: { changeCount: 0, decisionChanges: 0, staleAssumptions: 0, failedJobs: 0, overlapClusters: 0 } } } }) };",
       "  }",
       "  if (pathname.endsWith('/automation')) {",
       "    const settings = process.env.SNIPARA_TEST_AUTOMATION_SETTINGS ? JSON.parse(process.env.SNIPARA_TEST_AUTOMATION_SETTINGS) : {};",
@@ -310,6 +387,50 @@ function writeTeamSyncState(dir) {
   );
 }
 
+function writePendingDecisionRequest(dir, requestId = "decision-operational-loop") {
+  const pendingDir = path.join(dir, ".snipara", "decisions", "pending");
+  fs.mkdirSync(pendingDir, { recursive: true });
+  const request = {
+    schemaVersion: "snipara.decision_request.v0",
+    requestId,
+    fingerprint: `${requestId}-fingerprint`,
+    createdAt: "2026-05-31T10:45:00.000Z",
+    producer: {
+      kind: "project_policy_review",
+      command: "run --emit-policy-decisions",
+      sourceRef: "policy:operational-loop",
+    },
+    decision: "review_policy_findings",
+    question: "Review policy findings before closing the workflow phase?",
+    blocking: false,
+    expiresAt: null,
+    evidence: {
+      summary: "Policy review should be resolved before closure.",
+      refs: ["policy:operational-loop"],
+      items: [
+        {
+          ref: "policy:operational-loop",
+          title: "Policy review",
+          summary: "Review policy findings before phase closure.",
+          kind: "project_policy_review",
+        },
+      ],
+      reasonCodes: ["project_policy_review"],
+      applyPath: "manual_project_policy_review",
+      applyCommand: "Resolve with snipara-companion workflow decide.",
+    },
+    options: ["accept", "reject", "keep_pending"],
+    recommendation: "keep_pending",
+    rationale: "Policy administration stays review-only.",
+  };
+  fs.writeFileSync(
+    path.join(pendingDir, `${request.requestId}.json`),
+    `${stableTestJsonStringify(request)}\n`,
+    "utf8"
+  );
+  return request;
+}
+
 test("client exposes generic workflow helpers", () => {
   const client = createClient();
 
@@ -347,6 +468,7 @@ test("agentic status summarizes workflow, git, and Team Sync state", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-agentic-status-"));
   writeWorkflowState(dir);
   writeTeamSyncState(dir);
+  writePendingDecisionRequest(dir);
 
   const status = buildAgenticWorkStatus(dir);
 
@@ -357,6 +479,18 @@ test("agentic status summarizes workflow, git, and Team Sync state", () => {
   assert.equal(status.teamSync.handoffCount, 1);
   assert.equal(status.teamSync.latestHandoff.summary, "Status command ready");
   assert.ok(status.risks.some((risk) => risk.includes("proof")));
+  assert.equal(status.openDecisions.count, 1);
+  assert.equal(status.operationalLoop.status, "attention");
+  assert.equal(status.operationalLoop.decisionRequestCount, 1);
+  assert.ok(status.operationalLoop.receiptGapCount >= 1);
+  assert.ok(
+    status.operationalLoop.nextActions.some((action) => action.includes("Decision Request"))
+  );
+  assert.ok(
+    status.operationalLoop.receiptActions.some((action) =>
+      action.includes("outcome-capture preview --emit-outcome-receipt")
+    )
+  );
   assert.match(status.suggestedNextAction, /verify/);
 });
 
@@ -398,6 +532,29 @@ test("top-level timeline reads local workflow and Team Sync state", () => {
   assert.equal(payload.version, "snipara.agentic_timeline.v1");
   assert.equal(payload.events.length, 3);
   assert.equal(payload.events[0].kind, "team-sync-handoff");
+});
+
+test("workflow timeline exports redacted markdown", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-timeline-md-"));
+  writeWorkflowState(dir);
+  appendActivityEvent({
+    cwd: dir,
+    source: "workflow",
+    kind: "phase-commit",
+    title: `Verified ${dir}/packages/cli/src/index.ts`,
+    summary: "token=secret-value should be redacted",
+    files: [path.join(dir, "packages/cli/src/index.ts"), ".snipara/activity/session.json"],
+    timestamp: "2026-07-02T21:30:00.000Z",
+  });
+
+  const result = runCli(["workflow", "timeline", "--export", "md", "--limit", "3"], { cwd: dir });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^# Workflow Timeline/);
+  assert.match(result.stdout, /\[workspace\]/);
+  assert.match(result.stdout, /\[local-state\]/);
+  assert.match(result.stdout, /token=\[redacted\]/);
+  assert.doesNotMatch(result.stdout, new RegExp(dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
 
 test("workflow impact gate audits unpushed committed phases without dirty files", () => {
@@ -652,6 +809,212 @@ test("session bootstrap quality warns on stale low-confidence test memories", ()
   assert.match(quality.warnings.join("\n"), /test fixtures/);
 });
 
+test("session bootstrap brief prioritizes recent high-signal carryover over stale critical trivia", () => {
+  const brief = buildSessionBootstrapBrief(
+    {
+      critical: {
+        memories: [
+          {
+            id: "old_env",
+            type: "FACT",
+            category: "configuration",
+            content:
+              "Symlinked .env files structure: /Users/alopez/Devs/Snipara/.env is the source of truth.",
+            confidence: 0.23,
+            created_at: "2026-02-06T11:55:45.516Z",
+          },
+          {
+            id: "old_tooltip",
+            type: "DECISION",
+            category: "ui",
+            content:
+              "InfoTooltip component created at apps/web/src/components/ui/info-tooltip.tsx.",
+            confidence: 0.2,
+            created_at: "2026-01-26T08:49:04.656Z",
+          },
+        ],
+        count: 2,
+        tokens: 300,
+      },
+      daily: {
+        memories: [
+          {
+            id: "today_final",
+            type: "CONTEXT",
+            category: "journal:2026-07-03",
+            content:
+              "Checkpoint: workflow:final-commit. Implemented and released true Control Plane Lite lifecycle. Companion now routes --mode auto by intent, LITE has zero mandatory Snipara calls, and snipara-companion@3.2.7 is published.",
+            confidence: 1,
+            created_at: "2026-07-03T20:11:10.540Z",
+          },
+        ],
+        count: 1,
+        tokens: 120,
+      },
+      total_tokens: 420,
+    },
+    {
+      includeSessionContext: true,
+      maxTokens: 120,
+      now: new Date("2026-07-03T20:30:00.000Z"),
+    }
+  );
+
+  assert.equal(brief.entries[0]?.id, "today_final");
+  assert.notEqual(brief.entries[0]?.id, "old_env");
+  assert.ok(brief.estimatedTokens <= brief.budgetTokens);
+});
+
+test("session bootstrap brief reserves old project and owner profiles and drops generic stale memory", () => {
+  const projectProfile = {
+    id: "project_profile",
+    type: "FACT",
+    category: "tenant_profile",
+    content: "Project constitution: ship verified context optimization without owning inference.",
+    confidence: 1,
+    created_at: "2025-01-01T00:00:00.000Z",
+  };
+  const ownerProfile = {
+    id: "owner_profile",
+    type: "PREFERENCE",
+    category: "owner_operating_profile",
+    content:
+      "Owner operating profile: prefers concise evidence-first updates and end-to-end release proof.",
+    confidence: 1,
+    created_at: "2025-01-01T00:00:00.000Z",
+  };
+  const additionalProjectProfile = {
+    id: "additional_project_profile",
+    type: "FACT",
+    category: "tenant_profile",
+    content: "Second client profile: preserve EU residency and accessibility constraints.",
+    confidence: 1,
+    created_at: "2025-01-02T00:00:00.000Z",
+  };
+  const brief = buildSessionBootstrapBrief(
+    {
+      critical: {
+        memories: [
+          projectProfile,
+          ownerProfile,
+          additionalProjectProfile,
+          {
+            id: "generic_stale_fact",
+            type: "FACT",
+            category: "configuration",
+            content: "Generic configuration note from a long-finished migration.",
+            confidence: 1,
+            created_at: "2025-01-02T00:00:00.000Z",
+          },
+        ],
+        count: 4,
+        tokens: 100,
+      },
+      daily: { memories: [], count: 0, tokens: 0 },
+      profiles: {
+        owner_memory_id: "owner_profile",
+        project_memory_id: "project_profile",
+        tokens: 48,
+        precedence: ["project", "owner"],
+      },
+      total_tokens: 100,
+    },
+    {
+      includeSessionContext: false,
+      maxEntries: 4,
+      maxTokens: 160,
+      now: new Date("2026-07-12T00:00:00.000Z"),
+    }
+  );
+
+  assert.deepEqual(
+    brief.entries.map((entry) => entry.id),
+    ["project_profile", "owner_profile", "additional_project_profile"]
+  );
+  assert.equal(
+    brief.entries.filter((entry) => entry.category === "owner_operating_profile").length,
+    1
+  );
+  assert.equal(brief.entries.filter((entry) => entry.category === "tenant_profile").length, 2);
+  assert.ok(brief.estimatedTokens <= brief.budgetTokens);
+});
+
+test("session bootstrap brief deduplicates carryover and reserves room for recent decisions", () => {
+  const brief = buildSessionBootstrapBrief(
+    {
+      critical: {
+        memories: [
+          {
+            id: "control_plane_decision",
+            type: "DECISION",
+            category: "roadmap",
+            content:
+              "Roadmap framing decision: Project Control Plane = architecture component of Project Intelligence, not the product and not a marketing slogan.",
+            confidence: 1,
+            created_at: "2026-07-03T15:16:43.491Z",
+          },
+          {
+            id: "workflow_phase",
+            type: "CONTEXT",
+            category: "workflow-phase",
+            content:
+              "Workflow control-plane-lite-context-routing Final commit Implemented and released true Control Plane Lite lifecycle. Companion now routes --mode auto by intent, LITE has zero mandatory Snipara calls.",
+            confidence: 1,
+            created_at: "2026-07-03T20:10:00.000Z",
+          },
+        ],
+        count: 2,
+        tokens: 240,
+      },
+      daily: {
+        memories: [
+          {
+            id: "checkpoint_final",
+            type: "CONTEXT",
+            category: "journal:2026-07-03",
+            content:
+              "Checkpoint: workflow:final-commit Summary: Implemented and released true Control Plane Lite lifecycle. Companion now routes --mode auto by intent, LITE has zero mandatory Snipara calls.",
+            confidence: 1,
+            created_at: "2026-07-03T20:11:10.540Z",
+          },
+          {
+            id: "published_handoff",
+            type: "CONTEXT",
+            category: "team_sync_handoff",
+            content:
+              "Released snipara-companion 3.2.8 to make session-bootstrap text briefs tiny/high-signal: recent handoff/session carryover ranks ahead of stale durable memory.",
+            confidence: 1,
+            created_at: "2026-07-03T20:37:31.215Z",
+          },
+          {
+            id: "phase_docs",
+            type: "CONTEXT",
+            category: "journal:2026-07-03",
+            content:
+              "Checkpoint: workflow:phase-commit Summary: Replaced mandatory recall/context startup rules with routed brief-first guidance and documented true lite mode.",
+            confidence: 1,
+            created_at: "2026-07-03T19:50:00.000Z",
+          },
+        ],
+        count: 3,
+        tokens: 360,
+      },
+      total_tokens: 600,
+    },
+    {
+      includeSessionContext: true,
+      maxTokens: 260,
+      now: new Date("2026-07-03T20:45:00.000Z"),
+    }
+  );
+
+  const ids = brief.entries.map((entry) => entry.id);
+  assert.equal(ids.filter((id) => id === "workflow_phase" || id === "checkpoint_final").length, 1);
+  assert.ok(ids.includes("control_plane_decision"));
+  assert.ok(brief.entries.filter((entry) => entry.type === "CONTEXT").length <= 3);
+  assert.ok(brief.estimatedTokens <= brief.budgetTokens);
+});
+
 test("generated workflow plan document converts hosted plan steps", () => {
   const document = buildGeneratedWorkflowPlanDocument(
     {
@@ -740,6 +1103,156 @@ test("workflow scaffold builds a four-phase memory backend unification plan", ()
     ["v2-limits-compaction-and-hygiene", "multi-scope-recall-and-proof-gated-validation"]
   );
   assert.match(scaffold.plan.steps[0].acceptance, /legacy memory surfaces are inventoried/i);
+});
+
+test("workflow start auto-publishes standard collaboration presence without claims", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-standard-presence-"));
+  fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "app" }), "utf8");
+  const preloadPath = writeWorkflowPreload(dir);
+  const collaborationLog = path.join(dir, "collaboration.log");
+
+  const result = runCli(["workflow", "start", "--goal", "Fix copy", "--json"], {
+    cwd: dir,
+    nodeArgs: ["--require", preloadPath],
+    env: {
+      SNIPARA_API_KEY: "test-key",
+      SNIPARA_PROJECT_ID: "project_1",
+      SNIPARA_API_URL: "https://api.example.test",
+      SNIPARA_TEST_COLLAB_LOG: collaborationLog,
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.coordination.mode, "standard");
+  assert.equal(payload.coordination.startReceipt.hostedSessionStatus, "ok");
+  assert.equal(payload.coordination.startReceipt.hostedClaimStatus, "skipped");
+  const calls = fs.readFileSync(collaborationLog, "utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(calls.filter((call) => call.pathname.endsWith("/collaboration/sessions")).length, 1);
+  assert.equal(calls.filter((call) => call.pathname.endsWith("/collaboration/leases")).length, 0);
+});
+
+test("workflow start auto-publishes full Team Sync and claims planned files", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-full-claims-"));
+  fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "app" }), "utf8");
+  const planFile = path.join(dir, "workflow-plan.json");
+  fs.writeFileSync(
+    planFile,
+    JSON.stringify({
+      mode: "full",
+      steps: [
+        {
+          id: "edit-cli",
+          title: "Edit CLI",
+          query: "Edit the CLI",
+          files: ["packages/cli/src/index.ts"],
+        },
+      ],
+    }),
+    "utf8"
+  );
+  const preloadPath = writeWorkflowPreload(dir);
+  const collaborationLog = path.join(dir, "collaboration.log");
+  const teamSyncLog = path.join(dir, "team-sync.log");
+
+  const result = runCli(
+    [
+      "workflow",
+      "start",
+      "--goal",
+      "Ship workflow coordination",
+      "--plan-file",
+      planFile,
+      "--json",
+    ],
+    {
+      cwd: dir,
+      nodeArgs: ["--require", preloadPath],
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "project_1",
+        SNIPARA_API_URL: "https://api.example.test",
+        SNIPARA_TEST_COLLAB_LOG: collaborationLog,
+        SNIPARA_TEST_TEAM_SYNC_LOG: teamSyncLog,
+      },
+    }
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.coordination.mode, "full");
+  assert.equal(payload.coordination.startReceipt.hostedSessionStatus, "ok");
+  assert.equal(payload.coordination.startReceipt.hostedClaimStatus, "ok");
+  assert.equal(payload.coordination.teamSyncReceipt.hostedStatus, "ok");
+  const calls = fs.readFileSync(collaborationLog, "utf8").trim().split("\n").map(JSON.parse);
+  const leaseCall = calls.find((call) => call.pathname.endsWith("/collaboration/leases"));
+  assert.ok(leaseCall);
+  assert.ok(
+    leaseCall.body.resources.some((resource) => resource.id === "packages/cli/src/index.ts")
+  );
+  const teamSyncCalls = fs.readFileSync(teamSyncLog, "utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(teamSyncCalls.length, 1);
+  assert.equal(teamSyncCalls[0].body.task, "Ship workflow coordination");
+});
+
+test("workflow phase-commit releases workflow coordination leases", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-release-"));
+  const planFile = path.join(dir, "workflow-plan.json");
+  fs.writeFileSync(
+    planFile,
+    JSON.stringify({
+      mode: "full",
+      steps: [
+        {
+          id: "edit-cli",
+          title: "Edit CLI",
+          query: "Edit the CLI",
+          files: ["packages/cli/src/index.ts"],
+        },
+      ],
+    }),
+    "utf8"
+  );
+  const preloadPath = writeWorkflowPreload(dir);
+  const collaborationLog = path.join(dir, "collaboration.log");
+  const env = {
+    SNIPARA_API_KEY: "test-key",
+    SNIPARA_PROJECT_ID: "project_1",
+    SNIPARA_API_URL: "https://api.example.test",
+    SNIPARA_TEST_COLLAB_LOG: collaborationLog,
+  };
+
+  const start = runCli(
+    ["workflow", "start", "--goal", "Ship release hygiene", "--plan-file", planFile, "--json"],
+    { cwd: dir, nodeArgs: ["--require", preloadPath], env }
+  );
+  assert.equal(start.status, 0, start.stderr || start.stdout);
+
+  const phaseCommit = runCli(
+    [
+      "workflow",
+      "phase-commit",
+      "edit-cli",
+      "--summary",
+      "Implemented edit",
+      "--outcome",
+      "completed",
+      "--files",
+      "packages/cli/src/index.ts",
+      "--json",
+    ],
+    { cwd: dir, nodeArgs: ["--require", preloadPath], env }
+  );
+  assert.equal(phaseCommit.status, 0, phaseCommit.stderr || phaseCommit.stdout);
+  const payload = JSON.parse(phaseCommit.stdout);
+  assert.equal(payload.coordinationRelease.hostedReleaseStatus, "ok");
+  assert.ok(payload.workflow.coordination.releaseReceipt);
+  const calls = fs.readFileSync(collaborationLog, "utf8").trim().split("\n").map(JSON.parse);
+  assert.ok(
+    calls.some(
+      (call) => call.pathname.includes("/collaboration/leases/") && call.method === "PATCH"
+    )
+  );
 });
 
 test("workflow scaffold builds the Project Intelligence continuity layer plan", () => {
@@ -846,6 +1359,24 @@ test("workflow phase-commit appends a journal checkpoint alongside durable memor
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.journal.status, "ok");
+  assert.equal(payload.producerLoopArtifact.status, "written");
+  assert.equal(payload.producerLoopArtifact.schemaVersion, PRODUCER_LOOP_ARTIFACT_VERSION);
+  assert.match(payload.producerLoopArtifact.relativePath, /^\.snipara\/producer-loop\//);
+  assert.match(payload.producerLoopArtifact.ledgerHash, /^sha256:/);
+  const phaseProducerArtifact = JSON.parse(
+    fs.readFileSync(payload.producerLoopArtifact.path, "utf8")
+  );
+  assert.equal(phaseProducerArtifact.schemaVersion, PRODUCER_LOOP_ARTIFACT_VERSION);
+  assert.equal(phaseProducerArtifact.producer.kind, "workflow_phase_commit");
+  assert.equal(phaseProducerArtifact.producer.workflowId, "companion-journal");
+  assert.equal(phaseProducerArtifact.producer.phaseId, "companion-journal-checkpoints");
+  assert.equal(phaseProducerArtifact.ledger.version, "snipara.coding_intelligence_ledger.v0");
+  assert.equal(phaseProducerArtifact.calibration.hardGateReady, false);
+  assert.match(phaseProducerArtifact.caveats.join("\n"), /Local review evidence only/);
+  assert.ok(
+    fs.existsSync(path.join(dir, PRODUCER_LOOP_RELATIVE_DIR)),
+    "producer loop artifact directory should exist"
+  );
   const current = JSON.parse(
     fs.readFileSync(path.join(dir, ".snipara", "workflow", "current.json"), "utf8")
   );
@@ -868,6 +1399,296 @@ test("workflow phase-commit appends a journal checkpoint alongside durable memor
     "phase",
     "outcome:completed",
   ]);
+});
+
+test("workflow producer-report summarizes local workflow producer artifacts", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-producer-report-"));
+  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+  fs.mkdirSync(path.join(dir, ".snipara", "workflow"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, ".snipara", "workflow", "current.json"),
+    JSON.stringify(
+      {
+        schemaVersion: "snipara.workflow.v2",
+        workflowId: "producer-report-workflow",
+        goal: "Report local producer samples",
+        status: "active",
+        currentPhaseId: "report",
+        planSource: "inline",
+        createdAt: "2026-05-29T08:00:00.000Z",
+        updatedAt: "2026-05-29T08:00:00.000Z",
+        phases: [
+          {
+            id: "report",
+            title: "Report samples",
+            query: "Create a local producer sample",
+            status: "in_progress",
+          },
+        ],
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+  const preloadPath = writeWorkflowPreload(dir);
+
+  const commitResult = runCli(
+    [
+      "workflow",
+      "phase-commit",
+      "report",
+      "--summary",
+      "Created one producer sample for report coverage",
+      "--json",
+    ],
+    {
+      cwd: dir,
+      env: {
+        SNIPARA_API_KEY: "snp-test",
+        SNIPARA_PROJECT_ID: "project_1",
+        SNIPARA_API_URL: "https://api.snipara.com",
+        SNIPARA_SESSION_ID: "session_1",
+        SNIPARA_AUTOMATION_CLIENT: "codex",
+      },
+      nodeArgs: ["-r", preloadPath],
+    }
+  );
+  assert.equal(commitResult.status, 0, commitResult.stderr || commitResult.stdout);
+  const producerDir = path.join(dir, PRODUCER_LOOP_RELATIVE_DIR);
+  fs.mkdirSync(producerDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(producerDir, "2026-05-29T08-05-00-000Z-producer-pr-answer-pack.json"),
+    JSON.stringify(
+      {
+        schemaVersion: PRODUCER_LOOP_ARTIFACT_VERSION,
+        artifactId: "producer-pr-answer-pack",
+        generatedAt: "2026-05-29T08:05:00.000Z",
+        producer: {
+          kind: "pr_answer_pack_decision_capture",
+          command: "github-pr-answer-pack decision-capture",
+          category: "github-pr-answer-pack",
+          repository: "acme/app",
+          pullNumber: 42,
+          sourceRef: "github:acme/app#42:abc123",
+          files: ["src/auth.ts"],
+          candidateCount: 1,
+          createdDecisionCount: 1,
+          duplicateDecisionCount: 0,
+          failedDecisionCount: 0,
+        },
+        source: {
+          summary: "Captured PR decision candidates",
+          sourceRef: "github:acme/app#42:abc123",
+        },
+        ledger: {
+          version: "snipara.coding_intelligence_ledger.v0",
+          reasonCodes: ["producer_loop_v0", "pr_answer_pack_decision_capture"],
+        },
+        ledgerHash: "sha256:pr-pack-ledger",
+        localEvidence: {
+          durableMemoryAttempted: true,
+          decisionCaptureAttempted: true,
+          serverSide: true,
+        },
+        calibration: {
+          status: "sample_unreviewed",
+          sampleSize: 1,
+          hardGateReady: false,
+          notes: ["PR Answer Pack sample is review-pending."],
+        },
+        caveats: ["PR Answer Pack producer evidence remains review-pending."],
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+
+  const result = runCli(["workflow", "producer-report", "--min-review-samples", "2", "--json"], {
+    cwd: dir,
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.version, PRODUCER_LOOP_REPORT_VERSION);
+  assert.equal(report.source.directory, PRODUCER_LOOP_RELATIVE_DIR);
+  assert.equal(report.source.localOnly, true);
+  assert.equal(report.adoption.status, "active");
+  assert.equal(report.adoption.artifactCount, 2);
+  assert.deepEqual([...report.adoption.producerKinds].sort(), [
+    "pr_answer_pack_decision_capture",
+    "workflow_phase_commit",
+  ]);
+  assert.deepEqual(report.adoption.workflowIds, ["producer-report-workflow"]);
+  assert.equal(report.calibration.status, "insufficient_samples");
+  assert.equal(report.calibration.sampleSize, 2);
+  assert.equal(report.calibration.reviewedSampleSize, 0);
+  assert.equal(report.calibration.rejectedSampleSize, 0);
+  assert.equal(report.calibration.unreviewedSampleSize, 2);
+  assert.equal(report.calibration.minReviewSampleSize, 2);
+  assert.equal(report.calibration.hardGateReady, false);
+  assert.equal(report.reasonCodes.counts.producer_loop_v0, 2);
+  assert.equal(report.reasonCodes.counts.pr_answer_pack_decision_capture, 1);
+  assert.match(report.latestArtifact.relativePath, /^\.snipara\/producer-loop\//);
+  assert.equal(report.invalidArtifacts.length, 0);
+
+  const reviewResult = runCli(
+    [
+      "workflow",
+      "producer-review",
+      "--artifact",
+      "producer-pr-answer-pack",
+      "--outcome",
+      "useful",
+      "--reviewer",
+      "alice",
+      "--note",
+      "Evidence matched the PR Answer Pack",
+      "--json",
+    ],
+    {
+      cwd: dir,
+    }
+  );
+
+  assert.equal(reviewResult.status, 0, reviewResult.stderr || reviewResult.stdout);
+  const review = JSON.parse(reviewResult.stdout);
+  assert.equal(review.artifactId, "producer-pr-answer-pack");
+  assert.equal(review.review.status, "sample_reviewed");
+  assert.equal(review.review.outcome, "useful");
+  assert.equal(review.review.reviewer, "alice");
+  assert.equal(review.calibration.hardGateReady, false);
+
+  const reviewedArtifact = JSON.parse(fs.readFileSync(review.path, "utf8"));
+  assert.equal(reviewedArtifact.calibration.status, "sample_reviewed");
+  assert.equal(reviewedArtifact.review.outcome, "useful");
+
+  const reviewedReportResult = runCli(
+    ["workflow", "producer-report", "--min-review-samples", "1", "--json"],
+    {
+      cwd: dir,
+    }
+  );
+
+  assert.equal(
+    reviewedReportResult.status,
+    0,
+    reviewedReportResult.stderr || reviewedReportResult.stdout
+  );
+  const reviewedReport = JSON.parse(reviewedReportResult.stdout);
+  assert.equal(reviewedReport.calibration.status, "reviewable_sample_set");
+  assert.equal(reviewedReport.calibration.sampleSize, 2);
+  assert.equal(reviewedReport.calibration.reviewedSampleSize, 1);
+  assert.equal(reviewedReport.calibration.rejectedSampleSize, 0);
+  assert.equal(reviewedReport.calibration.unreviewedSampleSize, 1);
+  assert.equal(reviewedReport.calibration.reviewOutcomes.useful, 1);
+  assert.equal(reviewedReport.calibration.hardGateReady, false);
+});
+
+test("workflow producer-triage emits decision requests and decide applies producer review", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-decisions-"));
+  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+  fs.mkdirSync(path.join(dir, ".snipara", "workflow"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, ".snipara", "workflow", "current.json"),
+    JSON.stringify(
+      {
+        schemaVersion: "snipara.workflow.v2",
+        workflowId: "decision-request-workflow",
+        goal: "Create decision request sample",
+        status: "active",
+        currentPhaseId: "request",
+        planSource: "inline",
+        createdAt: "2026-05-29T08:00:00.000Z",
+        updatedAt: "2026-05-29T08:00:00.000Z",
+        phases: [
+          {
+            id: "request",
+            title: "Request review",
+            query: "Create a local producer sample",
+            status: "in_progress",
+          },
+        ],
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+  const preloadPath = writeWorkflowPreload(dir);
+  const commitResult = runCli(
+    [
+      "workflow",
+      "phase-commit",
+      "request",
+      "--summary",
+      "Created one producer sample for decision triage",
+      "--json",
+    ],
+    {
+      cwd: dir,
+      env: {
+        SNIPARA_API_KEY: "snp-test",
+        SNIPARA_PROJECT_ID: "project_1",
+        SNIPARA_API_URL: "https://api.snipara.com",
+        SNIPARA_SESSION_ID: "session_1",
+        SNIPARA_AUTOMATION_CLIENT: "codex",
+      },
+      nodeArgs: ["-r", preloadPath],
+    }
+  );
+  assert.equal(commitResult.status, 0, commitResult.stderr || commitResult.stdout);
+
+  const triageResult = runCli(["workflow", "producer-triage", "--json"], { cwd: dir });
+  assert.equal(triageResult.status, 0, triageResult.stderr || triageResult.stdout);
+  const triage = JSON.parse(triageResult.stdout);
+  assert.equal(triage.write.status, "written");
+  assert.equal(triage.request.schemaVersion, "snipara.decision_request.v0");
+  assert.equal(triage.request.decision, "accept_triage_batch");
+  assert.equal(triage.request.evidence.applyPath, "workflow producer-review");
+  assert.equal(triage.request.evidence.items.length, 1);
+  assert.equal(triage.request.evidence.items[0].ref, triage.request.evidence.refs[0]);
+  assert.match(triage.request.evidence.items[0].title, /decision-request-workflow/);
+  assert.match(
+    triage.request.evidence.items[0].summary,
+    /Created one producer sample for decision triage/
+  );
+
+  const decisionsResult = runCli(["workflow", "decisions", "--json"], { cwd: dir });
+  assert.equal(decisionsResult.status, 0, decisionsResult.stderr || decisionsResult.stdout);
+  const decisions = JSON.parse(decisionsResult.stdout);
+  assert.equal(decisions.pendingCount, 1);
+  assert.equal(decisions.requests[0].requestId, triage.request.requestId);
+  assert.equal(decisions.requests[0].evidence.items[0].ref, triage.request.evidence.refs[0]);
+
+  const decideResult = runCli(
+    [
+      "workflow",
+      "decide",
+      triage.request.requestId,
+      "--choose",
+      "accept_all",
+      "--reviewer",
+      "alice",
+      "--note",
+      "spot checked",
+      "--json",
+    ],
+    { cwd: dir }
+  );
+  assert.equal(decideResult.status, 0, decideResult.stderr || decideResult.stdout);
+  const resolved = JSON.parse(decideResult.stdout);
+  assert.equal(resolved.response.choice, "accept_all");
+  assert.match(resolved.response.appliedActions[0], /workflow producer-review/);
+  assert.equal(fs.readdirSync(path.join(dir, ".snipara", "decisions", "pending")).length, 0);
+  assert.equal(fs.readdirSync(path.join(dir, ".snipara", "decisions", "resolved")).length, 1);
+
+  const reportResult = runCli(["workflow", "producer-report", "--json"], { cwd: dir });
+  assert.equal(reportResult.status, 0, reportResult.stderr || reportResult.stdout);
+  const report = JSON.parse(reportResult.stdout);
+  assert.equal(report.calibration.reviewedSampleSize, 1);
+  assert.equal(report.artifacts[0].reviewer, "alice");
 });
 
 test("workflow phase-commit advances local state when hosted commit times out", () => {
@@ -1047,6 +1868,20 @@ test("final-commit surfaces the backend Team Sync handoff invariant", () => {
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.commit.team_sync_handoff.status, "created");
   assert.equal(payload.commit.team_sync_handoff.memory_id, "mem_handoff");
+  assert.equal(payload.producerLoopArtifact.status, "written");
+  assert.equal(payload.producerLoopArtifact.schemaVersion, PRODUCER_LOOP_ARTIFACT_VERSION);
+  assert.match(payload.producerLoopArtifact.relativePath, /^\.snipara\/producer-loop\//);
+  const finalProducerArtifact = JSON.parse(
+    fs.readFileSync(payload.producerLoopArtifact.path, "utf8")
+  );
+  assert.equal(finalProducerArtifact.schemaVersion, PRODUCER_LOOP_ARTIFACT_VERSION);
+  assert.equal(finalProducerArtifact.producer.kind, "workflow_final_commit");
+  assert.equal(finalProducerArtifact.producer.workflowId, "agentic-work");
+  assert.deepEqual(finalProducerArtifact.producer.files, [
+    "packages/cli/src/commands/workflows.ts",
+  ]);
+  assert.equal(finalProducerArtifact.ledger.version, "snipara.coding_intelligence_ledger.v0");
+  assert.equal(finalProducerArtifact.calibration.hardGateReady, false);
 
   const current = JSON.parse(
     fs.readFileSync(path.join(dir, ".snipara", "workflow", "current.json"), "utf8")
@@ -1396,10 +2231,35 @@ test("orchestrator handoff artifact captures workflow and routing metadata", () 
       fs.readFileSync(path.join(dir, ORCHESTRATOR_HANDOFF_RELATIVE_PATH), "utf8")
     );
     assert.equal(persisted.schemaVersion, "snipara.orchestrator.handoff.v1");
-    assert.deepEqual(persisted.memory.decisionIds, ["DEC-002"]);
+    assert.deepEqual(persisted.memory.decisionIds, []);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("orchestrator handoff only emits explicit or referenced decision IDs", () => {
+  const recommendation = getOrchestratorRecommendation("Release validation", "full", {
+    policyAutoRoute: true,
+  });
+
+  const emptyArtifact = buildOrchestratorHandoff({
+    sourceCommand: "workflow run",
+    recommendation,
+    query: "Release validation",
+    summary: "No linked decisions",
+  });
+  assert.deepEqual(emptyArtifact.memory.decisionIds, []);
+
+  const linkedArtifact = buildOrchestratorHandoff({
+    sourceCommand: "workflow run",
+    recommendation,
+    query: "Release validation",
+    summary: "Linked decisions",
+    decisionIds: ["dec-101", "DEC-101", "not-a-decision"],
+    contextRefs: ["team-sync decision DEC-202", "docs/reference/CODE_GRAPH.md"],
+  });
+
+  assert.deepEqual(linkedArtifact.memory.decisionIds, ["DEC-101", "DEC-202"]);
 });
 
 test("adaptive work routing handoff remains recommendation-only and local-capable", () => {
@@ -1768,6 +2628,418 @@ test("workflow run applies project adaptive routing catalog policy", () => {
   }
 });
 
+test("workflow run explains when project policy blocks requested local routing", () => {
+  const dir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "snipara-adaptive-routing-policy-blocks-local-")
+  );
+  try {
+    fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+    fs.mkdirSync(path.join(dir, ".snipara", "workflow"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, ".snipara", "workflow", "current.json"),
+      JSON.stringify(
+        {
+          schemaVersion: "snipara.workflow.v2",
+          workflowId: "adaptive-routing-policy-blocks-local",
+          goal: "Prepare local worker handoff",
+          status: "active",
+          currentPhaseId: "docs-worker",
+          planSource: "inline",
+          createdAt: "2026-06-18T21:30:00.000Z",
+          updatedAt: "2026-06-18T21:30:00.000Z",
+          phases: [
+            {
+              id: "docs-worker",
+              title: "Docs worker",
+              query: "Update docs through a scoped worker",
+              status: "in_progress",
+              files: ["docs/roadmap.md"],
+            },
+          ],
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const preloadPath = writeWorkflowPreload(dir);
+    const result = runCli(
+      [
+        "workflow",
+        "run",
+        "--mode",
+        "standard",
+        "--query",
+        "Reason with the main planner then use a local worker for a docs update",
+        "--adaptive-routing-dry-run",
+        "--route-local-workers",
+        "--routing-worker-role",
+        "coding",
+        "--routing-local-base-url",
+        "http://127.0.0.1:1234",
+        "--routing-local-model",
+        "qwen/qwen3-coder-30b",
+        "--emit-orchestrator-handoff",
+        "--json",
+      ],
+      {
+        cwd: dir,
+        env: {
+          SNIPARA_API_KEY: "snp-test",
+          SNIPARA_PROJECT_ID: "project_1",
+          SNIPARA_API_URL: "https://api.snipara.com",
+          SNIPARA_TEST_AUTOMATION_SETTINGS: JSON.stringify({
+            adaptiveRoutingMode: "off",
+            adaptiveRoutingAllowedEndpointTypes: ["cloud"],
+            adaptiveRoutingPreferredEndpointTypes: [],
+            adaptiveRoutingAllowedWorkerClasses: ["documentation", "tests", "review"],
+          }),
+        },
+        nodeArgs: ["-r", preloadPath],
+      }
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.adaptive_routing.gateway, undefined);
+    assert.deepEqual(payload.adaptive_routing.requirements.allowedEndpointTypes, ["cloud"]);
+    assert.deepEqual(payload.adaptive_routing.requirements.preferredEndpointTypes ?? [], []);
+    assert.match(
+      payload.adaptive_routing.routingCard.warnings.join(" "),
+      /Local worker routing was requested, but the effective Adaptive Work Routing policy does not allow local endpoints/
+    );
+    assert.match(
+      payload.adaptive_routing.routingCard.warnings.join(" "),
+      /Companion skipped local orchestrator routing/
+    );
+    assert.equal(payload.orchestrator_handoff.relativePath, ORCHESTRATOR_HANDOFF_RELATIVE_PATH);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("local worker declarations feed workflow run routing", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-local-worker-routing-"));
+  try {
+    fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+    fs.mkdirSync(path.join(dir, ".snipara", "workflow"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, ".snipara", "workflow", "current.json"),
+      JSON.stringify(
+        {
+          schemaVersion: "snipara.workflow.v2",
+          workflowId: "local-worker-routing",
+          goal: "Use local GPT-OSS coding worker",
+          status: "active",
+          currentPhaseId: "coding-worker",
+          planSource: "inline",
+          createdAt: "2026-06-18T21:30:00.000Z",
+          updatedAt: "2026-06-18T21:30:00.000Z",
+          phases: [
+            {
+              id: "coding-worker",
+              title: "Coding worker",
+              query: "Let a local coding worker update a small file",
+              status: "in_progress",
+              files: ["src/example.ts"],
+            },
+          ],
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const addResult = runCli(
+      [
+        "workers",
+        "local",
+        "add",
+        "--id",
+        "local-gpt-oss-20b-coding",
+        "--role",
+        "coding",
+        "--provider",
+        "lm-studio",
+        "--base-url",
+        "http://127.0.0.1:1234",
+        "--model",
+        "openai/gpt-oss-20b",
+        "--json",
+      ],
+      { cwd: dir }
+    );
+    assert.equal(addResult.status, 0, addResult.stderr || addResult.stdout);
+    const addPayload = JSON.parse(addResult.stdout);
+    assert.equal(addPayload.worker.id, "local-gpt-oss-20b-coding");
+    assert.equal(addPayload.worker.workerRole, "coding");
+    assert.equal(addPayload.worker.model, "openai/gpt-oss-20b");
+    assert.deepEqual(addPayload.worker.writeScope, []);
+
+    const workerConfig = JSON.parse(
+      fs.readFileSync(
+        path.join(dir, ".snipara", "workers", "local-gpt-oss-20b-coding.json"),
+        "utf8"
+      )
+    );
+    assert.equal(workerConfig.workerId, "local-gpt-oss-20b-coding");
+    assert.equal(workerConfig.capabilities.roles.includes("coding"), true);
+    const policy = JSON.parse(
+      fs.readFileSync(path.join(dir, ".snipara", "adaptive-routing.json"), "utf8")
+    );
+    assert.ok(policy.allowedEndpointTypes.includes("local"));
+    assert.ok(policy.preferredEndpointTypes.includes("local"));
+
+    const preloadPath = writeWorkflowPreload(dir);
+    const orchestratorArgsLog = path.join(dir, "orchestrator-args.jsonl");
+    const result = runCli(
+      [
+        "workflow",
+        "run",
+        "--mode",
+        "standard",
+        "--query",
+        "Use the declared local coding worker for a small implementation task",
+        "--adaptive-routing-dry-run",
+        "--routing-local-worker",
+        "local-gpt-oss-20b-coding",
+        "--emit-orchestrator-handoff",
+        "--json",
+      ],
+      {
+        cwd: dir,
+        env: {
+          SNIPARA_API_KEY: "snp-test",
+          SNIPARA_PROJECT_ID: "project_1",
+          SNIPARA_API_URL: "https://api.snipara.com",
+          SNIPARA_TEST_ORCHESTRATOR_ARGS_LOG: orchestratorArgsLog,
+          SNIPARA_TEST_AUTOMATION_SETTINGS: JSON.stringify({
+            adaptiveRoutingMode: "off",
+            adaptiveRoutingAllowedEndpointTypes: ["cloud"],
+          }),
+          SNIPARA_TEST_LOCAL_ORCHESTRATOR_CATALOG_RESPONSE: JSON.stringify({
+            schemaVersion: "snipara.orchestrator.runtime_catalog.v1",
+            source: "openai_compatible_local",
+            provider: "lm-studio",
+            baseUrl: "http://127.0.0.1:1234",
+            models: ["openai/gpt-oss-20b"],
+            candidates: [
+              {
+                candidateId: "local-gpt-oss-20b-coding",
+                workerClass: "coding",
+                catalogSource: "openai_compatible_local",
+                endpointType: "local",
+                workerRoles: ["coding"],
+                capabilities: ["code", "refactor"],
+                isAvailable: true,
+              },
+            ],
+            workerEndpoints: {
+              "local-gpt-oss-20b-coding": {
+                provider: "lm-studio",
+                baseUrl: "http://127.0.0.1:1234",
+                model: "openai/gpt-oss-20b",
+              },
+            },
+          }),
+          SNIPARA_TEST_LOCAL_ORCHESTRATOR_ROUTE_RESPONSE: JSON.stringify({
+            status: "resolved",
+            selected: {
+              candidate: {
+                candidateId: "local-gpt-oss-20b-coding",
+                workerClass: "coding",
+                endpointType: "local",
+              },
+              score: 0.88,
+              scoreBreakdown: {
+                capabilityFit: 0.4,
+              },
+              reasons: ["declared local coding worker selected"],
+            },
+            fallback: "main_agent",
+            reasons: ["declared local coding worker selected"],
+            warnings: [],
+          }),
+        },
+        nodeArgs: ["-r", preloadPath],
+      }
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.local_worker.id, "local-gpt-oss-20b-coding");
+    assert.equal(payload.adaptive_routing.gateway.source, "local_orchestrator");
+    assert.equal(payload.adaptive_routing.gateway.success, true);
+    assert.equal(payload.adaptive_routing.requirements.workerRole, "coding");
+    assert.deepEqual(payload.adaptive_routing.requirements.allowedEndpointTypes, ["local"]);
+    assert.deepEqual(payload.adaptive_routing.requirements.preferredEndpointTypes, ["local"]);
+    assert.match(
+      payload.adaptive_routing.routingCard.warnings.join(" "),
+      /Declared local worker local-gpt-oss-20b-coding selected/
+    );
+
+    const orchestratorCalls = fs
+      .readFileSync(orchestratorArgsLog, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    const catalogCall = orchestratorCalls.find(
+      (entry) =>
+        entry.command === "snipara-orchestrator" && entry.args?.[0] === "local-model-catalog"
+    );
+    assert.ok(catalogCall, "expected local-model-catalog to be invoked");
+    assert.ok(catalogCall.args.includes("--model"));
+    assert.ok(catalogCall.args.includes("openai/gpt-oss-20b"));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("workers local list and remove manage per-worker registry files", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-local-workers-list-remove-"));
+  try {
+    const preloadPath = writeWorkflowPreload(dir);
+
+    const addResult = runCli(
+      [
+        "workers",
+        "local",
+        "add",
+        "--id",
+        "local-gpt-oss-20b-coding",
+        "--role",
+        "coding",
+        "--provider",
+        "lm-studio",
+        "--base-url",
+        "http://127.0.0.1:1234",
+        "--model",
+        "openai/gpt-oss-20b",
+        "--json",
+      ],
+      {
+        cwd: dir,
+        nodeArgs: ["-r", preloadPath],
+      }
+    );
+    assert.equal(addResult.status, 0, addResult.stderr || addResult.stdout);
+    const addPayload = JSON.parse(addResult.stdout);
+    assert.equal(addPayload.worker.reasoning, "medium");
+
+    const addSecondResult = runCli(
+      [
+        "workers",
+        "local",
+        "add",
+        "--id",
+        "local-codex-mini",
+        "--role",
+        "documentation",
+        "--transport",
+        "cli",
+        "--command",
+        "codex",
+        "--reasoning",
+        "high",
+        "--json",
+      ],
+      {
+        cwd: dir,
+        nodeArgs: ["-r", preloadPath],
+      }
+    );
+    assert.equal(addSecondResult.status, 0, addSecondResult.stderr || addSecondResult.stdout);
+    const addSecondPayload = JSON.parse(addSecondResult.stdout);
+    assert.equal(addSecondPayload.worker.reasoning, "high");
+
+    const listResult = runCli(["workers", "local", "list", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(listResult.status, 0, listResult.stderr || listResult.stdout);
+    const listPayload = JSON.parse(listResult.stdout);
+    assert.equal(listPayload.configured, true);
+    assert.equal(listPayload.workers.length, 2);
+
+    const removeResult = runCli(
+      ["workers", "local", "remove", "local-gpt-oss-20b-coding", "--json"],
+      {
+        cwd: dir,
+      }
+    );
+    assert.equal(removeResult.status, 0, removeResult.stderr || removeResult.stdout);
+    const removePayload = JSON.parse(removeResult.stdout);
+    assert.equal(removePayload.removed.id, "local-gpt-oss-20b-coding");
+    assert.equal(removePayload.config.workers.length, 1);
+
+    assert.ok(
+      !fs.existsSync(path.join(dir, ".snipara", "workers", "local-gpt-oss-20b-coding.json")),
+      "expected removed worker profile file to be deleted"
+    );
+
+    const listAfterResult = runCli(["workers", "local", "list", "--json"], {
+      cwd: dir,
+    });
+    const listAfterPayload = JSON.parse(listAfterResult.stdout);
+    assert.equal(listAfterPayload.workers.length, 1);
+    assert.equal(listAfterPayload.workers[0].id, "local-codex-mini");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("workers local probe drafts a persisted declaration suggestion", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-local-workers-probe-"));
+  try {
+    const preloadPath = writeWorkflowPreload(dir);
+    const probeResult = runCli(
+      [
+        "workers",
+        "local",
+        "probe",
+        "--base-url",
+        "http://127.0.0.1:1234",
+        "--provider",
+        "lm-studio",
+        "--role",
+        "coding",
+        "--model",
+        "tiny-coder",
+        "--worker-id",
+        "local-gpt-oss-20b-coding",
+        "--json",
+      ],
+      {
+        cwd: dir,
+        nodeArgs: ["-r", preloadPath],
+        env: {
+          SNIPARA_TEST_LOCAL_ORCHESTRATOR_CATALOG_RESPONSE: JSON.stringify({
+            schemaVersion: "snipara.orchestrator.runtime_catalog.v1",
+            source: "openai_compatible_local",
+            provider: "lm-studio",
+            baseUrl: "http://127.0.0.1:1234",
+            models: ["openai/gpt-oss-20b"],
+            candidates: [],
+            workerEndpoints: {},
+          }),
+        },
+      }
+    );
+    assert.equal(probeResult.status, 0, probeResult.stderr || probeResult.stdout);
+    const payload = JSON.parse(probeResult.stdout);
+    assert.equal(payload.suggestion.id, "local-gpt-oss-20b-coding");
+    assert.equal(payload.suggestion.model, "tiny-coder");
+    assert.equal(payload.suggestion.reasoning, "low");
+    assert.equal(payload.suggestion.workerRole, "coding");
+    assert.equal(payload.suggestion.baseUrl, "http://127.0.0.1:1234");
+    assert.deepEqual(payload.suggestion.writeScope, []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("workflow run uses local adaptive routing policy without hosted configuration", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-adaptive-routing-local-"));
   try {
@@ -2002,6 +3274,270 @@ test("memory guard normalizes guard tags into memory categories", () => {
   assert.equal(normalizeGuardTag(" commit "), "commit");
 });
 
+test("workflow auto mode deterministically selects workflow depth", () => {
+  assert.equal(resolveAutoWorkflowMode("show what changed in this repo"), "lite");
+  assert.equal(resolveAutoWorkflowMode("fix typo in README small diff"), "lite");
+  assert.equal(resolveAutoWorkflowMode("implement login error handling"), "standard");
+  assert.equal(resolveAutoWorkflowMode("why did we choose hosted MCP for memory?"), "standard");
+  assert.equal(resolveAutoWorkflowMode("ship a multi-phase schema migration plan"), "full");
+  assert.equal(
+    resolveAutoWorkflowMode("coordinate production proof gate with workers"),
+    "orchestrate"
+  );
+});
+
+test("workflow lite mode does not require hosted configuration", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-lite-no-config-"));
+  try {
+    fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+    const result = runCli(
+      ["workflow", "run", "--mode", "lite", "--query", "fix typo in README", "--json"],
+      { cwd: dir }
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.effective_mode, "lite");
+    assert.deepEqual(payload.retrieval_policy.mandatory_calls, []);
+    assert.equal(payload.context, undefined);
+    assert.equal(payload.session_bootstrap, undefined);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("workflow auto lite does not call hosted context or bootstrap tools", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-auto-lite-"));
+  try {
+    fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+    const preloadPath = writeWorkflowPreload(dir);
+    const toolLogPath = path.join(dir, "tools.log");
+    const result = runCli(
+      ["workflow", "run", "--mode", "auto", "--query", "fix typo in README small diff", "--json"],
+      {
+        cwd: dir,
+        nodeArgs: ["--require", preloadPath],
+        env: {
+          SNIPARA_API_KEY: "test-key",
+          SNIPARA_PROJECT_ID: "proj_test",
+          SNIPARA_API_URL: "https://api.test",
+          SNIPARA_TEST_TOOL_LOG: toolLogPath,
+        },
+      }
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.effective_mode, "lite");
+    const calledTools = fs.existsSync(toolLogPath) ? fs.readFileSync(toolLogPath, "utf8") : "";
+    assert.doesNotMatch(calledTools, /snipara_context_query/);
+    assert.doesNotMatch(calledTools, /snipara_session_memories/);
+    assert.doesNotMatch(calledTools, /snipara_recall/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("session-bootstrap text output is silent for an empty pushed brief", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-bootstrap-empty-"));
+  try {
+    fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+    const preloadPath = writeWorkflowPreload(dir);
+    const result = runCli(["session-bootstrap"], {
+      cwd: dir,
+      nodeArgs: ["--require", preloadPath],
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "proj_test",
+        SNIPARA_API_URL: "https://api.test",
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(result.stdout.trim(), "");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("session-bootstrap text output is silent in an unconfigured empty project", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-bootstrap-blank-project-"));
+  try {
+    fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+    const result = runCli(["session-bootstrap", "--include-session-context"], {
+      cwd: dir,
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(result.stdout.trim(), "");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("session-bootstrap text output is tiny and high-signal", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-bootstrap-signal-"));
+  try {
+    fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+    const preloadPath = writeWorkflowPreload(dir);
+    const sessionMemories = {
+      critical: {
+        memories: [
+          {
+            id: "old_env",
+            content:
+              "Symlinked .env files structure: /Users/alopez/Devs/Snipara/.env is the source of truth.",
+            type: "FACT",
+            category: "configuration",
+            confidence: 0.23,
+            created_at: "2026-02-06T11:55:45.516Z",
+          },
+          {
+            id: "old_injection",
+            content:
+              "Memory Injection feature is complete and working. The hooks use rlm_remember and rlm_recall.",
+            type: "DECISION",
+            category: "architecture",
+            confidence: 0.67,
+            created_at: "2026-01-25T21:59:29.495Z",
+          },
+        ],
+        count: 2,
+        tokens: 300,
+      },
+      daily: {
+        memories: [
+          {
+            id: "today_final",
+            content:
+              "Checkpoint: workflow:final-commit. Implemented and released true Control Plane Lite lifecycle. LITE has zero mandatory Snipara calls and snipara-companion@3.2.7 is published.",
+            type: "CONTEXT",
+            category: "journal:2026-07-03",
+            confidence: 1,
+            created_at: "2026-07-03T20:11:10.540Z",
+          },
+        ],
+        count: 1,
+        tokens: 120,
+      },
+      total_tokens: 420,
+    };
+    const result = runCli(["session-bootstrap", "--include-session-context"], {
+      cwd: dir,
+      nodeArgs: ["--require", preloadPath],
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "proj_test",
+        SNIPARA_API_URL: "https://api.test",
+        SNIPARA_TEST_SESSION_MEMORIES: JSON.stringify(sessionMemories),
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /Control Plane Lite lifecycle/);
+    assert.doesNotMatch(result.stdout, /Symlinked \.env files/);
+    assert.doesNotMatch(result.stdout, /Memory Injection feature/);
+    assert.doesNotMatch(result.stdout, /more available on demand/);
+    assert.ok(result.stdout.trim().split("\n").length <= 4);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("continue-workspace emits stable continuity contract for editor integrations", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-continuity-contract-"));
+  try {
+    fs.mkdirSync(path.join(dir, ".snipara", "source"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+    fs.writeFileSync(
+      path.join(dir, ".snipara", "source", "latest.json"),
+      JSON.stringify(
+        {
+          version: "snipara.local_source_snapshot.v1",
+          generatedAt: "2026-07-05T09:00:00.000Z",
+          root: dir,
+          provider: "local_folder",
+          revision: "rev_local",
+          summary: { totalFiles: 2, totalBytes: 120, skipped: 0 },
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+    saveTeamSyncState(
+      {
+        ...createEmptyTeamSyncState(),
+        handoffs: [
+          {
+            id: "handoff_1",
+            type: "handoff",
+            summary: "Activation complete",
+            next: "Open the first brief",
+            files: ["README.md"],
+            attention: "watch",
+            createdAt: "2026-07-05T09:00:00.000Z",
+          },
+        ],
+      },
+      dir
+    );
+    writeSessionSnapshot({ cwd: dir });
+
+    const preloadPath = writeWorkflowPreload(dir);
+    const sessionMemories = {
+      critical: {
+        memories: [
+          {
+            id: "decision_1",
+            content: "Use create-snipara as the canonical activation engine.",
+            type: "DECISION",
+            category: "activation",
+            confidence: 0.98,
+            created_at: "2026-07-05T08:00:00.000Z",
+          },
+        ],
+        count: 1,
+        tokens: 24,
+      },
+      daily: { memories: [], count: 0, tokens: 0 },
+      total_tokens: 24,
+    };
+
+    const result = runCli(["continue-workspace", "--include-session-context", "--json"], {
+      cwd: dir,
+      nodeArgs: ["--require", preloadPath],
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "proj_test",
+        SNIPARA_API_URL: "https://api.test",
+        SNIPARA_SESSION_ID: "sess_test",
+        SNIPARA_TEST_SESSION_MEMORIES: JSON.stringify(sessionMemories),
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.version, "snipara.companion.continuity.v1");
+    assert.equal(payload.configured, true);
+    assert.equal(payload.project.projectId, "proj_test");
+    assert.equal(payload.project.sessionId, "sess_test");
+    assert.equal(payload.bootstrap.critical.count, 1);
+    assert.deepEqual(payload.bootstrapQuality.warnings, []);
+    assert.equal(payload.bootstrapQuality.counts.critical_memories, 1);
+    assert.equal(payload.sessionContext.included, true);
+    assert.equal(payload.source.status, "present");
+    assert.equal(payload.source.snapshotPath, ".snipara/source/latest.json");
+    assert.equal(payload.teamSync.handoffCount, 1);
+    assert.equal(payload.teamSync.latestHandoff.summary, "Activation complete");
+    assert.equal(payload.artifacts.workflowStatePath, WORKFLOW_STATE_RELATIVE_PATH);
+    assert.ok(payload.nextActions.some((action) => action.id === "refresh_source_snapshot"));
+    assert.ok(payload.nextActions.some((action) => action.id === "run_impact_gate"));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("memory guard treats explicit failure triggers and npm E-codes as failures", async () => {
   const result = await runMemoryGuardCheck({
     trigger: "failure",
@@ -2026,4 +3562,475 @@ test("memory guard always recalls workflow policy for commit-like gates", async 
 
   assert.equal(result.triggered, false);
   assert.ok(result.categories.includes("workflow-policy"));
+});
+
+test("activity timeline appends events and builds fail-closed session snapshot", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-activity-"));
+  try {
+    appendActivityEvent({
+      cwd: dir,
+      source: "workflow",
+      kind: "phase-start",
+      title: "Build local timeline",
+      workflowId: "workflow_1",
+      phaseId: "phase_1",
+      files: ["packages/cli/src/commands/activity.ts"],
+      metadata: { action: "read" },
+      timestamp: "2026-07-02T20:00:00.000Z",
+    });
+    appendActivityEvent({
+      cwd: dir,
+      source: "team-sync",
+      kind: "team-sync-handoff",
+      title: "Parallel work visible",
+      refs: ["handoff_1"],
+      metadata: { action: "read" },
+      timestamp: "2026-07-02T20:01:00.000Z",
+    });
+
+    const events = readActivityTimeline({ cwd: dir });
+    assert.equal(events.length, 2);
+    assert.equal(events[0].kind, "team-sync-handoff");
+
+    const snapshot = writeSessionSnapshot({ cwd: dir });
+    assert.equal(snapshot.schemaVersion, "snipara.session_snapshot.v0");
+    assert.equal(snapshot.activity.totalEvents, 2);
+    assert.equal(snapshot.summary.latestActivityTitle, "Parallel work visible");
+    assert.equal(snapshot.summary.latestActivityKind, "team-sync-handoff");
+    assert.deepEqual(snapshot.summary.touchedFiles, ["packages/cli/src/commands/activity.ts"]);
+    assert.equal(snapshot.summary.risk, "none");
+    assert.match(snapshot.summary.recommendedNextAction, /Review the latest activity/);
+    assert.equal(snapshot.intentDetection.intent, "investigating");
+    assert.equal(snapshot.intentDetection.hardRoutingAllowed, false);
+    assert.equal(snapshot.intentDetection.advisoryRouting.hardRoutingAllowed, false);
+    assert.equal(snapshot.routing.hardRoutingAllowed, false);
+    assert.ok(snapshot.performance.buildMs < 1000);
+
+    const rebuilt = buildSessionSnapshot({ cwd: dir, limit: 1 });
+    assert.equal(rebuilt.activity.latestEvents.length, 1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("workflow resume includes the local session snapshot", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-resume-session-"));
+  try {
+    writeWorkflowState(dir);
+    appendActivityEvent({
+      cwd: dir,
+      source: "workflow",
+      kind: "phase-start",
+      title: "Resume consumes local activity",
+      workflowId: "agentic-work",
+      phaseId: "verify",
+      files: ["packages/cli/src/commands/workflows.ts"],
+      metadata: { action: "write" },
+      timestamp: "2026-07-02T21:00:00.000Z",
+    });
+    const preloadPath = writeWorkflowPreload(dir);
+
+    const result = runCli(["workflow", "resume", "--include-session-context", "--json"], {
+      cwd: dir,
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "snipara",
+        SNIPARA_API_URL: "https://api.snipara.com",
+      },
+      nodeArgs: ["--require", preloadPath],
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.local_session_snapshot.schemaVersion, "snipara.session_snapshot.v0");
+    assert.equal(
+      payload.local_session_snapshot.summary.latestActivityTitle,
+      "Resume consumes local activity"
+    );
+    assert.equal(payload.local_session_snapshot.summary.risk, "none");
+    assert.deepEqual(payload.local_session_snapshot.summary.touchedFiles, [
+      "packages/cli/src/commands/workflows.ts",
+    ]);
+    assert.equal(payload.local_session_snapshot.intentDetection.intent, "implementing_feature");
+    assert.equal(payload.local_session_snapshot.intentDetection.hardRoutingAllowed, false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("workflow session prints advisory intent detection", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-session-intent-"));
+  try {
+    writeWorkflowState(dir);
+    appendActivityEvent({
+      cwd: dir,
+      source: "workflow",
+      kind: "test",
+      title: "node --test failed",
+      outcome: "failed",
+      files: ["packages/cli/test/workflows.test.js", "packages/cli/src/commands/workflows.ts"],
+      metadata: { action: "test" },
+      timestamp: "2026-07-02T21:30:00.000Z",
+    });
+    appendActivityEvent({
+      cwd: dir,
+      source: "workflow",
+      kind: "phase-commit",
+      title: "Fix workflow session output",
+      files: ["packages/cli/src/commands/workflows.ts"],
+      metadata: { action: "write" },
+      timestamp: "2026-07-02T21:31:00.000Z",
+    });
+
+    const result = runCli(["workflow", "session"], { cwd: dir });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /Intent:\s+debugging \(high\)/);
+    assert.match(result.stdout, /Suggested mode:\s+standard \(advisory\)/);
+    assert.match(result.stdout, /Hard routing allowed:\s+false/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("workflow decide creates review-only policy suggestion for repeated receipts", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-policy-suggestion-"));
+  try {
+    const pendingDir = path.join(dir, ".snipara", "decisions", "pending");
+    fs.mkdirSync(pendingDir, { recursive: true });
+
+    function writePendingRequest(sourceRef) {
+      const request = {
+        schemaVersion: "snipara.decision_request.v0",
+        requestId: `decision-${sourceRef}`,
+        fingerprint: `fingerprint-${sourceRef}`,
+        createdAt: "2026-07-02T20:00:00.000Z",
+        producer: {
+          kind: "memory_review_queue",
+          command: "memory reviews",
+          sourceRef,
+        },
+        decision: "reject_memory_candidate",
+        question: `Reject memory candidate ${sourceRef}?`,
+        blocking: false,
+        expiresAt: null,
+        evidence: {
+          summary: "Repeated pi-hermes-ops memory should be rejected.",
+          refs: [sourceRef],
+          items: [
+            {
+              ref: `memory:${sourceRef}`,
+              title: `pi-hermes memory ${sourceRef}`,
+              summary: "pi-hermes-ops memory candidate",
+              kind: "memory_review_queue",
+              metadata: {
+                category: "pi-hermes-ops",
+                type: "decision",
+              },
+            },
+          ],
+          reasonCodes: ["duplicate_ops_memory", "human_rejected"],
+          applyPath: "manual_context_review",
+          applyCommand: "Review memory queue manually.",
+        },
+        options: ["accept", "reject"],
+        recommendation: "reject",
+      };
+      fs.writeFileSync(
+        path.join(pendingDir, `${request.requestId}.json`),
+        `${stableTestJsonStringify(request)}\n`,
+        "utf8"
+      );
+      return request;
+    }
+
+    const first = writePendingRequest("mem_1");
+    let result = runCli(
+      [
+        "workflow",
+        "decide",
+        first.requestId,
+        "--choose",
+        "reject",
+        "--reviewer",
+        "alopez",
+        "--note",
+        "pi-hermes duplicate from old deployment notes",
+        "--json",
+      ],
+      { cwd: dir }
+    );
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(JSON.parse(result.stdout).policySuggestionWrite, undefined);
+
+    const second = writePendingRequest("mem_2");
+    result = runCli(
+      [
+        "workflow",
+        "decide",
+        second.requestId,
+        "--choose",
+        "reject",
+        "--reviewer",
+        "alopez",
+        "--note",
+        "pi-hermes backfill resurrected obsolete notes",
+        "--json",
+      ],
+      { cwd: dir }
+    );
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.policySuggestionWrite.status, "written");
+    assert.equal(payload.policySuggestion.producer.kind, "policy_suggestion");
+    assert.equal(payload.policySuggestion.evidence.applyPath, "manual_context_review");
+    assert.match(payload.policySuggestion.evidence.applyCommand, /manually/);
+
+    const timeline = JSON.parse(
+      fs
+        .readFileSync(path.join(dir, ".snipara", "activity", "timeline.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .at(-1)
+    );
+    assert.equal(timeline.kind, "policy-suggestion-created");
+    assert.equal(timeline.metadata.manualApplyRequired, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("workflow policy-ledger summarizes pending and resolved policy decisions for agents", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-policy-ledger-"));
+  try {
+    const pendingDir = path.join(dir, ".snipara", "decisions", "pending");
+    fs.mkdirSync(pendingDir, { recursive: true });
+    const policyRequest = {
+      schemaVersion: "snipara.decision_request.v0",
+      requestId: "decision-policy-auth",
+      fingerprint: "fingerprint-policy-auth",
+      createdAt: "2026-07-06T08:00:00.000Z",
+      producer: {
+        kind: "project_policy_review",
+        command: "run --emit-policy-decisions",
+        sourceRef: "policy:auth",
+      },
+      decision: "project_policy_require_review",
+      question: "May the agent proceed once on the auth policy change?",
+      blocking: true,
+      expiresAt: null,
+      evidence: {
+        summary: "Project Policy requires review before auth changes.",
+        refs: ["policy:auth"],
+        reasonCodes: ["project_policy_review"],
+        files: ["src/auth.ts"],
+        applyPath: "manual_project_policy_review",
+        applyCommand: "Resolve with snipara-companion workflow decide.",
+      },
+      options: ["approve_once", "require_changes", "mark_policy_stale", "keep_advisory"],
+      recommendation: "require_changes",
+    };
+    fs.writeFileSync(
+      path.join(pendingDir, `${policyRequest.requestId}.json`),
+      `${stableTestJsonStringify(policyRequest)}\n`,
+      "utf8"
+    );
+
+    let result = runCli(["workflow", "policy-ledger", "--json"], { cwd: dir });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    let payload = JSON.parse(result.stdout);
+    assert.equal(payload.summary.pending, 1);
+    assert.equal(payload.summary.refused, 0);
+    assert.equal(payload.entries[0].producerKind, "project_policy_review");
+    assert.match(payload.agentPrompt[0], /Ask the user/);
+    assert.match(payload.agentPrompt[0], /workflow decide decision-policy-auth/);
+
+    result = runCli(
+      [
+        "workflow",
+        "decide",
+        policyRequest.requestId,
+        "--choose",
+        "require_changes",
+        "--reviewer",
+        "alopez",
+        "--note",
+        "auth policy needs a narrower plan",
+        "--json",
+      ],
+      { cwd: dir }
+    );
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+
+    result = runCli(["workflow", "policy-ledger", "--json"], { cwd: dir });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    payload = JSON.parse(result.stdout);
+    assert.equal(payload.summary.pending, 0);
+    assert.equal(payload.summary.refused, 1);
+    assert.equal(payload.entries[0].status, "refused");
+    assert.equal(payload.entries[0].humanChoice, "require_changes");
+    assert.equal(
+      payload.agentPrompt[0],
+      "No pending Project Policy decision needs a human response right now."
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("workflow apply-decisions previews and writes policy suggestion drafts idempotently", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-apply-decisions-"));
+  try {
+    const resolvedDir = path.join(dir, ".snipara", "decisions", "resolved");
+    fs.mkdirSync(resolvedDir, { recursive: true });
+    const record = {
+      schemaVersion: "snipara.decision_resolution.v0",
+      request: {
+        schemaVersion: "snipara.decision_request.v0",
+        requestId: "decision-promote-policy",
+        fingerprint: "fingerprint-promote-policy",
+        createdAt: "2026-07-06T08:00:00.000Z",
+        producer: {
+          kind: "policy_suggestion",
+          command: "workflow decide",
+          sourceRef: ".snipara/decisions/resolved",
+        },
+        decision: "promote_recurring_decision_policy",
+        question: "Create a reusable triage policy?",
+        blocking: false,
+        expiresAt: null,
+        evidence: {
+          summary: "Repeated decisions should become a reviewable Project Policy draft.",
+          refs: ["decision-a", "decision-b"],
+          reasonCodes: ["recurring_decision_receipts", "project_policy"],
+          files: ["AGENTS.md"],
+          applyPath: "manual_context_review",
+          applyCommand: "Review the suggested rule manually.",
+        },
+        options: ["create_policy_suggestion", "ignore_once", "reject_policy_suggestion"],
+        recommendation: "create_policy_suggestion",
+      },
+      response: {
+        schemaVersion: "snipara.decision_response.v0",
+        requestId: "decision-promote-policy",
+        choice: "create_policy_suggestion",
+        reviewer: "alopez",
+        note: "Make it a local draft first.",
+        appliedActions: [],
+        resolvedAt: "2026-07-06T08:05:00.000Z",
+      },
+    };
+    fs.writeFileSync(
+      path.join(resolvedDir, `${record.request.requestId}.json`),
+      `${stableTestJsonStringify(record)}\n`,
+      "utf8"
+    );
+
+    let result = runCli(["workflow", "apply-decisions", "--dry-run", "--json"], { cwd: dir });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    let payload = JSON.parse(result.stdout);
+    assert.equal(payload.dryRun, true);
+    assert.equal(payload.summary.needsApply, 1);
+    assert.equal(payload.summary.written, 0);
+    assert.equal(payload.items[0].state, "needs_apply");
+    assert.match(payload.items[0].policyDraftPath, /\.snipara\/policies\/drafts/);
+    assert.equal(
+      fs.existsSync(
+        path.join(dir, ".snipara", "policies", "drafts", "decision-promote-policy.json")
+      ),
+      false
+    );
+
+    result = runCli(["workflow", "apply-decisions", "--json"], { cwd: dir });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    payload = JSON.parse(result.stdout);
+    assert.equal(payload.dryRun, false);
+    assert.equal(payload.summary.written, 1);
+    assert.equal(payload.summary.applied, 1);
+    assert.equal(payload.items[0].state, "applied");
+    assert.equal(
+      fs.existsSync(
+        path.join(dir, ".snipara", "policies", "drafts", "decision-promote-policy.json")
+      ),
+      true
+    );
+
+    result = runCli(["workflow", "apply-decisions", "--json"], { cwd: dir });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    payload = JSON.parse(result.stdout);
+    assert.equal(payload.summary.written, 0);
+    assert.equal(payload.summary.applied, 1);
+    assert.equal(payload.items[0].alreadyApplied, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("workflow sync-policy-ledger dry-run collects local policy receipts without network", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-sync-policy-ledger-"));
+  try {
+    const resolvedDir = path.join(dir, ".snipara", "decisions", "resolved");
+    fs.mkdirSync(resolvedDir, { recursive: true });
+    const record = {
+      schemaVersion: "snipara.decision_resolution.v0",
+      request: {
+        schemaVersion: "snipara.decision_request.v0",
+        requestId: "decision-sync-policy",
+        fingerprint: "fingerprint-sync-policy",
+        createdAt: "2026-07-06T08:00:00.000Z",
+        producer: {
+          kind: "policy_suggestion",
+          command: "workflow decide",
+          sourceRef: ".snipara/decisions/resolved",
+        },
+        decision: "promote_sync_policy",
+        question: "Create a reusable sync policy?",
+        blocking: false,
+        expiresAt: null,
+        evidence: {
+          summary: "Repeated decisions should be visible in the hosted ledger.",
+          refs: ["decision-sync-policy"],
+          reasonCodes: ["project_policy"],
+          files: ["AGENTS.md"],
+          applyPath: "manual_context_review",
+          applyCommand: "Review the suggested rule manually.",
+        },
+        options: ["create_policy_suggestion", "reject_policy_suggestion"],
+        recommendation: "create_policy_suggestion",
+      },
+      response: {
+        schemaVersion: "snipara.decision_response.v0",
+        requestId: "decision-sync-policy",
+        choice: "create_policy_suggestion",
+        reviewer: "alopez",
+        note: "Sync this receipt.",
+        appliedActions: [],
+        resolvedAt: "2026-07-06T08:05:00.000Z",
+      },
+    };
+    fs.writeFileSync(
+      path.join(resolvedDir, `${record.request.requestId}.json`),
+      `${stableTestJsonStringify(record)}\n`,
+      "utf8"
+    );
+
+    let result = runCli(["workflow", "apply-decisions", "--json"], { cwd: dir });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+
+    result = runCli(["workflow", "sync-policy-ledger", "--dry-run", "--json"], { cwd: dir });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.dryRun, true);
+    assert.equal(payload.summary.resolvedDecisions, 1);
+    assert.equal(payload.summary.applyReceipts, 1);
+    assert.equal(payload.summary.policyDrafts, 1);
+    assert.equal(payload.summary.total, 3);
+    assert.deepEqual(payload.artifacts.map((artifact) => artifact.kind).sort(), [
+      "apply_receipt",
+      "decision_resolution",
+      "policy_draft",
+    ]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

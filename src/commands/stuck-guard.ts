@@ -41,6 +41,10 @@ const SECRET_PATTERNS: Array<[RegExp, string]> = [
   [/\b(Bearer\s+)[A-Za-z0-9._~+/=-]{20,}\b/g, "$1[REDACTED]"],
   [/\b(sk|snp|rlm)_[A-Za-z0-9_-]{16,}\b/g, "[REDACTED_KEY]"],
   [/\b[A-Za-z0-9._%+-]+:[^@\s]{8,}@([A-Za-z0-9.-]+:[0-9]+)\b/g, "[REDACTED_CREDENTIALS]@$1"],
+  [
+    /\b([A-Za-z][A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY)[A-Za-z0-9_]*)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s;&|]{8,})/gi,
+    "$1=[REDACTED]",
+  ],
   [/\b(api[_-]?key|token|password|secret)\s*[:=]\s*["']?[^"'\s]{8,}["']?/gi, "$1=[REDACTED]"],
 ];
 const COMMAND_FIELDS = ["command", "cmd", "script", "query", "pattern", "path", "file_path"];
@@ -142,6 +146,7 @@ export function buildToolCallPayload(options: ToolCallPayloadOptions): Record<st
 
 export function buildToolResultPayload(options: ToolResultPayloadOptions): Record<string, unknown> {
   const command = extractCommandFromToolInput(options.toolInput);
+  const commandPreview = command ? truncate(redactSecrets(command), 800) : undefined;
   const classification = classifyToolResult({
     tool: options.tool,
     command,
@@ -154,7 +159,7 @@ export function buildToolResultPayload(options: ToolResultPayloadOptions): Recor
     hook: options.hook ?? "post-tool",
     tool: options.tool || "unknown",
     result_classification: classification,
-    ...(command ? { command } : {}),
+    ...(commandPreview ? { command: commandPreview } : {}),
     ...(typeof options.exitCode === "number" ? { exit_code: options.exitCode } : {}),
     ...(options.status ? { status: options.status } : {}),
     ...(options.files && options.files.length > 0 ? { files: options.files } : {}),

@@ -69,6 +69,9 @@ export interface RuntimeDetectionReport {
     cliAvailable: boolean;
     command?: string;
     version?: string;
+    source?: "path" | "workspace_venv";
+    workspacePackageVersion?: string;
+    versionMismatch?: boolean;
   };
   providerKeys: {
     openai: boolean;
@@ -128,7 +131,9 @@ export function detectRuntimeEnvironment(
   const workspaceRoot = findWorkspaceRoot(cwd);
   const mcpConfigPaths = findRuntimeMcpConfigPaths(cwd, workspaceRoot);
   const sandboxCli = detectSandboxCli();
-  const orchestratorCli = detectOrchestratorCli();
+  const orchestratorCli = detectOrchestratorCli(cwd, workspaceRoot);
+  const workspaceOrchestratorVersion = findWorkspaceOrchestratorVersion(cwd, workspaceRoot);
+  const orchestratorCliVersion = parseOrchestratorVersion(orchestratorCli.version);
   const parsedVersion = parseRuntimeVersion(sandboxCli.version);
   const providerKeys = detectProviderKeys(cwd, workspaceRoot, env);
 
@@ -154,6 +159,13 @@ export function detectRuntimeEnvironment(
       cliAvailable: Boolean(orchestratorCli.command),
       command: orchestratorCli.command,
       version: orchestratorCli.version,
+      source: orchestratorCli.source,
+      workspacePackageVersion: workspaceOrchestratorVersion,
+      versionMismatch: Boolean(
+        orchestratorCliVersion &&
+        workspaceOrchestratorVersion &&
+        orchestratorCliVersion !== workspaceOrchestratorVersion
+      ),
     },
     providerKeys,
     docker: {
@@ -297,6 +309,22 @@ function getCommandVersion(command: string): string | undefined {
   }
 }
 
+function executableExists(filePath: string): boolean {
+  try {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) {
+      return false;
+    }
+    if (process.platform === "win32") {
+      return true;
+    }
+    fs.accessSync(filePath, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function detectSandboxCli(): { command?: string; legacyCommand?: boolean; version?: string } {
   for (const command of SANDBOX_COMMANDS) {
     const version = getCommandVersion(command);
@@ -312,16 +340,93 @@ function detectSandboxCli(): { command?: string; legacyCommand?: boolean; versio
   return {};
 }
 
-function detectOrchestratorCli(): { command?: string; version?: string } {
+function detectOrchestratorCli(
+  cwd: string,
+  workspaceRoot: string | null
+): { command?: string; version?: string; source?: "path" | "workspace_venv" } {
   const version = getCommandVersion(ORCHESTRATOR_COMMAND);
   if (version || commandExists(ORCHESTRATOR_COMMAND)) {
     return {
       command: ORCHESTRATOR_COMMAND,
       version,
+      source: "path",
+    };
+  }
+
+  for (const candidate of findWorkspaceExecutableCandidates(
+    ORCHESTRATOR_COMMAND,
+    cwd,
+    workspaceRoot
+  )) {
+    if (!executableExists(candidate)) {
+      continue;
+    }
+    return {
+      command: candidate,
+      version: getCommandVersion(candidate),
+      source: "workspace_venv",
     };
   }
 
   return {};
+}
+
+function findWorkspaceOrchestratorVersion(
+  cwd: string,
+  workspaceRoot: string | null
+): string | undefined {
+  const roots = Array.from(
+    new Set([workspaceRoot, path.resolve(cwd)].filter((value): value is string => Boolean(value)))
+  );
+  for (const root of roots) {
+    const version = readPyprojectVersion(
+      path.join(root, "packages", "agentic-orchestrator", "pyproject.toml"),
+      "snipara-orchestrator"
+    );
+    if (version) {
+      return version;
+    }
+  }
+  return undefined;
+}
+
+function readPyprojectVersion(filePath: string, packageName: string): string | undefined {
+  if (!fs.existsSync(filePath)) {
+    return undefined;
+  }
+  const content = fs.readFileSync(filePath, "utf-8");
+  const nameMatch = content.match(/^\s*name\s*=\s*["']([^"']+)["']/m);
+  if (nameMatch && nameMatch[1] !== packageName) {
+    return undefined;
+  }
+  const versionMatch = content.match(/^\s*version\s*=\s*["']([^"']+)["']/m);
+  return versionMatch?.[1];
+}
+
+function parseOrchestratorVersion(version: string | undefined): string | undefined {
+  if (!version) {
+    return undefined;
+  }
+  const match = version.match(/snipara-orchestrator\s+([^\s]+)/i);
+  return match?.[1];
+}
+
+function findWorkspaceExecutableCandidates(
+  command: string,
+  cwd: string,
+  workspaceRoot: string | null
+): string[] {
+  const executableName = process.platform === "win32" ? `${command}.exe` : command;
+  const roots = Array.from(
+    new Set([workspaceRoot, path.resolve(cwd)].filter((value): value is string => Boolean(value)))
+  );
+
+  return roots.flatMap((root) => [
+    path.join(root, ".venv", "bin", executableName),
+    path.join(root, "venv", "bin", executableName),
+    path.join(root, "packages", "agentic-orchestrator", ".venv", "bin", executableName),
+    path.join(root, "apps", "mcp-server", ".venv", "bin", executableName),
+  ]);
 }
 
 function parseRuntimeVersion(version: string | undefined): {

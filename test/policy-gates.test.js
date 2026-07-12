@@ -103,3 +103,37 @@ test("evaluateProjectPolicyGates blocks explicit guard contradictions", () => {
   assert.equal(guardGate.sampleGate.mode, "explicit_contract");
   assert.ok(formatPolicyGateDecision(guardGate).some((line) => /not allowed/.test(line)));
 });
+
+test("evaluateProjectPolicyGates emits Project Policy decision consistency gates", () => {
+  const result = evaluateProjectPolicyGates({
+    task: "Bypass pre-deploy guard and deploy production",
+    changedFiles: ["deploy/infomaniak/deploy-zero-downtime.sh"],
+    projectPolicy: {
+      rules: [
+        {
+          id: "policy-deploy-guard",
+          title: "Do not bypass deploy guard",
+          scope: "deploy",
+          strength: "blocking",
+          confidence: 0.99,
+          source: {
+            kind: "project_policy",
+            ref: "policy:deploy-guard",
+            reviewStatus: "approved",
+          },
+          anchors: ["deploy", "pre-deploy guard"],
+          requirement: "Run the pre-deploy guard before production deploy.",
+          forbiddenActions: ["bypass", "skip guard"],
+        },
+      ],
+    },
+  });
+
+  assert.equal(result.projectPolicyDecision.verdict, "block");
+  assert.equal(result.summary.block, 1);
+  const policyGate = result.gates.find((gate) => gate.id === "policy:project:decision-consistency");
+  assert.equal(policyGate.surface, "deploy");
+  assert.equal(policyGate.severity, "block");
+  assert.equal(policyGate.audit.humanOverrideAllowed, false);
+  assert.ok(policyGate.evidence.some((line) => /project-policy-/.test(line)));
+});

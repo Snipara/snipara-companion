@@ -17,7 +17,14 @@ import {
   formatProjectJudgmentCard,
   type ProjectIntelligenceJudgmentCard,
 } from "./judgment-card";
+import { buildSessionSnapshot, readSessionSnapshot, type SessionSnapshot } from "./activity";
 import { buildVerificationPlan, type VerificationPlan } from "./verify";
+import {
+  evaluateProjectPolicyDecision,
+  type ProjectPolicyDecision,
+  type ProjectPolicyRule,
+  type ProjectPolicyRuleScope,
+} from "../contracts/project-intelligence";
 
 export interface ProjectIntelligenceBriefOptions {
   task?: string;
@@ -42,6 +49,8 @@ export interface ProjectIntelligenceBrief {
   memoryHealth?: Record<string, unknown>;
   codeImpact?: Record<string, unknown>;
   codeImpactSourceSelection?: CodeGraphSourceSelection;
+  localSessionSnapshot?: SessionSnapshot;
+  projectPolicyDecision?: ProjectPolicyDecision;
   verificationPlan?: VerificationPlan;
   judgmentCard?: ProjectIntelligenceJudgmentCard;
   errors: Array<{ surface: string; message: string }>;
@@ -129,6 +138,120 @@ function actionList(value: unknown): string[] {
     .filter(Boolean);
 }
 
+function extractProjectPolicyRulesFromResumeContext(
+  resumeContext: Record<string, unknown> | undefined
+): ProjectPolicyRule[] {
+  if (!resumeContext) {
+    return [];
+  }
+  return collectRecords(resumeContext)
+    .map(recordToProjectPolicyRule)
+    .filter((rule): rule is ProjectPolicyRule => Boolean(rule));
+}
+
+function collectRecords(value: unknown, depth = 0): Record<string, unknown>[] {
+  if (depth > 5) {
+    return [];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectRecords(item, depth + 1));
+  }
+  if (!isRecord(value)) {
+    return [];
+  }
+  return [
+    value,
+    ...Object.values(value).flatMap((item) =>
+      typeof item === "object" && item !== null ? collectRecords(item, depth + 1) : []
+    ),
+  ];
+}
+
+function recordToProjectPolicyRule(record: Record<string, unknown>): ProjectPolicyRule | undefined {
+  const type = preview(record.type ?? record.memory_type ?? record.category, 80).toLowerCase();
+  const content = preview(record.content ?? record.text ?? record.summary ?? record.decision, 4000);
+  if (!content || !/(decision|policy|workflow-policy|roadmap)/i.test(type)) {
+    return undefined;
+  }
+  const status = preview(record.status ?? record.lifecycleStatus ?? "active", 40).toLowerCase();
+  const reviewStatus = preview(record.reviewStatus ?? record.review_status ?? "approved", 40)
+    .toLowerCase()
+    .replace("canonical", "approved");
+  if (status && status !== "active") {
+    return undefined;
+  }
+  if (reviewStatus && reviewStatus !== "approved") {
+    return undefined;
+  }
+  const anchors = extractPolicyAnchors(content);
+  if (anchors.length === 0) {
+    return undefined;
+  }
+  const id = preview(record.memory_id ?? record.id ?? record.source_id ?? anchors[0], 80);
+  const confidence = numberValue(record.confidence) ?? numberValue(record.score) ?? 0.8;
+  return {
+    id,
+    title: preview(record.title ?? content, 120),
+    scope: inferProjectPolicyScope(content, anchors),
+    strength: inferProjectPolicyStrength(content),
+    confidence,
+    source: {
+      kind: "decision_memory",
+      ref: id.startsWith("memory:") ? id : `memory:${id}`,
+      reviewStatus: "approved",
+    },
+    anchors,
+    requirement: content.slice(0, 240),
+    forbiddenActions: extractForbiddenActions(content),
+  };
+}
+
+function extractPolicyAnchors(text: string): string[] {
+  const normalized = text.toLowerCase();
+  return [
+    ...Array.from(normalized.matchAll(/`([^`]{3,120})`/g), (match) => match[1]),
+    ...Array.from(
+      normalized.matchAll(/\b(?:apps|packages|deploy|docs|scripts|oss)\/[a-z0-9_[\]./-]+/g),
+      (match) => match[0]
+    ),
+    ...["auth", "billing", "schema", "migration", "deploy", "package", "memory", "routing"].filter(
+      (term) => normalized.includes(term)
+    ),
+  ].filter((value, index, values) => value && values.indexOf(value) === index);
+}
+
+function inferProjectPolicyScope(text: string, anchors: string[]): ProjectPolicyRuleScope {
+  const haystack = `${text}\n${anchors.join("\n")}`.toLowerCase();
+  if (/\b(auth|oauth|session|permission|token|secret)\b/.test(haystack)) return "auth";
+  if (/\b(billing|stripe|subscription|checkout|entitlement|quota)\b/.test(haystack)) {
+    return "billing";
+  }
+  if (/\b(schema|migration|prisma|database)\b/.test(haystack)) return "schema";
+  if (/\b(deploy|production|pre-deploy|zero-downtime)\b/.test(haystack)) return "deploy";
+  if (/\b(package|npm|pypi|npx|publish|pack smoke)\b/.test(haystack)) return "package_surface";
+  if (/\b(memory|reviewed memory|decision memory)\b/.test(haystack)) return "memory";
+  if (/\b(routing|orchestrator|worker)\b/.test(haystack)) return "routing";
+  return "custom";
+}
+
+function inferProjectPolicyStrength(text: string): ProjectPolicyRule["strength"] {
+  const normalized = text.toLowerCase();
+  if (/\b(never|must not|do not|forbid|forbidden|disallow|block)\b/.test(normalized)) {
+    return "blocking";
+  }
+  if (/\b(require review|requires review|approval|required|must)\b/.test(normalized)) {
+    return "review_required";
+  }
+  return "advisory";
+}
+
+function extractForbiddenActions(text: string): string[] {
+  const normalized = text.toLowerCase();
+  return ["bypass", "skip", "remove", "delete", "disable", "drop", "force"].filter((term) =>
+    normalized.includes(term)
+  );
+}
+
 function buildSuggestedCommands(args: {
   task?: string;
   changedFiles: string[];
@@ -199,6 +322,15 @@ export async function buildProjectIntelligenceBrief(
   };
 
   try {
+    brief.localSessionSnapshot = readSessionSnapshot() ?? buildSessionSnapshot({ limit: 8 });
+  } catch (error) {
+    errors.push({
+      surface: "local_session_snapshot",
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  try {
     brief.resumeContext = await client.callTool<Record<string, unknown>>("snipara_resume_context", {
       ...(branch ? { branch } : {}),
       ...(options.task ? { task: options.task } : {}),
@@ -242,6 +374,17 @@ export async function buildProjectIntelligenceBrief(
         message: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  const projectPolicyRules = extractProjectPolicyRulesFromResumeContext(brief.resumeContext);
+  if (projectPolicyRules.length > 0) {
+    brief.projectPolicyDecision = evaluateProjectPolicyDecision({
+      action: {
+        summary: options.diffSummary ?? options.task ?? "Project Intelligence brief",
+        changedFiles,
+      },
+      rules: projectPolicyRules,
+    });
   }
 
   brief.verificationPlan = buildVerificationPlan({
@@ -304,6 +447,37 @@ function printResumeContext(result: Record<string, unknown> | undefined): void {
       console.log(`- ${caveat}`);
     }
   }
+}
+
+function printLocalSessionSnapshot(snapshot: SessionSnapshot | undefined): void {
+  if (!snapshot) {
+    console.log(chalk.yellow("Unavailable"));
+    return;
+  }
+  if (snapshot.summary.latestActivityAt) {
+    console.log(`Latest activity: ${snapshot.summary.latestActivityAt}`);
+  }
+  if (snapshot.summary.latestActivityTitle) {
+    console.log(`Latest title: ${preview(snapshot.summary.latestActivityTitle, 220)}`);
+  }
+  console.log(`Risk: ${snapshot.summary.risk}`);
+  if (snapshot.summary.riskReasons.length > 0) {
+    console.log(`Risk reasons: ${snapshot.summary.riskReasons.slice(0, 3).join("; ")}`);
+  }
+  if (snapshot.summary.touchedFiles.length > 0) {
+    console.log(`Touched files: ${snapshot.summary.touchedFiles.slice(0, 8).join(", ")}`);
+  }
+  console.log(
+    `Intent: ${snapshot.intentDetection.intent} (${snapshot.intentDetection.confidence})`
+  );
+  console.log(
+    `Suggested mode: ${snapshot.intentDetection.advisoryRouting.suggestedWorkflowMode} (advisory)`
+  );
+  if (snapshot.intentDetection.signals.length > 0) {
+    console.log(`Intent signals: ${snapshot.intentDetection.signals.slice(0, 5).join(", ")}`);
+  }
+  console.log(`Hard routing allowed: ${snapshot.intentDetection.hardRoutingAllowed}`);
+  console.log(`Next action: ${snapshot.summary.recommendedNextAction}`);
 }
 
 function printMemoryHealth(result: Record<string, unknown> | undefined): void {
@@ -404,9 +578,27 @@ export async function projectIntelligenceBriefCommand(
   printResumeContext(brief.resumeContext);
   console.log("");
 
+  console.log(chalk.bold("Local Session"));
+  printLocalSessionSnapshot(brief.localSessionSnapshot);
+  console.log("");
+
   console.log(chalk.bold("Memory Authority And Health"));
   printMemoryHealth(brief.memoryHealth);
   console.log("");
+
+  if (brief.projectPolicyDecision) {
+    console.log(chalk.bold("Project Policy"));
+    console.log(
+      `Verdict: ${brief.projectPolicyDecision.verdict} (${Math.round(
+        brief.projectPolicyDecision.confidence * 100
+      )}%)`
+    );
+    if (brief.projectPolicyDecision.requiredActions.length > 0) {
+      console.log(`Required: ${brief.projectPolicyDecision.requiredActions[0]}`);
+    }
+    console.log(`Receipt: ${brief.projectPolicyDecision.receipt.receiptId}`);
+    console.log("");
+  }
 
   console.log(chalk.bold("Code Impact"));
   if (brief.codeImpactSourceSelection) {

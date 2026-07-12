@@ -6,6 +6,7 @@
  * (success / failure / timeout), emits a canonical automation event, and runs
  * the memory guard. Fail-soft: tracking errors never break the host tool.
  */
+import { execFileSync } from "node:child_process";
 import { createClient } from "../api/client";
 import { isConfigured } from "../config/store";
 import {
@@ -35,6 +36,109 @@ function normalizeStringArray(value: unknown): string[] {
 const FILE_FIELDS = ["file_path", "path", "file"];
 const FILE_COLLECTION_FIELDS = ["paths", "files"];
 const NESTED_INPUT_FIELDS = ["tool_input", "toolInput", "input", "arguments", "args", "params"];
+const FULL_GIT_COMMIT_SHA = /^[0-9a-f]{40}$/;
+const COMMIT_LIKE_GIT_COMMAND =
+  /^\s*(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s;&|]+)\s+)*(?:command\s+)?git\s+(?:(?:-C|--git-dir|--work-tree)\s+(?:"[^"]*"|'[^']*'|[^\s;&|]+)\s+|--[a-z][a-z0-9-]*\s+)*(commit|revert|cherry-pick)\b/i;
+const AMBIGUOUS_SHELL_COMMAND = /(?:&&|\|\||[;&|<>`\r\n]|\$\(|^\s*\(|\)\s*$)/;
+const NON_COMMIT_RESULT =
+  /(?:\bnothing to commit\b|\bnothing added to commit\b|\bno changes added to commit\b|\bnothing committed\b|\bcherry-pick is now empty\b|\bfatal:|\berror:|\baborting\b)/i;
+const COMMIT_SHA_RESULT_PREFIX = /\b[0-9a-f]{7,40}\b/gi;
+
+type CommitLikeGitOperation = "commit" | "revert" | "cherry-pick";
+
+function commitLikeGitOperation(command?: string): CommitLikeGitOperation | undefined {
+  if (!command || AMBIGUOUS_SHELL_COMMAND.test(command)) {
+    return undefined;
+  }
+
+  const match = command.match(COMMIT_LIKE_GIT_COMMAND)?.[1]?.toLowerCase();
+  if (match === "commit" || match === "revert" || match === "cherry-pick") {
+    return match;
+  }
+  return undefined;
+}
+
+function reflogMatchesOperation(subject: string, operation: CommitLikeGitOperation): boolean {
+  const normalized = subject.trim().toLowerCase();
+  if (operation === "commit") {
+    return /^commit(?:\s+\((?:initial|amend|merge)\))?:/.test(normalized);
+  }
+  if (operation === "revert") {
+    return /^revert:/.test(normalized);
+  }
+  return /^(?:cherry-pick|commit\s+\(cherry-pick\)):/.test(normalized);
+}
+
+function readGitValue(cwd: string, args: string[]): string | undefined {
+  try {
+    const value = execFileSync("git", args, {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return value || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function resultConfirmsCommitSha(result: string | undefined, commitSha: string): boolean {
+  if (!result) {
+    return false;
+  }
+  const candidates = result.match(COMMIT_SHA_RESULT_PREFIX) ?? [];
+  return candidates.some((candidate) => commitSha.startsWith(candidate.toLowerCase()));
+}
+
+/**
+ * Return the only extra metadata allowed for a successful commit-like result.
+ *
+ * The command is used only as a local classification hint and is never copied
+ * into this metadata. Git is invoked without a shell, the reflog must confirm
+ * the requested operation, the current result must contain HEAD's SHA prefix,
+ * and the emitted SHA must be a full commit object id.
+ */
+export function buildCommitResultMetadata(options: {
+  tool?: string;
+  toolInput?: string;
+  result?: string;
+  exitCode?: number;
+  status?: string;
+  cwd?: string;
+}): { commitSha?: string } {
+  const command = extractCommandFromToolInput(options.toolInput);
+  const operation = commitLikeGitOperation(command);
+  if (!operation) {
+    return {};
+  }
+
+  const classification = classifyToolResult({
+    tool: options.tool,
+    command,
+    result: options.result,
+    exitCode: options.exitCode,
+    status: options.status,
+  });
+  if (classification !== "success" || NON_COMMIT_RESULT.test(options.result ?? "")) {
+    return {};
+  }
+
+  const cwd = options.cwd ?? process.cwd();
+  const reflogSubject = readGitValue(cwd, ["reflog", "-1", "--format=%gs", "HEAD"]);
+  if (!reflogSubject || !reflogMatchesOperation(reflogSubject, operation)) {
+    return {};
+  }
+
+  const commitSha = readGitValue(cwd, ["rev-parse", "--verify", "HEAD^{commit}"])?.toLowerCase();
+  if (
+    !commitSha ||
+    !FULL_GIT_COMMIT_SHA.test(commitSha) ||
+    !resultConfirmsCommitSha(options.result, commitSha)
+  ) {
+    return {};
+  }
+  return { commitSha };
+}
 
 function collectFiles(value: unknown, files: string[], depth = 0): void {
   if (depth > 4 || value === null || value === undefined) {
@@ -191,6 +295,13 @@ export async function postToolCommand(options: {
           exitCode: options.exitCode,
           status: options.status,
           files: uniqueFiles,
+        }),
+        ...buildCommitResultMetadata({
+          tool: options.tool,
+          toolInput: options.toolInput,
+          result: options.result,
+          exitCode: options.exitCode,
+          status: options.status,
         }),
         ...(contextPackSkipped ? { local_context_pack_skipped: contextPackSkipped } : {}),
       },

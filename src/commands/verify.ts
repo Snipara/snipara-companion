@@ -85,6 +85,12 @@ interface PackageInfo {
   scripts: Record<string, string>;
 }
 
+interface PythonProjectInfo {
+  root: string;
+  pyprojectPath: string;
+  text: string;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -306,9 +312,126 @@ function commandForPackageScript(info: PackageInfo, scriptName: string, cwd: str
   return `pnpm ${scriptName}`;
 }
 
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function commandInDirectory(root: string, cwd: string, command: string): string {
+  const relativeRoot = path.relative(path.resolve(cwd), path.resolve(root));
+  if (!relativeRoot) {
+    return command;
+  }
+  return `cd ${shellQuote(relativeRoot)} && ${command}`;
+}
+
+function isPythonSurface(filePath: string): boolean {
+  const basename = path.basename(filePath);
+  return (
+    filePath.endsWith(".py") ||
+    basename === "pyproject.toml" ||
+    basename === "requirements.txt" ||
+    basename.startsWith("requirements-") ||
+    basename === "setup.py" ||
+    basename === "setup.cfg" ||
+    basename === "tox.ini"
+  );
+}
+
+function findPyproject(startPath: string, cwd: string): string | null {
+  const absoluteStart = path.resolve(cwd, startPath);
+  let current =
+    fs.existsSync(absoluteStart) && fs.statSync(absoluteStart).isDirectory()
+      ? absoluteStart
+      : path.dirname(absoluteStart);
+  const stop = path.parse(path.resolve(cwd)).root;
+
+  while (current !== stop) {
+    const candidate = path.join(current, "pyproject.toml");
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+  }
+
+  return null;
+}
+
+function readPythonProject(pyprojectPath: string): PythonProjectInfo | null {
+  try {
+    return {
+      root: path.dirname(pyprojectPath),
+      pyprojectPath,
+      text: fs.readFileSync(pyprojectPath, "utf8"),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function inferPythonChecks(changedFiles: string[], cwd: string): VerificationCheck[] {
+  const pyprojectFiles = unique(
+    changedFiles
+      .filter(isPythonSurface)
+      .map((file) => findPyproject(file, cwd))
+      .filter((file): file is string => typeof file === "string")
+  );
+  const projects = pyprojectFiles
+    .map(readPythonProject)
+    .filter((info): info is PythonProjectInfo => Boolean(info));
+
+  return projects.flatMap((info): VerificationCheck[] => {
+    const checks: VerificationCheck[] = [
+      {
+        kind: "test",
+        title: "pytest for Python project",
+        command: commandInDirectory(info.root, cwd, "python -m pytest"),
+        source: "fallback",
+        reason: `Detected Python project at ${path.relative(cwd, info.pyprojectPath)}.`,
+      },
+    ];
+
+    if (/\[tool\.ruff(?:\.|\])/.test(info.text) || /\bruff\b/.test(info.text)) {
+      checks.push({
+        kind: "lint",
+        title: "ruff check for Python project",
+        command: commandInDirectory(info.root, cwd, "python -m ruff check ."),
+        source: "fallback",
+        reason: `Detected Ruff configuration or dependency in ${path.relative(cwd, info.pyprojectPath)}.`,
+      });
+    }
+
+    if (/\[tool\.mypy\]/.test(info.text) || /\bmypy\b/.test(info.text)) {
+      checks.push({
+        kind: "type-check",
+        title: "mypy for Python project",
+        command: commandInDirectory(info.root, cwd, "python -m mypy ."),
+        source: "fallback",
+        reason: `Detected mypy configuration or dependency in ${path.relative(cwd, info.pyprojectPath)}.`,
+      });
+    }
+
+    if (/\[build-system\]/.test(info.text)) {
+      checks.push({
+        kind: "build",
+        title: "build Python package",
+        command: commandInDirectory(info.root, cwd, "python -m build"),
+        source: "fallback",
+        reason: `Detected Python build system in ${path.relative(cwd, info.pyprojectPath)}.`,
+      });
+    }
+
+    return checks;
+  });
+}
+
 function inferPackageScriptChecks(changedFiles: string[], cwd: string): VerificationCheck[] {
   const packageFiles = unique(
     changedFiles
+      .filter((file) => !(isPythonSurface(file) && findPyproject(file, cwd)))
       .map((file) => findPackageJson(file, cwd))
       .filter((file): file is string => typeof file === "string")
   );
@@ -477,8 +600,14 @@ export function buildVerificationPlan(options: BuildVerificationPlanOptions): Ve
   const impactedFiles = collectImpactedFiles(options.codeImpact, changedFiles, options.filePath);
   const directChecks = collectDirectTestChecks(options.codeImpact);
   const actionChecks = collectActionChecks(options.codeImpact);
+  const pythonChecks = inferPythonChecks(impactedFiles, cwd);
   const packageChecks = inferPackageScriptChecks(impactedFiles, cwd);
-  const recommendedChecks = dedupeChecks([...directChecks, ...actionChecks, ...packageChecks]);
+  const recommendedChecks = dedupeChecks([
+    ...directChecks,
+    ...actionChecks,
+    ...pythonChecks,
+    ...packageChecks,
+  ]);
   const missingChecks = collectCoverageGaps(options.codeImpact);
 
   if (!options.codeImpact) {

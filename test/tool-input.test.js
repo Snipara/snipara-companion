@@ -1,7 +1,13 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { spawnSync } = require("node:child_process");
 const test = require("node:test");
 
 const {
+  buildCommitResultMetadata,
+  buildCanonicalEvent,
   resolveQueryFromToolInput,
   extractFilesFromToolInput,
   buildToolResultPayload,
@@ -9,6 +15,12 @@ const {
   extractCommandFromToolInput,
   getStuckGuardInjection,
 } = require("../dist/index.js");
+
+function runGit(cwd, args) {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  return result.stdout.trim();
+}
 
 test("resolveQueryFromToolInput builds query from file path", () => {
   const query = resolveQueryFromToolInput(JSON.stringify({ file_path: "/src/auth.ts" }), "Read");
@@ -85,6 +97,179 @@ test("buildToolResultPayload redacts and truncates result previews", () => {
   assert.equal(payload.result_classification, "failure");
   assert.equal(payload.command, "curl api");
   assert.match(payload.result_preview, /\[REDACTED\]/);
+});
+
+test("buildToolResultPayload and canonical events never retain raw command secrets", () => {
+  const privateDiscordValue = "discord-value-that-must-never-leave-the-process";
+  const payload = buildToolResultPayload({
+    tool: "Bash",
+    toolInput: JSON.stringify({
+      command: `DISCORD_TOKEN=${privateDiscordValue} token=private-value pnpm test`,
+    }),
+    result: "ok",
+    exitCode: 0,
+  });
+  const event = buildCanonicalEvent({ eventType: "tool_result", payload });
+  const serialized = JSON.stringify(event);
+
+  assert.equal(serialized.includes(privateDiscordValue), false);
+  assert.equal(serialized.includes("private-value"), false);
+  assert.equal(payload.command, "DISCORD_TOKEN=[REDACTED] token=[REDACTED] pnpm test");
+});
+
+test("buildCommitResultMetadata emits only full SHAs for actual commit-like results", () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-commit-result-"));
+  runGit(repo, ["init"]);
+  runGit(repo, ["config", "user.email", "agent@example.com"]);
+  runGit(repo, ["config", "user.name", "Agent"]);
+
+  fs.writeFileSync(path.join(repo, "tracked.txt"), "initial\n", "utf8");
+  runGit(repo, ["add", "tracked.txt"]);
+  runGit(repo, ["commit", "-m", "initial"]);
+  const initialSha = runGit(repo, ["rev-parse", "HEAD"]);
+  const initialMetadata = buildCommitResultMetadata({
+    tool: "Bash",
+    toolInput: JSON.stringify({ command: 'git commit -m "initial"' }),
+    result: `[branch ${initialSha.slice(0, 7)}] initial`,
+    exitCode: 0,
+    cwd: repo,
+  });
+  assert.deepEqual(initialMetadata, { commitSha: initialSha });
+  assert.deepEqual(Object.keys(initialMetadata), ["commitSha"]);
+
+  fs.appendFileSync(path.join(repo, "tracked.txt"), "amended\n", "utf8");
+  runGit(repo, ["add", "tracked.txt"]);
+  runGit(repo, ["commit", "--amend", "-m", "amended"]);
+  const amendedSha = runGit(repo, ["rev-parse", "HEAD"]);
+  const amendedMetadata = buildCommitResultMetadata({
+    tool: "Bash",
+    toolInput: JSON.stringify({ command: 'git commit --amend -m "token=private-value"' }),
+    result: `[branch ${amendedSha.slice(0, 7)}] amended`,
+    status: "success",
+    cwd: repo,
+  });
+  assert.deepEqual(amendedMetadata, { commitSha: amendedSha });
+  assert.equal(JSON.stringify(amendedMetadata).includes("private-value"), false);
+
+  const primaryBranch = runGit(repo, ["branch", "--show-current"]);
+  runGit(repo, ["checkout", "-b", "topic"]);
+  fs.writeFileSync(path.join(repo, "topic.txt"), "topic\n", "utf8");
+  runGit(repo, ["add", "topic.txt"]);
+  runGit(repo, ["commit", "-m", "topic"]);
+  const topicSha = runGit(repo, ["rev-parse", "HEAD"]);
+  runGit(repo, ["checkout", primaryBranch]);
+  runGit(repo, ["cherry-pick", topicSha]);
+  const cherryPickedSha = runGit(repo, ["rev-parse", "HEAD"]);
+  assert.deepEqual(
+    buildCommitResultMetadata({
+      tool: "Bash",
+      toolInput: JSON.stringify({ command: `git cherry-pick ${topicSha}` }),
+      result: `[${primaryBranch} ${cherryPickedSha.slice(0, 7)}] topic`,
+      exitCode: 0,
+      cwd: repo,
+    }),
+    { commitSha: cherryPickedSha }
+  );
+
+  runGit(repo, ["revert", "--no-edit", cherryPickedSha]);
+  const revertSha = runGit(repo, ["rev-parse", "HEAD"]);
+  assert.deepEqual(
+    buildCommitResultMetadata({
+      tool: "Bash",
+      toolInput: JSON.stringify({ command: `git revert --no-edit ${cherryPickedSha}` }),
+      result: `[${primaryBranch} ${revertSha.slice(0, 7)}] Revert topic`,
+      exitCode: 0,
+      cwd: repo,
+    }),
+    { commitSha: revertSha }
+  );
+});
+
+test("buildCommitResultMetadata rejects mentions, failures, no-ops, and reflog mismatches", () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-commit-result-negative-"));
+  runGit(repo, ["init"]);
+  runGit(repo, ["config", "user.email", "agent@example.com"]);
+  runGit(repo, ["config", "user.name", "Agent"]);
+  fs.writeFileSync(path.join(repo, "tracked.txt"), "initial\n", "utf8");
+  runGit(repo, ["add", "tracked.txt"]);
+  runGit(repo, ["commit", "-m", "initial"]);
+  const initialSha = runGit(repo, ["rev-parse", "HEAD"]);
+
+  const base = {
+    tool: "Bash",
+    result: "command completed",
+    exitCode: 0,
+    cwd: repo,
+  };
+  assert.deepEqual(
+    buildCommitResultMetadata({
+      ...base,
+      toolInput: JSON.stringify({ command: "echo git commit -m fake" }),
+    }),
+    {}
+  );
+  assert.deepEqual(
+    buildCommitResultMetadata({
+      ...base,
+      toolInput: JSON.stringify({
+        command: "git commit --quiet -m masked || git rev-parse --short HEAD",
+      }),
+      result: initialSha.slice(0, 12),
+    }),
+    {}
+  );
+  const maskedNoop = spawnSync("sh", ["-c", "git commit -m masked >/dev/null 2>&1 || true"], {
+    cwd: repo,
+    encoding: "utf8",
+  });
+  assert.equal(maskedNoop.status, 0, maskedNoop.stderr);
+  assert.equal(maskedNoop.stdout, "");
+  assert.deepEqual(
+    buildCommitResultMetadata({
+      ...base,
+      toolInput: JSON.stringify({ command: "git commit -m masked || true" }),
+      result: maskedNoop.stdout,
+    }),
+    {}
+  );
+  assert.deepEqual(
+    buildCommitResultMetadata({
+      ...base,
+      toolInput: JSON.stringify({ command: "git commit --quiet -m silent" }),
+      result: "",
+    }),
+    {}
+  );
+  assert.deepEqual(
+    buildCommitResultMetadata({
+      ...base,
+      toolInput: JSON.stringify({ command: "git status" }),
+    }),
+    {}
+  );
+  assert.deepEqual(
+    buildCommitResultMetadata({
+      ...base,
+      toolInput: JSON.stringify({ command: "git revert HEAD" }),
+    }),
+    {}
+  );
+  assert.deepEqual(
+    buildCommitResultMetadata({
+      ...base,
+      toolInput: JSON.stringify({ command: "git commit -m failed" }),
+      exitCode: 1,
+    }),
+    {}
+  );
+  assert.deepEqual(
+    buildCommitResultMetadata({
+      ...base,
+      toolInput: JSON.stringify({ command: "git commit -m noop" }),
+      result: "nothing to commit, working tree clean",
+    }),
+    {}
+  );
 });
 
 test("getStuckGuardInjection returns only inject or enforce rescue text", () => {

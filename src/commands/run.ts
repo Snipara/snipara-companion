@@ -6,7 +6,20 @@
  * Judgment Card in one pass.
  */
 import { execFileSync, spawnSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import chalk from "chalk";
+import {
+  buildAdvisorInfluenceLifecycle,
+  buildDecisionRequest,
+  buildOutcomeIntelligenceCalibration,
+  type AdvisorInfluenceLifecycle,
+  type AdvisorInfluenceLifecycleEvidence,
+  type AdvisorInfluenceLifecycleState,
+  type DecisionRequest,
+  type OutcomeIntelligenceCalibration,
+  type OutcomeIntelligenceReceipt,
+} from "../contracts/project-intelligence";
 import {
   createClient,
   type AdvisorInfluenceAgentDecision,
@@ -24,6 +37,7 @@ import {
   formatPolicyGateDecision,
   type ProjectPolicyGatesResult,
 } from "./policy-gates";
+import { writeDecisionRequest, type DecisionRequestWriteResult } from "./decision-requests";
 
 export interface ProjectRunCommandOptions {
   task?: string;
@@ -39,6 +53,11 @@ export interface ProjectRunCommandOptions {
   skipPackageReview?: boolean;
   servedJudgmentId?: string;
   skipAdvisorReceipts?: boolean;
+  advisorPlanBefore?: string;
+  advisorPlanAfter?: string;
+  advisorRecommendationId?: string;
+  outcomeReceiptFiles?: string[];
+  emitPolicyDecisions?: boolean;
   json?: boolean;
 }
 
@@ -64,6 +83,7 @@ export interface ProjectRunAdvisorReceiptWrite {
   status: "recorded" | "skipped" | "error";
   agentDecision?: AdvisorInfluenceAgentDecision;
   changedBecauseOfRecommendation?: boolean;
+  lifecycleState?: AdvisorInfluenceLifecycleState;
   result?: RecordAdvisorInfluenceReceiptResult;
   reason?: ProjectRunAdvisorReceiptSkipReason;
   error?: string;
@@ -107,17 +127,43 @@ export interface ProjectIntelligenceRunResult {
   guard?: ProjectRunGuardResult;
   packageReview?: ProjectRunPackageReview;
   policyGates: ProjectPolicyGatesResult;
+  policyDecisionRequests?: ProjectRunPolicyDecisionRequests;
   advisorReceiptCapture?: ProjectRunAdvisorReceiptCapture;
+  outcomeCalibration?: OutcomeIntelligenceCalibration;
   judgmentCard: ProjectIntelligenceJudgmentCard;
   suggestedCommands: string[];
+}
+
+export interface ProjectRunPolicyDecisionRequests {
+  version: "project-intelligence.policy-decision-requests.v1";
+  emitted: boolean;
+  requestCount: number;
+  requests: DecisionRequest[];
+  writes: DecisionRequestWriteResult[];
+  caveats: string[];
 }
 
 const GUARD_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 const RAW_OUTPUT_PREVIEW_BYTES = 64_000;
 const ADVISOR_RECEIPT_WRITE_LIMIT = 6;
 
+interface AdvisorRecommendationPlanScope {
+  mode:
+    | "automatic_single_recommendation"
+    | "explicit_match"
+    | "explicit_non_match"
+    | "multiple_recommendations_require_selector";
+  requestedRecommendationId: string | null;
+  targeted: boolean;
+  totalRecommendationCount: number;
+}
+
 function normalizeStringList(values: string[] | undefined): string[] {
   return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))];
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -132,6 +178,38 @@ function guardPayload(
 
 function packageReviewCommand(): string {
   return "npm view snipara-companion version bin dist-tags --json";
+}
+
+function readOutcomeReceipts(files: string[] | undefined): OutcomeIntelligenceReceipt[] {
+  const receipts: OutcomeIntelligenceReceipt[] = [];
+  for (const file of normalizeStringList(files)) {
+    const resolved = path.resolve(process.cwd(), file);
+    const parsed = JSON.parse(fs.readFileSync(resolved, "utf8")) as unknown;
+    receipts.push(...outcomeReceiptsFromUnknown(parsed));
+  }
+  return receipts;
+}
+
+function outcomeReceiptsFromUnknown(value: unknown): OutcomeIntelligenceReceipt[] {
+  if (Array.isArray(value)) {
+    return value.flatMap(outcomeReceiptsFromUnknown);
+  }
+  if (!isRecord(value)) {
+    return [];
+  }
+  if (value.version === "snipara.outcome_intelligence.receipt.v0") {
+    return [value as unknown as OutcomeIntelligenceReceipt];
+  }
+  if (isRecord(value.outcomeReceipt)) {
+    return outcomeReceiptsFromUnknown(value.outcomeReceipt);
+  }
+  if (Array.isArray(value.outcomeReceipts)) {
+    return outcomeReceiptsFromUnknown(value.outcomeReceipts);
+  }
+  if (Array.isArray(value.receipts)) {
+    return outcomeReceiptsFromUnknown(value.receipts);
+  }
+  return [];
 }
 
 function outputPreview(value: string): string {
@@ -233,92 +311,141 @@ function advisorReceiptRecommendation(
       recommendation.expectedBehaviorChange ??
       `Adapt the visible plan according to ${recommendation.title}.`,
     evidence: [],
-    caveats: ["First-party companion receipt records plan adaptation, not outcome proof."],
+    caveats: [
+      "Expected behavior is a proposal only; lifecycle evidence separately records acknowledgement, application, and verification.",
+    ],
   };
 }
 
 function advisorReceiptDecision(
   recommendation: ProjectIntelligenceJudgmentCard["advisorRecommendations"][number],
-  judgmentCard: ProjectIntelligenceJudgmentCard
+  judgmentCard: ProjectIntelligenceJudgmentCard,
+  lifecycle: AdvisorInfluenceLifecycle
 ): AdvisorInfluenceAgentDecision {
   if (recommendation.severity === "block" && judgmentCard.canProceed === "block") {
     return "blocked";
   }
-  return "modified";
+  return lifecycle.planChange.changed ? "modified" : "accepted";
 }
 
-function advisorReceiptChangedBecauseOfRecommendation(args: {
+function advisorLifecycleEvidenceStatus(
+  status: OutcomeIntelligenceReceipt["verification"]["evidence"][number]["status"]
+): AdvisorInfluenceLifecycleEvidence["status"] | undefined {
+  if (status === "passed" || status === "failed" || status === "warning") return status;
+  return undefined;
+}
+
+function advisorLifecycleOutcomeStatus(
+  status: OutcomeIntelligenceReceipt["outcome"]["status"]
+): AdvisorInfluenceLifecycleEvidence["status"] | undefined {
+  if (status === "success") return "passed";
+  if (status === "failure" || status === "blocked") return "failed";
+  if (status === "partial") return "warning";
+  return undefined;
+}
+
+function boundedLifecycleText(value: string, maxChars: number): string {
+  return value.trim().replace(/\s+/g, " ").slice(0, maxChars);
+}
+
+function advisorRecommendationPlanScope(args: {
+  options: ProjectRunCommandOptions;
+  recommendationId: string;
+  totalRecommendationCount: number;
+}): AdvisorRecommendationPlanScope {
+  const requestedRecommendationId = stringValue(args.options.advisorRecommendationId) ?? null;
+  if (requestedRecommendationId) {
+    const targeted = requestedRecommendationId === args.recommendationId;
+    return {
+      mode: targeted ? "explicit_match" : "explicit_non_match",
+      requestedRecommendationId,
+      targeted,
+      totalRecommendationCount: args.totalRecommendationCount,
+    };
+  }
+  if (args.totalRecommendationCount === 1) {
+    return {
+      mode: "automatic_single_recommendation",
+      requestedRecommendationId: null,
+      targeted: true,
+      totalRecommendationCount: 1,
+    };
+  }
+  return {
+    mode: "multiple_recommendations_require_selector",
+    requestedRecommendationId: null,
+    targeted: false,
+    totalRecommendationCount: args.totalRecommendationCount,
+  };
+}
+
+function advisorLifecycleEvidenceFromOutcomeReceipts(args: {
+  recommendationId: string;
+  outcomeReceipts: OutcomeIntelligenceReceipt[];
+}): AdvisorInfluenceLifecycleEvidence[] {
+  const evidence: AdvisorInfluenceLifecycleEvidence[] = [];
+  for (const receipt of args.outcomeReceipts) {
+    if (!receipt.decision.advisorRecommendationIds?.includes(args.recommendationId)) continue;
+
+    receipt.verification.evidence.forEach((item, index) => {
+      const status = advisorLifecycleEvidenceStatus(item.status);
+      if (!status) return;
+      const detail = boundedLifecycleText(
+        [item.label, item.command, item.detail].filter(Boolean).join(" — "),
+        900
+      );
+      evidence.push({
+        kind: "execution",
+        ref: boundedLifecycleText(`${receipt.receiptId}#verification-${index + 1}`, 500),
+        status,
+        ...(detail ? { detail } : {}),
+      });
+    });
+
+    const outcomeStatus = advisorLifecycleOutcomeStatus(receipt.outcome.status);
+    if (outcomeStatus) {
+      evidence.push({
+        kind: "outcome",
+        ref: boundedLifecycleText(receipt.receiptId, 500),
+        status: outcomeStatus,
+        detail: boundedLifecycleText(receipt.outcome.summary, 900),
+      });
+    }
+  }
+  return evidence;
+}
+
+function advisorReceiptBehaviorChange(args: {
   recommendation: ProjectIntelligenceJudgmentCard["advisorRecommendations"][number];
-  judgmentCard: ProjectIntelligenceJudgmentCard;
-}): boolean {
-  if (args.recommendation.severity === "block" && args.judgmentCard.canProceed === "block") {
-    return true;
-  }
-  if (args.recommendation.severity === "risk") {
-    return true;
-  }
-  if (args.recommendation.expectedBehaviorChange?.trim()) {
-    return true;
-  }
-  if (args.recommendation.recommendedVerification.length > 0) {
-    return true;
-  }
-  return args.judgmentCard.requiredActions.length > 0;
-}
-
-function advisorReceiptBehaviorChange(
-  recommendation: ProjectIntelligenceJudgmentCard["advisorRecommendations"][number],
-  judgmentCard: ProjectIntelligenceJudgmentCard
-): string {
-  const verification = recommendation.recommendedVerification.slice(0, 3).join("; ");
-  const mode =
-    recommendation.severity === "block" || recommendation.severity === "risk"
-      ? "required action"
-      : "advisory action";
-  return [
-    `snipara-companion run added a ${mode} from Project Advisor: ${recommendation.title}.`,
-    recommendation.expectedBehaviorChange
-      ? `Expected adaptation: ${recommendation.expectedBehaviorChange}.`
-      : null,
-    verification ? `Recommended verification to perform: ${verification}.` : null,
-    `Judgment state after adaptation: ${judgmentCard.state}.`,
-  ]
-    .filter(Boolean)
-    .join(" ");
-}
-
-function advisorReceiptPlanBefore(options: ProjectRunCommandOptions): string | null {
-  return (
-    options.task ??
-    options.diffSummary ??
-    (options.changedFiles && options.changedFiles.length > 0
-      ? `Work on ${options.changedFiles.slice(0, 8).join(", ")}`
-      : null)
-  );
-}
-
-function advisorReceiptPlanAfter(args: {
-  recommendation: ProjectIntelligenceJudgmentCard["advisorRecommendations"][number];
-  behaviorChange: string;
-  judgmentCard: ProjectIntelligenceJudgmentCard;
+  lifecycle: AdvisorInfluenceLifecycle;
+  planScope: AdvisorRecommendationPlanScope;
 }): string {
-  const requiredActions = args.judgmentCard.requiredActions
-    .slice(0, 5)
-    .map((action) => action.command ?? action.title)
-    .filter(Boolean);
-  return [
-    args.behaviorChange,
-    requiredActions.length > 0
-      ? `Visible plan now includes required action(s): ${requiredActions.join("; ")}.`
-      : null,
-    args.recommendation.recommendedVerification.length > 0
-      ? `Recommended verification stays open: ${args.recommendation.recommendedVerification
-          .slice(0, 5)
-          .join("; ")}.`
-      : null,
-  ]
-    .filter(Boolean)
-    .join(" ");
+  const { lifecycle, recommendation, planScope } = args;
+  const beforeHash = lifecycle.planChange.beforeHash?.slice(0, 20) ?? "missing";
+  const afterHash = lifecycle.planChange.afterHash?.slice(0, 20) ?? "missing";
+  if (lifecycle.state === "verified") {
+    return `Recommendation '${recommendation.title}' changed the bounded plan from ${beforeHash} to ${afterHash}; ${lifecycle.evidence.length} recommendation-scoped execution/outcome evidence item(s) verified the applied change.`;
+  }
+  if (lifecycle.state === "applied") {
+    return `Recommendation '${recommendation.title}' changed the bounded plan from ${beforeHash} to ${afterHash}; no recommendation-scoped execution/outcome evidence verifies it yet.`;
+  }
+  if (lifecycle.planChange.beforeHash && lifecycle.planChange.afterHash) {
+    return `Recommendation '${recommendation.title}' was acknowledged, but the bounded plan hashes are unchanged; application is not proven.`;
+  }
+  if (!planScope.targeted) {
+    return `Recommendation '${recommendation.title}' was acknowledged, but the supplied plan snapshots were not scoped to this recommendation; application is not proven.`;
+  }
+  return `Recommendation '${recommendation.title}' was acknowledged, but a complete bounded plan-before/plan-after pair was not supplied; application is not proven.`;
+}
+
+function verificationExecutedFromLifecycle(lifecycle: AdvisorInfluenceLifecycle): string[] {
+  if (lifecycle.state !== "verified") return [];
+  return lifecycle.evidence.map((item) =>
+    boundedLifecycleText(
+      `${item.kind} ${item.ref}: ${item.status}${item.detail ? ` — ${item.detail}` : ""}`,
+      900
+    )
+  );
 }
 
 function advisorReceiptMetadata(args: {
@@ -329,8 +456,8 @@ function advisorReceiptMetadata(args: {
   recommendationIndex: number;
   totalRecommendations: number;
   verificationEvidence: ProjectRunVerificationEvidence[];
-  agentDecision: AdvisorInfluenceAgentDecision;
-  behaviorChange: string;
+  lifecycle: AdvisorInfluenceLifecycle;
+  planScope: AdvisorRecommendationPlanScope;
 }): Record<string, unknown> {
   const toolActions = normalizeStringList([
     ...args.recommendation.recommendedVerification,
@@ -351,13 +478,11 @@ function advisorReceiptMetadata(args: {
     branch: args.brief.branch ?? args.options.branch ?? null,
     filesAffected,
     changedFiles: filesAffected,
-    planBefore: advisorReceiptPlanBefore(args.options),
-    planAfter: advisorReceiptPlanAfter({
-      recommendation: args.recommendation,
-      behaviorChange: args.behaviorChange,
-      judgmentCard: args.judgmentCard,
-    }),
-    changedBecauseOfRecommendation: args.agentDecision !== "ignored",
+    planBefore: args.lifecycle.planChange.before,
+    planAfter: args.lifecycle.planChange.after,
+    changedBecauseOfRecommendation: args.lifecycle.planChange.changed,
+    advisorInfluenceLifecycle: args.lifecycle,
+    advisorPlanScope: args.planScope,
     toolActions,
     humanOverride: null,
     judgmentState: args.judgmentCard.state,
@@ -367,17 +492,18 @@ function advisorReceiptMetadata(args: {
       version: "advisor-receipt-verification-backfill-v1",
       executedCount: args.verificationEvidence.filter((item) => item.status !== "skipped").length,
       skippedCount: args.verificationEvidence.filter((item) => item.status === "skipped").length,
+      qualifyingLifecycleEvidenceCount: args.lifecycle.evidence.length,
       caveat:
-        "Verification evidence records commands or gates observed by this run; it is not outcome proof.",
+        "Run diagnostics are retained for compatibility but do not advance the lifecycle; only recommendation-scoped execution/outcome evidence can verify an applied change.",
     },
     receiptAutomation: {
-      version: "first-party-advisor-receipt-automation-v1",
+      version: "first-party-advisor-receipt-automation-v2",
       trigger: "snipara-companion run",
       selectedRecommendationRank: args.recommendationIndex + 1,
       totalRecommendations: args.totalRecommendations,
       writeLimit: ADVISOR_RECEIPT_WRITE_LIMIT,
       skipReason: null,
-      reason: "served judgment id and plan adaptation were present",
+      reason: `served judgment was acknowledged; lifecycle state is ${args.lifecycle.state}`,
     },
   };
 }
@@ -468,14 +594,87 @@ function verificationEvidenceFromRun(args: {
   return evidence;
 }
 
-function verificationExecutedFromEvidence(evidence: ProjectRunVerificationEvidence[]): string[] {
-  return evidence
-    .filter((item) => item.status !== "skipped")
-    .map((item) =>
-      item.command
-        ? `${item.label}: ${item.command} (${item.status})`
-        : `${item.label}: ${item.status}`
-    );
+function buildPolicyDecisionRequest(args: {
+  run: ProjectIntelligenceRunResult;
+}): DecisionRequest | undefined {
+  const decision = args.run.policyGates.projectPolicyDecision;
+  if (!decision || decision.verdict === "allow") return undefined;
+
+  const changedFiles = args.run.brief.changedFiles.slice(0, 24);
+  const matchedRules = decision.matchedRules.slice(0, 8);
+  const options =
+    decision.verdict === "block"
+      ? ["respect_block", "request_exception", "mark_policy_stale"]
+      : ["approve_once", "require_changes", "mark_policy_stale", "keep_advisory"];
+  const recommendation = decision.verdict === "block" ? "respect_block" : "approve_once";
+
+  return buildDecisionRequest({
+    producer: {
+      kind: "project_policy_review",
+      command: "run --emit-policy-decisions",
+      sourceRef: decision.receipt.receiptId,
+    },
+    decision: `project_policy_${decision.verdict}`,
+    question:
+      decision.verdict === "block"
+        ? "Project Policy blocked this action. Should the agent stop, request an exception, or mark the policy stale?"
+        : "Project Policy requires human review. May the agent proceed once, change plan, or mark the policy stale?",
+    evidence: {
+      summary: `Project Policy verdict ${decision.verdict} for task '${args.run.brief.task ?? "unspecified"}'. Receipt ${decision.receipt.receiptId}.`,
+      refs: uniqueStrings([decision.receipt.receiptId, ...decision.receipt.ruleRefs]),
+      items: matchedRules.map((rule) => ({
+        ref: rule.source.ref,
+        title: rule.title,
+        summary: rule.requirement,
+        kind: rule.source.kind,
+        status: rule.strength,
+        metadata: {
+          ruleId: rule.id,
+          scope: rule.scope,
+          confidence: rule.confidence,
+          reviewStatus: rule.source.reviewStatus ?? null,
+        },
+      })),
+      reasonCodes: uniqueStrings(["project_policy_review", ...decision.reasonCodes]),
+      files: changedFiles,
+      applyPath: "manual_context_review",
+      applyCommand:
+        "Resolve with `snipara-companion workflow decide <request-id> --choose <option> --reviewer <name>`; if policy is stale, update or invalidate the cited decision/policy before rerunning `snipara-companion run`.",
+    },
+    options,
+    recommendation,
+    rationale:
+      "Project Policy decisions stay agent-first: the agent asks for explicit human governance and records a response receipt; no dashboard or silent policy mutation is required.",
+    blocking: true,
+    fingerprintParts: [
+      "project_policy_review_v1",
+      decision.receipt.receiptId,
+      decision.verdict,
+      decision.receipt.ruleRefs,
+      changedFiles,
+    ],
+  });
+}
+
+function emitPolicyDecisionRequests(
+  run: ProjectIntelligenceRunResult
+): ProjectRunPolicyDecisionRequests {
+  const requests = [buildPolicyDecisionRequest({ run })].filter(
+    (request): request is DecisionRequest => Boolean(request)
+  );
+  const writes = requests.map((request) => writeDecisionRequest(request));
+  return {
+    version: "project-intelligence.policy-decision-requests.v1",
+    emitted: true,
+    requestCount: requests.length,
+    requests,
+    writes,
+    caveats: [
+      "Policy decision requests never apply policy changes automatically.",
+      "Resolve them with workflow decide so the human choice is recorded as a local response receipt.",
+      "Marking a policy stale is a governance signal; the cited memory or policy still needs explicit update or invalidation.",
+    ],
+  };
 }
 
 async function recordFirstPartyAdvisorReceipts(args: {
@@ -483,6 +682,7 @@ async function recordFirstPartyAdvisorReceipts(args: {
   brief: ProjectIntelligenceBrief;
   judgmentCard: ProjectIntelligenceJudgmentCard;
   verificationEvidence?: ProjectRunVerificationEvidence[];
+  outcomeReceipts?: OutcomeIntelligenceReceipt[];
 }): Promise<ProjectRunAdvisorReceiptCapture | undefined> {
   const allRecommendations = args.judgmentCard.advisorRecommendations;
   if (args.options.skipAdvisorReceipts) {
@@ -532,7 +732,7 @@ async function recordFirstPartyAdvisorReceipts(args: {
 
   const client = createClient(10000);
   const verificationEvidence = args.verificationEvidence ?? [];
-  const verificationExecuted = verificationExecutedFromEvidence(verificationEvidence);
+  const outcomeReceipts = args.outcomeReceipts ?? [];
   const selectedRecommendations = allRecommendations.slice(0, ADVISOR_RECEIPT_WRITE_LIMIT);
   const overflowWrites = allRecommendations
     .slice(ADVISOR_RECEIPT_WRITE_LIMIT)
@@ -541,28 +741,44 @@ async function recordFirstPartyAdvisorReceipts(args: {
     ...(await Promise.all(
       selectedRecommendations.map(
         async (recommendation, recommendationIndex): Promise<ProjectRunAdvisorReceiptWrite> => {
-          const agentDecision = advisorReceiptDecision(recommendation, args.judgmentCard);
-          const changedBecauseOfRecommendation = advisorReceiptChangedBecauseOfRecommendation({
-            recommendation,
-            judgmentCard: args.judgmentCard,
+          const planScope = advisorRecommendationPlanScope({
+            options: args.options,
+            recommendationId: recommendation.id,
+            totalRecommendationCount: allRecommendations.length,
           });
-          if (!changedBecauseOfRecommendation) {
-            return skippedAdvisorReceiptWrite(
-              recommendation,
-              "no_plan_adaptation",
-              agentDecision,
-              false
-            );
-          }
+          const lifecycle = buildAdvisorInfluenceLifecycle({
+            recommendationId: recommendation.id,
+            generatedAt: args.judgmentCard.generatedAt,
+            acknowledged: true,
+            planBefore: planScope.targeted ? args.options.advisorPlanBefore : undefined,
+            planAfter: planScope.targeted ? args.options.advisorPlanAfter : undefined,
+            evidence: advisorLifecycleEvidenceFromOutcomeReceipts({
+              recommendationId: recommendation.id,
+              outcomeReceipts,
+            }),
+          });
+          const agentDecision = advisorReceiptDecision(
+            recommendation,
+            args.judgmentCard,
+            lifecycle
+          );
+          const changedBecauseOfRecommendation = lifecycle.planChange.changed;
+          const verificationExecuted = verificationExecutedFromLifecycle(lifecycle);
 
           try {
-            const behaviorChange = advisorReceiptBehaviorChange(recommendation, args.judgmentCard);
+            const behaviorChange = advisorReceiptBehaviorChange({
+              recommendation,
+              lifecycle,
+              planScope,
+            });
             const result = await client.recordAdvisorInfluenceReceipt({
               servedJudgmentId,
               recommendation: advisorReceiptRecommendation(recommendation),
               agentDecision,
               behaviorChange,
               verificationExecuted,
+              // The backend owns canonical OutcomeSignal linking. Companion can
+              // carry external lifecycle evidence, but creation stays pending.
               outcomeLinkStatus: "pending",
               metadata: advisorReceiptMetadata({
                 options: args.options,
@@ -572,8 +788,8 @@ async function recordFirstPartyAdvisorReceipts(args: {
                 recommendationIndex,
                 totalRecommendations: allRecommendations.length,
                 verificationEvidence,
-                agentDecision,
-                behaviorChange,
+                lifecycle,
+                planScope,
               }),
             });
             return {
@@ -581,6 +797,7 @@ async function recordFirstPartyAdvisorReceipts(args: {
               status: "recorded",
               agentDecision,
               changedBecauseOfRecommendation,
+              lifecycleState: lifecycle.state,
               result,
             };
           } catch (error) {
@@ -589,6 +806,7 @@ async function recordFirstPartyAdvisorReceipts(args: {
               status: "error",
               agentDecision,
               changedBecauseOfRecommendation,
+              lifecycleState: lifecycle.state,
               error: error instanceof Error ? error.message : String(error),
             };
           }
@@ -723,6 +941,17 @@ export async function buildProjectIntelligenceRun(
     options.release || changedFiles.some((file) => file.startsWith("packages/cli/"))
       ? runPackageReview(options)
       : undefined;
+  let outcomeCalibration: OutcomeIntelligenceCalibration | undefined;
+  let outcomeCalibrationError: string | undefined;
+  let outcomeReceipts: OutcomeIntelligenceReceipt[] = [];
+  try {
+    outcomeReceipts = readOutcomeReceipts(options.outcomeReceiptFiles);
+    if (outcomeReceipts.length > 0) {
+      outcomeCalibration = buildOutcomeIntelligenceCalibration({ receipts: outcomeReceipts });
+    }
+  } catch (error) {
+    outcomeCalibrationError = error instanceof Error ? error.message : String(error);
+  }
 
   const runErrors = [
     ...brief.errors,
@@ -742,6 +971,14 @@ export async function buildProjectIntelligenceRun(
           },
         ]
       : []),
+    ...(outcomeCalibrationError
+      ? [
+          {
+            surface: "outcome_calibration",
+            message: outcomeCalibrationError,
+          },
+        ]
+      : []),
   ];
 
   const judgmentCard = buildProjectJudgmentCard({
@@ -754,6 +991,7 @@ export async function buildProjectIntelligenceRun(
     verificationPlan: brief.verificationPlan as unknown as Record<string, unknown>,
     guard: guardPayload(guard),
     packageReview: packageReview as unknown as Record<string, unknown> | undefined,
+    advisoryObservability: outcomeCalibration as unknown as Record<string, unknown> | undefined,
     errors: runErrors,
   });
   const policyGates = evaluateProjectPolicyGates({
@@ -766,6 +1004,11 @@ export async function buildProjectIntelligenceRun(
     guard,
     packageReview,
     judgmentCard,
+    projectPolicy: brief.projectPolicyDecision
+      ? {
+          decision: brief.projectPolicyDecision,
+        }
+      : undefined,
   });
   const verificationEvidence = verificationEvidenceFromRun({
     guard,
@@ -777,6 +1020,7 @@ export async function buildProjectIntelligenceRun(
     brief,
     judgmentCard,
     verificationEvidence,
+    outcomeReceipts,
   });
 
   const suggestedCommands = [
@@ -792,7 +1036,7 @@ export async function buildProjectIntelligenceRun(
       : []),
   ];
 
-  return {
+  const result: ProjectIntelligenceRunResult = {
     version: "project-intelligence.production-run.v1",
     generatedAt: new Date().toISOString(),
     release: Boolean(options.release),
@@ -801,9 +1045,16 @@ export async function buildProjectIntelligenceRun(
     ...(packageReview ? { packageReview } : {}),
     policyGates,
     ...(advisorReceiptCapture ? { advisorReceiptCapture } : {}),
+    ...(outcomeCalibration ? { outcomeCalibration } : {}),
     judgmentCard,
     suggestedCommands: [...new Set(suggestedCommands)],
   };
+
+  if (options.emitPolicyDecisions) {
+    result.policyDecisionRequests = emitPolicyDecisionRequests(result);
+  }
+
+  return result;
 }
 
 export async function projectIntelligenceRunCommand(
@@ -883,6 +1134,22 @@ export async function projectIntelligenceRunCommand(
         if (write.status === "skipped" && write.reason) {
           console.log(`- skipped ${write.advisorRecommendationId}: ${write.reason}`);
         }
+      }
+      console.log("");
+    }
+
+    if (result.outcomeCalibration) {
+      console.log(chalk.bold("Outcome Intelligence"));
+      console.log(`Receipts: ${result.outcomeCalibration.receiptCount}`);
+      for (const bucket of result.outcomeCalibration.buckets.slice(0, 5)) {
+        const rate =
+          bucket.positiveRate === null ? "n/a" : `${Math.round(bucket.positiveRate * 100)}%`;
+        console.log(
+          `- ${bucket.reasonCode} / ${bucket.taskKind}/${bucket.risk}: ${rate} (${bucket.confidence}, n=${bucket.sampleCount})`
+        );
+      }
+      if (result.outcomeCalibration.caveats.length > 0) {
+        console.log(`Caveat: ${result.outcomeCalibration.caveats[0]}`);
       }
       console.log("");
     }

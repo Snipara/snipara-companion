@@ -96,25 +96,38 @@ function createJsonLineReader(stream) {
   let buffer = "";
   const queue = [];
   const waiters = [];
-  stream.on("data", (chunk) => {
-    buffer += chunk.toString("utf8");
+  const enqueueLine = (line) => {
+    if (!line) {
+      return;
+    }
+    const parsed = JSON.parse(line);
+    const waiter = waiters.shift();
+    if (waiter) {
+      waiter.resolve(parsed);
+    } else {
+      queue.push(parsed);
+    }
+  };
+  const drainBuffer = () => {
     let newlineIndex = buffer.indexOf("\n");
     while (newlineIndex >= 0) {
       const line = buffer.slice(0, newlineIndex).trim();
       buffer = buffer.slice(newlineIndex + 1);
       newlineIndex = buffer.indexOf("\n");
-      if (!line) {
-        continue;
-      }
-      const parsed = JSON.parse(line);
-      const waiter = waiters.shift();
-      if (waiter) {
-        waiter.resolve(parsed);
-      } else {
-        queue.push(parsed);
-      }
+      enqueueLine(line);
     }
+  };
+  const flushFinalBuffer = () => {
+    const line = buffer.trim();
+    buffer = "";
+    enqueueLine(line);
+  };
+  stream.on("data", (chunk) => {
+    buffer += chunk.toString("utf8");
+    drainBuffer();
   });
+  stream.on("end", flushFinalBuffer);
+  stream.on("close", flushFinalBuffer);
   return function readNext(timeoutMs = 5000) {
     if (queue.length > 0) {
       return Promise.resolve(queue.shift());
@@ -272,6 +285,27 @@ test("hosted overlay upload payload wraps cached non-canonical manifest", () => 
   assert.equal(payload.request.ttl_hours, 6);
   assert.equal(payload.request.retire_previous, true);
   assert.equal(payload.cachePath, getLocalCodeOverlayCachePath(repo));
+});
+
+test("hosted overlay upload payload rejects invalid ttl values", () => {
+  const repo = makeTempRepo();
+
+  assert.throws(
+    () =>
+      buildHostedCodeOverlayUploadPayload({
+        dir: repo,
+        ttlHours: 0,
+      }),
+    /--ttl-hours must be a positive integer/
+  );
+  assert.throws(
+    () =>
+      buildHostedCodeOverlayUploadPayload({
+        dir: repo,
+        ttlHours: 999,
+      }),
+    /--ttl-hours must be less than or equal to 168/
+  );
 });
 
 test("code sync and status expose JSON for CLI-only agents", () => {

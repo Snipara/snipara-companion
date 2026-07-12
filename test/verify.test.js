@@ -132,6 +132,68 @@ test("buildVerificationPlan combines code impact, coverage gaps, and local scrip
   assert.ok(plan.caveats.some((caveat) => caveat.includes("uncommitted edits")));
 });
 
+test("buildVerificationPlan maps Python pyproject changes to Python checks", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-verify-python-"));
+  fs.writeFileSync(
+    path.join(dir, "package.json"),
+    JSON.stringify(
+      {
+        name: "root-js",
+        scripts: {
+          test: "turbo test",
+          lint: "turbo lint",
+          build: "turbo build",
+        },
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+  fs.mkdirSync(path.join(dir, "packages", "agentic-orchestrator", "src"), {
+    recursive: true,
+  });
+  fs.writeFileSync(
+    path.join(dir, "packages", "agentic-orchestrator", "pyproject.toml"),
+    [
+      "[build-system]",
+      'requires = ["hatchling"]',
+      "",
+      "[project]",
+      'name = "snipara-orchestrator"',
+      "",
+      "[tool.ruff]",
+      'target-version = "py310"',
+      "",
+      "[tool.mypy]",
+      'python_version = "3.10"',
+      "",
+      "[tool.pytest.ini_options]",
+      'testpaths = ["tests"]',
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+
+  const plan = buildVerificationPlan({
+    cwd: dir,
+    skipImpact: true,
+    changedFiles: ["packages/agentic-orchestrator/pyproject.toml"],
+  });
+  const commands = plan.recommendedChecks.flatMap((check) =>
+    check.command ? [check.command] : []
+  );
+
+  assert.ok(commands.includes("cd 'packages/agentic-orchestrator' && python -m pytest"));
+  assert.ok(commands.includes("cd 'packages/agentic-orchestrator' && python -m ruff check ."));
+  assert.ok(commands.includes("cd 'packages/agentic-orchestrator' && python -m mypy ."));
+  assert.ok(commands.includes("cd 'packages/agentic-orchestrator' && python -m build"));
+  assert.equal(
+    commands.some((command) => command.startsWith("pnpm ")),
+    false
+  );
+});
+
 test("verify command returns JSON from mocked code impact", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-verify-cli-"));
   fs.mkdirSync(path.join(dir, "src"), { recursive: true });

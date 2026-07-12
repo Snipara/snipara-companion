@@ -488,7 +488,92 @@ test("top-level handoff can attach an ADE adapter pack", () => {
   assert.deepEqual(payload.adapter.acceptanceCriteria, ["auth tests pass"]);
   assert.ok(payload.adapter.receiptExpectation.required);
   assert.match(payload.adapter.receiptExpectation.command, /snipara-companion handoff/);
+  assert.ok(payload.adapter.receiptExpectation.requiredFields.includes("proofVerificationStatus"));
+  assert.ok(payload.adapter.receiptExpectation.requiredFields.includes("proofSource"));
+  assert.equal(payload.adapter.target.profile, "Hosted MCP-aware coding agent");
+  assert.equal(payload.adapter.target.runtimeControl, "handoff_only");
   assert.match(payload.adapter.prompt, /Auth hardening ready/);
+  assert.match(payload.adapter.prompt, /proofVerification\.status=verified/);
+  assert.match(payload.adapter.caveats.join("\n"), /does not control the target client runtime/);
+});
+
+test("top-level handoff preserves commas inside adapter acceptance criteria", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-agentic-handoff-comma-"));
+
+  const result = runCli(
+    [
+      "handoff",
+      "--summary",
+      "Route orchestrator artifact",
+      "--next",
+      "Run gate",
+      "--adapter-pack",
+      "--acceptance",
+      "handoff has schemaVersion, routing, coordination, and validation",
+      "--json",
+    ],
+    { cwd: dir }
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.deepEqual(payload.adapter.acceptanceCriteria, [
+    "handoff has schemaVersion, routing, coordination, and validation",
+  ]);
+});
+
+test("top-level handoff normalizes claude adapter alias to Claude Code", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-agentic-handoff-claude-"));
+
+  const result = runCli(
+    [
+      "handoff",
+      "--summary",
+      "Docs update ready",
+      "--next",
+      "Run docs tests",
+      "--adapter-pack",
+      "--target",
+      "claude",
+      "--json",
+    ],
+    { cwd: dir }
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.adapter.target.id, "claude-code");
+  assert.match(payload.adapter.target.instruction, /canonical receipt fields/);
+  assert.equal(payload.adapter.target.runtimeControl, "handoff_only");
+});
+
+test("top-level handoff supports portable ADE adapter targets", () => {
+  for (const target of ["cursor", "orca", "windsurf", "custom"]) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `snipara-agentic-handoff-${target}-`));
+
+    const result = runCli(
+      [
+        "handoff",
+        "--summary",
+        `${target} handoff`,
+        "--next",
+        "Return proof receipt",
+        "--adapter-pack",
+        "--target",
+        target,
+        "--json",
+      ],
+      { cwd: dir }
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.adapter.target.id, target);
+    assert.ok(payload.adapter.target.profile);
+    assert.equal(payload.adapter.target.runtimeControl, "handoff_only");
+    assert.match(payload.adapter.prompt, new RegExp(`${target} handoff`));
+    assert.match(payload.adapter.caveats.join("\n"), /portable contract/);
+  }
 });
 
 test("team sync summary separates active, stale, and completed work", () => {
@@ -520,6 +605,19 @@ test("team sync summary separates active, stale, and completed work", () => {
   assert.equal(summary.latestActiveWork.summary, "Harden team sync output");
   assert.equal(summary.latestStaleWork.summary, "Legacy API key cleanup");
   assert.equal(summary.latestCompletedWork.summary, "Close stale work items");
+  assert.equal(summary.staleWorkExplanation.staleAfterHours, 48);
+  assert.equal(summary.staleWorkExplanation.autoArchiveAfterDays, 14);
+  assert.equal(summary.staleWorkExplanation.activeStaleCount, 1);
+  assert.equal(summary.staleWorkExplanation.autoArchivableCount, 0);
+  assert.equal(summary.staleWorkExplanation.completedIgnoredCount, 1);
+  assert.match(
+    summary.staleWorkExplanation.message,
+    /stale after 48h but not old enough for 14d sweep auto-archive/
+  );
+  assert.equal(summary.hygieneActions.length, 2);
+  assert.equal(summary.hygieneActions[0].kind, "complete-work");
+  assert.match(summary.hygieneActions[0].command, /team-sync complete-work --id/);
+  assert.equal(summary.hygieneActions[1].kind, "handoff");
 });
 
 test("team sync archives active work after the inactivity threshold", () => {
@@ -583,6 +681,37 @@ test("team sync completes active work from workflow completion evidence", () => 
   assert.equal(summary.completedWorkCount, 1);
 });
 
+test("team sync completes active work when workflow goal is slug-like but files and tokens match", () => {
+  const state = createEmptyTeamSyncState(new Date("2026-06-29T18:00:00.000Z"));
+  state.work.push(
+    buildTeamSyncStartWorkRecord({
+      summary:
+        "Correct Companion and Orchestrator audit findings, publish affected package surfaces, then promote dev to main and deploy",
+      files: ["packages/cli/src/commands/team-sync.ts", "packages/cli/src/commands/workflows.ts"],
+      now: new Date("2026-06-29T16:41:00.000Z"),
+    }),
+    buildTeamSyncStartWorkRecord({
+      summary: "Promote unrelated frontend release from dev to main and deploy",
+      files: ["apps/web/src/app/(marketing)/page.tsx"],
+      now: new Date("2026-06-29T16:42:00.000Z"),
+    })
+  );
+
+  const completed = completeTeamSyncWorkFromEvidence(state, {
+    workflowGoal: "companion-orchestrator-audit-corrections-20260629",
+    summary:
+      "Completed phased Companion and Orchestrator corrections end to end with package publication and deploy verification.",
+    files: ["packages/cli/src/commands/workflows.ts"],
+    reason: "Workflow companion-orchestrator-audit-corrections-20260629 completed.",
+    now: new Date("2026-06-29T18:02:00.000Z"),
+  });
+
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0].status, "completed");
+  assert.match(completed[0].completionReason, /companion-orchestrator-audit-corrections/);
+  assert.equal(state.work[1].status, "active");
+});
+
 test("team sync sweep previews and archives inactive work", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-team-sync-sweep-"));
   const state = createEmptyTeamSyncState(new Date("2026-05-17T12:00:00.000Z"));
@@ -594,6 +723,12 @@ test("team sync sweep previews and archives inactive work", () => {
   );
   saveTeamSyncState(state, dir);
 
+  const humanPreview = runCli(["team-sync", "sweep", "--days", "14", "--dry-run"], { cwd: dir });
+  assert.equal(humanPreview.status, 0, humanPreview.stderr || humanPreview.stdout);
+  assert.match(humanPreview.stdout, /Sweep detail:/);
+  assert.match(humanPreview.stdout, /would be archived/);
+  assert.equal(loadTeamSyncState(dir).work[0].status, "active");
+
   const preview = runCli(["team-sync", "sweep", "--days", "14", "--dry-run", "--json"], {
     cwd: dir,
   });
@@ -601,6 +736,25 @@ test("team sync sweep previews and archives inactive work", () => {
   const previewPayload = JSON.parse(preview.stdout);
   assert.equal(previewPayload.dryRun, true);
   assert.equal(previewPayload.archivedCount, 1);
+  assert.equal(previewPayload.explanation.mode, "preview");
+  assert.equal(previewPayload.explanation.candidateCount, 1);
+  assert.equal(previewPayload.explanation.archivedCount, 0);
+  assert.equal(previewPayload.explanation.remainingStaleCount, 0);
+  assert.match(previewPayload.explanation.message, /would be archived/);
+  assert.ok(
+    previewPayload.summary.hygieneActions.some(
+      (action) =>
+        action.kind === "sweep-preview" &&
+        action.command === "snipara-companion team-sync sweep --days 14 --dry-run"
+    )
+  );
+  assert.ok(
+    previewPayload.summary.hygieneActions.some(
+      (action) =>
+        action.kind === "sweep-archive" &&
+        action.command === "snipara-companion team-sync sweep --days 14"
+    )
+  );
   assert.equal(loadTeamSyncState(dir).work[0].status, "active");
 
   const result = runCli(["team-sync", "sweep", "--days", "14", "--json"], { cwd: dir });
@@ -608,6 +762,10 @@ test("team sync sweep previews and archives inactive work", () => {
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.dryRun, false);
   assert.equal(payload.archivedCount, 1);
+  assert.equal(payload.explanation.mode, "archive");
+  assert.equal(payload.explanation.archivedCount, 1);
+  assert.equal(payload.explanation.remainingStaleCount, 0);
+  assert.deepEqual(payload.summary.hygieneActions, []);
 
   const loaded = loadTeamSyncState(dir);
   assert.equal(loaded.work[0].status, "archived");

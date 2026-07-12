@@ -44,6 +44,7 @@ import {
   memoryCompactCommand,
   memoryHealthCommand,
   memoryInvalidateCommand,
+  memoryReviewsCommand,
   memorySupersedeCommand,
 } from "./commands/memory";
 import { evalExportCommand, evalRunCommand, memoryLocalCommand } from "./commands/local-stack";
@@ -77,6 +78,14 @@ import {
   sourceWatchCommand,
 } from "./commands/source";
 import {
+  workersLocalAddCommand,
+  workersLocalListCommand,
+  workersLocalProbePrintCommand,
+  workersLocalRemoveCommand,
+  workersLocalStatusCommand,
+} from "./commands/workers";
+import { controlledWorkerExecuteCommand } from "./commands/controlled-worker-execution";
+import {
   automationsDiffCommand,
   automationsInstallCommand,
   automationsStatusCommand,
@@ -84,7 +93,10 @@ import {
 } from "./commands/automations";
 import { agentReadinessAuditCommand } from "./commands/agent-readiness";
 import { leadPlanCommand } from "./commands/lead-plan";
+import { outcomeCapturePreviewCommand } from "./commands/outcome-capture";
+import { codingLedgerExportCommand } from "./commands/coding-ledger";
 import { projectIntelligenceBriefCommand } from "./commands/intelligence";
+import { realityCheckCommand } from "./commands/reality-check";
 import { referencesIngestCommand, referencesScanCommand } from "./commands/references";
 import { verifyCommand } from "./commands/verify";
 import { projectIntelligenceRunCommand } from "./commands/run";
@@ -116,6 +128,7 @@ import {
   chunkGetCommand,
   clientProjectCreateCommand,
   clientProjectsListCommand,
+  continueWorkspaceCommand,
   codeSymbolCardCommand,
   finalCommitCommand,
   loadDocumentCommand,
@@ -131,18 +144,29 @@ import {
   syncDocumentsCommand,
   taskCommitCommand,
   uploadCommand,
+  workflowApplyDecisionsCommand,
+  workflowDecideCommand,
+  workflowDecisionProducerContextRiskCommand,
+  workflowDecisionProducerMemoryCommand,
+  workflowDecisionsCommand,
   workflowImpactGateCommand,
+  workflowPolicyLedgerCommand,
   workflowPhaseCommitCommand,
   workflowPhaseStartCommand,
+  workflowProducerTriageCommand,
+  workflowProducerReportCommand,
+  workflowProducerReviewCommand,
   workflowRuntimeCheckpointCommand,
   workflowResumeCommand,
   workflowScaffoldCommand,
   workflowRunCommand,
+  workflowSessionCommand,
   workflowStartCommand,
   workflowStatusCommand,
   workflowTimelineCommand,
   WORKFLOW_PLAN_PRESET_IDS,
 } from "./commands/workflows";
+import { workflowSyncPolicyLedgerCommand } from "./commands/policy-ledger-sync";
 import {
   htaskCompleteCommand,
   htaskCreateCommand,
@@ -156,7 +180,7 @@ import { loadConfig } from "./config/store";
 // Programmatic API: pure helpers re-exported for embedding and unit tests.
 // These have no CLI side effects and are safe to import without running argv.
 export { resolveQueryFromToolInput } from "./commands/pre-tool";
-export { extractFilesFromToolInput } from "./commands/post-tool";
+export { buildCommitResultMetadata, extractFilesFromToolInput } from "./commands/post-tool";
 export {
   attachLocalContextPackReceipts,
   buildCanonicalEvent,
@@ -180,15 +204,24 @@ export {
   runMemoryGuardCheck,
 } from "./commands/memory-guard";
 export {
+  appendActivityEvent,
+  buildSessionSnapshot,
+  readActivityTimeline,
+  readSessionSnapshot,
+  writeSessionSnapshot,
+} from "./commands/activity";
+export {
   buildProjectIntelligenceBrief,
   projectIntelligenceBriefCommand,
 } from "./commands/intelligence";
+export { buildLocalProjectRealityCheck, realityCheckCommand } from "./commands/reality-check";
 export {
   buildMemoryAudit,
   memoryAuditCommand,
   memoryCleanCandidatesCommand,
   memoryCompactCommand,
   memoryHealthCommand,
+  memoryReviewsCommand,
 } from "./commands/memory";
 export {
   buildEvalCaseArtifact,
@@ -219,6 +252,8 @@ export {
   ENGINEERING_LEAD_EXECUTION_RECEIPT_STAGES,
   ENGINEERING_LEAD_EXECUTION_RECEIPT_STATUSES,
   ENGINEERING_LEAD_POSTURES,
+  ENGINEERING_LEAD_PROOF_VERIFICATION_SOURCES,
+  ENGINEERING_LEAD_PROOF_VERIFICATION_STATUSES,
   ENGINEERING_LEAD_ROUTING_MODES,
   ENGINEERING_LEAD_STATUSES,
   ENGINEERING_LEAD_SUPERVISION_STATUSES,
@@ -230,6 +265,16 @@ export {
 } from "./commands/lead-plan";
 export { buildProjectJudgmentCard, formatProjectJudgmentCard } from "./commands/judgment-card";
 export { buildProjectIntelligenceRun, projectIntelligenceRunCommand } from "./commands/run";
+export {
+  buildWhyOutcomeCaptureReport,
+  outcomeCapturePreviewCommand,
+  WHY_OUTCOME_CAPTURE_VERSION,
+} from "./commands/outcome-capture";
+export {
+  buildCodingIntelligenceLedger,
+  codingLedgerExportCommand,
+  CODING_INTELLIGENCE_LEDGER_VERSION,
+} from "./commands/coding-ledger";
 export { evaluateProjectPolicyGates, formatPolicyGateDecision } from "./commands/policy-gates";
 export {
   buildCodeHooksInstallPlan,
@@ -260,6 +305,17 @@ export {
   readLocalSourceSnapshot,
   writeLocalSourceSnapshot,
 } from "./commands/source";
+export {
+  addLocalWorker,
+  readLocalWorkersConfig,
+  resolveLocalWorkerRoutingDefaults,
+  workersLocalListCommand,
+  workersLocalAddCommand,
+  workersLocalProbePrintCommand,
+  workersLocalRemoveCommand,
+  workersLocalStatusCommand,
+} from "./commands/workers";
+export { controlledWorkerExecuteCommand } from "./commands/controlled-worker-execution";
 export { getPlanStepDisplayTitle } from "./commands/workflows";
 export {
   ingestReferences,
@@ -271,20 +327,33 @@ export {
   buildAgenticTimeline,
   buildAgenticWorkStatus,
   buildGeneratedWorkflowPlanDocument,
+  buildProducerLoopReport,
+  writeProducerLoopArtifact,
   buildWorkflowImpactGate,
   buildWorkflowPhaseCommitSummary,
   buildWorkflowPlanScaffold,
+  buildSessionBootstrapBrief,
   buildSessionBootstrapQuality,
   buildOnboardFolderManifest,
   buildSyncDocumentsDryRun,
   collectSyncDocuments,
   collectSyncDocumentsInput,
   normalizeWorkflowPlanInput,
+  resolveAutoWorkflowMode,
   resolveFullWorkflowTokenBudget,
   validatePlanResult,
+  PRODUCER_LOOP_ARTIFACT_VERSION,
+  PRODUCER_LOOP_REPORT_VERSION,
+  PRODUCER_LOOP_RELATIVE_DIR,
   WORKFLOW_PLANS_RELATIVE_DIR,
   WORKFLOW_STATE_RELATIVE_PATH,
 } from "./commands/workflows";
+export {
+  buildPolicyLedgerSyncReport,
+  collectPolicyLedgerSyncArtifacts,
+  workflowSyncPolicyLedgerCommand,
+  POLICY_LEDGER_SYNC_REPORT_VERSION,
+} from "./commands/policy-ledger-sync";
 export { createLocalQueryCache } from "./cache/query-cache";
 export { getConfigPath, loadConfig, saveConfig } from "./config/store";
 export {
@@ -327,6 +396,7 @@ export {
   normalizeCollaborationFiles,
   parseCollaborationResources,
   saveCollaborationState,
+  shouldFailCollaborationGuard,
   collaborationIdeStatusCommand,
 } from "./commands/collaboration";
 export { buildJournalCheckpointEntry } from "./commands/journal";
@@ -379,6 +449,39 @@ const program = new Command();
 
 function collectOption(value: string, previous: string[] = []): string[] {
   return [...previous, value];
+}
+
+function configureRealityCheckCommand(command: Command): Command {
+  return command
+    .description("Run a Project Reality Check against local or supplied change scope")
+    .option("--task <task>", "Task or change summary")
+    .option("--branch <branch>", "Branch to scope the check")
+    .option("--base <ref>", "Base ref for committed local changes (default: upstream)")
+    .option("--changed-files <files...>", "Changed files to analyze")
+    .option("--diff-summary <summary>", "Natural-language diff summary")
+    .option("--decision <decision...>", "Decision or intent in ID: text form")
+    .option("--document <document...>", "Document/context hint in path: preview form")
+    .option("--verification <item...>", "Verification evidence or checklist item")
+    .option("--no-include-dirty", "Exclude dirty working-tree files from local scope")
+    .option("--enforce", "Exit non-zero for review-required or blocking findings")
+    .option("-d, --dir <directory>", "Project directory (default: current)")
+    .option("--json", "Print raw JSON")
+    .action(async (options) => {
+      await realityCheckCommand({
+        task: options.task,
+        branch: options.branch,
+        base: options.base,
+        changedFiles: options.changedFiles,
+        diffSummary: options.diffSummary,
+        decision: options.decision,
+        document: options.document,
+        verification: options.verification,
+        includeDirty: options.includeDirty,
+        enforce: Boolean(options.enforce),
+        dir: options.dir,
+        json: Boolean(options.json),
+      });
+    });
 }
 
 program
@@ -477,7 +580,10 @@ program
   .option("--risk <risk>", "Compatibility alias for --attention")
   .option("--actor <actor>", "Actor or agent name")
   .option("--adapter-pack", "Attach an ADE Adapter Pack V1 to the handoff artifact")
-  .option("--target <target>", "ADE target (codex|claude-code|cursor|orca|windsurf|custom)")
+  .option(
+    "--target <target>",
+    "ADE adapter-pack target (codex|claude-code|cursor|orca|windsurf|custom)"
+  )
   .option("--context <refs...>", "Context references for the adapter pack")
   .option("--proof <proof...>", "Proof gates expected from the receiving agent")
   .option("--acceptance <criteria...>", "Acceptance criteria for the receiving agent")
@@ -572,6 +678,72 @@ program
   );
 
 program
+  .command("outcome-capture")
+  .description("Extract review-pending why/outcome candidates from local execution signals")
+  .addCommand(
+    new Command("preview")
+      .description("Preview bounded decision and outcome candidates without persisting memory")
+      .option("--from-file <file>", "Read one event, {events:[...]}, or an array of events as JSON")
+      .option(
+        "--event <kind>",
+        "Event kind (commit|pull_request|phase_commit|handoff|final_commit|guard_decision|test_result|deploy_health|review_result|feedback)"
+      )
+      .option("--summary <summary>", "Observed event summary")
+      .option("--outcome <outcome>", "Observed outcome label")
+      .option("--status <status>", "Observed status, for example passed, failed, blocked, merged")
+      .option(
+        "--source-ref <ref>",
+        "Stable source reference such as commit SHA, PR URL, or phase id"
+      )
+      .option("--actor <actor>", "Actor or reviewer who produced the signal")
+      .option("--files <files...>", "Relevant files")
+      .option("--evidence <evidence>", "Evidence line; repeatable", collectOption, [])
+      .option(
+        "--command <command>",
+        "Command or check represented by the signal; repeatable",
+        collectOption,
+        []
+      )
+      .option("--reason <reason>", "Rationale or why signal; repeatable", collectOption, [])
+      .option("--feedback <feedback>", "Explicit human or reviewer feedback")
+      .option("--max-candidates <number>", "Maximum candidates to emit", "20")
+      .option("--emit-decisions", "Write decision requests for review-pending candidates")
+      .option("--emit-outcome-receipt", "Emit an Outcome Intelligence V0 receipt")
+      .option(
+        "--task-kind <kind>",
+        "Outcome receipt task kind (bugfix|feature|docs|release|deploy|refactor|investigation|unknown)"
+      )
+      .option("--risk <risk>", "Outcome receipt risk (low|medium|high|critical)")
+      .option("--surface <surface>", "Outcome receipt surface; repeatable", collectOption, [])
+      .option("--workflow-fingerprint <fingerprint>", "Workflow identity fingerprint")
+      .option("--json", "Print raw JSON")
+      .action(async (options) => {
+        await outcomeCapturePreviewCommand({
+          fromFile: options.fromFile,
+          event: options.event,
+          summary: options.summary,
+          outcome: options.outcome,
+          status: options.status,
+          sourceRef: options.sourceRef,
+          actor: options.actor,
+          files: options.files,
+          evidence: options.evidence,
+          command: options.command,
+          reason: options.reason,
+          feedback: options.feedback,
+          maxCandidates: options.maxCandidates,
+          emitDecisions: Boolean(options.emitDecisions),
+          emitOutcomeReceipt: Boolean(options.emitOutcomeReceipt),
+          taskKind: options.taskKind,
+          risk: options.risk,
+          surface: options.surface,
+          workflowFingerprint: options.workflowFingerprint,
+          json: Boolean(options.json),
+        });
+      })
+  );
+
+program
   .command("lead-plan")
   .description("Create a fail-closed Companion Engineering Lead Plan")
   .option("--task <task>", "Current task or work package summary")
@@ -589,6 +761,7 @@ program
   .option("--reconcile", "Reconcile an imported lead plan against current local Companion signals")
   .option("-d, --dir <directory>", "Project directory (default: current)")
   .option("-o, --output <file>", "Write Markdown or JSON report")
+  .option("--out <file>", "Alias for --output")
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await leadPlanCommand({
@@ -603,7 +776,7 @@ program
       fromPlan: options.fromPlan,
       reconcile: Boolean(options.reconcile),
       dir: options.dir,
-      output: options.output,
+      output: options.output ?? options.out,
       json: Boolean(options.json),
     });
   });
@@ -624,6 +797,26 @@ program
   .option("--skip-package-review", "Skip npm package surface review")
   .option("--served-judgment-id <id>", "Served judgment id to use for first-party advisor receipts")
   .option("--skip-advisor-receipts", "Skip first-party advisor influence receipt capture")
+  .option(
+    "--advisor-plan-before <plan>",
+    "Explicit bounded plan snapshot before applying Advisor recommendations"
+  )
+  .option(
+    "--advisor-plan-after <plan>",
+    "Explicit bounded plan snapshot after applying Advisor recommendations"
+  )
+  .option(
+    "--advisor-recommendation-id <id>",
+    "Recommendation id that the explicit plan snapshots apply to"
+  )
+  .option(
+    "--outcome-receipts <files...>",
+    "Outcome Intelligence V0 receipt JSON files for local calibration"
+  )
+  .option(
+    "--emit-policy-decisions",
+    "Write local Decision Requests for Project Policy review/block findings"
+  )
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await projectIntelligenceRunCommand({
@@ -640,6 +833,11 @@ program
       skipPackageReview: Boolean(options.skipPackageReview),
       servedJudgmentId: options.servedJudgmentId,
       skipAdvisorReceipts: Boolean(options.skipAdvisorReceipts),
+      advisorPlanBefore: options.advisorPlanBefore,
+      advisorPlanAfter: options.advisorPlanAfter,
+      advisorRecommendationId: options.advisorRecommendationId,
+      outcomeReceiptFiles: options.outcomeReceipts,
+      emitPolicyDecisions: Boolean(options.emitPolicyDecisions),
       json: Boolean(options.json),
     });
   });
@@ -1097,6 +1295,7 @@ program
       .option("--no-context", "Skip source context query")
       .option("--no-recent-failures", "Skip recent Companion event failure inspection")
       .option("--json", "Print raw JSON")
+      .option("--verbose", "Print full non-blocking guard details instead of one-line success")
       .action(async (options) => {
         await memoryGuardCheckCommand({
           trigger: options.trigger,
@@ -1119,6 +1318,7 @@ program
           includeContext: options.context,
           recentFailures: options.recentFailures,
           json: options.json,
+          verbose: options.verbose,
         });
       })
   )
@@ -1748,6 +1948,8 @@ program
     });
   });
 
+configureRealityCheckCommand(program.command("reality-check"));
+
 const intelligence = program
   .command("intelligence")
   .description(
@@ -1780,6 +1982,67 @@ intelligence
     });
   });
 
+configureRealityCheckCommand(intelligence.command("reality-check"));
+
+intelligence
+  .command("ledger-export")
+  .description("Export a structured, redacted Coding Intelligence Ledger JSON artifact")
+  .option("--from-file <file>", "Read ledger inputs from a JSON object")
+  .option("--task <task>", "Task or work package summary")
+  .option("--prompt <prompt>", "Prompt or operator request summary")
+  .option("--source-ref <ref>", "Stable prompt or source reference")
+  .option("--branch <branch>", "Repository branch")
+  .option("--commit <commit>", "Repository commit or revision")
+  .option("--changed-files <files...>", "Changed files represented by the ledger")
+  .option("--recent-files <files...>", "Recently relevant files")
+  .option("--diff-summary <summary>", "Diff summary represented by the ledger")
+  .option("--served-context <context>", "Served context item; repeatable", collectOption, [])
+  .option("--plan <plan>", "Plan or decision item; repeatable", collectOption, [])
+  .option("--diff <diff>", "Diff item; repeatable", collectOption, [])
+  .option("--test <test>", "Test or verification item; repeatable", collectOption, [])
+  .option("--ci <ci>", "CI or build item; repeatable", collectOption, [])
+  .option("--review <review>", "Review item; repeatable", collectOption, [])
+  .option("--outcome <outcome>", "Outcome item; repeatable", collectOption, [])
+  .option(
+    "--influence-receipt <receipt>",
+    "Advisor influence or receipt item; repeatable",
+    collectOption,
+    []
+  )
+  .option("--reason-code <code>", "Reason code; repeatable", collectOption, [])
+  .option("--confidence <scoreOrBand>", "Confidence score (0-1 or 0-100) or band")
+  .option("--calibration <metadata>", "Calibration note or metadata; repeatable", collectOption, [])
+  .option("-d, --dir <directory>", "Project directory (default: current)")
+  .option("-o, --output <file>", "Write ledger JSON to a file")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await codingLedgerExportCommand({
+      fromFile: options.fromFile,
+      task: options.task,
+      prompt: options.prompt,
+      sourceRef: options.sourceRef,
+      branch: options.branch,
+      commit: options.commit,
+      changedFiles: options.changedFiles,
+      recentFiles: options.recentFiles,
+      diffSummary: options.diffSummary,
+      servedContext: options.servedContext,
+      plan: options.plan,
+      diff: options.diff,
+      test: options.test,
+      ci: options.ci,
+      review: options.review,
+      outcome: options.outcome,
+      influenceReceipt: options.influenceReceipt,
+      reasonCode: options.reasonCode,
+      confidence: options.confidence,
+      calibration: options.calibration,
+      dir: options.dir,
+      output: options.output,
+      json: Boolean(options.json),
+    });
+  });
+
 const workflow = program
   .command("workflow")
   .description("Workflow presets and compaction-safe phase tracking");
@@ -1796,6 +2059,58 @@ workflow
       preset: options.preset,
       goal: options.goal,
       output: options.output,
+      json: options.json,
+    });
+  });
+
+workflow
+  .command("decisions")
+  .description("List pending local decision requests for the LLM to ask the human")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await workflowDecisionsCommand({ json: options.json });
+  });
+
+workflow
+  .command("policy-ledger")
+  .description("Summarize Project Policy decisions for agent-mediated review and audit")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await workflowPolicyLedgerCommand({ json: options.json });
+  });
+
+workflow
+  .command("apply-decisions")
+  .description("Apply already resolved Project Policy decisions into local reviewable artifacts")
+  .option("--dry-run", "Preview actions without writing local apply artifacts")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await workflowApplyDecisionsCommand({ dryRun: Boolean(options.dryRun), json: options.json });
+  });
+
+workflow
+  .command("sync-policy-ledger")
+  .description("Sync local Project Policy workflow receipts into the hosted ledger")
+  .option("--dry-run", "Preview hosted ledger sync without uploading receipts")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await workflowSyncPolicyLedgerCommand({ dryRun: Boolean(options.dryRun), json: options.json });
+  });
+
+workflow
+  .command("decide")
+  .description("Resolve a pending local decision request with an explicit human choice")
+  .argument("<request-id>", "Decision request id or fingerprint")
+  .requiredOption("--choose <option>", "Chosen option from the decision request")
+  .requiredOption("--reviewer <name>", "Human reviewer name or handle")
+  .option("--note <note>", "Review note")
+  .option("--json", "Print raw JSON")
+  .action(async (requestId, options) => {
+    await workflowDecideCommand({
+      requestId,
+      choice: options.choose,
+      reviewer: options.reviewer,
+      note: options.note,
       json: options.json,
     });
   });
@@ -1832,6 +2147,32 @@ workflow
   });
 
 workflow
+  .command("timeline")
+  .description("Show the append-only local activity timeline for this workflow session")
+  .option("-l, --limit <number>", "Maximum number of events", "20")
+  .option("--export <format>", "Export redacted timeline artifact (md)")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await workflowTimelineCommand({
+      limit: parseInt(options.limit, 10),
+      exportFormat: options.export,
+      json: Boolean(options.json),
+    });
+  });
+
+workflow
+  .command("session")
+  .description("Build and show the local Session Snapshot V0 for Companion and Orchestrator")
+  .option("-l, --limit <number>", "Maximum number of latest activity events", "20")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await workflowSessionCommand({
+      limit: parseInt(options.limit, 10),
+      json: Boolean(options.json),
+    });
+  });
+
+workflow
   .command("impact-gate")
   .description("Audit committed local workflow phases that have not been pushed yet")
   .option("--base <ref>", "Base ref to compare against (default: upstream branch)")
@@ -1841,6 +2182,101 @@ workflow
     await workflowImpactGateCommand({
       base: options.base,
       maxFiles: parseInt(options.maxFiles, 10),
+      json: options.json,
+    });
+  });
+
+workflow
+  .command("producer-triage")
+  .description("Emit a decision request for unreviewed Producer Loop samples")
+  .option(
+    "--min-review-samples <number>",
+    "Minimum local samples to treat the set as reviewable",
+    "5"
+  )
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await workflowProducerTriageCommand({
+      minReviewSamples: parseInt(options.minReviewSamples, 10),
+      json: options.json,
+    });
+  });
+
+const decisionProducer = workflow
+  .command("decision-producer")
+  .description("Emit local decision requests from review-pending surfaces");
+
+decisionProducer
+  .command("memory")
+  .description("Emit a decision request for a hosted memory review action")
+  .argument("<memory-id>", "Memory id or queue item id")
+  .requiredOption("--action <action>", "accept|reject|archive|invalidate|merge|supersede|verify")
+  .option("--summary <summary>", "Evidence summary to show the human")
+  .option("--reviewer-hint <option>", "Suggested decision option")
+  .option("--json", "Print raw JSON")
+  .action(async (memoryId, options) => {
+    await workflowDecisionProducerMemoryCommand({
+      memoryId,
+      action: options.action,
+      summary: options.summary,
+      reviewerHint: options.reviewerHint,
+      json: options.json,
+    });
+  });
+
+decisionProducer
+  .command("context-risk")
+  .description("Emit a decision request for a stale document tombstone or Unknown Registry risk")
+  .argument("<ref>", "Document tombstone id, path, or Unknown Registry reference")
+  .option("--kind <kind>", "unknown_registry_risk|document_tombstone")
+  .option("--summary <summary>", "Evidence summary to show the human")
+  .option("--json", "Print raw JSON")
+  .action(async (ref, options) => {
+    await workflowDecisionProducerContextRiskCommand({
+      ref,
+      kind: options.kind,
+      summary: options.summary,
+      json: options.json,
+    });
+  });
+
+workflow
+  .command("producer-report")
+  .description("Summarize local Producer Loop artifacts emitted by workflow phase/final commits")
+  .option(
+    "--min-review-samples <number>",
+    "Minimum local samples to treat the set as reviewable",
+    "5"
+  )
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await workflowProducerReportCommand({
+      minReviewSamples: parseInt(options.minReviewSamples, 10),
+      json: options.json,
+    });
+  });
+
+workflow
+  .command("producer-review")
+  .description("Mark a local Producer Loop artifact as reviewed or rejected")
+  .option("--artifact <artifact>", "Artifact path, file name, or artifact id to review")
+  .option("--latest", "Review the latest valid Producer Loop artifact")
+  .option("--reject", "Mark the sample as rejected instead of reviewed")
+  .option(
+    "--outcome <outcome>",
+    "Review outcome: useful, false_positive, missing_context, unsafe, duplicate, or other"
+  )
+  .option("--reviewer <reviewer>", "Reviewer name or handle")
+  .option("--note <note>", "Review note; repeatable", collectOption, [])
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await workflowProducerReviewCommand({
+      artifact: options.artifact,
+      latest: options.latest,
+      reject: options.reject,
+      outcome: options.outcome,
+      reviewer: options.reviewer,
+      note: options.note,
       json: options.json,
     });
   });
@@ -1994,6 +2430,10 @@ workflow
     "--route-local-workers",
     "Prefer local worker endpoints and keep deep reasoning on the planner"
   )
+  .option(
+    "--routing-local-worker <id>",
+    "Use a declared local worker from .snipara/workers/<worker-id>.json"
+  )
   .option("--routing-worker-role <role>", "Suggested worker role for Adaptive Work Routing")
   .option(
     "--routing-preferred-endpoint <type>",
@@ -2047,6 +2487,7 @@ workflow
       orchestratorPolicySource: options.orchestratorPolicySource,
       adaptiveRoutingDryRun: Boolean(options.adaptiveRoutingDryRun),
       routeLocalWorkers: Boolean(options.routeLocalWorkers),
+      routingLocalWorker: options.routingLocalWorker,
       routingWorkerRole: options.routingWorkerRole,
       routingPreferredEndpoints: options.routingPreferredEndpoint,
       routingAllowedEndpoints: options.routingAllowedEndpoint,
@@ -2059,6 +2500,201 @@ workflow
       startWorkflowFromPlan: Boolean(options.startWorkflowFromPlan),
       workflowId: options.workflowId,
       force: Boolean(options.force),
+      json: options.json,
+    });
+  });
+
+const workers = program.command("workers").description("Declare local worker runtimes for routing");
+
+workers
+  .command("execute")
+  .description("Create a policy-gated Controlled Worker Execution V0 receipt")
+  .requiredOption("--task <task>", "Bounded worker task summary")
+  .option("--worker-id <id>", "Worker id for the execution receipt")
+  .option("--worker-role <role>", "Worker role, for example coding, tests, docs, or review")
+  .option(
+    "--endpoint-type <type>",
+    "Worker endpoint type (local|cloud|self_hosted|unknown)",
+    "local"
+  )
+  .option("--mode <mode>", "Execution mode (dry_run|approval_required|auto_low_risk)")
+  .option("--command <command>", "Command to run when --execute is provided")
+  .option("--execute", "Actually execute the command after policy checks")
+  .option("--approval-receipt <id>", "Approval receipt id required for non-dry-run execution")
+  .option("--outcome-receipt <id>", "Linked Outcome Intelligence receipt id")
+  .option("--write-scope <path>", "Allowed write scope; repeatable", collectOption, [])
+  .option("--acceptance <criteria>", "Acceptance criterion; repeatable", collectOption, [])
+  .option(
+    "--proof <proof>",
+    "Required proof or verification command; repeatable",
+    collectOption,
+    []
+  )
+  .option("--output <file>", "Write receipt to a specific file")
+  .option("--project-id <id>", "Project id to include in a local unified receipt projection")
+  .option(
+    "--unified-output <file>",
+    "Write the local unified receipt projection to a specific file"
+  )
+  .option("-d, --dir <directory>", "Project directory (default: current)")
+  .option("--json", "Print raw JSON")
+  .action((options) => {
+    controlledWorkerExecuteCommand({
+      task: options.task,
+      workerId: options.workerId,
+      workerRole: options.workerRole,
+      endpointType: options.endpointType,
+      mode: options.mode,
+      command: options.command,
+      execute: Boolean(options.execute),
+      approvalReceipt: options.approvalReceipt,
+      outcomeReceipt: options.outcomeReceipt,
+      writeScope: options.writeScope,
+      acceptance: options.acceptance,
+      proof: options.proof,
+      output: options.output,
+      projectId: options.projectId,
+      unifiedOutput: options.unifiedOutput,
+      dir: options.dir,
+      json: Boolean(options.json),
+    });
+  });
+
+const localWorkers = workers
+  .command("local")
+  .description("Manage local OpenAI-compatible worker declarations");
+
+localWorkers
+  .command("add")
+  .description("Declare a local worker and enable local Adaptive Work Routing for this project")
+  .option("--id <id>", "Stable local worker id")
+  .option(
+    "--role <role>",
+    "Worker role, for example coding, documentation, tests, or review",
+    "coding"
+  )
+  .option("--provider <provider>", "Provider label", "lm-studio")
+  .option("--base-url <url>", "OpenAI-compatible local runtime base URL", "http://127.0.0.1:1234")
+  .option("--model <id>", "Exact model id exposed by the local runtime")
+  .option(
+    "--prefer-model <text>",
+    "Fallback model id substring to prefer when no exact model is set"
+  )
+  .option("--transport <openai_http|cli>", "Worker transport: openai_http (default) or cli")
+  .option("--command <command>", "CLI command to execute when transport is cli")
+  .option("--capability <capability>", "Worker capability; repeatable", collectOption, [])
+  .option(
+    "--reasoning <level>",
+    "Worker reasoning tier: low, medium, or high",
+    /^(low|medium|high)$/i
+  )
+  .option(
+    "--context-window <tokens>",
+    "Model context window in tokens",
+    (value: string) => Number.parseInt(value, 10),
+    undefined
+  )
+  .option(
+    "--write-scope <path>",
+    "Allowed write scope for this worker; repeatable",
+    collectOption,
+    []
+  )
+  .option("--no-default", "Do not make this worker the default local worker")
+  .option("--json", "Print raw JSON")
+  .action((options) => {
+    workersLocalAddCommand({
+      id: options.id,
+      role: options.role,
+      provider: options.provider,
+      baseUrl: options.baseUrl,
+      model: options.model,
+      preferModel: options.preferModel,
+      transport: options.transport,
+      command: options.command,
+      capabilities: options.capability,
+      reasoning: options.reasoning
+        ? (options.reasoning.toLowerCase() as "low" | "medium" | "high")
+        : undefined,
+      contextWindow: options.contextWindow,
+      writeScope: options.writeScope,
+      default: options.default !== false,
+      json: options.json,
+    });
+  });
+
+localWorkers
+  .command("status")
+  .description("Show declared local workers")
+  .option("--json", "Print raw JSON")
+  .action((options) => {
+    workersLocalStatusCommand({ json: options.json });
+  });
+
+localWorkers
+  .command("list")
+  .description("List declared local workers")
+  .option("--json", "Print raw JSON")
+  .action((options) => {
+    workersLocalListCommand({ json: options.json });
+  });
+
+localWorkers
+  .command("remove")
+  .description("Remove a declared local worker")
+  .argument("id", "Local worker id")
+  .option("--json", "Print raw JSON")
+  .action((id, options) => {
+    workersLocalRemoveCommand({ id, json: options.json });
+  });
+
+localWorkers
+  .command("probe")
+  .description("Probe an OpenAI-compatible endpoint and draft a worker suggestion")
+  .option("--base-url <url>", "OpenAI-compatible local runtime base URL", "http://127.0.0.1:1234")
+  .option("--provider <provider>", "Provider label", "lm-studio")
+  .option("--model <id>", "Exact model id exposed by the local runtime")
+  .option("--prefer-model <text>", "Fallback local model substring when exact model is unset")
+  .option(
+    "--role <role>",
+    "Worker role; for example coding, documentation, tests, or review",
+    "coding"
+  )
+  .option("--worker-id <id>", "Suggested worker id when saving this probe")
+  .option("--capability <capability>", "Capability; repeatable", collectOption, [])
+  .option(
+    "--reasoning <level>",
+    "Worker reasoning tier: low, medium, or high",
+    /^(low|medium|high)$/i,
+    undefined
+  )
+  .option(
+    "--context-window <tokens>",
+    "Model context window in tokens",
+    (value: string) => Number.parseInt(value, 10),
+    undefined
+  )
+  .option(
+    "--write-scope <path>",
+    "Allowed write scope for candidate synthesis; repeatable",
+    collectOption,
+    []
+  )
+  .option("--json", "Print raw JSON")
+  .action((options) => {
+    workersLocalProbePrintCommand({
+      baseUrl: options.baseUrl,
+      provider: options.provider,
+      model: options.model,
+      preferModel: options.preferModel,
+      role: options.role,
+      workerId: options.workerId,
+      capabilities: options.capability,
+      reasoning: options.reasoning
+        ? (options.reasoning.toLowerCase() as "low" | "medium" | "high")
+        : undefined,
+      contextWindow: options.contextWindow,
+      writeScope: options.writeScope,
       json: options.json,
     });
   });
@@ -2417,6 +3053,7 @@ collaboration
   )
   .option("-d, --dir <directory>", "Repository directory (default: current)")
   .option("--json", "Print raw JSON")
+  .option("--verbose", "Print the full guard report even when the guard passes")
   .action(async (options) => {
     await collaborationGuardCommand({
       files: options.files,
@@ -2438,6 +3075,7 @@ collaboration
       ackReviewOnly: Boolean(options.ackReviewOnly),
       dir: options.dir,
       json: options.json,
+      verbose: Boolean(options.verbose || process.argv.includes("--verbose")),
     });
   });
 
@@ -3176,6 +3814,46 @@ program
       })
   )
   .addCommand(
+    new Command("reviews")
+      .description("Read hosted memory review surfaces and optionally emit decision requests")
+      .option("-s, --scope <scope>", "Memory scope (agent|project|team|user)")
+      .option("--status <status>", "Review queue status to inspect", "pending")
+      .option("--type <type>", "Optional memory type filter")
+      .option("--category <category>", "Optional memory category filter")
+      .option("--search <query>", "Optional review queue search filter")
+      .option("--limit <number>", "Maximum items per hosted review surface", "10")
+      .option("--offset <number>", "Review queue offset", "0")
+      .option("--no-evidence", "Skip hosted evidence refs in queue reads")
+      .option(
+        "--include-inactive",
+        "Include invalidated and superseded memories in candidate scans"
+      )
+      .option("--no-clean-candidates", "Skip clean-candidates review surface")
+      .option("--no-duplicates", "Skip duplicate-candidates review surface")
+      .option("--min-similarity <number>", "Duplicate candidate similarity threshold", "0.82")
+      .option("--emit-decisions", "Write local Decision Request V0 artifacts")
+      .option("--json", "Print raw JSON")
+      .action(async (options) => {
+        await memoryReviewsCommand({
+          scope: options.scope,
+          status: options.status,
+          type: options.type,
+          category: options.category,
+          search: options.search,
+          limit: parseInt(options.limit, 10),
+          offset: parseInt(options.offset, 10),
+          includeEvidence: options.evidence,
+          includeInactive: Boolean(options.includeInactive),
+          includeCleanCandidates: options.cleanCandidates,
+          includeDuplicates: options.duplicates,
+          minSimilarity:
+            options.minSimilarity !== undefined ? parseFloat(options.minSimilarity) : undefined,
+          emitDecisions: Boolean(options.emitDecisions),
+          json: options.json,
+        });
+      })
+  )
+  .addCommand(
     new Command("compact")
       .description("Preview hosted memory compaction without mutating memory")
       .option("-s, --scope <scope>", "Memory scope (agent|project|team|user)")
@@ -3358,6 +4036,29 @@ program
   });
 
 program
+  .command("continue-workspace")
+  .description("Print the stable Companion Continuity Contract for editor integrations")
+  .option("--max-critical-tokens <number>", "Durable memory token budget")
+  .option(
+    "--include-session-context",
+    "Include short-lived session carryover in addition to durable memory"
+  )
+  .option("--max-context-tokens <number>", "Short-lived session context token budget")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    const maxCriticalTokens =
+      options.maxCriticalTokens !== undefined ? parseInt(options.maxCriticalTokens, 10) : undefined;
+    const maxContextTokens =
+      options.maxContextTokens !== undefined ? parseInt(options.maxContextTokens, 10) : undefined;
+    await continueWorkspaceCommand({
+      maxCriticalTokens,
+      maxContextTokens,
+      includeSessionContext: Boolean(options.includeSessionContext || options.maxContextTokens),
+      json: options.json,
+    });
+  });
+
+program
   .command("task-commit")
   .description("Persist durable outcomes after meaningful task work, not every git commit")
   .requiredOption("-s, --summary <summary>", "Task summary")
@@ -3422,6 +4123,7 @@ Context vs Memory
     memory             Audit memory health, cleanup candidates, and compaction dry-runs
     recall             Ask memory about past decisions, learnings, preferences, or carryover
     session-bootstrap  Restore durable memory state at session start
+    outcome-capture    Preview review-pending why/outcome candidates without persistence
     task-commit        Persist durable outcomes after work is complete
     workflow           Track visible LLM plans with phase commits that survive compaction
     team-sync          Record local repository handoffs for parallel dev work

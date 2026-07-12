@@ -128,6 +128,18 @@ export interface LocalSourceSyncResult {
 const SNAPSHOT_RELATIVE_PATH = path.join(".snipara", "source", "latest.json");
 const DEFAULT_MAX_FILES = 5000;
 const DEFAULT_MAX_FILE_BYTES = 5 * 1024 * 1024;
+const LOCAL_SOURCE_FILE_KINDS = new Set<LocalSourceFileKind>([
+  "DOC",
+  "BINARY",
+  "CODE",
+  "CONFIG",
+  "OTHER",
+]);
+const LOCAL_SOURCE_SKIPPED_REASONS = new Set<LocalSourceSkippedReason>([
+  "ignored",
+  "too_large",
+  "read_error",
+]);
 
 const DOCUMENT_FORMATS = new Map<string, { kind: LocalSourceFileKind; format: string }>([
   [".adoc", { kind: "DOC", format: "adoc" }],
@@ -206,12 +218,28 @@ const DEFAULT_IGNORED_DIRS = new Set([
   "venv",
 ]);
 
-function positiveInteger(value: number | undefined, fallback: number): number {
-  return Number.isFinite(value) && value !== undefined && value > 0 ? Math.floor(value) : fallback;
+function positiveInteger(value: number | undefined, fallback: number, label = "value"): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (Number.isFinite(value) && value > 0) {
+    return Math.floor(value);
+  }
+  throw new Error(`${label} must be a positive integer.`);
 }
 
 function normalizeRepoPath(value: string): string {
   return value.split(path.sep).join("/").replace(/^\/+/, "");
+}
+
+function comparePaths(left: string, right: string): number {
+  if (left < right) {
+    return -1;
+  }
+  if (left > right) {
+    return 1;
+  }
+  return 0;
 }
 
 function sha256(value: string | Buffer): string {
@@ -322,8 +350,12 @@ export function buildLocalSourceSnapshot(
 ): LocalSourceSnapshot {
   const root = resolveSourceRoot(options.dir);
   const recursive = options.recursive ?? true;
-  const maxFiles = positiveInteger(options.maxFiles, DEFAULT_MAX_FILES);
-  const maxFileBytes = positiveInteger(options.maxFileBytes, DEFAULT_MAX_FILE_BYTES);
+  const maxFiles = positiveInteger(options.maxFiles, DEFAULT_MAX_FILES, "--max-files");
+  const maxFileBytes = positiveInteger(
+    options.maxFileBytes,
+    DEFAULT_MAX_FILE_BYTES,
+    "--max-file-bytes"
+  );
   const now = new Date().toISOString();
   const sniparaIgnore = readSniparaIgnore(root);
   const files: LocalSourceFile[] = [];
@@ -409,6 +441,9 @@ export function buildLocalSourceSnapshot(
     warnings.push(`Stopped after ${maxFiles} files. Increase --max-files for larger folders.`);
   }
 
+  files.sort((left, right) => comparePaths(left.path, right.path));
+  skippedSamples.sort((left, right) => comparePaths(left.path, right.path));
+
   const byKind = emptyKindCounts();
   let totalBytes = 0;
   for (const file of files) {
@@ -465,11 +500,90 @@ export function readLocalSourceSnapshot(cwd: string = process.cwd()): LocalSourc
     return null;
   }
   try {
-    const parsed = JSON.parse(fs.readFileSync(snapshotPath, "utf8")) as LocalSourceSnapshot;
-    return parsed?.version === "snipara.local_source_snapshot.v1" ? parsed : null;
+    const parsed = JSON.parse(fs.readFileSync(snapshotPath, "utf8")) as unknown;
+    return isLocalSourceSnapshot(parsed) ? parsed : null;
   } catch {
     return null;
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isLocalSourceFile(value: unknown): value is LocalSourceFile {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    typeof value.path === "string" &&
+    LOCAL_SOURCE_FILE_KINDS.has(value.kind as LocalSourceFileKind) &&
+    (typeof value.format === "string" || value.format === null) &&
+    typeof value.sizeBytes === "number" &&
+    Number.isFinite(value.sizeBytes) &&
+    typeof value.modifiedAt === "string" &&
+    typeof value.sha256 === "string"
+  );
+}
+
+function isSkippedFile(value: unknown): value is LocalSourceSkippedFile {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    typeof value.path === "string" &&
+    LOCAL_SOURCE_SKIPPED_REASONS.has(value.reason as LocalSourceSkippedReason) &&
+    (value.sizeBytes === undefined ||
+      (typeof value.sizeBytes === "number" && Number.isFinite(value.sizeBytes)))
+  );
+}
+
+function hasKindCounts(value: unknown): value is Record<LocalSourceFileKind, number> {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return Array.from(LOCAL_SOURCE_FILE_KINDS).every(
+    (kind) => typeof value[kind] === "number" && Number.isFinite(value[kind])
+  );
+}
+
+function hasSkippedCounts(value: unknown): value is Record<LocalSourceSkippedReason, number> {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return Array.from(LOCAL_SOURCE_SKIPPED_REASONS).every(
+    (reason) => typeof value[reason] === "number" && Number.isFinite(value[reason])
+  );
+}
+
+function isLocalSourceSnapshot(value: unknown): value is LocalSourceSnapshot {
+  if (!isRecord(value) || value.version !== "snipara.local_source_snapshot.v1") {
+    return false;
+  }
+  if (!isRecord(value.summary) || !isRecord(value.skipped)) {
+    return false;
+  }
+  return (
+    typeof value.generatedAt === "string" &&
+    typeof value.root === "string" &&
+    value.provider === "local_folder" &&
+    typeof value.revision === "string" &&
+    typeof value.recursive === "boolean" &&
+    typeof value.maxFiles === "number" &&
+    typeof value.maxFileBytes === "number" &&
+    typeof value.summary.totalFiles === "number" &&
+    typeof value.summary.totalBytes === "number" &&
+    hasKindCounts(value.summary.byKind) &&
+    typeof value.summary.skipped === "number" &&
+    Array.isArray(value.files) &&
+    value.files.every(isLocalSourceFile) &&
+    typeof value.skipped.total === "number" &&
+    hasSkippedCounts(value.skipped.byReason) &&
+    Array.isArray(value.skipped.samples) &&
+    value.skipped.samples.every(isSkippedFile) &&
+    Array.isArray(value.warnings) &&
+    value.warnings.every((warning) => typeof warning === "string")
+  );
 }
 
 export function compareLocalSourceSnapshots(
@@ -704,14 +818,49 @@ export async function sourceSyncCommand(options: LocalSourceSyncOptions = {}): P
 export async function sourceWatchCommand(
   options: LocalSourceSyncOptions & { once?: boolean; intervalMs?: number } = {}
 ): Promise<void> {
-  const intervalMs = positiveInteger(options.intervalMs, 5000);
+  const intervalMs = positiveInteger(options.intervalMs, 5000, "--interval-ms");
   if (options.once) {
     await sourceSyncCommand(options);
     return;
   }
 
-  while (true) {
-    await sourceSyncCommand(options);
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  let stopping = false;
+  let activeTimer: ReturnType<typeof setTimeout> | null = null;
+  let resolveWait: (() => void) | null = null;
+  const stop = () => {
+    stopping = true;
+    if (activeTimer) {
+      clearTimeout(activeTimer);
+      activeTimer = null;
+    }
+    if (resolveWait) {
+      resolveWait();
+      resolveWait = null;
+    }
+  };
+  const signals = ["SIGINT", "SIGTERM"] as const;
+  for (const signal of signals) {
+    process.once(signal, stop);
+  }
+
+  try {
+    while (!stopping) {
+      await sourceSyncCommand(options);
+      if (stopping) {
+        break;
+      }
+      await new Promise<void>((resolve) => {
+        resolveWait = resolve;
+        activeTimer = setTimeout(() => {
+          activeTimer = null;
+          resolveWait = null;
+          resolve();
+        }, intervalMs);
+      });
+    }
+  } finally {
+    for (const signal of signals) {
+      process.removeListener(signal, stop);
+    }
   }
 }

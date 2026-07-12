@@ -14,6 +14,8 @@ import {
   PROJECT_INTELLIGENCE_ENGINEERING_LEAD_EXECUTION_RECEIPT_STATUSES,
   PROJECT_INTELLIGENCE_ENGINEERING_LEAD_PLAN_VERSION,
   PROJECT_INTELLIGENCE_ENGINEERING_LEAD_POSTURES,
+  PROJECT_INTELLIGENCE_ENGINEERING_LEAD_PROOF_VERIFICATION_SOURCES,
+  PROJECT_INTELLIGENCE_ENGINEERING_LEAD_PROOF_VERIFICATION_STATUSES,
   PROJECT_INTELLIGENCE_ENGINEERING_LEAD_ROUTING_MODES,
   PROJECT_INTELLIGENCE_ENGINEERING_LEAD_SUPERVISION_STATUSES,
   PROJECT_INTELLIGENCE_ENGINEERING_LEAD_WORK_PACKAGE_STATUSES,
@@ -25,6 +27,9 @@ import {
   type ProjectIntelligenceEngineeringLeadExecutionReceiptStatus,
   type ProjectIntelligenceEngineeringLeadPlanSummary,
   type ProjectIntelligenceEngineeringLeadPosture,
+  type ProjectIntelligenceEngineeringLeadProofVerification,
+  type ProjectIntelligenceEngineeringLeadProofVerificationSource,
+  type ProjectIntelligenceEngineeringLeadProofVerificationStatus,
   type ProjectIntelligenceEngineeringLeadRoutingMode,
   type ProjectIntelligenceEngineeringLeadSupervision,
   type ProjectIntelligenceEngineeringLeadSupervisionStatus,
@@ -39,6 +44,10 @@ import {
   type AgentReadinessLocalSignals,
   type AgentReadinessTarget,
 } from "./agent-readiness";
+import {
+  evaluateProofVerificationAuthenticity,
+  proofVerificationHasSourceEvidence,
+} from "./execution-receipts";
 
 export const ENGINEERING_LEAD_STATUSES = PROJECT_HEALTH_COCKPIT_STATUSES;
 export const ENGINEERING_LEAD_POSTURES = PROJECT_INTELLIGENCE_ENGINEERING_LEAD_POSTURES;
@@ -52,6 +61,10 @@ export const ENGINEERING_LEAD_EXECUTION_RECEIPT_STATUSES =
   PROJECT_INTELLIGENCE_ENGINEERING_LEAD_EXECUTION_RECEIPT_STATUSES;
 export const ENGINEERING_LEAD_EXECUTION_RECEIPT_STAGES =
   PROJECT_INTELLIGENCE_ENGINEERING_LEAD_EXECUTION_RECEIPT_STAGES;
+export const ENGINEERING_LEAD_PROOF_VERIFICATION_STATUSES =
+  PROJECT_INTELLIGENCE_ENGINEERING_LEAD_PROOF_VERIFICATION_STATUSES;
+export const ENGINEERING_LEAD_PROOF_VERIFICATION_SOURCES =
+  PROJECT_INTELLIGENCE_ENGINEERING_LEAD_PROOF_VERIFICATION_SOURCES;
 
 export type EngineeringLeadStatus = ProjectHealthCockpitStatus;
 export type EngineeringLeadPosture = ProjectIntelligenceEngineeringLeadPosture;
@@ -63,6 +76,11 @@ export type EngineeringLeadExecutionReceiptStatus =
   ProjectIntelligenceEngineeringLeadExecutionReceiptStatus;
 export type EngineeringLeadExecutionReceiptStage =
   ProjectIntelligenceEngineeringLeadExecutionReceiptStage;
+export type EngineeringLeadProofVerificationStatus =
+  ProjectIntelligenceEngineeringLeadProofVerificationStatus;
+export type EngineeringLeadProofVerificationSource =
+  ProjectIntelligenceEngineeringLeadProofVerificationSource;
+export type EngineeringLeadProofVerification = ProjectIntelligenceEngineeringLeadProofVerification;
 export type EngineeringLeadEvidenceRef = ProjectIntelligenceEngineeringLeadEvidenceRef;
 export type EngineeringLeadWorkerContract = ProjectIntelligenceEngineeringLeadWorkerContract;
 export type EngineeringLeadWorkerRecommendation =
@@ -154,14 +172,7 @@ function normalizeTask(task: string | undefined): string | undefined {
 }
 
 function unique(values: string[] | undefined): string[] {
-  return [
-    ...new Set(
-      (values ?? [])
-        .flatMap((value) => value.split(","))
-        .map((value) => value.trim())
-        .filter(Boolean)
-    ),
-  ];
+  return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -217,6 +228,99 @@ function cockpitEnumValue<T extends string>(
 
 function compactReasonCodes(values: Array<string | null>): string[] {
   return values.filter((value): value is string => Boolean(value));
+}
+
+function defaultProofVerificationStatus(input: {
+  proofRequired: string[];
+  proofEvidenceProvided: boolean;
+}): EngineeringLeadProofVerificationStatus {
+  if (input.proofEvidenceProvided) {
+    return "provided";
+  }
+  return input.proofRequired.length > 0 ? "declared" : "unknown";
+}
+
+function buildProofVerification(input: {
+  status: EngineeringLeadProofVerificationStatus;
+  source?: EngineeringLeadProofVerificationSource;
+  sourceRef?: string | null;
+  adapterTarget?: string | null;
+  verifiedBy?: string | null;
+  verifiedAt?: string | null;
+  evidenceHash?: string | null;
+  reasonCodes?: string[];
+}): EngineeringLeadProofVerification {
+  return {
+    status: input.status,
+    source: input.source ?? "unknown",
+    sourceRef: input.sourceRef ?? null,
+    adapterTarget: input.adapterTarget ?? null,
+    verifiedBy: input.verifiedBy ?? null,
+    verifiedAt: input.verifiedAt ?? null,
+    evidenceHash: input.evidenceHash ?? null,
+    reasonCodes: [
+      ...new Set([
+        ...(input.reasonCodes ?? []),
+        `proof_verification_${input.status}`,
+        ...(input.status === "verified" ? [] : ["proof_verification_pending_validation"]),
+      ]),
+    ],
+  };
+}
+
+function normalizeProofVerification(input: {
+  value: unknown;
+  proofRequired: string[];
+  proofEvidenceProvided: boolean;
+  selfAttestedProof?: boolean;
+  now?: Date;
+}): EngineeringLeadProofVerification {
+  const fallbackStatus = defaultProofVerificationStatus(input);
+  const selfAttestedReasonCodes = input.selfAttestedProof
+    ? ["proof_verification_self_attested_proof_not_source_backed"]
+    : [];
+  if (!isRecord(input.value)) {
+    return buildProofVerification({ status: fallbackStatus, reasonCodes: selfAttestedReasonCodes });
+  }
+
+  const status = cockpitEnumValue(
+    "proof_verification_status",
+    ENGINEERING_LEAD_PROOF_VERIFICATION_STATUSES,
+    input.value.status,
+    fallbackStatus
+  );
+  const source = cockpitEnumValue(
+    "proof_verification_source",
+    ENGINEERING_LEAD_PROOF_VERIFICATION_SOURCES,
+    input.value.source,
+    "unknown"
+  );
+
+  const candidate = buildProofVerification({
+    status: status.value,
+    source: source.value,
+    sourceRef: stringValue(input.value.sourceRef) ?? null,
+    adapterTarget: stringValue(input.value.adapterTarget) ?? null,
+    verifiedBy: stringValue(input.value.verifiedBy) ?? null,
+    verifiedAt: stringValue(input.value.verifiedAt) ?? null,
+    evidenceHash: stringValue(input.value.evidenceHash) ?? null,
+    reasonCodes: [
+      ...stringList(input.value.reasonCodes),
+      ...compactReasonCodes([status.droppedReasonCode, source.droppedReasonCode]),
+    ],
+  });
+  const authenticity = evaluateProofVerificationAuthenticity({
+    verification: candidate,
+    proofEvidenceProvided: input.proofEvidenceProvided,
+    selfAttestedProof: input.selfAttestedProof,
+    now: input.now,
+  });
+
+  return buildProofVerification({
+    ...candidate,
+    status: authenticity.effectiveStatus,
+    reasonCodes: [...candidate.reasonCodes, ...authenticity.reasonCodes],
+  });
 }
 
 function slug(value: string, fallback: string): string {
@@ -677,6 +781,8 @@ function missingRequirementsForExecutionReceipt(input: {
   requiredStages: EngineeringLeadExecutionReceiptStage[];
   completedStages: EngineeringLeadExecutionReceiptStage[];
   brainUpdateCandidates: string[];
+  proofVerificationStatus?: EngineeringLeadProofVerificationStatus;
+  proofEvidenceProvided?: boolean;
 }): string[] {
   const completed = new Set(input.completedStages);
   const missing = new Set<string>();
@@ -693,8 +799,17 @@ function missingRequirementsForExecutionReceipt(input: {
   if (input.requiredStages.includes("approval") && !completed.has("approval")) {
     missing.add("approval_receipt");
   }
-  if (input.requiredStages.includes("proof") && !completed.has("proof")) {
+  const proofEvidenceProvided = input.proofEvidenceProvided ?? completed.has("proof");
+  if (input.requiredStages.includes("proof") && !proofEvidenceProvided) {
     missing.add("proof_receipt");
+  }
+  if (
+    input.requiredStages.includes("proof") &&
+    proofEvidenceProvided &&
+    input.workPackage.proofRequired.length > 0 &&
+    input.proofVerificationStatus !== "verified"
+  ) {
+    missing.add("verified_proof");
   }
   if (input.requiredStages.includes("outcome") && !completed.has("outcome")) {
     missing.add("outcome_receipt");
@@ -718,7 +833,8 @@ function executionReceiptStatusFromWorkPackage(input: {
   if (input.workPackage.status === "blocked") return "blocked";
   if (
     input.workPackage.status === "closed" &&
-    input.requiredStages.every((stage) => input.completedStages.includes(stage))
+    input.requiredStages.every((stage) => input.completedStages.includes(stage)) &&
+    input.missingRequirements.length === 0
   ) {
     return "closed";
   }
@@ -744,6 +860,9 @@ function executionReceiptNextAction(input: {
   }
   if (input.missingRequirements.includes("proof_receipt")) {
     return "Attach proof receipts before closure.";
+  }
+  if (input.missingRequirements.includes("verified_proof")) {
+    return "Validate the proof source before treating this package as complete.";
   }
   if (input.missingRequirements.includes("outcome_receipt")) {
     return "Attach an outcome or closure receipt before Brain promotion.";
@@ -806,6 +925,9 @@ function buildExpectedExecutionReceipts(input: {
       brainUpdateReceiptId: null,
       proofRequired: workPackage.proofRequired,
       proofExecuted: [],
+      proofVerification: buildProofVerification({
+        status: workPackage.proofRequired.length > 0 ? "declared" : "unknown",
+      }),
       missingRequirements,
       nextAction: executionReceiptNextAction({ status, missingRequirements }),
       replanTriggers: workPackage.replanTriggers,
@@ -1097,7 +1219,8 @@ function normalizeExecutionReceipt(
   value: Record<string, unknown>,
   index: number,
   workPackages: EngineeringLeadWorkPackage[],
-  workerRecommendations: EngineeringLeadWorkerRecommendation[]
+  workerRecommendations: EngineeringLeadWorkerRecommendation[],
+  now?: Date
 ): EngineeringLeadExecutionReceipt {
   const workPackageId =
     stringValue(value.workPackageId) ?? workPackages[index]?.id ?? `work-package:${index + 1}`;
@@ -1117,6 +1240,41 @@ function normalizeExecutionReceipt(
     stringList(value.brainUpdateCandidates).length > 0
       ? stringList(value.brainUpdateCandidates)
       : (recommendation?.brainUpdateCandidates ?? []);
+  const proofReceiptIds = stringList(value.proofReceiptIds);
+  const proofRequired =
+    stringList(value.proofRequired).length > 0
+      ? stringList(value.proofRequired)
+      : (workPackage?.proofRequired ?? []);
+  const proofExecuted = stringList(value.proofExecuted);
+  const selfAttestedProof = proofExecuted.length > 0 || normalizedCompletedStages.includes("proof");
+  const importedProofVerificationSourceEvidence =
+    isRecord(value.proofVerification) &&
+    proofVerificationHasSourceEvidence({
+      status: "provided",
+      source: cockpitEnumValue(
+        "proof_verification_source",
+        ENGINEERING_LEAD_PROOF_VERIFICATION_SOURCES,
+        value.proofVerification.source,
+        "unknown"
+      ).value,
+      sourceRef: stringValue(value.proofVerification.sourceRef) ?? null,
+      adapterTarget: null,
+      verifiedBy: stringValue(value.proofVerification.verifiedBy) ?? null,
+      verifiedAt: null,
+      evidenceHash: stringValue(value.proofVerification.evidenceHash) ?? null,
+      reasonCodes: [],
+    });
+  const proofEvidenceProvided =
+    proofReceiptIds.length > 0 || importedProofVerificationSourceEvidence;
+  const proofVerification = normalizeProofVerification({
+    value: value.proofVerification,
+    proofRequired,
+    proofEvidenceProvided,
+    selfAttestedProof,
+    now,
+  });
+  const sourceBackedProofVerified = proofVerification.status === "verified";
+  const effectiveProofEvidenceProvided = proofEvidenceProvided || sourceBackedProofVerified;
   const derivedMissing =
     workPackage &&
     missingRequirementsForExecutionReceipt({
@@ -1124,11 +1282,31 @@ function normalizeExecutionReceipt(
       requiredStages: normalizedRequiredStages,
       completedStages: normalizedCompletedStages,
       brainUpdateCandidates,
+      proofVerificationStatus: proofVerification.status,
+      proofEvidenceProvided: effectiveProofEvidenceProvided,
     });
-  const missingRequirements =
+  const missingRequirementsSet = new Set(
     stringList(value.missingRequirements).length > 0
       ? stringList(value.missingRequirements)
-      : (derivedMissing ?? []);
+      : (derivedMissing ?? [])
+  );
+  if (
+    normalizedRequiredStages.includes("proof") &&
+    proofRequired.length > 0 &&
+    effectiveProofEvidenceProvided &&
+    proofVerification.status !== "verified"
+  ) {
+    missingRequirementsSet.add("verified_proof");
+  }
+  if (
+    normalizedRequiredStages.includes("proof") &&
+    proofRequired.length > 0 &&
+    selfAttestedProof &&
+    !effectiveProofEvidenceProvided
+  ) {
+    missingRequirementsSet.add("proof_receipt");
+  }
+  const missingRequirements = Array.from(missingRequirementsSet).sort();
   const fallbackStatus = workPackage
     ? executionReceiptStatusFromWorkPackage({
         workPackage,
@@ -1143,6 +1321,16 @@ function normalizeExecutionReceipt(
     value.status,
     fallbackStatus
   );
+  const effectiveStatus: EngineeringLeadExecutionReceiptStatus =
+    status.value === "closed" && missingRequirements.length > 0
+      ? "verification_required"
+      : status.value;
+  const statusReasonCodes = compactReasonCodes([
+    status.droppedReasonCode,
+    status.value === "closed" && effectiveStatus === "verification_required"
+      ? "companion_downgraded_closed_execution_receipt_pending_verification"
+      : null,
+  ]);
 
   return {
     id: stringValue(value.id) ?? `engineering-lead-receipt:${workPackageId}`,
@@ -1151,25 +1339,23 @@ function normalizeExecutionReceipt(
       stringValue(value.workPackageTitle) ??
       workPackage?.title ??
       `Imported work package ${index + 1}`,
-    status: status.value,
+    status: effectiveStatus,
     requiredStages: normalizedRequiredStages,
     completedStages: normalizedCompletedStages,
     handoffReceiptId: stringValue(value.handoffReceiptId) ?? null,
     claimId: stringValue(value.claimId) ?? null,
     htaskId: stringValue(value.htaskId) ?? null,
     approvalReceiptId: stringValue(value.approvalReceiptId) ?? null,
-    proofReceiptIds: stringList(value.proofReceiptIds),
+    proofReceiptIds,
     outcomeReceiptId: stringValue(value.outcomeReceiptId) ?? null,
     brainUpdateReceiptId: stringValue(value.brainUpdateReceiptId) ?? null,
-    proofRequired:
-      stringList(value.proofRequired).length > 0
-        ? stringList(value.proofRequired)
-        : (workPackage?.proofRequired ?? []),
-    proofExecuted: stringList(value.proofExecuted),
+    proofRequired,
+    proofExecuted,
+    proofVerification,
     missingRequirements,
     nextAction:
       stringValue(value.nextAction) ??
-      executionReceiptNextAction({ status: status.value, missingRequirements }),
+      executionReceiptNextAction({ status: effectiveStatus, missingRequirements }),
     replanTriggers:
       stringList(value.replanTriggers).length > 0
         ? stringList(value.replanTriggers)
@@ -1182,9 +1368,12 @@ function normalizeExecutionReceipt(
     reasonCodes: [
       ...new Set([
         ...stringList(value.reasonCodes),
-        ...compactReasonCodes([status.droppedReasonCode]),
+        ...statusReasonCodes,
         ...requiredStages.reasonCodes,
         ...completedStages.reasonCodes,
+        ...proofVerification.reasonCodes.filter((code) =>
+          code.startsWith("companion_dropped_unknown_")
+        ),
       ]),
     ],
   };
@@ -1315,7 +1504,10 @@ function normalizeSupervision(
   };
 }
 
-function normalizeCockpitPlan(cockpit: Record<string, unknown>): EngineeringLeadPlanSummary {
+function normalizeCockpitPlan(
+  cockpit: Record<string, unknown>,
+  now?: Date
+): EngineeringLeadPlanSummary {
   const rawPlan = isRecord(cockpit.engineeringLeadPlan) ? cockpit.engineeringLeadPlan : cockpit;
   const score = Math.round(numberValue(rawPlan.score, 0));
   const workerRecommendations = recordList(rawPlan.workerRecommendations).map(
@@ -1327,7 +1519,7 @@ function normalizeCockpitPlan(cockpit: Record<string, unknown>): EngineeringLead
   const executionReceipts =
     rawExecutionReceipts.length > 0
       ? rawExecutionReceipts.map((receipt, index) =>
-          normalizeExecutionReceipt(receipt, index, workPackages, workerRecommendations)
+          normalizeExecutionReceipt(receipt, index, workPackages, workerRecommendations, now)
         )
       : buildExpectedExecutionReceipts({ workPackages, workerRecommendations });
   const posture = cockpitEnumValue(
@@ -1469,10 +1661,26 @@ function reconcileEngineeringLeadPlan(input: {
     recommendedActions.add(trigger);
   }
   for (const receipt of executionReceipts) {
+    const proofEvidenceProvided =
+      receipt.proofReceiptIds.length > 0 ||
+      (receipt.proofVerification
+        ? proofVerificationHasSourceEvidence(receipt.proofVerification)
+        : false);
     if (receipt.status === "blocked") {
       changedSignals.add(`blocked_execution_receipt:${receipt.workPackageId}`);
       recommendedActions.add(receipt.nextAction);
       reasonCodes.add("companion_reconcile_execution_receipt_blocked");
+    }
+    if (
+      receipt.requiredStages.includes("proof") &&
+      proofEvidenceProvided &&
+      receipt.proofVerification?.status !== "verified"
+    ) {
+      changedSignals.add(`execution_receipt_unverified_proof:${receipt.workPackageId}`);
+      recommendedActions.add(
+        `Validate proof source for ${receipt.workPackageTitle} before closure.`
+      );
+      reasonCodes.add("companion_reconcile_execution_receipt_unverified_proof");
     }
     if (receipt.missingRequirements.length > 0) {
       changedSignals.add(
@@ -1593,7 +1801,7 @@ export function buildCompanionEngineeringLeadPlanReport(
       ? readJsonFile(options.fromCockpit ?? options.fromPlan ?? "")
       : undefined);
   const importedPlan = cockpit
-    ? normalizeCockpitPlan(cockpit)
+    ? normalizeCockpitPlan(cockpit, options.now)
     : buildLocalEngineeringLeadPlan({
         target,
         task,
@@ -1721,6 +1929,15 @@ export function formatCompanionEngineeringLeadPlanReport(
       lines.push(`  handoff receipt: ${receipt.handoffReceiptId ?? "missing"}`);
       lines.push(`  claim: ${receipt.claimId ?? "missing"}`);
       lines.push(`  approval receipt: ${receipt.approvalReceiptId ?? "missing"}`);
+      lines.push(`  proof receipts: ${formatList(receipt.proofReceiptIds)}`);
+      if (receipt.proofVerification) {
+        lines.push(
+          `  proof verification: ${receipt.proofVerification.status} (${receipt.proofVerification.source})`
+        );
+        if (receipt.proofVerification.adapterTarget) {
+          lines.push(`  proof adapter target: ${receipt.proofVerification.adapterTarget}`);
+        }
+      }
       lines.push(`  outcome receipt: ${receipt.outcomeReceiptId ?? "missing"}`);
       lines.push(`  brain update receipt: ${receipt.brainUpdateReceiptId ?? "missing"}`);
       lines.push(`  missing: ${formatList(receipt.missingRequirements)}`);
@@ -1773,6 +1990,16 @@ function writeReport(outputPath: string, report: CompanionEngineeringLeadPlanRep
   fs.writeFileSync(absolute, content, "utf8");
 }
 
+function defaultJsonOutputPath(cwd: string, report: CompanionEngineeringLeadPlanReport): string {
+  const timestamp = report.generatedAt.replace(/[:.]/g, "-");
+  return path.join(
+    cwd,
+    ".snipara",
+    "lead-plans",
+    `${timestamp}-${slug(report.task ?? "lead-plan", "lead-plan")}.json`
+  );
+}
+
 export async function leadPlanCommand(options: LeadPlanCommandOptions): Promise<void> {
   const cwd = path.resolve(options.dir ?? process.cwd());
   const report = buildCompanionEngineeringLeadPlanReport({
@@ -1780,13 +2007,33 @@ export async function leadPlanCommand(options: LeadPlanCommandOptions): Promise<
     cwd,
     localSignals: collectAgentReadinessLocalSignals(cwd),
   });
+  const writtenOutput =
+    options.output ?? (options.json ? defaultJsonOutputPath(cwd, report) : undefined);
 
-  if (options.output) {
-    writeReport(options.output, report);
+  if (writtenOutput) {
+    writeReport(writtenOutput, report);
   }
 
   if (options.json) {
-    console.log(JSON.stringify(report, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          ...report,
+          outputPath: writtenOutput ? path.resolve(writtenOutput) : undefined,
+          relativeOutputPath: writtenOutput
+            ? path.relative(cwd, path.resolve(writtenOutput))
+            : undefined,
+          nextCommand: writtenOutput
+            ? `snipara-orchestrator team-sync gate --plan ${path.relative(
+                cwd,
+                path.resolve(writtenOutput)
+              )} --json`
+            : undefined,
+        },
+        null,
+        2
+      )
+    );
     return;
   }
 

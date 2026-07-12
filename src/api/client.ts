@@ -10,6 +10,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { AdvisorInfluenceLifecycle } from "../contracts/project-intelligence";
 import { loadConfig, type ConfigResolutionOptions, type RLMConfig } from "../config/store";
 import { resolveProject } from "../project/resolver";
 
@@ -163,6 +164,39 @@ export interface SyncDocumentInput {
   metadata?: Record<string, unknown>;
 }
 
+export type ProjectPolicyLedgerSyncArtifactKind =
+  | "decision_request"
+  | "decision_resolution"
+  | "apply_receipt"
+  | "policy_draft";
+
+export type ProjectPolicyLedgerSyncStatus =
+  | "pending"
+  | "approved"
+  | "refused"
+  | "superseded"
+  | "modified";
+
+export type ProjectPolicyLedgerSyncApplyState =
+  | "needs_apply"
+  | "applied"
+  | "manual_follow_up_required"
+  | "no_apply";
+
+export interface ProjectPolicyLedgerSyncArtifactInput {
+  kind: ProjectPolicyLedgerSyncArtifactKind;
+  requestId: string;
+  fingerprint?: string;
+  title?: string;
+  status?: ProjectPolicyLedgerSyncStatus;
+  applyState?: ProjectPolicyLedgerSyncApplyState;
+  humanChoice?: string;
+  summary?: string;
+  sourcePath?: string;
+  updatedAt?: string;
+  payload: Record<string, unknown>;
+}
+
 export type BusinessCollectionPreset =
   | "business_response_playbook"
   | "business_library"
@@ -295,9 +329,17 @@ export interface SessionMemoryTier {
   tokens: number;
 }
 
+export interface SessionMemoryProfiles extends Record<string, unknown> {
+  project_memory_id?: string | null;
+  owner_memory_id?: string | null;
+  tokens?: number;
+  precedence?: string[];
+}
+
 export interface SessionMemoriesResult extends Record<string, unknown> {
   critical: SessionMemoryTier;
   daily: SessionMemoryTier;
+  profiles?: SessionMemoryProfiles;
   total_tokens?: number;
   message?: string;
 }
@@ -379,6 +421,7 @@ export interface EmitEventResult {
 
 export type AdvisorInfluenceAgentDecision = "accepted" | "modified" | "ignored" | "blocked";
 export type AdvisorInfluenceOutcomeLinkStatus = "pending" | "linked" | "missed" | "unevaluated";
+export type AdvisorInfluenceReceiptCreationOutcomeLinkStatus = "pending";
 
 export interface AdvisorInfluenceRecommendationInput {
   id: string;
@@ -402,7 +445,7 @@ export interface RecordAdvisorInfluenceReceiptInput {
   agentDecision: AdvisorInfluenceAgentDecision;
   behaviorChange: string;
   verificationExecuted: string[];
-  outcomeLinkStatus?: AdvisorInfluenceOutcomeLinkStatus;
+  outcomeLinkStatus?: AdvisorInfluenceReceiptCreationOutcomeLinkStatus;
   metadata?: AdvisorInfluenceReceiptMetadataInput;
 }
 
@@ -412,6 +455,7 @@ export interface AdvisorInfluenceReceiptMetadataInput extends Record<string, unk
   planBefore?: string | null;
   planAfter?: string | null;
   changedBecauseOfRecommendation?: boolean | null;
+  advisorInfluenceLifecycle?: AdvisorInfluenceLifecycle;
   filesAffected?: string[];
   toolActions?: string[];
   humanOverride?: string | null;
@@ -1123,16 +1167,34 @@ function normalizeSessionMemoryTier(value: unknown): SessionMemoryTier {
   };
 }
 
+function normalizeSessionMemoryProfiles(value: unknown): SessionMemoryProfiles | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  return {
+    ...value,
+    project_memory_id: typeof value.project_memory_id === "string" ? value.project_memory_id : null,
+    owner_memory_id: typeof value.owner_memory_id === "string" ? value.owner_memory_id : null,
+    tokens: typeof value.tokens === "number" ? value.tokens : undefined,
+    precedence: Array.isArray(value.precedence)
+      ? value.precedence.filter((entry): entry is string => typeof entry === "string")
+      : undefined,
+  };
+}
+
 export function normalizeSessionMemoriesResult(value: unknown): SessionMemoriesResult {
   const record = isRecord(value) ? value : {};
   const critical = normalizeSessionMemoryTier(record.critical);
   const daily = normalizeSessionMemoryTier(record.daily);
+  const profiles = normalizeSessionMemoryProfiles(record.profiles);
   const derivedTotalTokens = critical.tokens + daily.tokens;
 
   return {
     ...record,
     critical,
     daily,
+    profiles,
     total_tokens:
       typeof record.total_tokens === "number"
         ? record.total_tokens
@@ -2577,6 +2639,29 @@ export class RLMClient {
       documents,
       delete_missing: deleteMissing,
     });
+  }
+
+  async syncProjectPolicyLedger(
+    artifacts: ProjectPolicyLedgerSyncArtifactInput[]
+  ): Promise<Record<string, unknown>> {
+    return this.dashboardProjectRequest<Record<string, unknown>>(
+      "/project-policy/ledger",
+      {
+        method: "POST",
+        body: {
+          client: {
+            name: "snipara-companion",
+            version: "unknown",
+          },
+          syncedAt: new Date().toISOString(),
+          artifacts,
+        },
+      },
+      {
+        invalidMessage: "Invalid Project Policy ledger sync response",
+        validate: (data) => typeof data === "object" && data !== null,
+      }
+    );
   }
 
   async reindex(options: {

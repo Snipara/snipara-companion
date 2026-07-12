@@ -9,10 +9,45 @@
 
 No global install. No account. Your code stays on your machine.
 
+`create-snipara` is the canonical activation engine. Use it first when a repo
+needs Hosted MCP config, editor/client files, a First Work Brief, and
+review-only memory candidates. Use `snipara-companion` after that first
+activation for local continuity: source refresh, impact checks, workflow phase
+state, handoffs, and durable task outcomes.
+
 ```bash
+npx -y create-snipara@latest init --client cursor --starter
+npx -y snipara-companion session-bootstrap --include-session-context --max-context-tokens 1000
 npx -y snipara-companion impact src/auth/session.ts --source local
 npx -y snipara-companion source init .
 ```
+
+## Companion Continuity Contract V1
+
+Editor integrations and post-activation workflows can ask Companion for one
+machine-readable "continue this workspace" payload:
+
+```bash
+npx -y snipara-companion@latest continue-workspace --include-session-context --json
+```
+
+The payload version is `snipara.companion.continuity.v1`. It is designed for
+native editor commands, status bars, panels, and agent handoffs that need to
+resume real work without rescanning or reimplementing Snipara semantics. It
+includes project binding, session bootstrap entries and quality warnings,
+workflow phase state, Team Sync handoff summary, passive source snapshot status,
+session snapshot summary, stable local artifact paths, and recommended next
+actions.
+
+Session bootstrap treats two explicit profiles as durable operating context:
+the project profile is selected first, followed by the authenticated owner
+profile. These profiles reserve bounded space ahead of ordinary decisions and
+carryover; Companion does not infer a psychological profile from conversation
+history.
+
+Use this after `create-snipara` activation. `create-snipara` remains the
+canonical engine for first workspace setup; Companion owns the repeatable local
+continuity loop after that.
 
 Example output excerpt:
 
@@ -39,15 +74,69 @@ your current checkout in seconds, before an agent edits the wrong thing.
 
 These commands are useful without hosted Snipara:
 
-| Command                                                      | What it gives you locally                                    |
-| ------------------------------------------------------------ | ------------------------------------------------------------ |
-| `source init` / `source sync` / `source status`              | Local source snapshot, document preview, and code overlay    |
-| `impact` / `code impact`                                     | File-level blast-radius from the local code overlay          |
-| `code callers` / `imports` / `neighbors` / `shortest-path`   | Structural repo questions from local files                   |
-| `workflow start` / `phase-start` / `phase-commit` / `resume` | Agent continuity that survives compaction                    |
-| `context-pack`                                               | Reversible local packs for long logs, diffs, and tool output |
-| `judgment-card`, `verify`, `lead-plan`, `agent-readiness`    | Local review artifacts and delegation contracts              |
-| `stuck-guard`, `memory-guard`, `pre-tool`, `post-tool`       | Fail-soft local guards and hook helpers                      |
+| Command                                                                               | What it gives you locally                                                    |
+| ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `source init` / `source sync` / `source status`                                       | Local source snapshot, document preview, and code overlay                    |
+| `impact` / `code impact`                                                              | File-level blast-radius from the local code overlay                          |
+| `reality-check`                                                                       | Intent Ledger, Unknown Registry, and verification checks                     |
+| `code callers` / `imports` / `neighbors` / `shortest-path`                            | Structural repo questions from local files                                   |
+| `workflow start` / `phase-start` / `phase-commit` / `resume`                          | Agent continuity that survives compaction                                    |
+| `workflow timeline` / `workflow session`                                              | Append-only local activity log and Session Snapshot V0                       |
+| `workflow decisions` / `workflow decide`                                              | Local human decision requests and response receipts                          |
+| `workflow policy-ledger` / `workflow apply-decisions` / `workflow sync-policy-ledger` | Project Policy review ledger, explicit apply pipeline, and hosted audit sync |
+| `run --emit-policy-decisions`                                                         | Project Policy review requests in the agent workflow                         |
+| `workflow producer-triage`                                                            | Ask for human review of unreviewed Producer Loop samples                     |
+| `workflow producer-report`                                                            | Local Producer Loop adoption and calibration report                          |
+| `workflow producer-review`                                                            | Mark local Producer Loop samples reviewed or rejected                        |
+| `context-pack`                                                                        | Reversible local packs for long logs, diffs, and tool output                 |
+| `judgment-card`, `verify`, `lead-plan`, `agent-readiness`                             | Local review artifacts and delegation contracts                              |
+| `intelligence ledger-export`                                                          | Structured redacted ledger JSON for replay and review                        |
+| `stuck-guard`, `memory-guard`, `pre-tool`, `post-tool`                                | Fail-soft local guards and hook helpers                                      |
+
+### Local Worker Registry
+
+Use `workers local` when you want Companion to route bounded work to a local
+OpenAI-compatible runtime such as LM Studio. The registry is project state under
+`.snipara/workers/`; commit intentional profile changes like any other
+workflow artifact. Keep API keys, tokens, passwords, and private credentialed
+URLs out of worker profiles. Use environment variables for credentials.
+
+Probe the local runtime first:
+
+```bash
+npx -y snipara-companion workers local probe \
+  --base-url http://127.0.0.1:1234 \
+  --model openai/gpt-oss-20b \
+  --role documentation \
+  --capability docs_write \
+  --write-scope packages/cli/README.md
+```
+
+Declare the worker only after the probe matches the intended model and scope:
+
+```bash
+npx -y snipara-companion workers local add \
+  --id local-openai-gpt-oss-20b \
+  --base-url http://127.0.0.1:1234 \
+  --model openai/gpt-oss-20b \
+  --role documentation \
+  --capability docs_write \
+  --write-scope packages/cli/README.md
+```
+
+Inspect declared workers before routing:
+
+```bash
+npx -y snipara-companion workers local list
+npx -y snipara-companion workers local status --json
+```
+
+Remove stale local profiles when a model, endpoint, or write scope is no longer
+valid:
+
+```bash
+npx -y snipara-companion workers local remove local-openai-gpt-oss-20b
+```
 
 ## Agent Continuity
 
@@ -60,12 +149,82 @@ npx -y snipara-companion lead-plan --task "ship auth hardening" --changed-files 
 npx -y snipara-companion lead-plan --from-plan ./project-health-lead-plan.json --reconcile --changed-files src/auth/session.ts
 npx -y snipara-companion lead-plan --from-plan ./project-health-lead-plan.json --json | jq '.engineeringLeadPlan.executionReceipts'
 npx -y snipara-companion workflow phase-commit audit --summary "mapped auth impact"
+npx -y snipara-companion workflow producer-triage
+npx -y snipara-companion workflow decisions
+npx -y snipara-companion workflow policy-ledger
+npx -y snipara-companion workflow decide decision-abc123 --choose accept_all --reviewer alice
+npx -y snipara-companion workflow apply-decisions --dry-run
+npx -y snipara-companion workflow sync-policy-ledger
+npx -y snipara-companion workflow timeline
+npx -y snipara-companion workflow timeline --export md
+npx -y snipara-companion workflow session --json
+npx -y snipara-companion workflow producer-report
+npx -y snipara-companion workflow producer-review --latest --outcome useful --reviewer alice
 npx -y snipara-companion handoff --summary "auth impact mapped" --next "run auth tests"
 ```
 
 `snipara-companion` writes local state under `.snipara/` so a coding agent can
 resume with the current phase, recent handoffs, timeline, context packs, and
 verification hints.
+
+`workflow timeline` reads the append-only activity log at
+`.snipara/activity/timeline.jsonl`. `workflow session` derives
+`.snipara/activity/session.json` for fast local resume and Orchestrator dogfood;
+Session Snapshot V0 includes latest activity, risk reasons, touched files, a
+next action, and advisory Intent Detection V0. Intent Detection V0 reports the
+inferred intent, confidence, reason-code signals, local evidence counts, and a
+suggested workflow mode. `workflow run --mode auto` uses that same Control Plane
+principle to choose lite, standard, full, or orchestrate. Lite runs with zero
+mandatory hosted context calls; recall/context/code-impact are on-demand
+escalations, not an entry toll.
+`workflow timeline --export md` prints a compact redacted Markdown timeline for
+handoff or publication.
+
+Workflow `phase-commit` and `final-commit` also emit Producer Loop artifacts
+under `.snipara/producer-loop/`. These are local review evidence backed by the
+redacted Coding Intelligence Ledger, not automatic durable memory, worker
+execution, calibrated confidence, or server-side attestation. Use
+`workflow producer-report` to inspect local adoption, reason-code counts, sample
+size, reviewed/rejected/unreviewed counts, invalid artifacts, and calibration
+caveats before any future hard gate.
+The report also recognizes exported PR Answer Pack decision-capture artifacts
+with producer kind `pr_answer_pack_decision_capture`, so calibration can track
+more than the workflow producer once those artifacts are present locally.
+Use `workflow producer-review --artifact <path|file|artifactId>` or
+`workflow producer-review --latest` after auditing embedded evidence to move a
+sample from `sample_unreviewed` to `sample_reviewed` or `sample_rejected`.
+For conversational human review, run `workflow producer-triage` to create a
+batched Decision Request artifact, `workflow decisions --json` to give the
+LLM client the exact question/evidence/options to ask, and `workflow decide`
+only after the human answers. Batched requests include readable evidence items
+with artifact summaries, statuses, file hints, and metadata instead of only
+opaque refs. Decision requests never resolve by timeout or default, and only
+`workflow decide` applies the existing `producer-review` path.
+When repeated resolved receipts share the same human choice and rationale,
+`workflow decide` may emit a new review-only policy suggestion decision request;
+it still uses manual apply instructions and never writes policy automatically.
+`workflow policy-ledger` gives the LLM agent a consolidated view of pending,
+approved, refused, modified, and deferred Project Policy decision artifacts,
+plus the exact pending requests it should ask the human about. It is read-only
+and does not apply policy edits.
+After the human resolves a request, `workflow apply-decisions --dry-run` previews
+local follow-up actions for resolved Project Policy receipts. Running
+`workflow apply-decisions` writes only idempotent review artifacts such as local
+policy drafts under `.snipara/policies/drafts/`; it does not activate canonical
+Project Policy silently.
+Run `workflow sync-policy-ledger` after local review to upload Decision Request,
+resolution, apply receipt, and policy draft artifacts into the hosted Project
+Policy ledger. The sync is audit-only and does not approve, refuse, activate, or
+edit canonical Project Policy.
+Other producers such as `outcome-capture preview --emit-decisions`,
+`memory reviews --emit-decisions`, `workflow decision-producer memory`, and
+`workflow decision-producer context-risk` emit requests with their existing apply
+paths declared; they do not write canonical memory directly. `memory reviews`
+is the hosted-memory review connector: it reads review queue, cleanup, and
+duplicate candidate surfaces, summarizes the items for the LLM, and only writes
+local Decision Requests when `--emit-decisions` is passed. Its JSON output
+includes `emittedCount`, `emittedRequestIds`, and an `emitted` summary so an
+agent can continue without re-listing pending requests.
 
 ## Local First, Hosted When Useful
 

@@ -94,6 +94,7 @@ function writeIntelligencePreload(dir) {
       "      resumeContext: {",
       "        scope: { branch: args.branch },",
       "        focus: { summary: 'Resume intelligence surface', activeDecisionCount: 2, overlapCount: 0 },",
+      "        decisions: [{ id: 'mem-auth-review', type: 'decision', status: 'active', reviewStatus: 'approved', confidence: 0.95, content: 'Auth policy: `src/auth.ts` requires review before merge.' }],",
       "        recommendedActions: ['Run verification plan'],",
       "        caveats: []",
       "      },",
@@ -125,7 +126,22 @@ function writeIntelligencePreload(dir) {
   return preloadPath;
 }
 
-function writeAdvisorReceiptPreload(dir) {
+const DEFAULT_ADVISOR_RECOMMENDATIONS = [
+  {
+    id: "advisor:historical_impact:package-surface-risk",
+    source: "historical_impact",
+    severity: "risk",
+    title: "Historical Impact suggests risk",
+    rationale: "Package releases need smoke proof.",
+    reasonCodes: ["package_surface"],
+    historicalImpactSummary: "1 helpful / 3 unhelpful.",
+    reasonCodeReliability: 0.84,
+    recommendedVerification: ["Run pack smoke before publish."],
+    expectedBehaviorChange: "Add pack smoke before publishing.",
+  },
+];
+
+function writeAdvisorReceiptPreload(dir, advisorRecommendations = DEFAULT_ADVISOR_RECOMMENDATIONS) {
   const preloadPath = path.join(dir, "advisor-receipt-preload.js");
   const callsPath = path.join(dir, "advisor-receipt-calls.jsonl");
   fs.writeFileSync(
@@ -159,18 +175,7 @@ function writeAdvisorReceiptPreload(dir) {
       "      project: { slug: 'snipara' },",
       "      projectIntelligence: {",
       "        judgment: {",
-      "          advisorRecommendations: [{",
-      "            id: 'advisor:historical_impact:package-surface-risk',",
-      "            source: 'historical_impact',",
-      "            severity: 'risk',",
-      "            title: 'Historical Impact suggests risk',",
-      "            rationale: 'Package releases need smoke proof.',",
-      "            reasonCodes: ['package_surface'],",
-      "            historicalImpactSummary: '1 helpful / 3 unhelpful.',",
-      "            reasonCodeReliability: 0.84,",
-      "            recommendedVerification: ['Run pack smoke before publish.'],",
-      "            expectedBehaviorChange: 'Add pack smoke before publishing.'",
-      "          }]",
+      `          advisorRecommendations: ${JSON.stringify(advisorRecommendations)}`,
       "        }",
       "      },",
       "      resumeContext: {",
@@ -218,9 +223,13 @@ function writeMemoryPreload(dir) {
       "  const args = body.params?.arguments || {};",
       "  let result;",
       "  if (toolName === 'snipara_memory_health') {",
-      "    result = { total_scanned: 12, scope: args.scope, counts: { by_status: { active: 11 }, top_categories: [] }, received: args };",
+      "    result = { total_scanned: 12, scope: args.scope, counts: { by_status: { active: 11 }, top_categories: [] }, auto_compact: { threshold: 10, would_trigger_by_count: true }, received: args };",
       "  } else if (toolName === 'snipara_memory_clean_candidates') {",
-      "    result = { total_scanned: 12, counts: { noise: 1, possibly_stale: 2, duplicates: 0 }, candidates: { noise: [{ memory_id: 'mem_noise', reason: 'receipt', preview: 'low signal' }] }, received: args };",
+      "    result = { total_scanned: 12, counts: { noise: 1, possibly_stale: 2, duplicates: 0 }, candidates: { noise: [{ memory_id: 'mem_noise', reason: 'receipt', preview: 'low signal' }], possibly_stale: [{ memory_id: 'mem_stale', reason: 'old_context_or_todo', type: 'context', scope: 'project', category: 'runbook', status: 'active', preview: 'Old runbook may be stale', created_at: '2026-01-01T00:00:00.000Z' }] }, received: args };",
+      "  } else if (toolName === 'snipara_memory_review_queue') {",
+      "    result = { items: [{ memory_id: 'mem_candidate', content: 'Candidate memory needs promotion review', type: 'decision', scope: 'project', category: 'workflow-phase', status: 'pending', review_status: 'pending', needs_review_reason: 'candidate_memory', confidence: 0.73, created_at: '2026-07-02T17:00:00.000Z', evidence: [{ external_ref: 'workflow:phase-commit', weight: 1 }] }], total_count: 1, received: args, mutated: false };",
+      "  } else if (toolName === 'snipara_memory_duplicate_candidates') {",
+      "    result = { group_count: 1, groups: [{ keep_memory_id: 'mem_keep', candidates: [{ memory_id: 'mem_dupe', content: 'Duplicate decision memory', status: 'active', type: 'decision' }] }], received: args, mutated: false };",
       "  } else if (toolName === 'snipara_memory_compact') {",
       "    result = { dry_run: args.dry_run, mutated: false, planned_actions: 3, received: args };",
       "  } else if (toolName === 'snipara_memory_invalidate') {",
@@ -299,6 +308,7 @@ test("root help exposes workflow, intelligence, and code commands", () => {
   assert.match(result.stdout, /\bintelligence\b/);
   assert.match(result.stdout, /\bstatus\b/);
   assert.match(result.stdout, /\bbrief\b/);
+  assert.match(result.stdout, /reality-check/);
   assert.match(result.stdout, /\brun\b/);
   assert.match(result.stdout, /\btimeline\b/);
   assert.match(result.stdout, /\bhandoff\b/);
@@ -338,6 +348,18 @@ test("intelligence help exposes the brief command", () => {
   const result = runCli(["intelligence", "--help"]);
   assert.equal(result.status, 0);
   assert.match(result.stdout, /\bbrief\b/);
+  assert.match(result.stdout, /reality-check/);
+  assert.match(result.stdout, /ledger-export/);
+});
+
+test("reality-check help exposes local and enforcement options", () => {
+  const result = runCli(["reality-check", "--help"]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /Project Reality Check/);
+  assert.match(result.stdout, /--changed-files/);
+  assert.match(result.stdout, /--decision/);
+  assert.match(result.stdout, /--no-include-dirty/);
+  assert.match(result.stdout, /--enforce/);
 });
 
 test("top-level brief help exposes Project Intelligence options", () => {
@@ -373,6 +395,7 @@ test("top-level run help exposes production judgment options", () => {
   assert.match(result.stdout, /--skip-package-review/);
   assert.match(result.stdout, /--served-judgment-id/);
   assert.match(result.stdout, /--skip-advisor-receipts/);
+  assert.match(result.stdout, /--advisor-recommendation-id/);
 });
 
 test("intelligence brief combines resume context, memory health, and code impact", () => {
@@ -391,6 +414,22 @@ test("intelligence brief combines resume context, memory health, and code impact
   );
   fs.mkdirSync(path.join(dir, "src"), { recursive: true });
   fs.writeFileSync(path.join(dir, "src", "auth.ts"), "export const auth = true;\n", "utf8");
+  fs.mkdirSync(path.join(dir, ".snipara", "activity"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, ".snipara", "activity", "timeline.jsonl"),
+    `${JSON.stringify({
+      schemaVersion: "snipara.activity_timeline.v0",
+      eventId: "act_test_brief",
+      timestamp: "2026-07-02T21:00:00.000Z",
+      source: "workflow",
+      kind: "phase-commit",
+      title: "Implement brief local snapshot",
+      files: ["src/auth.ts"],
+      refs: [],
+      metadata: { action: "write" },
+    })}\n`,
+    "utf8"
+  );
   const preloadPath = writeIntelligencePreload(dir);
   assert.equal(spawnSync("git", ["add", "."], { cwd: dir, encoding: "utf8" }).status, 0);
   assert.equal(
@@ -430,10 +469,25 @@ test("intelligence brief combines resume context, memory health, and code impact
   assert.deepEqual(payload.changedFiles, ["src/auth.ts"]);
   assert.equal(payload.resumeContext.resumeContext.focus.summary, "Resume intelligence surface");
   assert.equal(payload.memoryHealth.health_score, 0.92);
+  assert.equal(payload.projectPolicyDecision.version, "snipara.project_policy.decision.v0");
+  assert.equal(payload.projectPolicyDecision.verdict, "require_review");
+  assert.equal(payload.projectPolicyDecision.receipt.overrideRequiresReason, true);
   assert.equal(payload.codeImpactSourceSelection.selected, "local_overlay");
   assert.equal(payload.codeImpactSourceSelection.reason, "auto_local_default");
   assert.equal(payload.codeImpact.title, "Local impact");
   assert.deepEqual(payload.codeImpact.changedFiles, ["src/auth.ts"]);
+  assert.equal(payload.localSessionSnapshot.schemaVersion, "snipara.session_snapshot.v0");
+  assert.equal(
+    payload.localSessionSnapshot.summary.latestActivityTitle,
+    "Implement brief local snapshot"
+  );
+  assert.deepEqual(payload.localSessionSnapshot.summary.touchedFiles, ["src/auth.ts"]);
+  assert.equal(payload.localSessionSnapshot.intentDetection.intent, "implementing_feature");
+  assert.equal(payload.localSessionSnapshot.intentDetection.hardRoutingAllowed, false);
+  assert.equal(
+    payload.localSessionSnapshot.intentDetection.advisoryRouting.suggestedWorkflowMode,
+    "lite"
+  );
   assert.equal(payload.judgmentCard.version, "project-intelligence.judgment-card.v1");
   assert.ok(
     payload.suggestedCommands.some((command) =>
@@ -507,7 +561,78 @@ test("run command composes production judgment JSON", () => {
   );
 });
 
-test("run command records first-party advisor influence receipts when served judgment is known", () => {
+test("run command emits agent-first Project Policy decision requests", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-run-policy-decisions-"));
+  assert.equal(spawnSync("git", ["init"], { cwd: dir, encoding: "utf8" }).status, 0);
+  assert.equal(
+    spawnSync("git", ["config", "user.email", "agent@example.com"], {
+      cwd: dir,
+      encoding: "utf8",
+    }).status,
+    0
+  );
+  assert.equal(
+    spawnSync("git", ["config", "user.name", "Agent"], { cwd: dir, encoding: "utf8" }).status,
+    0
+  );
+  fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "src", "auth.ts"), "export const auth = true;\n", "utf8");
+  const preloadPath = writeIntelligencePreload(dir);
+  assert.equal(spawnSync("git", ["add", "."], { cwd: dir, encoding: "utf8" }).status, 0);
+  assert.equal(
+    spawnSync("git", ["commit", "-m", "init"], { cwd: dir, encoding: "utf8" }).status,
+    0
+  );
+
+  const result = runCli(
+    [
+      "run",
+      "--task",
+      "change auth policy",
+      "--branch",
+      "dev",
+      "--changed-files",
+      "src/auth.ts",
+      "--diff-summary",
+      "auth change",
+      "--skip-guard",
+      "--skip-package-review",
+      "--emit-policy-decisions",
+      "--json",
+    ],
+    {
+      cwd: dir,
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "snipara",
+        SNIPARA_API_URL: "https://api.snipara.com",
+      },
+      nodeArgs: ["--require", preloadPath],
+    }
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.policyGates.projectPolicyDecision.verdict, "require_review");
+  assert.equal(
+    payload.policyDecisionRequests.version,
+    "project-intelligence.policy-decision-requests.v1"
+  );
+  assert.equal(payload.policyDecisionRequests.requestCount, 1);
+  assert.equal(payload.policyDecisionRequests.writes[0].status, "written");
+  assert.equal(payload.policyDecisionRequests.requests[0].producer.kind, "project_policy_review");
+  assert.equal(payload.policyDecisionRequests.requests[0].blocking, true);
+  assert.deepEqual(payload.policyDecisionRequests.requests[0].evidence.files, ["src/auth.ts"]);
+
+  const decisionsResult = runCli(["workflow", "decisions", "--json"], { cwd: dir });
+  assert.equal(decisionsResult.status, 0, decisionsResult.stderr || decisionsResult.stdout);
+  const decisions = JSON.parse(decisionsResult.stdout);
+  assert.equal(decisions.pendingCount, 1);
+  assert.equal(decisions.requests[0].producer.kind, "project_policy_review");
+  assert.equal(decisions.requests[0].options.includes("approve_once"), true);
+});
+
+test("run command acknowledges expected behavior without claiming plan adaptation", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-advisor-receipt-"));
   const { preloadPath, callsPath } = writeAdvisorReceiptPreload(dir);
 
@@ -553,12 +678,20 @@ test("run command records first-party advisor influence receipts when served jud
   assert.equal(calls.length, 1);
   assert.match(calls[0].url, /\/api\/projects\/snipara\/project-intelligence\/advisor-influence$/);
   assert.equal(calls[0].body.servedJudgmentId, "served_123");
-  assert.equal(calls[0].body.agentDecision, "modified");
-  assert.deepEqual(calls[0].body.verificationExecuted, ["Policy gates: warning"]);
+  assert.equal(calls[0].body.agentDecision, "accepted");
+  assert.deepEqual(calls[0].body.verificationExecuted, []);
   assert.equal(calls[0].body.outcomeLinkStatus, "pending");
   assert.equal(calls[0].body.metadata.source, "snipara-companion:run");
   assert.equal(calls[0].body.metadata.firstParty, true);
-  assert.equal(calls[0].body.metadata.changedBecauseOfRecommendation, true);
+  assert.equal(calls[0].body.metadata.planBefore, null);
+  assert.equal(calls[0].body.metadata.planAfter, null);
+  assert.equal(calls[0].body.metadata.changedBecauseOfRecommendation, false);
+  assert.equal(calls[0].body.metadata.advisorInfluenceLifecycle.state, "acknowledged");
+  assert.equal(calls[0].body.metadata.advisorInfluenceLifecycle.planChange.changed, false);
+  assert.deepEqual(
+    calls[0].body.metadata.advisorInfluenceLifecycle.transitions.map((item) => item.state),
+    ["proposed", "acknowledged"]
+  );
   assert.deepEqual(
     calls[0].body.metadata.verificationEvidence.map((item) => [item.source, item.status]),
     [
@@ -574,17 +707,299 @@ test("run command records first-party advisor influence receipts when served jud
   assert.equal(calls[0].body.metadata.verificationBackfill.skippedCount, 1);
   assert.equal(
     calls[0].body.metadata.receiptAutomation.version,
-    "first-party-advisor-receipt-automation-v1"
+    "first-party-advisor-receipt-automation-v2"
   );
   assert.equal(calls[0].body.metadata.receiptAutomation.selectedRecommendationRank, 1);
   assert.equal(calls[0].body.metadata.receiptAutomation.totalRecommendations, 1);
   assert.equal(calls[0].body.metadata.receiptAutomation.skipReason, null);
-  assert.equal(payload.advisorReceiptCapture.writes[0].agentDecision, "modified");
-  assert.equal(payload.advisorReceiptCapture.writes[0].changedBecauseOfRecommendation, true);
+  assert.equal(payload.advisorReceiptCapture.writes[0].agentDecision, "accepted");
+  assert.equal(payload.advisorReceiptCapture.writes[0].changedBecauseOfRecommendation, false);
+  assert.equal(payload.advisorReceiptCapture.writes[0].lifecycleState, "acknowledged");
   assert.equal(calls[0].body.recommendation.source, "historical_impact");
   assert.deepEqual(calls[0].body.recommendation.caveats, [
-    "First-party companion receipt records plan adaptation, not outcome proof.",
+    "Expected behavior is a proposal only; lifecycle evidence separately records acknowledgement, application, and verification.",
   ]);
+});
+
+test("run command keeps hash-identical explicit plan snapshots acknowledged", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-advisor-unchanged-"));
+  const { preloadPath, callsPath } = writeAdvisorReceiptPreload(dir);
+
+  const result = runCli(
+    [
+      "run",
+      "--task",
+      "publish package surface",
+      "--branch",
+      "dev",
+      "--served-judgment-id",
+      "served_123",
+      "--advisor-plan-before",
+      "Build\nVerify",
+      "--advisor-plan-after",
+      "Build  \r\nVerify\n",
+      "--skip-package-review",
+      "--json",
+    ],
+    {
+      cwd: dir,
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "snipara",
+        SNIPARA_API_URL: "https://api.snipara.com",
+      },
+      nodeArgs: ["--require", preloadPath],
+    }
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  const calls = fs.readFileSync(callsPath, "utf8").trim().split("\n").map(JSON.parse);
+  const lifecycle = calls[0].body.metadata.advisorInfluenceLifecycle;
+  assert.equal(calls[0].body.agentDecision, "accepted");
+  assert.equal(calls[0].body.metadata.changedBecauseOfRecommendation, false);
+  assert.equal(lifecycle.state, "acknowledged");
+  assert.equal(lifecycle.planChange.changed, false);
+  assert.equal(lifecycle.planChange.beforeHash, lifecycle.planChange.afterHash);
+  assert.deepEqual(calls[0].body.verificationExecuted, []);
+  assert.equal(payload.advisorReceiptCapture.writes[0].lifecycleState, "acknowledged");
+});
+
+test("run command records a real bounded plan diff as applied", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-advisor-applied-"));
+  const { preloadPath, callsPath } = writeAdvisorReceiptPreload(dir);
+
+  const result = runCli(
+    [
+      "run",
+      "--task",
+      "publish package surface",
+      "--branch",
+      "dev",
+      "--served-judgment-id",
+      "served_123",
+      "--advisor-plan-before",
+      "Build\nDeploy",
+      "--advisor-plan-after",
+      "Build\nRun pack smoke\nDeploy",
+      "--skip-package-review",
+      "--json",
+    ],
+    {
+      cwd: dir,
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "snipara",
+        SNIPARA_API_URL: "https://api.snipara.com",
+      },
+      nodeArgs: ["--require", preloadPath],
+    }
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  const calls = fs.readFileSync(callsPath, "utf8").trim().split("\n").map(JSON.parse);
+  const lifecycle = calls[0].body.metadata.advisorInfluenceLifecycle;
+  assert.equal(calls[0].body.agentDecision, "modified");
+  assert.equal(calls[0].body.metadata.changedBecauseOfRecommendation, true);
+  assert.equal(lifecycle.state, "applied");
+  assert.equal(lifecycle.planChange.changed, true);
+  assert.notEqual(lifecycle.planChange.beforeHash, lifecycle.planChange.afterHash);
+  assert.equal(calls[0].body.metadata.advisorPlanScope.mode, "automatic_single_recommendation");
+  assert.deepEqual(calls[0].body.verificationExecuted, []);
+  assert.equal(calls[0].body.outcomeLinkStatus, "pending");
+  assert.equal(payload.advisorReceiptCapture.writes[0].lifecycleState, "applied");
+});
+
+test("run command scopes a shared plan pair to one explicit recommendation", () => {
+  const targetRecommendationId = "advisor:verification:release-check";
+  const recommendations = [
+    ...DEFAULT_ADVISOR_RECOMMENDATIONS,
+    {
+      id: targetRecommendationId,
+      source: "verification",
+      severity: "watch",
+      title: "Verify the release candidate",
+      rationale: "The release candidate needs a focused smoke test.",
+      reasonCodes: ["release_verification"],
+      historicalImpactSummary: null,
+      reasonCodeReliability: 0.78,
+      recommendedVerification: ["Run the release candidate smoke test."],
+      expectedBehaviorChange: "Add a release candidate smoke test.",
+    },
+  ];
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-advisor-scoped-"));
+  const { preloadPath, callsPath } = writeAdvisorReceiptPreload(dir, recommendations);
+  const runOptions = {
+    cwd: dir,
+    env: {
+      SNIPARA_API_KEY: "test-key",
+      SNIPARA_PROJECT_ID: "snipara",
+      SNIPARA_API_URL: "https://api.snipara.com",
+    },
+    nodeArgs: ["--require", preloadPath],
+  };
+  const baseArgs = [
+    "run",
+    "--task",
+    "publish package surface",
+    "--branch",
+    "dev",
+    "--served-judgment-id",
+    "served_123",
+    "--advisor-plan-before",
+    "Build\nDeploy",
+    "--advisor-plan-after",
+    "Build\nRun release smoke\nDeploy",
+    "--skip-package-review",
+  ];
+  const runScenario = (recommendationId) =>
+    runCli(
+      [
+        ...baseArgs,
+        ...(recommendationId ? ["--advisor-recommendation-id", recommendationId] : []),
+        "--json",
+      ],
+      runOptions
+    );
+  const readCalls = () => fs.readFileSync(callsPath, "utf8").trim().split("\n").map(JSON.parse);
+
+  const unscopedResult = runScenario();
+  assert.equal(unscopedResult.status, 0, unscopedResult.stderr);
+  const unscopedCalls = readCalls();
+  assert.equal(unscopedCalls.length, 2);
+  for (const call of unscopedCalls) {
+    assert.equal(call.body.metadata.advisorInfluenceLifecycle.state, "acknowledged");
+    assert.equal(call.body.metadata.changedBecauseOfRecommendation, false);
+    assert.equal(
+      call.body.metadata.advisorPlanScope.mode,
+      "multiple_recommendations_require_selector"
+    );
+  }
+
+  const scopedResult = runScenario(targetRecommendationId);
+  assert.equal(scopedResult.status, 0, scopedResult.stderr);
+  const scopedCalls = new Map(
+    readCalls()
+      .slice(2)
+      .map((call) => [call.body.recommendation.id, call.body])
+  );
+  assert.equal(scopedCalls.size, 2);
+  assert.equal(
+    scopedCalls.get(targetRecommendationId).metadata.advisorInfluenceLifecycle.state,
+    "applied"
+  );
+  assert.equal(
+    scopedCalls.get(targetRecommendationId).metadata.advisorPlanScope.mode,
+    "explicit_match"
+  );
+  assert.equal(
+    scopedCalls.get(DEFAULT_ADVISOR_RECOMMENDATIONS[0].id).metadata.advisorInfluenceLifecycle.state,
+    "acknowledged"
+  );
+  assert.equal(
+    scopedCalls.get(DEFAULT_ADVISOR_RECOMMENDATIONS[0].id).metadata.advisorPlanScope.mode,
+    "explicit_non_match"
+  );
+
+  const unmatchedResult = runScenario("advisor:missing");
+  assert.equal(unmatchedResult.status, 0, unmatchedResult.stderr);
+  const unmatchedCalls = readCalls().slice(4);
+  assert.equal(unmatchedCalls.length, 2);
+  for (const call of unmatchedCalls) {
+    assert.equal(call.body.metadata.advisorInfluenceLifecycle.state, "acknowledged");
+    assert.equal(call.body.metadata.changedBecauseOfRecommendation, false);
+    assert.equal(call.body.metadata.advisorPlanScope.mode, "explicit_non_match");
+  }
+});
+
+test("run command verifies an applied diff with recommendation-scoped outcome evidence", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-advisor-verified-"));
+  const { preloadPath, callsPath } = writeAdvisorReceiptPreload(dir);
+  const outcomePath = path.join(dir, "outcome.json");
+  fs.writeFileSync(
+    outcomePath,
+    JSON.stringify({
+      version: "snipara.outcome_intelligence.receipt.v0",
+      receiptId: "outcome-release-123",
+      generatedAt: "2026-07-12T10:00:00.000Z",
+      sourceRef: "commit:abc123",
+      taskProfile: {
+        kind: "release",
+        risk: "high",
+        surfaces: ["package"],
+        changedFiles: ["packages/cli/src/commands/run.ts"],
+      },
+      decision: {
+        summary: "Run pack smoke before publish.",
+        reasonCodes: ["package_surface"],
+        advisorRecommendationIds: ["advisor:historical_impact:package-surface-risk"],
+      },
+      verification: {
+        evidence: [
+          {
+            source: "test",
+            label: "Pack smoke",
+            status: "passed",
+            command: "pnpm --filter snipara-companion pack:smoke",
+          },
+        ],
+        passedCount: 1,
+        failedCount: 0,
+        warningCount: 0,
+        skippedCount: 0,
+      },
+      outcome: { status: "success", summary: "Package smoke and release succeeded." },
+      caveats: [],
+    }),
+    "utf8"
+  );
+
+  const result = runCli(
+    [
+      "run",
+      "--task",
+      "publish package surface",
+      "--branch",
+      "dev",
+      "--served-judgment-id",
+      "served_123",
+      "--advisor-plan-before",
+      "Build\nDeploy",
+      "--advisor-plan-after",
+      "Build\nRun pack smoke\nDeploy",
+      "--outcome-receipts",
+      outcomePath,
+      "--skip-package-review",
+      "--json",
+    ],
+    {
+      cwd: dir,
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "snipara",
+        SNIPARA_API_URL: "https://api.snipara.com",
+      },
+      nodeArgs: ["--require", preloadPath],
+    }
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  const calls = fs.readFileSync(callsPath, "utf8").trim().split("\n").map(JSON.parse);
+  const lifecycle = calls[0].body.metadata.advisorInfluenceLifecycle;
+  assert.equal(lifecycle.state, "verified");
+  assert.equal(lifecycle.planChange.changed, true);
+  assert.deepEqual(
+    lifecycle.evidence.map((item) => [item.kind, item.ref, item.status]),
+    [
+      ["execution", "outcome-release-123#verification-1", "passed"],
+      ["outcome", "outcome-release-123", "passed"],
+    ]
+  );
+  assert.equal(calls[0].body.verificationExecuted.length, 2);
+  assert.equal(calls[0].body.outcomeLinkStatus, "pending");
+  assert.equal(payload.advisorReceiptCapture.writes[0].lifecycleState, "verified");
 });
 
 test("run command skips advisor receipts with stable reason when served judgment is missing", () => {
@@ -661,6 +1076,16 @@ test("memory audit combines health, candidates, and compact dry-run", () => {
   assert.equal(payload.version, "snipara.memory_audit.v1");
   assert.equal(payload.scope, "project");
   assert.equal(payload.health.total_scanned, 12);
+  assert.equal(payload.summary.totalScanned, 12);
+  assert.equal(payload.summary.activeCount, 11);
+  assert.equal(payload.summary.autoCompactThreshold, 10);
+  assert.equal(payload.summary.autoCompactWouldTrigger, true);
+  assert.equal(payload.summary.cleanupCandidateCounts.noise, 1);
+  assert.ok(
+    payload.summary.recommendedActions.includes(
+      "snipara-companion memory clean-candidates --scope project --limit-per-bucket 5"
+    )
+  );
   assert.equal(payload.cleanCandidates.counts.noise, 1);
   assert.equal(payload.cleanCandidates.received.limit_per_bucket, 3);
   assert.equal(payload.compactDryRun.dry_run, true);
@@ -731,6 +1156,151 @@ test("memory lifecycle commands call hosted invalidate and supersede tools", () 
   assert.equal(supersedePayload.received.new_memory_id, "mem_new");
   assert.equal(supersedePayload.received.reason, "corrected source-selection rule");
   assert.equal(supersedePayload.received.text, undefined);
+});
+
+test("memory reviews summarizes hosted review surfaces and emits decision requests", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-memory-reviews-"));
+  const preloadPath = writeMemoryPreload(dir);
+
+  const result = runCli(
+    ["memory", "reviews", "--scope", "project", "--limit", "3", "--emit-decisions", "--json"],
+    {
+      cwd: dir,
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "snipara",
+        SNIPARA_API_URL: "https://api.snipara.com",
+      },
+      nodeArgs: ["--require", preloadPath],
+    }
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.version, "snipara.memory_review_connector.v0");
+  assert.equal(payload.scope, "project");
+  assert.equal(payload.surfaces.review_queue.count, 1);
+  assert.equal(payload.surfaces.clean_candidates.count, 2);
+  assert.equal(payload.surfaces.duplicate_candidates.count, 1);
+  assert.equal(payload.items.length, 4);
+  assert.equal(payload.requests.length, 4);
+  assert.equal(payload.writes.length, 4);
+  assert.equal(payload.emittedCount, 4);
+  assert.deepEqual(
+    payload.emittedRequestIds,
+    payload.writes.map((write) => write.requestId)
+  );
+  assert.deepEqual(payload.emitted, {
+    enabled: true,
+    count: 4,
+    requestIds: payload.emittedRequestIds,
+  });
+  assert.equal(payload.requests[0].schemaVersion, "snipara.decision_request.v0");
+  assert.equal(payload.requests[0].evidence.items[0].ref, "memory:mem_candidate");
+  assert.match(payload.requests[0].evidence.items[0].summary, /Candidate memory/);
+  assert.ok(fs.existsSync(path.join(dir, ".snipara", "decisions", "pending")));
+});
+
+test("workflow decide renders human choice in manual apply hints", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-choice-apply-"));
+  const preloadPath = writeMemoryPreload(dir);
+
+  const reviews = runCli(
+    ["memory", "reviews", "--scope", "project", "--limit", "3", "--emit-decisions", "--json"],
+    {
+      cwd: dir,
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "snipara",
+        SNIPARA_API_URL: "https://api.snipara.com",
+      },
+      nodeArgs: ["--require", preloadPath],
+    }
+  );
+
+  assert.equal(reviews.status, 0, reviews.stderr);
+  const reviewsPayload = JSON.parse(reviews.stdout);
+  const request = reviewsPayload.requests.find((candidate) =>
+    candidate.evidence.applyCommand?.includes('memory_id: "mem_candidate"')
+  );
+  assert.ok(request);
+  assert.match(request.evidence.applyCommand, /<human-choice>/);
+
+  const decide = runCli(
+    [
+      "workflow",
+      "decide",
+      request.requestId,
+      "--choose",
+      "keep_pending",
+      "--reviewer",
+      "alice",
+      "--json",
+    ],
+    { cwd: dir }
+  );
+
+  assert.equal(decide.status, 0, decide.stderr || decide.stdout);
+  const resolved = JSON.parse(decide.stdout);
+  assert.deepEqual(resolved.response.appliedActions, [
+    'manual_apply_required: snipara_memory_resolve_queue_item({ memory_id: "mem_candidate", action: "keep_pending" })',
+  ]);
+});
+
+test("workflow memory decision producer uses the selected action for apply hints", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-memory-decision-"));
+  const preloadPath = writeMemoryPreload(dir);
+
+  const inherited = runCli(
+    [
+      "workflow",
+      "decision-producer",
+      "memory",
+      "mem_candidate",
+      "--action",
+      "invalidate",
+      "--json",
+    ],
+    {
+      cwd: dir,
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "snipara",
+        SNIPARA_API_URL: "https://api.snipara.com",
+      },
+      nodeArgs: ["--require", preloadPath],
+    }
+  );
+
+  assert.equal(inherited.status, 0, inherited.stderr);
+  const inheritedPayload = JSON.parse(inherited.stdout);
+  assert.equal(inheritedPayload.inheritedFrom, "memory reviews");
+  assert.equal(inheritedPayload.request.evidence.applyPath, "snipara_memory_invalidate");
+  assert.match(
+    inheritedPayload.request.evidence.applyCommand,
+    /snipara_memory_invalidate\(\{ memory_id: "mem_candidate" \}\)/
+  );
+
+  const fallback = runCli(
+    ["workflow", "decision-producer", "memory", "mem_direct", "--action", "invalidate", "--json"],
+    {
+      cwd: dir,
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "snipara",
+        SNIPARA_API_URL: "https://api.snipara.com",
+      },
+      nodeArgs: ["--require", preloadPath],
+    }
+  );
+
+  assert.equal(fallback.status, 0, fallback.stderr);
+  const fallbackPayload = JSON.parse(fallback.stdout);
+  assert.equal(fallbackPayload.request.evidence.applyPath, "snipara_memory_invalidate");
+  assert.match(
+    fallbackPayload.request.evidence.applyCommand,
+    /snipara_memory_invalidate\(\{ memory_id: "mem_direct" \}\)/
+  );
 });
 
 test("top-level brief is an alias for intelligence brief", () => {
@@ -848,7 +1418,7 @@ test("init starts browser project authorization instead of dashboard key copy-pa
   assert.match(source, /writeProjectBinding\(projectDir, selectedProject\.slug\)/);
   assert.doesNotMatch(source, /await loginCommand/);
   assert.doesNotMatch(source, /Get your API key from: https:\/\/snipara\.com\/dashboard/);
-  assert.doesNotMatch(indexSource, /projectId: options\.project/);
+  assert.doesNotMatch(indexSource, /projectId: options\.project(?:[\s,}]|$)/);
 });
 
 test("init --force refreshes an existing workspace through browser project authorization", () => {
@@ -1749,6 +2319,67 @@ test("memory-guard detects contradictory memory before destructive intent", () =
   assert.match(payload.confirmationPrompt, /explicitly confirm/);
 });
 
+test("memory-guard non-blocking success is one line unless verbose", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-memory-guard-"));
+  fs.writeFileSync(
+    path.join(dir, "package.json"),
+    JSON.stringify({ name: "snipara-companion-test", version: "1.0.0" }),
+    "utf8"
+  );
+  const preloadPath = writeMemoryGuardPreload(dir);
+
+  const result = runCli(
+    [
+      "memory-guard",
+      "check",
+      "--trigger",
+      "pre-commit",
+      "--file",
+      "package.json",
+      "--no-recent-failures",
+    ],
+    {
+      cwd: dir,
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "snipara",
+        SNIPARA_API_URL: "https://api.snipara.com",
+      },
+      nodeArgs: ["--require", preloadPath],
+    }
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.stdout.trim(), "Snipara Memory Guard: checked (pre-commit)");
+
+  const verbose = runCli(
+    [
+      "memory-guard",
+      "check",
+      "--trigger",
+      "pre-commit",
+      "--file",
+      "package.json",
+      "--no-recent-failures",
+      "--verbose",
+    ],
+    {
+      cwd: dir,
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "snipara",
+        SNIPARA_API_URL: "https://api.snipara.com",
+      },
+      nodeArgs: ["--require", preloadPath],
+    }
+  );
+
+  assert.equal(verbose.status, 0, verbose.stderr || verbose.stdout);
+  assert.match(verbose.stdout, /Snipara Memory Guard/);
+  assert.match(verbose.stdout, /Release Surfaces/);
+  assert.match(verbose.stdout, /Memory Says/);
+});
+
 test("memory-guard explicit user confirmation overrides strict destructive contradiction", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-memory-guard-"));
   const preloadPath = writeMemoryGuardPreload(dir);
@@ -1991,6 +2622,33 @@ test("doctor json reports runtime readiness", () => {
   assert.equal(report.toolCatalog.available, true);
   assert.equal(report.toolCatalog.toolCount, 0);
   assert.match(report.toolCatalog.detail, /snipara_help\(list_all=true\) returned 0 tools/);
+});
+
+test("doctor json detects venv-installed orchestrator", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-doctor-venv-"));
+  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+  const binDir = path.join(dir, "packages", "agentic-orchestrator", ".venv", "bin");
+  fs.mkdirSync(binDir, { recursive: true });
+  const orchestratorPath = path.join(binDir, "snipara-orchestrator");
+  fs.writeFileSync(
+    orchestratorPath,
+    ["#!/bin/sh", "echo 'snipara-orchestrator 1.2.3'", ""].join("\n"),
+    "utf8"
+  );
+  fs.chmodSync(orchestratorPath, 0o755);
+
+  const result = runCli(["doctor", "--json"], {
+    cwd: dir,
+    env: {
+      PATH: path.dirname(process.execPath),
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.orchestrator.cliAvailable, true);
+  assert.equal(fs.realpathSync(report.orchestrator.command), fs.realpathSync(orchestratorPath));
+  assert.equal(report.orchestrator.version, "snipara-orchestrator 1.2.3");
 });
 
 test("doctor json detects workspace companion version newer than running CLI", () => {

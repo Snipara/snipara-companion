@@ -87,6 +87,7 @@ export interface AdaptiveRoutingCard {
   costEstimate: AdaptiveRoutingCostEstimate;
   humanApprovalRequired: boolean;
   fallback: "main_agent";
+  rejectedReasons?: Record<string, string[]>;
   reasons: string[];
   warnings: string[];
 }
@@ -121,6 +122,7 @@ export interface AdaptiveRoutingResolution {
   fallback?: string;
   reasons?: string[];
   warnings?: string[];
+  rejectedReasons?: Record<string, string[]>;
 }
 
 export interface AdaptiveWorkRoutingRecommendation {
@@ -225,6 +227,7 @@ export interface OrchestratorHandoffOptions {
   rootDir?: string;
   changedFiles?: string[];
   contextRefs?: string[];
+  decisionIds?: string[];
   resumeSummary?: string;
   featureTitle?: string;
   workstreams?: string[];
@@ -247,6 +250,12 @@ export function buildOrchestratorHandoff(
     options.changedFiles ??
       (Array.isArray(workflowState?.currentPhase?.files) ? workflowState.currentPhase.files : [])
   );
+  const contextRefs = normalizeStringList(options.contextRefs);
+  const decisionIds = normalizeDecisionIds([
+    ...normalizeStringList(workflowState?.decisionIds),
+    ...normalizeStringList(options.decisionIds),
+    ...extractDecisionIdsFromRefs(contextRefs),
+  ]);
   const requiresProofGate =
     options.recommendation.reasons.includes("proof_gate_intent") ||
     options.recommendation.reasons.includes("team_sync_collision");
@@ -333,8 +342,8 @@ export function buildOrchestratorHandoff(
         : [],
     },
     memory: {
-      decisionIds: ["DEC-002"],
-      contextRefs: normalizeStringList(options.contextRefs),
+      decisionIds,
+      contextRefs,
       resumeSummary: options.resumeSummary ?? null,
     },
   };
@@ -395,6 +404,7 @@ export function buildAdaptiveWorkRoutingRecommendation(
   });
   const warnings = [
     "Recommendation-only dry run; companion does not launch or claim workers.",
+    "Declare local runtimes with `snipara-companion workers local add ...` before expecting a local worker route.",
     ...(preferredEndpointTypes.includes("local")
       ? ["Local endpoint preference requires a runtime catalog or gateway to confirm availability."]
       : []),
@@ -642,6 +652,26 @@ function normalizeEndpointTypes(values: string[] | undefined): string[] {
   ).sort();
 }
 
+function normalizeDecisionIds(values: string[] | undefined): string[] {
+  return Array.from(
+    new Set(
+      normalizeStringList(values)
+        .map((value) => value.toUpperCase())
+        .filter((value) => /^DEC-[A-Z0-9._-]+$/.test(value))
+    )
+  ).sort();
+}
+
+function extractDecisionIdsFromRefs(contextRefs: string[]): string[] {
+  const matches: string[] = [];
+  for (const ref of contextRefs) {
+    for (const match of ref.matchAll(/\bDEC-[A-Za-z0-9._-]+\b/g)) {
+      matches.push(match[0]);
+    }
+  }
+  return matches;
+}
+
 function compactObject<T extends Record<string, unknown>>(value: T): T {
   return Object.fromEntries(
     Object.entries(value).filter(
@@ -673,6 +703,7 @@ function readWorkflowState(rootDir: string): {
   currentPhase?: OrchestratorHandoffWorkflowPhase;
   phases: OrchestratorHandoffWorkflowPhase[];
   runtimeSandboxPhases: OrchestratorHandoffRuntimeSandboxPhase[];
+  decisionIds: string[];
 } | null {
   const workflowPath = path.join(rootDir, ".snipara", "workflow", "current.json");
   if (!fs.existsSync(workflowPath)) {
@@ -688,6 +719,8 @@ function readWorkflowState(rootDir: string): {
         bindings?: unknown[];
       };
     };
+    decisions?: unknown[];
+    decisionIds?: unknown[];
   };
   const phases = Array.isArray(parsed.phases)
     ? parsed.phases.filter(isRecord).map((phase, index) => normalizeWorkflowPhase(phase, index))
@@ -732,7 +765,26 @@ function readWorkflowState(rootDir: string): {
     currentPhase,
     phases,
     runtimeSandboxPhases,
+    decisionIds: extractWorkflowDecisionIds(parsed),
   };
+}
+
+function extractWorkflowDecisionIds(parsed: {
+  decisions?: unknown[];
+  decisionIds?: unknown[];
+}): string[] {
+  const fromTopLevel = normalizeStringList(parsed.decisionIds);
+  const fromDecisions = Array.isArray(parsed.decisions)
+    ? parsed.decisions
+        .map((decision) => {
+          if (typeof decision === "string") {
+            return decision;
+          }
+          return isRecord(decision) ? stringValue(decision.decisionId) : undefined;
+        })
+        .filter((decisionId): decisionId is string => Boolean(decisionId))
+    : [];
+  return normalizeDecisionIds([...fromTopLevel, ...fromDecisions]);
 }
 
 function normalizeContextPackIds(value: unknown): string[] {

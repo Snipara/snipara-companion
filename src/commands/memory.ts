@@ -9,11 +9,19 @@
  */
 import chalk from "chalk";
 import {
+  buildDecisionRequest,
+  type BuildDecisionRequestInput,
+  type DecisionRequest,
+  type DecisionRequestEvidenceItem,
+  type DecisionRequestProducerKind,
+} from "../contracts/project-intelligence";
+import {
   createClient,
   type MemoryInvalidateResult,
   type MemoryScope,
   type MemorySupersedeResult,
 } from "../api/client";
+import { writeDecisionRequest, type DecisionRequestWriteResult } from "./decision-requests";
 
 export interface MemoryHealthCommandOptions {
   scope?: MemoryScope;
@@ -54,14 +62,73 @@ export interface MemorySupersedeCommandOptions {
   json?: boolean;
 }
 
+export interface MemoryReviewsCommandOptions {
+  scope?: MemoryScope;
+  status?: string;
+  type?: string;
+  category?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+  includeEvidence?: boolean;
+  includeCleanCandidates?: boolean;
+  includeDuplicates?: boolean;
+  includeInactive?: boolean;
+  minSimilarity?: number;
+  emitDecisions?: boolean;
+  json?: boolean;
+}
+
 export interface MemoryAuditResult {
   version: "snipara.memory_audit.v1";
   generatedAt: string;
   scope?: MemoryScope;
+  summary?: MemoryAuditSummary;
   health?: Record<string, unknown>;
   cleanCandidates?: Record<string, unknown>;
   compactDryRun?: Record<string, unknown>;
   errors: Array<{ surface: string; message: string }>;
+}
+
+export interface MemoryReviewConnectorResult {
+  version: "snipara.memory_review_connector.v0";
+  generatedAt: string;
+  scope?: MemoryScope;
+  surfaces: Record<string, { status: "ok" | "error"; count?: number; message?: string }>;
+  items: MemoryReviewConnectorItem[];
+  requests: DecisionRequest[];
+  writes: DecisionRequestWriteResult[];
+  emitted: { enabled: boolean; count: number; requestIds: string[] };
+  emittedCount: number;
+  emittedRequestIds: string[];
+  caveats: string[];
+}
+
+export interface MemoryReviewConnectorItem {
+  source: "review_queue" | "clean_candidates" | "duplicate_candidates";
+  bucket?: string;
+  memoryId: string;
+  targetMemoryId?: string;
+  title: string;
+  summary: string;
+  kind: DecisionRequestProducerKind;
+  status?: string;
+  action: string;
+  options: string[];
+  recommendation?: string;
+  reasonCodes: string[];
+  evidenceItem: DecisionRequestEvidenceItem;
+}
+
+export interface MemoryAuditSummary {
+  totalScanned?: number;
+  activeCount?: number;
+  autoCompactThreshold?: number;
+  autoCompactWouldTrigger?: boolean;
+  cleanupCandidateCounts: Record<string, number>;
+  compactDryRunMutated?: boolean;
+  compactDryRunPlannedActions?: number;
+  recommendedActions: string[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -72,6 +139,17 @@ function numberValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function numberLikeValue(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
 function preview(value: unknown, maxLength = 180): string {
   const text =
     typeof value === "string"
@@ -80,6 +158,26 @@ function preview(value: unknown, maxLength = 180): string {
         ? ""
         : JSON.stringify(value);
   return text.length > maxLength ? `${text.slice(0, maxLength - 1)}...` : text;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function booleanValue(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function recordArrayValue(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function firstString(values: unknown[]): string | undefined {
+  for (const value of values) {
+    const text = stringValue(value);
+    if (text) return text;
+  }
+  return undefined;
 }
 
 function compactObject(value: Record<string, unknown>): Record<string, unknown> {
@@ -101,6 +199,30 @@ function buildCleanCandidatesArgs(
     scope: options.scope,
     include_inactive: options.includeInactive || undefined,
     limit_per_bucket: options.limitPerBucket,
+  });
+}
+
+function buildReviewQueueArgs(options: MemoryReviewsCommandOptions): Record<string, unknown> {
+  return compactObject({
+    scope: options.scope,
+    status: options.status ?? "pending",
+    type: options.type,
+    category: options.category,
+    search: options.search,
+    limit: options.limit,
+    offset: options.offset,
+    include_evidence: options.includeEvidence ?? true,
+  });
+}
+
+function buildDuplicateCandidateArgs(
+  options: MemoryReviewsCommandOptions
+): Record<string, unknown> {
+  return compactObject({
+    scope: options.scope,
+    include_inactive: options.includeInactive || undefined,
+    limit: options.limit,
+    min_similarity: options.minSimilarity,
   });
 }
 
@@ -250,6 +372,363 @@ function printCleanCandidates(result: Record<string, unknown>): void {
   printCandidateBucket("Needs Human Review", candidates.needs_human_review);
 }
 
+function summarizeMemoryContent(value: Record<string, unknown>, maxLength = 240): string {
+  return preview(
+    firstString([
+      value.summary,
+      value.preview,
+      value.content,
+      value.text,
+      value.reason,
+      value.needs_review_reason,
+    ]) ?? JSON.stringify(value),
+    maxLength
+  );
+}
+
+function memoryIdFrom(value: Record<string, unknown>): string | undefined {
+  return firstString([value.memory_id, value.id, value.memoryId]);
+}
+
+function memoryEvidenceItem(
+  value: Record<string, unknown>,
+  options: {
+    ref: string;
+    title: string;
+    summary: string;
+    kind: string;
+    status?: string;
+    reason?: string;
+    source: string;
+    bucket?: string;
+  }
+): DecisionRequestEvidenceItem {
+  const evidence = recordArrayValue(value.evidence);
+  const evidenceRefs = evidence
+    .map((entry) => firstString([entry.external_ref, entry.document_id, entry.chunk_id]))
+    .filter((entry): entry is string => Boolean(entry));
+  return {
+    ref: options.ref,
+    title: options.title,
+    summary: options.summary,
+    kind: options.kind,
+    status: options.status,
+    files: uniqueStrings(evidenceRefs),
+    metadata: compactObject({
+      source: options.source,
+      bucket: options.bucket,
+      reason: options.reason,
+      type: stringValue(value.type),
+      scope: stringValue(value.scope),
+      category: stringValue(value.category),
+      status: stringValue(value.status),
+      reviewStatus: stringValue(value.review_status),
+      authorityStatus: stringValue(value.authority_status),
+      confidenceState: stringValue(value.confidence_state),
+      confidence: numberValue(value.confidence),
+      createdAt: stringValue(value.created_at),
+      updatedAt: stringValue(value.updated_at),
+      staleAt: stringValue(value.stale_at),
+      validUntil: stringValue(value.valid_until),
+      hasEvidence: evidence.length > 0,
+      mutated: booleanValue(value.mutated),
+    }) as Record<string, string | number | boolean | null>,
+  };
+}
+
+function reviewQueueItems(result: Record<string, unknown>): MemoryReviewConnectorItem[] {
+  return recordArrayValue(result.items).flatMap((item) => {
+    const memoryId = memoryIdFrom(item);
+    if (!memoryId) return [];
+    const status = stringValue(item.status);
+    const reviewStatus = stringValue(item.review_status);
+    const reason = stringValue(item.needs_review_reason);
+    const summary = summarizeMemoryContent(item);
+    return [
+      {
+        source: "review_queue",
+        memoryId,
+        title: `Review memory ${memoryId}`,
+        summary,
+        kind: "memory_review_queue",
+        status: reviewStatus ?? status,
+        action: "review_queue_item",
+        options: ["accept", "reject", "archive", "invalidate", "keep_pending"],
+        recommendation:
+          reviewStatus === "approved" || status === "active" ? "keep_pending" : "accept",
+        reasonCodes: uniqueStrings(["memory_review_queue", reason ?? "", status ?? ""]),
+        evidenceItem: memoryEvidenceItem(item, {
+          ref: `memory:${memoryId}`,
+          title: `Review memory ${memoryId}`,
+          summary,
+          kind: "memory_review_queue",
+          status: reviewStatus ?? status,
+          reason,
+          source: "review_queue",
+        }),
+      },
+    ];
+  });
+}
+
+function cleanCandidateItems(result: Record<string, unknown>): MemoryReviewConnectorItem[] {
+  const candidates = isRecord(result.candidates) ? result.candidates : {};
+  const items: MemoryReviewConnectorItem[] = [];
+  for (const [bucket, value] of Object.entries(candidates)) {
+    for (const candidate of recordArrayValue(value)) {
+      const memoryId = memoryIdFrom(candidate);
+      if (!memoryId) continue;
+      const reason = stringValue(candidate.reason) ?? bucket;
+      const summary = summarizeMemoryContent(candidate);
+      const staleBucket = bucket === "possibly_stale";
+      const duplicateBucket = bucket === "duplicates";
+      const options = duplicateBucket
+        ? ["merge", "supersede", "keep", "inspect"]
+        : staleBucket
+          ? ["verify", "invalidate", "keep", "inspect"]
+          : ["archive", "invalidate", "keep", "inspect"];
+      const recommendation = staleBucket ? "verify" : duplicateBucket ? "inspect" : "archive";
+      const kind: DecisionRequestProducerKind = duplicateBucket
+        ? "memory_duplicate_candidate"
+        : "memory_clean_candidate";
+      items.push({
+        source: "clean_candidates",
+        bucket,
+        memoryId,
+        title: `${bucket.replace(/_/g, " ")} memory candidate ${memoryId}`,
+        summary,
+        kind,
+        status: stringValue(candidate.status),
+        action: `${bucket}_candidate`,
+        options,
+        recommendation,
+        reasonCodes: uniqueStrings(["memory_clean_candidates", bucket, reason]),
+        evidenceItem: memoryEvidenceItem(candidate, {
+          ref: `memory:${memoryId}`,
+          title: `${bucket.replace(/_/g, " ")} memory candidate ${memoryId}`,
+          summary,
+          kind,
+          status: stringValue(candidate.status),
+          reason,
+          source: "clean_candidates",
+          bucket,
+        }),
+      });
+    }
+  }
+  return items;
+}
+
+function duplicateCandidateItems(result: Record<string, unknown>): MemoryReviewConnectorItem[] {
+  return recordArrayValue(result.groups).flatMap((group, index) => {
+    const candidates = recordArrayValue(group.candidates ?? group.memories ?? group.items);
+    const keepMemoryId = firstString([group.keep_memory_id, group.canonical_memory_id]);
+    return candidates.flatMap((candidate) => {
+      const memoryId = memoryIdFrom(candidate);
+      if (!memoryId || memoryId === keepMemoryId) return [];
+      const summary = summarizeMemoryContent(candidate);
+      return [
+        {
+          source: "duplicate_candidates",
+          bucket: `group_${index + 1}`,
+          memoryId,
+          targetMemoryId: keepMemoryId,
+          title: `Duplicate memory candidate ${memoryId}`,
+          summary,
+          kind: "memory_duplicate_candidate",
+          status: stringValue(candidate.status),
+          action: "duplicate_candidate",
+          options: ["merge", "supersede", "keep", "inspect"],
+          recommendation: keepMemoryId ? "supersede" : "inspect",
+          reasonCodes: uniqueStrings(["memory_duplicate_candidates", `group_${index + 1}`]),
+          evidenceItem: memoryEvidenceItem(candidate, {
+            ref: `memory:${memoryId}`,
+            title: `Duplicate memory candidate ${memoryId}`,
+            summary,
+            kind: "memory_duplicate_candidate",
+            status: stringValue(candidate.status),
+            reason: "duplicate_candidate",
+            source: "duplicate_candidates",
+            bucket: `group_${index + 1}`,
+          }),
+        },
+      ];
+    });
+  });
+}
+
+export function buildMemoryReviewDecisionRequest(item: MemoryReviewConnectorItem): DecisionRequest {
+  const applyPath =
+    item.recommendation === "verify"
+      ? "snipara_memory_verify"
+      : item.recommendation === "invalidate"
+        ? "snipara_memory_invalidate"
+        : "snipara_memory_resolve_queue_item";
+  const actionHint =
+    item.recommendation === "verify"
+      ? `snipara_memory_verify({ memory_id: "${item.memoryId}" })`
+      : item.recommendation === "invalidate"
+        ? `snipara_memory_invalidate({ memory_id: "${item.memoryId}" })`
+        : `snipara_memory_resolve_queue_item({ memory_id: "${item.memoryId}", action: "<human-choice>" })`;
+  const input: BuildDecisionRequestInput = {
+    producer: {
+      kind: item.kind,
+      command: "memory reviews",
+      sourceRef: `${item.source}:${item.bucket ?? item.action}`,
+    },
+    decision: `memory_${item.action}`,
+    question: `${item.title}: what should happen?`,
+    evidence: {
+      summary: item.summary,
+      refs: [item.evidenceItem.ref],
+      items: [item.evidenceItem],
+      reasonCodes: item.reasonCodes,
+      applyPath,
+      applyCommand: actionHint,
+    },
+    options: item.options,
+    recommendation: item.recommendation,
+    rationale:
+      "Generated from hosted read-only memory review surfaces; no memory is mutated until a human resolves the request through an existing apply path.",
+    fingerprintParts: [
+      "memory-review-connector-v0",
+      item.source,
+      item.bucket ?? "",
+      item.memoryId,
+      item.targetMemoryId ?? "",
+      item.reasonCodes,
+      item.options,
+    ],
+  };
+  return buildDecisionRequest(input);
+}
+
+export async function buildMemoryReviewConnector(
+  options: MemoryReviewsCommandOptions
+): Promise<MemoryReviewConnectorResult> {
+  const result: MemoryReviewConnectorResult = {
+    version: "snipara.memory_review_connector.v0",
+    generatedAt: new Date().toISOString(),
+    ...(options.scope ? { scope: options.scope } : {}),
+    surfaces: {},
+    items: [],
+    requests: [],
+    writes: [],
+    emitted: { enabled: Boolean(options.emitDecisions), count: 0, requestIds: [] },
+    emittedCount: 0,
+    emittedRequestIds: [],
+    caveats: [
+      "Read-only connector: hosted memory tools are queried, but no memory is mutated.",
+      "Emitted decision requests must still be resolved explicitly; no timeout/default applies.",
+      "Non-Producer apply paths remain declared receipts until a hosted apply integration resolves them.",
+    ],
+  };
+
+  try {
+    const reviewQueue = await callMemoryTool<Record<string, unknown>>(
+      "snipara_memory_review_queue",
+      buildReviewQueueArgs(options)
+    );
+    const items = reviewQueueItems(reviewQueue);
+    result.items.push(...items);
+    result.surfaces.review_queue = { status: "ok", count: items.length };
+  } catch (error) {
+    result.surfaces.review_queue = {
+      status: "error",
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  if (options.includeCleanCandidates !== false) {
+    try {
+      const cleanCandidates = await callMemoryTool<Record<string, unknown>>(
+        "snipara_memory_clean_candidates",
+        buildCleanCandidatesArgs({
+          scope: options.scope,
+          includeInactive: options.includeInactive,
+          limitPerBucket: options.limit,
+        })
+      );
+      const items = cleanCandidateItems(cleanCandidates);
+      result.items.push(...items);
+      result.surfaces.clean_candidates = { status: "ok", count: items.length };
+    } catch (error) {
+      result.surfaces.clean_candidates = {
+        status: "error",
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  if (options.includeDuplicates !== false) {
+    try {
+      const duplicateCandidates = await callMemoryTool<Record<string, unknown>>(
+        "snipara_memory_duplicate_candidates",
+        buildDuplicateCandidateArgs(options)
+      );
+      const items = duplicateCandidateItems(duplicateCandidates);
+      result.items.push(...items);
+      result.surfaces.duplicate_candidates = { status: "ok", count: items.length };
+    } catch (error) {
+      result.surfaces.duplicate_candidates = {
+        status: "error",
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  const seen = new Set<string>();
+  result.items = result.items.filter((item) => {
+    const key = `${item.source}:${item.bucket ?? ""}:${item.memoryId}:${item.action}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  result.requests = result.items.map(buildMemoryReviewDecisionRequest);
+  if (options.emitDecisions) {
+    result.writes = result.requests.map((request) => writeDecisionRequest(request));
+    result.emittedRequestIds = result.writes.map((write) => write.requestId);
+    result.emittedCount = result.emittedRequestIds.length;
+    result.emitted = {
+      enabled: true,
+      count: result.emittedCount,
+      requestIds: result.emittedRequestIds,
+    };
+  }
+  return result;
+}
+
+function printMemoryReviewConnector(result: MemoryReviewConnectorResult): void {
+  console.log(chalk.bold("Memory Review Connector"));
+  const surfaceSummary = Object.entries(result.surfaces)
+    .map(([surface, status]) =>
+      status.status === "ok" ? `${surface}: ${status.count ?? 0}` : `${surface}: error`
+    )
+    .join(" | ");
+  if (surfaceSummary) {
+    console.log(surfaceSummary);
+  }
+  if (result.items.length === 0) {
+    console.log("No memory review items found.");
+    return;
+  }
+  for (const item of result.items) {
+    console.log(`- ${item.memoryId} [${item.source}${item.bucket ? `/${item.bucket}` : ""}]`);
+    console.log(`  ${item.summary}`);
+    console.log(`  options: ${item.options.join(", ")}`);
+    if (item.recommendation) {
+      console.log(`  recommendation: ${item.recommendation}`);
+    }
+  }
+  if (result.writes.length > 0) {
+    console.log("");
+    console.log(chalk.bold("Decision Requests"));
+    for (const write of result.writes) {
+      console.log(`- ${write.status}: ${write.requestId}`);
+    }
+  }
+}
+
 function printCompactDryRun(result: Record<string, unknown>): void {
   console.log(chalk.bold("Memory Compact Dry Run"));
   if (result.mutated !== undefined) {
@@ -272,6 +751,98 @@ function printCompactDryRun(result: Record<string, unknown>): void {
     console.log("Planned actions:");
     for (const item of plan.slice(0, 8)) {
       console.log(`- ${preview(item, 240)}`);
+    }
+  }
+}
+
+function buildMemoryAuditSummary(audit: MemoryAuditResult): MemoryAuditSummary {
+  const health = isRecord(audit.health) ? audit.health : {};
+  const healthCounts = isRecord(health.counts) ? health.counts : {};
+  const healthByStatus = isRecord(healthCounts.by_status) ? healthCounts.by_status : {};
+  const autoCompact = isRecord(health.auto_compact) ? health.auto_compact : {};
+  const cleanCandidates = isRecord(audit.cleanCandidates) ? audit.cleanCandidates : {};
+  const candidateCounts = isRecord(cleanCandidates.counts) ? cleanCandidates.counts : {};
+  const compactDryRun = isRecord(audit.compactDryRun) ? audit.compactDryRun : {};
+
+  const cleanupCandidateCounts = Object.fromEntries(
+    Object.entries(candidateCounts)
+      .map(([key, value]) => [key, numberLikeValue(value)])
+      .filter((entry): entry is [string, number] => entry[1] !== undefined)
+  );
+  const totalScanned = numberLikeValue(health.total_scanned ?? cleanCandidates.total_scanned);
+  const activeCount = numberLikeValue(healthByStatus.active);
+  const autoCompactThreshold = numberLikeValue(autoCompact.threshold);
+  const autoCompactWouldTrigger = autoCompact.would_trigger_by_count === true;
+  const compactDryRunPlannedActions = numberLikeValue(
+    compactDryRun.planned_actions ?? compactDryRun.plannedActions
+  );
+  const recommendedActions: string[] = [];
+  const scope = audit.scope ?? "project";
+
+  if (
+    autoCompactWouldTrigger ||
+    (activeCount !== undefined &&
+      autoCompactThreshold !== undefined &&
+      activeCount > autoCompactThreshold)
+  ) {
+    recommendedActions.push(
+      `snipara-companion memory clean-candidates --scope ${scope} --limit-per-bucket 5`
+    );
+    recommendedActions.push(
+      `snipara-companion memory compact --scope ${scope} --archive-older-than-days 30`
+    );
+  }
+
+  if (Object.values(cleanupCandidateCounts).some((count) => count > 0)) {
+    recommendedActions.push(
+      'snipara-companion memory-guard check --intent "apply memory cleanup" --destructive --strict'
+    );
+  }
+
+  return {
+    ...(totalScanned !== undefined ? { totalScanned } : {}),
+    ...(activeCount !== undefined ? { activeCount } : {}),
+    ...(autoCompactThreshold !== undefined ? { autoCompactThreshold } : {}),
+    ...(Object.keys(autoCompact).length > 0 ? { autoCompactWouldTrigger } : {}),
+    cleanupCandidateCounts,
+    ...(typeof compactDryRun.mutated === "boolean"
+      ? { compactDryRunMutated: compactDryRun.mutated }
+      : {}),
+    ...(compactDryRunPlannedActions !== undefined ? { compactDryRunPlannedActions } : {}),
+    recommendedActions: uniqueStrings(recommendedActions),
+  };
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values));
+}
+
+function printMemoryAuditSummary(summary: MemoryAuditSummary): void {
+  console.log(chalk.bold("Memory Hygiene Summary"));
+  if (summary.totalScanned !== undefined) {
+    console.log(`Scanned: ${summary.totalScanned}`);
+  }
+  if (summary.activeCount !== undefined) {
+    console.log(`Active: ${summary.activeCount}`);
+  }
+  if (summary.autoCompactThreshold !== undefined) {
+    console.log(
+      `Auto-compaction: threshold ${summary.autoCompactThreshold} | would trigger: ${
+        summary.autoCompactWouldTrigger ? "yes" : "no"
+      }`
+    );
+  }
+  if (Object.keys(summary.cleanupCandidateCounts).length > 0) {
+    console.log(
+      `Cleanup candidates: ${Object.entries(summary.cleanupCandidateCounts)
+        .map(([key, value]) => `${key}: ${value}`)
+        .join(" | ")}`
+    );
+  }
+  if (summary.recommendedActions.length > 0) {
+    console.log("Recommended actions:");
+    for (const action of summary.recommendedActions) {
+      console.log(`- ${action}`);
     }
   }
 }
@@ -330,6 +901,17 @@ export async function memoryCleanCandidatesCommand(
   }
 
   printCleanCandidates(result);
+}
+
+export async function memoryReviewsCommand(options: MemoryReviewsCommandOptions): Promise<void> {
+  const result = await buildMemoryReviewConnector(options);
+
+  if (options.json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  printMemoryReviewConnector(result);
 }
 
 export async function memoryCompactCommand(options: MemoryCompactCommandOptions): Promise<void> {
@@ -438,6 +1020,8 @@ export async function buildMemoryAudit(
     });
   }
 
+  result.summary = buildMemoryAuditSummary(result);
+
   return result;
 }
 
@@ -454,6 +1038,11 @@ export async function memoryAuditCommand(options: MemoryAuditCommandOptions): Pr
     console.log(`Scope: ${audit.scope}`);
   }
   console.log("");
+
+  if (audit.summary) {
+    printMemoryAuditSummary(audit.summary);
+    console.log("");
+  }
 
   if (audit.health) {
     printMemoryHealth(audit.health);

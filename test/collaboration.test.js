@@ -18,6 +18,7 @@ const {
   normalizeCollaborationFiles,
   parseCollaborationResources,
   saveCollaborationState,
+  shouldFailCollaborationGuard,
 } = require("../dist/index.js");
 
 const cliPath = path.join(__dirname, "..", "dist", "index.js");
@@ -251,6 +252,47 @@ function writeHostedReviewOnlyGuardPreload(dir) {
   return preloadPath;
 }
 
+function writeHostedGoGuardPreload(dir) {
+  const preloadPath = path.join(dir, "collaboration-go-preload.js");
+  fs.writeFileSync(
+    preloadPath,
+    [
+      "globalThis.fetch = async (url, init = {}) => {",
+      "  const parsedUrl = new URL(String(url));",
+      "  const path = parsedUrl.pathname;",
+      "  const body = init.body ? JSON.parse(init.body) : {};",
+      "  const project = { id: 'project_1', name: 'App', slug: 'app' };",
+      "  if (path.endsWith('/collaboration/guard') && init.method === 'POST') {",
+      "    const resources = [",
+      "      ...(body.resources || []),",
+      "      ...(body.files || []).map((file) => ({ kind: 'FILE', id: file, sourcePath: file })),",
+      "    ];",
+      "    return ok({",
+      "      project,",
+      "      resources,",
+      "      evaluation: {",
+      "        decision: 'CLEAR',",
+      "        severity: 'INFO',",
+      "        evaluatedAt: '2026-06-09T12:02:00.000Z',",
+      "        resources,",
+      "        conflicts: [],",
+      "        recommendedActions: [],",
+      "      },",
+      "      guardEvent: { id: 'guard_1' },",
+      "    });",
+      "  }",
+      "  return ok({});",
+      "};",
+      "function ok(data, status = 200) {",
+      "  return { ok: true, status, statusText: 'OK', json: async () => ({ success: true, data }) };",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  return preloadPath;
+}
+
 function hostedEnv(extra = {}) {
   return {
     SNIPARA_API_KEY: "snp-test",
@@ -285,6 +327,27 @@ test("collaboration helpers normalize files, resources, and local state", () => 
   const recovered = loadCollaborationState(dir);
   assert.equal(recovered.schemaVersion, "snipara.collaboration.v1");
   assert.deepEqual(recovered.files, []);
+});
+
+test("collaboration local state expires stale active leases on load", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-collaboration-expired-"));
+  const state = createEmptyCollaborationState(new Date("2026-06-09T12:00:00.000Z"));
+  state.workSessionId = "workflow:lease-hygiene";
+  state.leases = [
+    {
+      id: "lease_expired",
+      mode: "ADVISORY",
+      status: "ACTIVE",
+      resources: [{ kind: "FILE", id: "src/index.ts" }],
+      claimedAt: "2026-06-09T12:00:00.000Z",
+      expiresAt: "2020-01-01T00:00:00.000Z",
+      workSessionId: "workflow:lease-hygiene",
+    },
+  ];
+  saveCollaborationState(state, dir);
+
+  const loaded = loadCollaborationState(dir);
+  assert.equal(loaded.leases[0].status, "EXPIRED");
 });
 
 test("collaboration helpers derive route, package, schema, surface, and symbol resources", () => {
@@ -500,6 +563,57 @@ test("collaboration guard exits non-zero for hosted blocking conflicts", () => {
   assert.equal(loadCollaborationState(dir).lastGuard.conflictCount, 1);
 });
 
+test("collaboration guard success is one line unless verbose", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-collaboration-guard-go-"));
+  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+  const preloadPath = writeHostedGoGuardPreload(dir);
+
+  const result = runCli(
+    [
+      "collaboration",
+      "guard",
+      "--files",
+      "src/index.ts",
+      "--action",
+      "edit",
+      "--actor-id",
+      "agent_1",
+    ],
+    {
+      cwd: dir,
+      env: hostedEnv(),
+      nodeArgs: ["-r", preloadPath],
+    }
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.stdout.trim(), "Collaboration guard: go");
+
+  const verbose = runCli(
+    [
+      "collaboration",
+      "guard",
+      "--files",
+      "src/index.ts",
+      "--action",
+      "edit",
+      "--actor-id",
+      "agent_1",
+      "--verbose",
+    ],
+    {
+      cwd: dir,
+      env: hostedEnv(),
+      nodeArgs: ["-r", preloadPath],
+    }
+  );
+
+  assert.equal(verbose.status, 0, verbose.stderr || verbose.stdout);
+  assert.match(verbose.stdout, /Collaboration guard/);
+  assert.match(verbose.stdout, /State:/);
+  assert.match(verbose.stdout, /Guard: CLEAR/);
+});
+
 test("collaboration guard can acknowledge review-only release warnings", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-collaboration-review-only-"));
   fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
@@ -568,6 +682,35 @@ test("collaboration guard action cards classify missing evaluations", () => {
   assert.equal(cards[0].safeToAck, false);
 });
 
+test("collaboration guard fails open for hosted outages but fails closed for blocking conflicts", () => {
+  assert.equal(
+    shouldFailCollaborationGuard({
+      hostedStatus: "error",
+      evaluation: undefined,
+      enforce: true,
+      ackReviewOnly: false,
+    }),
+    false
+  );
+
+  assert.equal(
+    shouldFailCollaborationGuard({
+      hostedStatus: "ok",
+      evaluation: {
+        decision: "BLOCKED",
+        severity: "CRITICAL",
+        evaluatedAt: "2026-07-06T00:00:00.000Z",
+        resources: [],
+        conflicts: [],
+        recommendedActions: [],
+      },
+      enforce: true,
+      ackReviewOnly: false,
+    }),
+    true
+  );
+});
+
 test("collaboration guard profile expands blocking deployment resources", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-collaboration-guard-profile-"));
   fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
@@ -606,6 +749,44 @@ test("collaboration guard profile expands blocking deployment resources", () => 
   assert.equal(
     guardBody.resources.some(
       (resource) => resource.kind === "SURFACE" && resource.id === "deployment"
+    ),
+    true
+  );
+});
+
+test("collaboration git write profiles include checkout claim surface", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-collaboration-git-write-"));
+  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+  const preloadPath = writeHostedCollaborationPreload(dir);
+  const logPath = path.join(dir, "collab-log.jsonl");
+
+  const result = runCli(
+    [
+      "collaboration",
+      "guard",
+      "--profile",
+      "pre-commit",
+      "--action",
+      "pre-commit",
+      "--files",
+      "src/index.ts",
+      "--actor-id",
+      "agent_1",
+      "--json",
+    ],
+    {
+      cwd: dir,
+      env: hostedEnv({ SNIPARA_TEST_COLLAB_LOG: logPath }),
+      nodeArgs: ["-r", preloadPath],
+    }
+  );
+
+  assert.equal(result.status, 2, result.stderr || result.stdout);
+  const logged = fs.readFileSync(logPath, "utf8").trim().split("\n").map(JSON.parse);
+  const guardBody = logged.find((entry) => entry.path.endsWith("/collaboration/guard")).body;
+  assert.equal(
+    guardBody.resources.some(
+      (resource) => resource.kind === "SURFACE" && resource.id === "checkout-git-write"
     ),
     true
   );
@@ -650,10 +831,16 @@ test("collaboration hooks install plan writes blocking managed hooks", () => {
     true
   );
   const preCommitHook = fs.readFileSync(path.join(dir, ".git", "hooks", "pre-commit"), "utf8");
-  assert.match(preCommitHook, /snipara-companion collaboration guard --profile pre-commit/);
+  assert.match(preCommitHook, /snipara_companion_hook collaboration guard --profile pre-commit/);
+  assert.match(preCommitHook, /pnpm --filter snipara-companion exec tsx src\/index\.ts/);
+  assert.match(preCommitHook, /snipara-companion "\$@"/);
+  assert.match(preCommitHook, /collaboration claim --resource SURFACE:checkout-git-write/);
+  assert.match(preCommitHook, /collaboration claim .*--json >\/dev\/null \|\| true/);
+  assert.match(preCommitHook, /guard --profile pre-commit .*--resource SURFACE:checkout-git-write/);
+  assert.match(preCommitHook, /--mode EXCLUSIVE --ttl-seconds 300/);
   assert.doesNotMatch(preCommitHook, /snipara-companion@latest/);
   assert.match(preCommitHook, /SNIPARA_COLLABORATION_GUARD=0/);
-  assert.match(preCommitHook, /exit 1/);
+  assert.match(preCommitHook, /return 127/);
 });
 
 test("collaboration status reads hosted active sessions and leases", () => {
