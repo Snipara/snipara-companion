@@ -236,6 +236,60 @@ test("context-control drift reports pending and applied mutation plans", () => {
   );
 });
 
+test("context-control drift scopes dirty git signals to manifest and context-control paths", () => {
+  const dir = createRepo();
+  fs.writeFileSync(path.join(dir, "scratch.tmp"), "orchestrator noise\n", "utf8");
+
+  const outOfScopeDrift = runCli(["context-control", "drift", "--json"], { cwd: dir });
+  assert.equal(outOfScopeDrift.status, 0, outOfScopeDrift.stderr || outOfScopeDrift.stdout);
+  const outOfScopePayload = JSON.parse(outOfScopeDrift.stdout);
+  assert.ok(
+    outOfScopePayload.signals.some(
+      (signal) =>
+        signal.surface === "git" &&
+        signal.state === "IN_SYNC" &&
+        signal.reasonCodes.includes("git_working_tree_dirty_out_of_scope")
+    )
+  );
+  assert.equal(
+    outOfScopePayload.signals.some((signal) =>
+      signal.reasonCodes.includes("git_working_tree_dirty_relevant")
+    ),
+    false
+  );
+
+  fs.writeFileSync(
+    path.join(dir, "snipara.project-context.json"),
+    JSON.stringify(
+      {
+        schemaVersion: "snipara.project_context_manifest.v0",
+        sources: [{ path: "README.md", authority: "canonical", tier: "HOT" }],
+        policies: [],
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+  runGit(dir, ["add", "snipara.project-context.json"]);
+  runGit(dir, ["commit", "-m", "add project context manifest"]);
+  fs.appendFileSync(path.join(dir, "README.md"), "\ncontext source drift\n", "utf8");
+
+  const relevantDrift = runCli(["context-control", "drift", "--json"], { cwd: dir });
+  assert.equal(relevantDrift.status, 0, relevantDrift.stderr || relevantDrift.stdout);
+  const relevantPayload = JSON.parse(relevantDrift.stdout);
+  assert.equal(relevantPayload.state, "DRIFT_DETECTED");
+  assert.ok(
+    relevantPayload.signals.some(
+      (signal) =>
+        signal.surface === "git" &&
+        signal.state === "DRIFT_DETECTED" &&
+        signal.refs.includes("README.md") &&
+        signal.reasonCodes.includes("git_working_tree_dirty_relevant")
+    )
+  );
+});
+
 test("context-control validates and reconciles a ProjectContext manifest", () => {
   const dir = createRepo();
   const manifestPath = path.join(dir, "snipara.project-context.json");

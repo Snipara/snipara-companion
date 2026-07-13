@@ -2,6 +2,19 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 3.2.27
+
+- Scopes `context-control drift` dirty Git detection to the ProjectContext
+  manifest, declared manifest sources, local Decision Requests, and
+  `.snipara/context-control/` artifacts. Dirty files outside that scope remain
+  visible but no longer force permanent `DRIFT_DETECTED` in shared checkouts.
+- Clarifies the Context as Code V0 boundary: manifests are local declarative
+  metadata and do not refresh hosted context, reconcile manifest-vs-hosted
+  state, or mutate hosted memory. Hosted refresh/apply remains V1 work.
+- Adds executable documentation smoke tests that run the README and full
+  reference `context-control` examples against the built local CLI, closing the
+  loop that previously allowed narrative examples to drift from command reality.
+
 ## New In 3.2.26
 
 - Fixes the published `context-control plan` examples so they use the real CLI

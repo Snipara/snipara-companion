@@ -339,13 +339,18 @@ snipara-companion workflow resume --include-session-context
   Git bases by default, writes only under `.snipara/context-control/`, and emits
   an apply receipt linked to the plan hash.
 - `context-control drift` is a read-only Project Drift V0 report. It checks Git
-  working tree/upstream state, managed workflow state, pending Decision
-  Requests, saved plans and receipts, and ProjectContext manifest health.
-  `UNKNOWN` is never treated as `IN_SYNC`.
+  upstream state, scoped Git dirty files, managed workflow state, pending
+  Decision Requests, saved plans and receipts, and ProjectContext manifest
+  health. Dirty Git files only become drift when they touch the ProjectContext
+  manifest, manifest sources, local Decision Requests, or
+  `.snipara/context-control/`; unrelated checkout noise remains visible without
+  classifying the project as `DRIFT_DETECTED`. `UNKNOWN` is never treated as
+  `IN_SYNC`.
 - `context-control validate --manifest snipara.project-context.json` validates
   Context as Code V0. The manifest is JSON metadata declaring context sources,
-  tiers, authority, tags, owners, freshness, and review policies. It does not
-  upload content or mutate hosted Snipara state.
+  tiers, authority, freshness, and review policies. It does not upload content,
+  refresh hosted context, reconcile manifest-vs-hosted state, or mutate hosted
+  Snipara state; hosted refresh/apply belongs to the future V1 surface.
 - `lead-plan` turns local workflow state, Team Sync, file scope, context refs,
   proof gates, and acceptance criteria into an advisory Engineering Lead Plan.
   It emits worker recommendations and handoff contracts, keeps

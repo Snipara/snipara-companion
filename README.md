@@ -99,7 +99,8 @@ These commands are useful without hosted Snipara:
 `context-control` is the local trust layer for Project Intelligence state. It
 borrows Terraform's useful product grammar without copying Terraform: preview a
 bounded context mutation, inspect drift, then apply only the exact reviewed
-plan.
+plan. V0 is intentionally local-only: it creates trust artifacts for review, not
+hosted context mutations.
 
 ```bash
 npx -y snipara-companion context-control plan \
@@ -123,13 +124,15 @@ locally:
       "path": "docs/architecture.md",
       "authority": "canonical",
       "tier": "HOT",
-      "tags": ["architecture"]
+      "required": true,
+      "description": "Architecture context that agents should treat as canonical."
     }
   ],
   "policies": [
     {
       "id": "review-context-changes",
-      "description": "Human review required before changing canonical context",
+      "scope": "memory.canonical",
+      "requirement": "Human review required before changing canonical context.",
       "reviewRequired": true
     }
   ]
@@ -142,7 +145,12 @@ npx -y snipara-companion context-control plan --manifest snipara.project-context
 ```
 
 The manifest is declarative metadata only. Validation and local reconciliation
-do not upload documents, approve memory, or mutate hosted Snipara state.
+do not upload documents, approve memory, refresh hosted context, or mutate
+hosted Snipara state. `context-control drift` scopes dirty Git signals to the
+manifest, manifest sources, local Decision Requests, and `.snipara/context-control/`
+artifacts so unrelated checkout noise does not become permanent drift. A future
+V1 hosted refresh/apply surface should compare manifest state against hosted
+context before allowing real hosted mutations.
 
 ### Local Worker Registry
 

@@ -112,6 +112,40 @@ function parseDirtyFile(line: string): string | undefined {
   return renameParts[renameParts.length - 1]?.replace(/^"|"$/g, "");
 }
 
+function resolveGitDriftScopePaths(cwd: string): string[] {
+  const scopePaths = [
+    PROJECT_CONTEXT_MANIFEST_DEFAULT_PATH,
+    CONTEXT_CONTROL_RELATIVE_DIR,
+    path.join(".snipara", "decisions"),
+  ];
+  const manifestPath = resolveManifestPath(cwd);
+  if (!fs.existsSync(manifestPath)) {
+    return normalizeScopePaths(scopePaths, cwd);
+  }
+
+  const manifestRead = readJsonFileSafe(manifestPath);
+  if (!manifestRead.value) {
+    return normalizeScopePaths(scopePaths, cwd);
+  }
+
+  const validation = validateProjectContextManifest({ manifest: manifestRead.value });
+  const manifestSourcePaths = validation.manifest?.sources.map((source) => source.path) ?? [];
+  return normalizeScopePaths([...scopePaths, ...manifestSourcePaths], cwd);
+}
+
+function normalizeScopePaths(scopePaths: string[], cwd: string): string[] {
+  return uniqueStrings(
+    scopePaths.map((scopePath) => normalizeProjectRelativePath(scopePath, cwd).replace(/\/+$/g, ""))
+  );
+}
+
+function isPathInsideScope(filePath: string, scopePaths: string[]): boolean {
+  const normalized = filePath.replace(/\\/g, "/").replace(/\/+$/g, "");
+  return scopePaths.some(
+    (scopePath) => normalized === scopePath || normalized.startsWith(`${scopePath}/`)
+  );
+}
+
 function slugify(value: string): string {
   const slug = value
     .toLowerCase()
@@ -469,6 +503,10 @@ function readJsonFileSafe(filePath: string): { value?: unknown; error?: string }
 
 function collectGitDriftSignals(cwd: string): ProjectDriftSignal[] {
   const revision = resolveGitBaseRevision(cwd);
+  const scopePaths = resolveGitDriftScopePaths(cwd);
+  const relevantDirtyFiles = revision.dirtyFiles.filter((file) =>
+    isPathInsideScope(file, scopePaths)
+  );
   const upstream = runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], cwd);
   const upstreamCounts = upstream
     ? runGit(["rev-list", "--left-right", "--count", `${upstream}...HEAD`], cwd)
@@ -477,23 +515,38 @@ function collectGitDriftSignals(cwd: string): ProjectDriftSignal[] {
     ? upstreamCounts.split(/\s+/g).map((part) => Number.parseInt(part, 10) || 0)
     : [];
   const dirtySignal: ProjectDriftSignal = revision.dirty
-    ? {
-        id: "git-working-tree-dirty",
-        surface: "git",
-        state: "DRIFT_DETECTED",
-        summary: "Working tree has local uncommitted changes.",
-        expected: "Clean working tree for release-grade context-control reconciliation.",
-        observed: revision.dirtyFiles.join(", "),
-        refs: revision.dirtyFiles,
-        severity: "watch",
-        reasonCodes: ["git_working_tree_dirty"],
-      }
+    ? relevantDirtyFiles.length > 0
+      ? {
+          id: "git-working-tree-dirty-relevant",
+          surface: "git",
+          state: "DRIFT_DETECTED",
+          summary:
+            "Working tree has uncommitted changes in context-control or ProjectContext scope.",
+          expected:
+            "Manifest, manifest sources, Decision Requests, and context-control artifacts are clean.",
+          observed: relevantDirtyFiles.join(", "),
+          refs: relevantDirtyFiles,
+          severity: "watch",
+          reasonCodes: ["git_working_tree_dirty_relevant"],
+        }
+      : {
+          id: "git-working-tree-dirty-out-of-scope",
+          surface: "git",
+          state: "IN_SYNC",
+          summary:
+            "Working tree has uncommitted changes, but none are in context-control or ProjectContext scope.",
+          expected: `Only scoped dirty paths affect context-control drift: ${scopePaths.join(", ")}.`,
+          observed: `${revision.dirtyFiles.length} out-of-scope dirty file(s)`,
+          refs: revision.dirtyFiles,
+          severity: "info",
+          reasonCodes: ["git_working_tree_dirty_out_of_scope"],
+        }
     : {
         id: "git-working-tree-clean",
         surface: "git",
         state: "IN_SYNC",
-        summary: "Working tree is clean.",
-        refs: [],
+        summary: "Working tree has no uncommitted changes.",
+        refs: scopePaths,
         severity: "info",
         reasonCodes: ["git_working_tree_clean"],
       };
@@ -766,6 +819,8 @@ export function buildLocalProjectDriftReport(
     ],
     caveats: [
       "Project Drift V0 is a read-only local report.",
+      "Git dirty-file drift is scoped to the ProjectContext manifest, manifest sources, Decision Requests, and .snipara/context-control artifacts; use git status for full working-tree release readiness.",
+      "Project Drift V0 validates manifest health locally but does not refresh hosted context state; hosted manifest-vs-context reconciliation is V1 work.",
       "UNKNOWN is never treated as IN_SYNC; verify missing or unreadable evidence before applying changes.",
     ],
   });
