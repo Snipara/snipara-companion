@@ -88,10 +88,61 @@ These commands are useful without hosted Snipara:
 | `workflow producer-triage`                                                            | Ask for human review of unreviewed Producer Loop samples                     |
 | `workflow producer-report`                                                            | Local Producer Loop adoption and calibration report                          |
 | `workflow producer-review`                                                            | Mark local Producer Loop samples reviewed or rejected                        |
+| `context-control plan` / `apply` / `drift` / `validate`                               | Preview/apply local context mutations, report drift, and validate manifests  |
 | `context-pack`                                                                        | Reversible local packs for long logs, diffs, and tool output                 |
 | `judgment-card`, `verify`, `lead-plan`, `agent-readiness`                             | Local review artifacts and delegation contracts                              |
 | `intelligence ledger-export`                                                          | Structured redacted ledger JSON for replay and review                        |
 | `stuck-guard`, `memory-guard`, `pre-tool`, `post-tool`                                | Fail-soft local guards and hook helpers                                      |
+
+### Context Control
+
+`context-control` is the local trust layer for Project Intelligence state. It
+borrows Terraform's useful product grammar without copying Terraform: preview a
+bounded context mutation, inspect drift, then apply only the exact reviewed
+plan.
+
+```bash
+npx -y snipara-companion context-control plan \
+  --summary "record reviewed context state" \
+  --output .snipara/context-control/plans/demo.json
+
+npx -y snipara-companion context-control apply \
+  --plan .snipara/context-control/plans/demo.json
+
+npx -y snipara-companion context-control drift
+```
+
+For Context as Code V0, add `snipara.project-context.json` and validate it
+locally:
+
+```json
+{
+  "schemaVersion": "snipara.project_context_manifest.v0",
+  "sources": [
+    {
+      "path": "docs/architecture.md",
+      "authority": "canonical",
+      "tier": "HOT",
+      "tags": ["architecture"]
+    }
+  ],
+  "policies": [
+    {
+      "id": "review-context-changes",
+      "description": "Human review required before changing canonical context",
+      "reviewRequired": true
+    }
+  ]
+}
+```
+
+```bash
+npx -y snipara-companion context-control validate --manifest snipara.project-context.json
+npx -y snipara-companion context-control plan --manifest snipara.project-context.json
+```
+
+The manifest is declarative metadata only. Validation and local reconciliation
+do not upload documents, approve memory, or mutate hosted Snipara state.
 
 ### Local Worker Registry
 

@@ -12,3 +12,4 @@ export * from "./outcome-intelligence";
 export * from "./advisor-influence-lifecycle";
 export * from "./controlled-worker-execution";
 export * from "./unified-receipt-ledger";
+export * from "./context-control";

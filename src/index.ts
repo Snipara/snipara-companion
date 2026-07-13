@@ -97,6 +97,12 @@ import { outcomeCapturePreviewCommand } from "./commands/outcome-capture";
 import { codingLedgerExportCommand } from "./commands/coding-ledger";
 import { projectIntelligenceBriefCommand } from "./commands/intelligence";
 import { realityCheckCommand } from "./commands/reality-check";
+import {
+  contextControlApplyCommand,
+  contextControlDriftCommand,
+  contextControlPlanCommand,
+  contextControlValidateCommand,
+} from "./commands/context-control";
 import { referencesIngestCommand, referencesScanCommand } from "./commands/references";
 import { verifyCommand } from "./commands/verify";
 import { projectIntelligenceRunCommand } from "./commands/run";
@@ -215,6 +221,16 @@ export {
   projectIntelligenceBriefCommand,
 } from "./commands/intelligence";
 export { buildLocalProjectRealityCheck, realityCheckCommand } from "./commands/reality-check";
+export {
+  applyLocalContextMutationPlan,
+  buildLocalContextMutationPlan,
+  buildLocalProjectContextValidationReport,
+  buildLocalProjectDriftReport,
+  contextControlApplyCommand,
+  contextControlDriftCommand,
+  contextControlPlanCommand,
+  contextControlValidateCommand,
+} from "./commands/context-control";
 export {
   buildMemoryAudit,
   memoryAuditCommand,
@@ -1949,6 +1965,68 @@ program
   });
 
 configureRealityCheckCommand(program.command("reality-check"));
+
+const contextControl = program
+  .command("context-control")
+  .description("Preview and apply local Project Intelligence context-control mutations");
+
+contextControl
+  .command("plan")
+  .description("Create a previewable local context mutation plan")
+  .option("--summary <summary>", "Plan summary")
+  .option("--target <file>", "Context-control state target under .snipara/context-control/")
+  .option("--manifest <file>", "ProjectContext manifest to validate and reconcile")
+  .option("-o, --output <file>", "Write the plan JSON to a file")
+  .option("--project-id <projectId>", "Project id to include in the plan")
+  .option("--expires-at <isoTime>", "Optional expiry timestamp")
+  .option("--no-approval-required", "Mark the preview as not requiring manual approval")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await contextControlPlanCommand({
+      summary: options.summary,
+      target: options.target,
+      manifest: options.manifest,
+      output: options.output,
+      projectId: options.projectId,
+      expiresAt: options.expiresAt,
+      approvalRequired: Boolean(options.approvalRequired),
+      json: Boolean(options.json),
+    });
+  });
+
+contextControl
+  .command("apply")
+  .description("Apply a saved local context mutation plan idempotently")
+  .requiredOption("--plan <file>", "Plan JSON produced by context-control plan")
+  .option("--allow-stale-base", "Apply even when Git HEAD changed since planning")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await contextControlApplyCommand({
+      plan: options.plan,
+      allowStaleBase: Boolean(options.allowStaleBase),
+      json: Boolean(options.json),
+    });
+  });
+
+contextControl
+  .command("drift")
+  .description("Report local project drift across git, workflow, decisions, and context plans")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await contextControlDriftCommand({ json: Boolean(options.json) });
+  });
+
+contextControl
+  .command("validate")
+  .description("Validate a ProjectContext manifest without mutating local or hosted state")
+  .option("--manifest <file>", "ProjectContext manifest path", "snipara.project-context.json")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await contextControlValidateCommand({
+      manifest: options.manifest,
+      json: Boolean(options.json),
+    });
+  });
 
 const intelligence = program
   .command("intelligence")

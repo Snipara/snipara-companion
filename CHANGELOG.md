@@ -2,6 +2,29 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 3.2.26
+
+- Fixes the published `context-control plan` examples so they use the real CLI
+  contract: `--summary` plus `--output`, without the nonexistent `--operation`
+  or `--content` flags or an out-of-scope target.
+- Adds a package-doc regression test that executes the documented command shape
+  and rejects the unsupported flags if they return to the README or full
+  reference.
+
+## New In 3.2.25
+
+- Adds `snipara-companion context-control plan` and `apply` for local,
+  Terraform-style previews of Project Intelligence context mutations. Plans are
+  content-hashed, pinned to the current Git base by default, and apply only
+  bounded writes under `.snipara/context-control/`.
+- Adds `snipara-companion context-control drift` as a read-only project drift
+  report across Git state, managed workflow state, pending Decision Requests,
+  saved context-control plans, and ProjectContext manifests.
+- Adds `snipara-companion context-control validate --manifest
+snipara.project-context.json` for Context as Code V0. The JSON manifest
+  declares project context sources, tiers, authority, tags, owners, and review
+  policies without uploading content or mutating hosted state.
+
 ## New In 3.2.24
 
 - Adds a validated full `commitSha` to successful commit, amend, revert, and

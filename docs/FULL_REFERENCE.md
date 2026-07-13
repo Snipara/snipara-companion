@@ -232,6 +232,10 @@ snipara-companion workflow sync-policy-ledger
 snipara-companion workflow producer-report
 snipara-companion workflow producer-review --latest --outcome useful --reviewer alice
 snipara-companion workflow run --adaptive-routing-dry-run --route-local-workers "document a scoped change"
+snipara-companion context-control plan --summary "record reviewed context state" --output .snipara/context-control/plans/demo.json
+snipara-companion context-control apply --plan .snipara/context-control/plans/demo.json
+snipara-companion context-control drift
+snipara-companion context-control validate --manifest snipara.project-context.json
 snipara-companion lead-plan --task "ship auth hardening" --changed-files src/auth.ts --proof "pnpm test auth" --acceptance "auth tests pass"
 snipara-companion verify --changed-files src/auth.ts --diff-summary "auth hardening"
 snipara-companion agent-readiness audit --target codex --task "ship auth hardening" --changed-files src/auth.ts --proof "pnpm test auth" --acceptance "auth tests pass"
@@ -328,6 +332,20 @@ snipara-companion workflow resume --include-session-context
 - `workflow run --adaptive-routing-dry-run` prints an Adaptive Work Routing
   card. Add `--route-local-workers` when a strong planner should keep deep
   reasoning while a local worker handles scoped execution.
+- `context-control plan` writes a content-hashed local Context Mutation Plan V0
+  for a bounded operation. The plan records the Git base and remains a preview
+  until `context-control apply` writes the exact planned state.
+- `context-control apply --plan <file>` verifies the plan hash, rejects stale
+  Git bases by default, writes only under `.snipara/context-control/`, and emits
+  an apply receipt linked to the plan hash.
+- `context-control drift` is a read-only Project Drift V0 report. It checks Git
+  working tree/upstream state, managed workflow state, pending Decision
+  Requests, saved plans and receipts, and ProjectContext manifest health.
+  `UNKNOWN` is never treated as `IN_SYNC`.
+- `context-control validate --manifest snipara.project-context.json` validates
+  Context as Code V0. The manifest is JSON metadata declaring context sources,
+  tiers, authority, tags, owners, freshness, and review policies. It does not
+  upload content or mutate hosted Snipara state.
 - `lead-plan` turns local workflow state, Team Sync, file scope, context refs,
   proof gates, and acceptance criteria into an advisory Engineering Lead Plan.
   It emits worker recommendations and handoff contracts, keeps
