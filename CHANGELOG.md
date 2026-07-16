@@ -2,6 +2,82 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 3.2.33
+
+- Turns `final-commit` into a structured closeout report with seven stable
+  sections: what changed, why, evidence, retained decisions, decisions proposed
+  for review, items not persisted, and risks plus the next step.
+- Writes the same versioned, redacted report to
+  `.snipara/workflow/final-report.json` and includes its path and SHA-256 hash in
+  JSON output for automation and handoff verification.
+- Retains phase commit and Why Capture receipts across a managed workflow so the
+  report distinguishes durable stored knowledge from pending review candidates,
+  duplicates, failures, and handoff-only content.
+- Adds `--why`, repeatable `--evidence <status:text>`, repeatable `--risk`, and
+  `--next-step` to both final-commit entry points while preserving the existing
+  handoff-only memory policy.
+
+## New In 3.2.32
+
+- Promotes a Hosted MCP `servedJudgmentId` into the first-class Project
+  Intelligence brief so `run` can persist Advisor Influence receipts without a
+  fragile nested lookup or manual flag when the hosted brief already supplies
+  the identity.
+- Adds an explicit Advisor measurement funnel to JSON and text output:
+  identity linked/missing, targeted versus unscoped, acknowledged, applied,
+  verified, blocked, unmeasured, and receipt coverage.
+- Stores a bounded measurement state with each first-party receipt so a runtime
+  acknowledgement is never presented as recommendation-scoped application.
+- Emits one stable `project-intelligence.judgment-run-envelope.v1` per `run`
+  invocation. It reuses a bounded Snipara or Codex session id when available,
+  otherwise generates an opaque run id, and attaches the same envelope to every
+  first-party Advisor receipt.
+
+## New In 3.2.31
+
+- Sends phase commits, final commits, and Team Sync handoffs to project-scoped
+  Why Capture with the existing goal, summary, files, verification commands,
+  session reference, and commit SHA.
+- Preserves reviewed-memory governance with an automatic read-only preview
+  followed by confirmation only when durable rationale candidates exist; filed
+  candidates remain `PENDING` in the review queue.
+- Keeps capture best-effort and observable in JSON receipts and the activity
+  timeline, so a Why Capture outage never rolls back a completed workflow or
+  handoff and never introduces a documentation prompt.
+
+## New In 3.2.30
+
+- Persists an explicit `--ack-review-only` as a 15-minute, one-use
+  acknowledgement bound to the exact guard profile, action, and finding
+  fingerprint, so the immediately following Git hook can consume it safely.
+- Invalidates that acknowledgement when findings change and never applies it
+  to required acknowledgements, active conflicts, or hard blocks.
+- Resolves collaboration state from `SNIPARA_WORKSPACE_DIR` or the Git
+  top-level directory, preventing filtered package commands from writing a
+  nested `packages/cli/.snipara/` session.
+
+## New In 3.2.29
+
+- Extends `workflow producer-report` with attributed gated-execution samples
+  joined to their persisted supervisor reviews.
+- Adds per-`workerId`/`workCategory` `workerTrust` breakdowns with execution,
+  review, accepted, blocked, incomplete receipt-family, and workflow fingerprint
+  counts.
+- Keeps the read model deliberately supervised: every pair remains
+  `probation_supervised`, `hardGateReady=false`, and lists the evidence still
+  required before the separate Trust Promotion gates can be implemented.
+
+## New In 3.2.28
+
+- Adds bounded Outcome Loop retrieval correlation to generated Codex, Claude,
+  Cursor, VS Code/Continue, and generic HTTP MCP references through
+  `SNIPARA_SESSION_ID` / `X-Snipara-Session-Id`.
+- Prints the active correlation session during `init` and documents the
+  explicit `correlation_context.session_id` fallback for MCP clients that
+  cannot inject environment-backed headers.
+- Keeps the correlation identifier telemetry-only and project-scoped; it does
+  not alter authentication or authorization.
+
 ## New In 3.2.27
 
 - Scopes `context-control drift` dirty Git detection to the ProjectContext

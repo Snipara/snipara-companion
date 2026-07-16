@@ -31,6 +31,9 @@ function runCli(args, options = {}) {
   if (!options.env || !Object.prototype.hasOwnProperty.call(options.env, "SNIPARA_SESSION_ID")) {
     delete env.SNIPARA_SESSION_ID;
   }
+  if (!options.env || !Object.prototype.hasOwnProperty.call(options.env, "CODEX_SESSION_ID")) {
+    delete env.CODEX_SESSION_ID;
+  }
   if (
     !options.env ||
     !Object.prototype.hasOwnProperty.call(options.env, "SNIPARA_AUTOMATION_CLIENT")
@@ -141,7 +144,11 @@ const DEFAULT_ADVISOR_RECOMMENDATIONS = [
   },
 ];
 
-function writeAdvisorReceiptPreload(dir, advisorRecommendations = DEFAULT_ADVISOR_RECOMMENDATIONS) {
+function writeAdvisorReceiptPreload(
+  dir,
+  advisorRecommendations = DEFAULT_ADVISOR_RECOMMENDATIONS,
+  servedJudgmentId
+) {
   const preloadPath = path.join(dir, "advisor-receipt-preload.js");
   const callsPath = path.join(dir, "advisor-receipt-calls.jsonl");
   fs.writeFileSync(
@@ -174,6 +181,9 @@ function writeAdvisorReceiptPreload(dir, advisorRecommendations = DEFAULT_ADVISO
       "    result = {",
       "      project: { slug: 'snipara' },",
       "      projectIntelligence: {",
+      ...(servedJudgmentId
+        ? [`        servedJudgmentId: ${JSON.stringify(servedJudgmentId)},`]
+        : []),
       "        judgment: {",
       `          advisorRecommendations: ${JSON.stringify(advisorRecommendations)}`,
       "        }",
@@ -665,6 +675,13 @@ test("run command acknowledges expected behavior without claiming plan adaptatio
 
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
+  assert.deepEqual(payload.runEnvelope, {
+    version: "project-intelligence.judgment-run-envelope.v1",
+    runId: payload.runEnvelope.runId,
+    identitySource: "generated",
+    startedAt: payload.generatedAt,
+  });
+  assert.match(payload.runEnvelope.runId, /^judgment-run:[0-9a-f-]{36}$/);
   assert.equal(payload.advisorReceiptCapture.status, "recorded");
   assert.equal(payload.advisorReceiptCapture.servedJudgmentId, "served_123");
   assert.equal(payload.advisorReceiptCapture.totalRecommendationCount, 1);
@@ -672,6 +689,20 @@ test("run command acknowledges expected behavior without claiming plan adaptatio
   assert.equal(payload.advisorReceiptCapture.attemptedCount, 1);
   assert.equal(payload.advisorReceiptCapture.recordedCount, 1);
   assert.equal(payload.advisorReceiptCapture.skippedCount, 0);
+  assert.deepEqual(payload.advisorReceiptCapture.measurement, {
+    version: "project-intelligence.advisor-measurement-coverage.v1",
+    identityStatus: "linked",
+    recommendationCount: 1,
+    recordedCount: 1,
+    targetedCount: 1,
+    unscopedCount: 0,
+    acknowledgedCount: 1,
+    appliedCount: 0,
+    verifiedCount: 0,
+    blockedCount: 0,
+    unmeasuredCount: 0,
+    receiptCoverage: 1,
+  });
   assert.equal(payload.judgmentCard.advisorRecommendations[0].source, "historical_impact");
 
   const calls = fs.readFileSync(callsPath, "utf8").trim().split("\n").map(JSON.parse);
@@ -683,6 +714,8 @@ test("run command acknowledges expected behavior without claiming plan adaptatio
   assert.equal(calls[0].body.outcomeLinkStatus, "pending");
   assert.equal(calls[0].body.metadata.source, "snipara-companion:run");
   assert.equal(calls[0].body.metadata.firstParty, true);
+  assert.equal(calls[0].body.metadata.runId, payload.runEnvelope.runId);
+  assert.deepEqual(calls[0].body.metadata.runEnvelope, payload.runEnvelope);
   assert.equal(calls[0].body.metadata.planBefore, null);
   assert.equal(calls[0].body.metadata.planAfter, null);
   assert.equal(calls[0].body.metadata.changedBecauseOfRecommendation, false);
@@ -715,6 +748,8 @@ test("run command acknowledges expected behavior without claiming plan adaptatio
   assert.equal(payload.advisorReceiptCapture.writes[0].agentDecision, "accepted");
   assert.equal(payload.advisorReceiptCapture.writes[0].changedBecauseOfRecommendation, false);
   assert.equal(payload.advisorReceiptCapture.writes[0].lifecycleState, "acknowledged");
+  assert.equal(payload.advisorReceiptCapture.writes[0].measurementState, "acknowledged");
+  assert.equal(payload.advisorReceiptCapture.writes[0].targeted, true);
   assert.equal(calls[0].body.recommendation.source, "historical_impact");
   assert.deepEqual(calls[0].body.recommendation.caveats, [
     "Expected behavior is a proposal only; lifecycle evidence separately records acknowledgement, application, and verification.",
@@ -866,6 +901,9 @@ test("run command scopes a shared plan pair to one explicit recommendation", () 
 
   const unscopedResult = runScenario();
   assert.equal(unscopedResult.status, 0, unscopedResult.stderr);
+  const unscopedPayload = JSON.parse(unscopedResult.stdout);
+  assert.equal(unscopedPayload.advisorReceiptCapture.measurement.unscopedCount, 2);
+  assert.equal(unscopedPayload.advisorReceiptCapture.measurement.targetedCount, 0);
   const unscopedCalls = readCalls();
   assert.equal(unscopedCalls.length, 2);
   for (const call of unscopedCalls) {
@@ -1042,7 +1080,39 @@ test("run command skips advisor receipts with stable reason when served judgment
   assert.equal(payload.advisorReceiptCapture.skippedCount, 1);
   assert.equal(payload.advisorReceiptCapture.writes[0].status, "skipped");
   assert.equal(payload.advisorReceiptCapture.writes[0].reason, "missing_served_judgment_id");
+  assert.equal(payload.advisorReceiptCapture.measurement.identityStatus, "missing");
+  assert.equal(payload.advisorReceiptCapture.measurement.unmeasuredCount, 1);
   assert.equal(fs.existsSync(callsPath), false);
+});
+
+test("run command promotes hosted served judgment identity into the first-class brief", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-advisor-identity-"));
+  const { preloadPath, callsPath } = writeAdvisorReceiptPreload(
+    dir,
+    DEFAULT_ADVISOR_RECOMMENDATIONS,
+    "served_from_resume"
+  );
+
+  const result = runCli(
+    ["run", "--task", "measure judgment identity", "--branch", "dev", "--json"],
+    {
+      cwd: dir,
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "snipara",
+        SNIPARA_API_URL: "https://api.snipara.com",
+      },
+      nodeArgs: ["--require", preloadPath],
+    }
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.brief.servedJudgmentId, "served_from_resume");
+  assert.equal(payload.advisorReceiptCapture.servedJudgmentId, "served_from_resume");
+  assert.equal(payload.advisorReceiptCapture.measurement.identityStatus, "linked");
+  const calls = fs.readFileSync(callsPath, "utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(calls[0].body.servedJudgmentId, "served_from_resume");
 });
 
 test("memory audit combines health, candidates, and compact dry-run", () => {
@@ -1585,6 +1655,10 @@ test("init writes workspace project binding and one companion config for codex",
   assert.equal(workspaceConfig.projectId, "proj_snipara_001");
   assert.equal(workspaceConfig.client, "codex");
   assert.match(workspaceConfig.sessionId, /^sess_/);
+  assert.match(
+    result.stdout,
+    /env_http_headers = \{ "X-Snipara-Session-Id" = "SNIPARA_SESSION_ID" \}/
+  );
 
   assert.equal(fs.readFileSync(path.join(dir, ".snipara", "project"), "utf8"), "snipara\n");
   assert.match(result.stdout, /Selected project: Snipara/);

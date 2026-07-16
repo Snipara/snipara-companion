@@ -205,6 +205,19 @@ function writeHostedTeamSyncPreload(dir) {
       "      }),",
       "    };",
       "  }",
+      "  if (path.endsWith('/agents/memory/why-capture') && init.method === 'POST') {",
+      "    const body = JSON.parse(init.body || '{}');",
+      "    const logPath = process.env.SNIPARA_TEST_WHY_CAPTURE_LOG;",
+      "    if (logPath) {",
+      "      fs.appendFileSync(logPath, `${JSON.stringify(body)}\\n`, 'utf8');",
+      "    }",
+      "    return {",
+      "      ok: true,",
+      "      status: 200,",
+      "      statusText: 'OK',",
+      "      json: async () => ({ success: true, data: { previewOnly: body.previewOnly === true, confirmed: body.confirmed === true, candidateCount: 1, ...(body.confirmed ? { capturedCount: 1 } : {}) } }),",
+      "    };",
+      "  }",
       "  if (path.endsWith('/team-sync/handoffs/latest')) {",
       "    return {",
       "      ok: true,",
@@ -948,6 +961,7 @@ test("team-sync handoff publishes the hosted capsule when configured", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-team-sync-handoff-"));
   fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
   const preloadPath = writeHostedTeamSyncPreload(dir);
+  const whyCaptureLog = path.join(dir, "team-sync-why-capture.jsonl");
 
   const result = runCli(
     [
@@ -970,6 +984,7 @@ test("team-sync handoff publishes the hosted capsule when configured", () => {
         SNIPARA_API_URL: "https://api.snipara.com",
         SNIPARA_SESSION_ID: "session_1",
         SNIPARA_AUTOMATION_CLIENT: "codex",
+        SNIPARA_TEST_WHY_CAPTURE_LOG: whyCaptureLog,
       },
       nodeArgs: ["-r", preloadPath],
     }
@@ -979,6 +994,16 @@ test("team-sync handoff publishes the hosted capsule when configured", () => {
   assert.match(result.stdout, /Hosted Handoff/);
   assert.match(result.stdout, /Handoff ID: handoff_hosted_1/);
   assert.match(result.stdout, /Attention: proof_required/);
+  const whyCapture = fs
+    .readFileSync(whyCaptureLog, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(whyCapture.length, 2);
+  assert.equal(whyCapture[0].previewOnly, true);
+  assert.equal(whyCapture[1].confirmed, true);
+  assert.equal(whyCapture[1].sourceKind, "handoff");
+  assert.match(whyCapture[1].sourceText, /Run permissions tests before merge/);
 });
 
 test("team-sync what-changed includes hosted continuity evidence in json mode", () => {

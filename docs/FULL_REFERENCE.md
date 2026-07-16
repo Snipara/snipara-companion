@@ -324,7 +324,11 @@ snipara-companion workflow resume --include-session-context
   workflow phase/final commits or exported PR Answer Pack decision-capture
   producers, then reports adoption, producer kinds, workflow ids, reason-code
   counts, invalid artifacts, sample size, reviewed/rejected/unreviewed counts,
-  and calibration caveats with `hardGateReady=false`.
+  and calibration caveats with `hardGateReady=false`. It also scans attributed
+  gated receipts and persisted reviews under `.snipara/orchestrator/`, reports
+  receipt-family completeness, and groups supervised evidence by
+  `(workerId, workCategory)` in `workerTrust`. It never promotes a worker or
+  changes an execution gate.
 - `workflow producer-review` marks one local Producer Loop artifact as
   `sample_reviewed` or `sample_rejected` after operator review. Use
   `--artifact <path|file|artifactId>` for an exact sample or `--latest` for the
@@ -378,16 +382,28 @@ The mental model is intentionally close to Git:
 | `git format-patch`    | `snipara-companion handoff`                  |
 | `git checkout`        | `snipara-companion workflow resume`          |
 
-`snipara-companion final-commit` closes the local workflow and asks the hosted
-API only for the final Team Sync handoff. The CLI sends a compact summary with a
-longer timeout, retries once with a shorter summary on transient hosted failures,
-and then records a local fallback handoff in `.snipara/team-sync/session.json`
-if the hosted call still times out. A hosted final-commit timeout does not modify
-Git state. Custom final-commit categories are namespaced under `final-commit`
-before the hosted call so they stay on the handoff-only path. Completed workflow
-commits also reconcile local Team Sync work: exact goal/summary matches close
-directly, and slug-like workflow goals can still close the matching active work
-when touched files overlap and meaningful workflow tokens match.
+`snipara-companion final-commit` closes the local workflow and emits a stable
+seven-section closeout report: what changed, why, evidence, decisions kept,
+decisions proposed for review, items not persisted, and risks plus the next
+step. Supply `--why`, repeatable `--evidence <status:text>`, repeatable `--risk`,
+and `--next-step` to make the receipt explicit. Evidence statuses are `passed`,
+`failed`, `not-run`, and `unknown`; unprefixed evidence is intentionally
+`unknown`. The versioned and redacted JSON artifact is written to
+`.snipara/workflow/final-report.json`; JSON command output includes the complete
+report plus its path and SHA-256 hash.
+
+The command asks the hosted API only for the final Team Sync handoff. It sends a
+compact summary with a longer timeout, retries once with a shorter summary on
+transient hosted failures, and then records a local fallback handoff in
+`.snipara/team-sync/session.json` if the hosted call still times out. A hosted
+final-commit timeout does not modify Git state. Custom final-commit categories
+are namespaced under `final-commit` before the hosted call so they stay on the
+handoff-only path. Stored phase commit receipts are reported separately from
+pending Why Capture candidates, duplicates, failures, and final handoff-only
+content; generating the report never approves pending memory. Completed
+workflow commits also reconcile local Team Sync work: exact goal/summary matches
+close directly, and slug-like workflow goals can still close the matching
+active work when touched files overlap and meaningful workflow tokens match.
 
 ## Adaptive Work Routing
 
@@ -821,6 +837,15 @@ Mistral generates MCP-first files (`MISTRAL.md`, Vibe config, Le Chat connector
 reference, and LangChain `ChatMistralAI.bindTools` snippets); Mistral request
 hooks are model request hooks, not local agent lifecycle hooks.
 
+All generated HTTP/SSE references include a bounded correlation header sourced
+from `SNIPARA_SESSION_ID`. Set it to the session printed by `init` before
+starting Codex, Claude, Cursor, VS Code/Continue, GLM, or another generic MCP
+host. The hosted server uses the header only for project-scoped retrieval
+telemetry and ignores invalid values. If the host cannot inject environment
+headers, pass the same value as `correlation_context.session_id` on
+`snipara_context_query`, `snipara_recall`, `snipara_search`, `snipara_ask`, and
+`snipara_get_chunk`.
+
 OpenClaw hooks remain separate:
 
 ```bash
@@ -973,10 +998,10 @@ snipara-companion workflow phase-start implementation
 snipara-companion workflow run --mode full --include-session-context --query "implement the auth refactor"
 snipara-companion workflow run --mode full --no-runtime-hint --query "implement the auth refactor"
 snipara-companion workflow run --mode orchestrate --query "map production rollout risks"
-snipara-companion workflow final-commit --summary "Shipped auth hardening and tests" --files src/auth.ts tests/auth.test.ts
+snipara-companion workflow final-commit --summary "Shipped auth hardening and tests" --why "Close the reported session replay gap" --evidence "passed:pnpm test auth" --risk "Monitor production auth errors" --next-step "Review the first 24 hours of telemetry" --files src/auth.ts tests/auth.test.ts
 snipara-companion workflow producer-report
 snipara-companion workflow producer-review --artifact producer-abc123 --outcome useful --reviewer alice
-snipara-companion final-commit --summary "Shipped auth hardening and tests" --files src/auth.ts tests/auth.test.ts
+snipara-companion final-commit --summary "Shipped auth hardening and tests" --why "Close the reported session replay gap" --evidence "passed:pnpm test auth" --next-step "Review the first 24 hours of telemetry" --files src/auth.ts tests/auth.test.ts
 snipara-companion doctor
 snipara-companion doctor --json
 snipara-companion code callers --qualified-name src.mcp_transport.handle_call_tool
@@ -1227,8 +1252,11 @@ snipara-companion run \
 package-surface review, verification plan, and final Judgment Card. Review-only
 guard findings can be acknowledged with the printed guard action card command;
 blocking conflicts still make the release judgment non-proceedable.
-When a served judgment id is available, add `--served-judgment-id` so `run` can
-write first-party Advisor Influence receipts. Receipts now follow an explicit
+When Hosted MCP returns a served judgment id, Companion promotes it to the
+first-class `brief.servedJudgmentId` field and uses it automatically. The
+`--served-judgment-id` option remains an explicit override and compatibility
+path. Without either identity, receipt capture remains fail-closed and reports
+`missing_served_judgment_id`. Receipts follow an explicit
 `proposed -> acknowledged -> applied -> verified` lifecycle. A served
 recommendation is only `acknowledged` by default: its `expectedBehaviorChange`,
 severity, required actions, and recommended checks never prove adaptation.
@@ -1252,6 +1280,21 @@ recommendations, `--advisor-recommendation-id` must exactly match the one whose
 plan changed. Without a selector, or when the selector matches none of them,
 every recommendation remains `acknowledged`; one global plan diff is never
 credited to all recommendations.
+
+The `advisorReceiptCapture.measurement` object makes that boundary measurable.
+It reports linked or missing judgment identity, targeted and unscoped receipt
+counts, acknowledged/applied/verified/blocked states, unmeasured
+recommendations, and total receipt coverage. An unscoped acknowledgement proves
+only that the first-party runtime saw the recommendation; it does not prove the
+agent selected, applied, or verified it.
+
+Every invocation also emits one
+`project-intelligence.judgment-run-envelope.v1` at top-level. The envelope
+contains a bounded opaque `runId`, its identity source, and `startedAt`; the
+same object is attached to every first-party Advisor receipt created by that
+invocation. A hosted Snipara session id wins, then a Codex session id, with a
+generated UUID fallback. This makes execution-level funnels available even
+when the caller did not inject a session environment variable.
 
 Missing, partial, or hash-identical snapshots remain `acknowledged`. An applied
 receipt becomes `verified` only when `--outcome-receipts` supplies a receipt
@@ -1363,10 +1406,15 @@ Semantics:
 - `snipara-companion workflow resume` does not snapshot or exactly restore a live Snipara Sandbox process; exact process restore remains a roadmap item
 - `snipara-companion team-sync start-work` = keeps the local session file, reports Start Work Brief status, and fetches the hosted brief when the workspace has project auth
 - `snipara-companion team-sync handoff` = keeps the local handoff record and publishes the hosted handoff capsule when project auth is available
+- `workflow phase-commit`, `final-commit`, and `team-sync handoff` also submit
+  bounded goal/summary/file/command/commit evidence to reviewed Why Capture.
+  Each submission is previewed first and confirmed only when the server finds
+  durable rationale; confirmed candidates remain pending human review. The
+  receipt is observable but best-effort, and no documentation prompt is added.
 - `snipara-companion team-sync what-changed` = prints the local state summary and the hosted What Changed For Me response when configured
 - `snipara-companion team-sync sweep` = archives stale local work items after an inactivity threshold; default is 14 days and `--dry-run` previews candidates, actual archive count, and remaining stale work
 - `snipara-companion team-sync resume` = reloads local carryover plus the hosted latest handoff and checkpoint-aware resume guidance when available
-- `snipara-companion final-commit` / `workflow final-commit` = final hosted commit for the managed workflow
+- `snipara-companion final-commit` / `workflow final-commit` = final hosted handoff plus a redacted seven-section closeout report in human output and `.snipara/workflow/final-report.json`; stored phase outcomes, pending Why Capture candidates, non-persisted items, evidence statuses, risks, and the next step remain visibly distinct
 - `snipara-companion code callers/imports/neighbors/shortest-path/impact` = primary code graph surface for agents with shell access. These commands use `--source auto` by default; clean configured checkouts use hosted MCP, dirty/ahead worktrees use the local overlay, and every response reports `sourceSelection` plus agent guidance.
 - `snipara-companion code symbol-card` = direct `snipara_code_symbol_card` for an important symbol before editing, with an agent guidance summary before raw JSON
 - `snipara-companion code impact --source hosted|local` = optional source override for debugging; normal agent instructions should leave `--source auto` in place. Hosted `snipara_code_impact` is the fallback when companion is unavailable or the canonical graph check after push/reindex.
@@ -1454,6 +1502,11 @@ Companion separates two concepts:
   `workflow phase-commit` and `final-commit` keep local workflow state moving on transient
   hosted commit timeouts and surface that local fallback explicitly in the result.
 
+`final-commit` itself remains handoff-only. Its seven-section report reads the
+durable phase receipts already stored, marks Why Capture candidates as pending
+review, lists skipped/duplicate/failed items as not persisted, and never treats
+the final summary or handoff as newly approved durable memory.
+
 Do not call `snipara_end_of_task_commit` mechanically for every Git commit. For risky commits,
 package releases, or retries after failures, run Memory Guard first so the agent sees relevant
 project memory and context. If a team wants automatic lightweight checkpoints for every Git commit,
@@ -1471,7 +1524,7 @@ Use this when the user's LLM has already produced a plan and Snipara should enfo
 6. For execution/test/debug/finalization that benefits from repeatable isolation, use Snipara Sandbox MCP `execute_python` from the AI client or standalone `snipara-sandbox run`. After material runtime progress, capture a resume-ready checkpoint with `snipara-companion workflow runtime-checkpoint <phase_id> --summary "<state>" --rehydrate-file <state.json>`.
 7. For production gates, drift checks, or htask coordination, hand off explicitly to `snipara-orchestrator`; companion should detect and suggest the package but must not spawn workers automatically.
 8. End every phase with `snipara-companion workflow phase-commit <phase_id> --summary "<outcome>" --files <files...>`.
-9. End the whole task with `snipara-companion final-commit --summary "<final outcome>" --files <files...>`.
+9. End the whole task with `snipara-companion final-commit --summary "<final outcome>" --why "<rationale>" --evidence "passed:<proof>" --risk "<remaining risk>" --next-step "<recommended follow-up>" --files <files...>`.
 
 After compaction or resume, run `snipara-companion workflow resume --include-session-context` when short-lived carryover matters, then rerun `snipara-companion workflow phase-start <phase_id>`. The local state file tells the agent the current phase, and hosted memory contains durable phase outcomes.
 

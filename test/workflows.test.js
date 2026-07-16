@@ -9,6 +9,7 @@ const {
   buildAgenticWorkStatus,
   buildSessionSnapshot,
   buildGeneratedWorkflowPlanDocument,
+  buildFinalCommitReport,
   buildSessionBootstrapQuality,
   buildTeamSyncStartWorkRecord,
   buildWorkflowImpactGate,
@@ -20,6 +21,7 @@ const {
   createClient,
   detectReleaseSurfacesFromFiles,
   formatOrchestratorRecommendationReason,
+  formatFinalCommitReport,
   getPlanStepDisplayTitle,
   getOrchestratorRecommendation,
   normalizeGuardTag,
@@ -29,6 +31,8 @@ const {
   PRODUCER_LOOP_ARTIFACT_VERSION,
   PRODUCER_LOOP_REPORT_VERSION,
   PRODUCER_LOOP_RELATIVE_DIR,
+  FINAL_COMMIT_REPORT_RELATIVE_PATH,
+  FINAL_COMMIT_REPORT_VERSION,
   resolveAutoWorkflowMode,
   resolveFullWorkflowTokenBudget,
   validatePlanResult,
@@ -176,9 +180,12 @@ function writeWorkflowPreload(dir) {
       "        error.name = 'AbortError';",
       "        throw error;",
       "      }",
-      "      const commitResult = { success: true, stored: true };",
+      "      const commitResult = { success: true, stored: true, stored_candidates: [], skipped_candidates: [] };",
       "      if (commitArgs.category === 'final-commit') {",
       "        commitResult.team_sync_handoff = { status: 'created', memory_id: 'mem_handoff' };",
+      "      } else {",
+      "        commitResult.stored_candidates = [{ text: 'Keep phase decisions attributable to their workflow receipts', memory_type: 'decision', category: commitArgs.category, stored: true, memory_id: 'mem_phase_decision', reason: 'stored' }];",
+      "        commitResult.skipped_candidates = [{ text: 'Ran a transient local inspection', memory_type: 'context', reason: 'operational_receipt' }];",
       "      }",
       "      return {",
       "        ok: true,",
@@ -256,6 +263,15 @@ function writeWorkflowPreload(dir) {
       "  const teamSyncLogPath = process.env.SNIPARA_TEST_TEAM_SYNC_LOG;",
       "  if (teamSyncLogPath && pathname.includes('/team-sync/')) {",
       "    fs.appendFileSync(teamSyncLogPath, `${JSON.stringify({ pathname, method: init.method, body })}\\n`, 'utf8');",
+      "  }",
+      "  if (pathname.endsWith('/agents/memory/why-capture') && init.method === 'POST') {",
+      "    const whyCaptureLogPath = process.env.SNIPARA_TEST_WHY_CAPTURE_LOG;",
+      "    if (whyCaptureLogPath) {",
+      "      fs.appendFileSync(whyCaptureLogPath, `${JSON.stringify(body)}\\n`, 'utf8');",
+      "    }",
+      "    const candidate = { content: 'Decision: Preserve review-first final commit reporting. Why: Pending rationale must never be shown as approved memory.', type: 'DECISION', category: 'why-capture', whyFields: { decision: 'Preserve review-first final commit reporting', why: 'Pending rationale must never be shown as approved memory' } };",
+      "    const memory = { id: 'mem_pending_why', content: candidate.content, type: 'DECISION', category: 'why-capture', reviewStatus: 'PENDING' };",
+      "    return { ok: true, status: 200, statusText: 'OK', json: async () => ({ success: true, data: { previewOnly: body.previewOnly === true, confirmed: body.confirmed === true, candidateCount: 1, candidates: [candidate], ...(body.confirmed ? { capturedCount: 1, memories: [memory], decisionCapture: { createdCount: 1, duplicateCount: 0, failedCount: 0, created: [{ id: 'decision_pending_1' }], duplicates: [], failed: [] } } : {}) } }) };",
       "  }",
       "  const project = { id: 'project_1', name: 'App', slug: 'app' };",
       "  if (pathname.endsWith('/collaboration/sessions') && init.method === 'POST') {",
@@ -338,6 +354,34 @@ function writeWorkflowState(dir) {
             status: "in_progress",
             startedAt: "2026-05-31T10:25:00.000Z",
             files: ["packages/cli/test/workflows.test.js"],
+          },
+        ],
+        phaseCommitReceipts: [
+          {
+            phaseId: "build",
+            capturedAt: "2026-05-31T10:20:00.000Z",
+            category: "workflow-phase",
+            outcome: "completed",
+            hostedStatus: "processed",
+            stored: [
+              {
+                memoryId: "mem_kept_decision",
+                text: "Keep final commit handoff-only",
+                type: "decision",
+                category: "workflow-phase",
+                source: "phase_commit",
+                phaseId: "build",
+              },
+            ],
+            skipped: [
+              {
+                text: "Ran one transient command",
+                type: "context",
+                reason: "operational_receipt",
+                source: "phase_commit",
+                phaseId: "build",
+              },
+            ],
           },
         ],
       },
@@ -462,6 +506,20 @@ test("client exposes generic workflow helpers", () => {
   assert.equal(typeof client.getSessionMemories, "function");
   assert.equal(typeof client.endOfTaskCommit, "function");
   assert.equal(typeof client.journalAppend, "function");
+});
+
+test("final-commit help exposes structured closeout inputs", () => {
+  for (const args of [
+    ["final-commit", "--help"],
+    ["workflow", "final-commit", "--help"],
+  ]) {
+    const result = runCli(args);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /--why/);
+    assert.match(result.stdout, /--evidence/);
+    assert.match(result.stdout, /--risk/);
+    assert.match(result.stdout, /--next-step/);
+  }
 });
 
 test("agentic status summarizes workflow, git, and Team Sync state", () => {
@@ -1300,6 +1358,53 @@ test("managed workflow exposes compaction-safe commit summaries", () => {
   );
 });
 
+test("final report fails closed for legacy receipts and unverified evidence", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-final-report-builder-"));
+  const report = buildFinalCommitReport({
+    cwd: dir,
+    summary: "Closed the workflow with api_key=secret-value",
+    why: "Protect Bearer abcdefghijklmnopqrstuvwxyz from closeout output",
+    outcome: "completed",
+    evidence: ["Ran a command without a result receipt"],
+    state: {
+      workflowId: "legacy-workflow",
+      goal: "Close legacy workflow",
+      status: "completed",
+      createdAt: "2026-05-01T08:00:00.000Z",
+      phases: [
+        {
+          id: "legacy",
+          title: "Legacy phase",
+          status: "completed",
+          summary: "Completed before phase receipts existed",
+          files: ["src/legacy.ts"],
+        },
+      ],
+    },
+    whyCapture: {
+      status: "skipped",
+      sourceKind: "final_commit",
+      previewCandidateCount: 0,
+      capturedCount: 0,
+      previewCandidates: [],
+      pendingMemories: [],
+      duplicates: [],
+      failed: [],
+    },
+    finalCommitResult: {
+      hosted_final_commit: { status: "error" },
+    },
+  });
+
+  assert.equal(report.changed.summary, "Closed the workflow with api_key=<redacted>");
+  assert.equal(report.rationale.text, "Protect Bearer <redacted> from closeout output");
+  assert.equal(report.evidence.items[0].status, "unknown");
+  assert.equal(report.retainedDecisions.status, "unavailable");
+  assert.equal(report.pendingDecisions.status, "unavailable");
+  assert.ok(report.closeout.risks.some((risk) => /local fallback/i.test(risk)));
+  assert.match(formatFinalCommitReport(report), /7\. Risks and next step/);
+});
+
 test("workflow phase-commit appends a journal checkpoint alongside durable memory", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-phase-commit-"));
   fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
@@ -1332,6 +1437,7 @@ test("workflow phase-commit appends a journal checkpoint alongside durable memor
   );
   const preloadPath = writeWorkflowPreload(dir);
   const journalLog = path.join(dir, "workflow-journal.jsonl");
+  const whyCaptureLog = path.join(dir, "workflow-why-capture.jsonl");
 
   const result = runCli(
     [
@@ -1351,6 +1457,7 @@ test("workflow phase-commit appends a journal checkpoint alongside durable memor
         SNIPARA_SESSION_ID: "session_1",
         SNIPARA_AUTOMATION_CLIENT: "codex",
         SNIPARA_TEST_JOURNAL_LOG: journalLog,
+        SNIPARA_TEST_WHY_CAPTURE_LOG: whyCaptureLog,
       },
       nodeArgs: ["-r", preloadPath],
     }
@@ -1359,6 +1466,44 @@ test("workflow phase-commit appends a journal checkpoint alongside durable memor
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.journal.status, "ok");
+  assert.deepEqual(payload.whyCapture, {
+    status: "captured",
+    sourceKind: "phase_commit",
+    previewCandidateCount: 1,
+    capturedCount: 1,
+    previewCandidates: [
+      {
+        text: "Decision: Preserve review-first final commit reporting. Why: Pending rationale must never be shown as approved memory.",
+        type: "DECISION",
+        category: "why-capture",
+        decision: "Preserve review-first final commit reporting",
+        rationale: "Pending rationale must never be shown as approved memory",
+      },
+    ],
+    pendingMemories: [
+      {
+        memoryId: "mem_pending_why",
+        text: "Decision: Preserve review-first final commit reporting. Why: Pending rationale must never be shown as approved memory.",
+        type: "DECISION",
+        category: "why-capture",
+        reviewStatus: "PENDING",
+      },
+    ],
+    duplicates: [],
+    failed: [],
+  });
+  const phaseWhyCapture = fs
+    .readFileSync(whyCaptureLog, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(phaseWhyCapture.length, 2);
+  assert.equal(phaseWhyCapture[0].previewOnly, true);
+  assert.equal(phaseWhyCapture[0].confirmed, false);
+  assert.equal(phaseWhyCapture[1].previewOnly, false);
+  assert.equal(phaseWhyCapture[1].confirmed, true);
+  assert.equal(phaseWhyCapture[1].sourceKind, "phase_commit");
+  assert.equal(phaseWhyCapture[1].sourceSessionId, "companion-journal");
   assert.equal(payload.producerLoopArtifact.status, "written");
   assert.equal(payload.producerLoopArtifact.schemaVersion, PRODUCER_LOOP_ARTIFACT_VERSION);
   assert.match(payload.producerLoopArtifact.relativePath, /^\.snipara\/producer-loop\//);
@@ -1381,6 +1526,13 @@ test("workflow phase-commit appends a journal checkpoint alongside durable memor
     fs.readFileSync(path.join(dir, ".snipara", "workflow", "current.json"), "utf8")
   );
   assert.equal(current.phases[0].status, "completed");
+  assert.equal(current.phaseCommitReceipts.length, 1);
+  assert.equal(current.phaseCommitReceipts[0].stored[0].memoryId, "mem_phase_decision");
+  assert.equal(current.phaseCommitReceipts[0].skipped[0].reason, "operational_receipt");
+  assert.equal(
+    current.phaseCommitReceipts[0].whyCapture.pendingMemories[0].reviewStatus,
+    "PENDING"
+  );
   const logged = fs
     .readFileSync(journalLog, "utf8")
     .trim()
@@ -1584,6 +1736,101 @@ test("workflow producer-report summarizes local workflow producer artifacts", ()
   assert.equal(reviewedReport.calibration.unreviewedSampleSize, 1);
   assert.equal(reviewedReport.calibration.reviewOutcomes.useful, 1);
   assert.equal(reviewedReport.calibration.hardGateReady, false);
+});
+
+test("workflow producer-report groups attributed receipts by worker and category", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-worker-trust-report-"));
+  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+  const executionDir = path.join(dir, ".snipara", "orchestrator", "executions");
+  const reviewDir = path.join(dir, ".snipara", "orchestrator", "reviews");
+  fs.mkdirSync(executionDir, { recursive: true });
+  fs.mkdirSync(reviewDir, { recursive: true });
+  const receiptRefs = {
+    handoffReceiptId: "handoff-docs",
+    claimId: "claim-docs",
+    proofReceiptIds: ["proof-docs"],
+    outcomeReceiptId: "outcome-docs",
+    brainUpdateReceiptId: "brain-docs",
+  };
+  fs.writeFileSync(
+    path.join(executionDir, "receipt-docs.json"),
+    JSON.stringify({
+      schemaVersion: "snipara.gated_worker_execution_receipt.v1",
+      receiptId: "receipt-docs",
+      recordedAt: "2026-07-13T10:00:00.000Z",
+      status: "completed_review_pending",
+      reviewStatus: "review_pending",
+      workerId: "local-docs-v0",
+      workCategory: "docs_low_risk",
+      routingCardRef: "routing-card-sha256:docs",
+      workflowFingerprint: "workflow-shape-sha256:docs",
+      executionActor: "worker",
+      workersSpawned: 1,
+      receiptRefs,
+    }),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(executionDir, "receipt-code.json"),
+    JSON.stringify({
+      schemaVersion: "snipara.gated_worker_execution_receipt.v1",
+      receiptId: "receipt-code",
+      recordedAt: "2026-07-13T10:01:00.000Z",
+      status: "completed_review_pending",
+      reviewStatus: "review_pending",
+      workerId: "local-docs-v0",
+      workCategory: "code_shared",
+      routingCardRef: "routing-card-sha256:code",
+      workflowFingerprint: "workflow-shape-sha256:code",
+      executionActor: "worker",
+      workersSpawned: 1,
+      receiptRefs: { proofReceiptIds: [] },
+    }),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(reviewDir, "review-docs.json"),
+    JSON.stringify({
+      schemaVersion: "snipara.gated_worker_execution_review.v0",
+      receiptId: "receipt-docs",
+      passed: true,
+      reviewStatus: "accepted",
+    }),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(reviewDir, "review-code.json"),
+    JSON.stringify({
+      schemaVersion: "snipara.gated_worker_execution_review.v0",
+      receiptId: "receipt-code",
+      passed: false,
+      reviewStatus: "blocked",
+    }),
+    "utf8"
+  );
+
+  const result = runCli(["workflow", "producer-report", "--min-review-samples", "2", "--json"], {
+    cwd: dir,
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.workerReceipts.sampleSize, 2);
+  assert.equal(report.workerReceipts.invalidArtifacts.length, 0);
+  assert.equal(report.workerTrust.length, 2);
+  const docs = report.workerTrust.find((row) => row.workCategory === "docs_low_risk");
+  const code = report.workerTrust.find((row) => row.workCategory === "code_shared");
+  assert.equal(docs.workerId, "local-docs-v0");
+  assert.equal(docs.state, "probation_supervised");
+  assert.equal(docs.reviewedSampleSize, 1);
+  assert.equal(docs.verifiedSampleSize, 1);
+  assert.equal(docs.incompleteReceiptSampleSize, 0);
+  assert.equal(docs.hardGateReady, false);
+  assert.deepEqual(docs.workflowFingerprints, ["workflow-shape-sha256:docs"]);
+  assert.equal(code.blockedSampleSize, 1);
+  assert.equal(code.incompleteReceiptSampleSize, 1);
+  assert.match(code.nextRequired.join(" "), /complete receipt families/);
+  assert.equal(code.hardGateReady, false);
 });
 
 test("workflow producer-triage emits decision requests and decide applies producer review", () => {
@@ -1840,12 +2087,23 @@ test("final-commit surfaces the backend Team Sync handoff invariant", () => {
   writeWorkflowState(dir);
   const preloadPath = writeWorkflowPreload(dir);
   const commitLog = path.join(dir, "workflow-commit.jsonl");
+  const whyCaptureLog = path.join(dir, "workflow-final-why-capture.jsonl");
 
   const result = runCli(
     [
       "final-commit",
       "--summary",
       "Closed the managed workflow",
+      "--why",
+      "Make closeout memory status explicit without auto-approving rationale",
+      "--evidence",
+      "passed:pnpm --filter snipara-companion test",
+      "--evidence",
+      "not-run:production smoke",
+      "--risk",
+      "Published package still needs registry verification",
+      "--next-step",
+      "Publish and verify the package",
       "--files",
       "packages/cli/src/commands/workflows.ts",
       "--json",
@@ -1859,6 +2117,7 @@ test("final-commit surfaces the backend Team Sync handoff invariant", () => {
         SNIPARA_SESSION_ID: "session_1",
         SNIPARA_AUTOMATION_CLIENT: "codex",
         SNIPARA_TEST_COMMIT_LOG: commitLog,
+        SNIPARA_TEST_WHY_CAPTURE_LOG: whyCaptureLog,
       },
       nodeArgs: ["-r", preloadPath],
     }
@@ -1868,6 +2127,37 @@ test("final-commit surfaces the backend Team Sync handoff invariant", () => {
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.commit.team_sync_handoff.status, "created");
   assert.equal(payload.commit.team_sync_handoff.memory_id, "mem_handoff");
+  assert.equal(payload.whyCapture.status, "captured");
+  assert.equal(payload.whyCapture.sourceKind, "final_commit");
+  assert.equal(payload.report.version, FINAL_COMMIT_REPORT_VERSION);
+  assert.equal(payload.report.rationale.status, "provided");
+  assert.equal(payload.report.evidence.counts.passed, 1);
+  assert.equal(payload.report.evidence.counts.not_run, 1);
+  assert.equal(payload.report.retainedDecisions.status, "confirmed");
+  assert.equal(payload.report.retainedDecisions.items[0].memoryId, "mem_kept_decision");
+  assert.equal(payload.report.pendingDecisions.status, "pending_review");
+  assert.equal(payload.report.pendingDecisions.items[0].memoryId, "mem_pending_why");
+  assert.ok(
+    payload.report.notPersisted.items.some((item) => item.reason === "handoff_only_by_design")
+  );
+  assert.deepEqual(payload.report.closeout.risks, [
+    "Published package still needs registry verification",
+    "Phase 'verify' is in_progress.",
+    "1 verification item(s) were not run.",
+  ]);
+  assert.equal(payload.report.closeout.nextStep, "Publish and verify the package");
+  assert.equal(payload.reportArtifact.status, "written");
+  assert.equal(payload.reportArtifact.relativePath, FINAL_COMMIT_REPORT_RELATIVE_PATH);
+  assert.match(payload.reportArtifact.hash, /^sha256:/);
+  const finalWhyCapture = fs
+    .readFileSync(whyCaptureLog, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(finalWhyCapture.length, 2);
+  assert.equal(finalWhyCapture[0].previewOnly, true);
+  assert.equal(finalWhyCapture[1].confirmed, true);
+  assert.equal(finalWhyCapture[1].sourceSessionId, "agentic-work");
   assert.equal(payload.producerLoopArtifact.status, "written");
   assert.equal(payload.producerLoopArtifact.schemaVersion, PRODUCER_LOOP_ARTIFACT_VERSION);
   assert.match(payload.producerLoopArtifact.relativePath, /^\.snipara\/producer-loop\//);
@@ -1888,6 +2178,12 @@ test("final-commit surfaces the backend Team Sync handoff invariant", () => {
   );
   assert.equal(current.status, "completed");
   assert.equal(current.lastCommit.category, "final-commit");
+  assert.equal(current.finalReport.version, FINAL_COMMIT_REPORT_VERSION);
+  const savedReport = JSON.parse(
+    fs.readFileSync(path.join(dir, FINAL_COMMIT_REPORT_RELATIVE_PATH), "utf8")
+  );
+  assert.equal(savedReport.version, FINAL_COMMIT_REPORT_VERSION);
+  assert.equal(savedReport.pendingDecisions.items[0].reviewStatus, "PENDING");
 
   const logged = fs
     .readFileSync(commitLog, "utf8")
@@ -1954,6 +2250,56 @@ test("final-commit completes the matching local Team Sync work item", () => {
   assert.equal(loaded.work[0].status, "completed");
   assert.match(loaded.work[0].completionReason, /Workflow agentic-work completed by final-commit/);
   assert.equal(loaded.work[1].status, "active");
+});
+
+test("final-commit prints the seven closeout sections in stable order", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-final-report-text-"));
+  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+  writeWorkflowState(dir);
+  const preloadPath = writeWorkflowPreload(dir);
+
+  const result = runCli(
+    [
+      "final-commit",
+      "--summary",
+      "Closed the workflow with a transparent report",
+      "--why",
+      "Operators need attributable closeout evidence",
+      "--evidence",
+      "passed:focused tests",
+      "--next-step",
+      "Verify the published package",
+    ],
+    {
+      cwd: dir,
+      env: {
+        SNIPARA_API_KEY: "snp-test",
+        SNIPARA_PROJECT_ID: "project_1",
+        SNIPARA_API_URL: "https://api.snipara.com",
+      },
+      nodeArgs: ["-r", preloadPath],
+    }
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const headings = [
+    "1. What changed",
+    "2. Why",
+    "3. Evidence",
+    "4. Decisions kept",
+    "5. Decisions proposed for review",
+    "6. Not persisted",
+    "7. Risks and next step",
+  ];
+  let previousIndex = -1;
+  for (const heading of headings) {
+    const index = result.stdout.indexOf(heading);
+    assert.ok(index > previousIndex, `Expected '${heading}' after the previous section`);
+    previousIndex = index;
+  }
+  assert.match(result.stdout, /\[passed\] focused tests/);
+  assert.match(result.stdout, /\[PENDING\]/);
+  assert.match(result.stdout, /handoff_only_by_design/);
 });
 
 test("final-commit keeps custom categories on the final handoff-only path", () => {

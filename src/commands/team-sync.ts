@@ -32,6 +32,11 @@ import {
 } from "../runtime/orchestrator-handoff";
 import { appendActivityEvent, writeSessionSnapshot } from "./activity";
 import { appendJournalCheckpoint, type JournalWriteResult } from "./journal";
+import {
+  captureCompanionWhy,
+  readLatestWorkflowCommands,
+  type CompanionWhyCaptureReceipt,
+} from "./why-capture";
 
 export const TEAM_SYNC_STATE_RELATIVE_PATH = path.join(".snipara", "team-sync", "session.json");
 const TEAM_SYNC_STALE_WORK_MS = 48 * 60 * 60 * 1000;
@@ -182,6 +187,7 @@ interface TeamSyncHandoffPayload {
   hosted: HostedAttempt<TeamSyncHandoffResponse>;
   orchestratorRecommendation: OrchestratorRecommendation | null;
   orchestratorHandoff: WrittenOrchestratorHandoff | null;
+  whyCapture: CompanionWhyCaptureReceipt;
 }
 
 export interface TeamSyncStartWorkPayload {
@@ -750,6 +756,17 @@ async function createTeamSyncHandoffPayload(
     files: record.files,
     cwd: rootDir,
   });
+  const whyCapture = await captureCompanionWhy({
+    cwd: rootDir,
+    sourceKind: "handoff",
+    sourceSessionId: record.id,
+    task: summary.latestActiveWork?.summary ?? record.summary,
+    summary: [record.summary, record.next ? `Next: ${record.next}` : undefined]
+      .filter(Boolean)
+      .join("\n"),
+    files: record.files,
+    commands: readLatestWorkflowCommands(rootDir),
+  });
   appendActivityEvent({
     cwd: rootDir,
     source: "team-sync",
@@ -764,6 +781,8 @@ async function createTeamSyncHandoffPayload(
       attention: record.attention,
       hostedStatus: hosted.status,
       journalStatus: journal.status,
+      whyCaptureStatus: whyCapture.status,
+      whyCaptureCandidateCount: whyCapture.capturedCount,
       orchestratorHandoffPath: orchestratorHandoff?.relativePath,
     },
   });
@@ -776,6 +795,7 @@ async function createTeamSyncHandoffPayload(
     statePath: getTeamSyncStatePath(rootDir),
     summary,
     hosted,
+    whyCapture,
     orchestratorRecommendation,
     orchestratorHandoff,
   };

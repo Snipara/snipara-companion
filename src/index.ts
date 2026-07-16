@@ -334,6 +334,14 @@ export {
 export { controlledWorkerExecuteCommand } from "./commands/controlled-worker-execution";
 export { getPlanStepDisplayTitle } from "./commands/workflows";
 export {
+  buildFinalCommitReport,
+  buildWorkflowPhaseCommitReceipt,
+  formatFinalCommitReport,
+  writeFinalCommitReport,
+  FINAL_COMMIT_REPORT_RELATIVE_PATH,
+  FINAL_COMMIT_REPORT_VERSION,
+} from "./commands/final-commit-report";
+export {
   ingestReferences,
   referencesIngestCommand,
   referencesScanCommand,
@@ -2460,16 +2468,29 @@ workflow
   .command("final-commit")
   .description("Persist the final workflow outcome and close the local workflow state")
   .requiredOption("-s, --summary <summary>", "Final outcome summary")
+  .option("--why <why>", "Decision rationale; never inferred when absent")
   .option("-c, --category <category>", "Memory category", "final-commit")
   .option("-o, --outcome <outcome>", "completed|partial|blocked|abandoned", "completed")
   .option("-f, --files <files...>", "Files touched")
+  .option(
+    "--evidence <evidence>",
+    "Verification evidence as passed|failed|not-run|unknown:text; repeatable",
+    collectOption,
+    []
+  )
+  .option("--risk <risk>", "Known residual risk; repeatable", collectOption, [])
+  .option("--next-step <nextStep>", "Recommended next action")
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await finalCommitCommand({
       summary: options.summary,
+      why: options.why,
       category: options.category,
       outcome: options.outcome,
       files: options.files,
+      evidence: options.evidence,
+      risks: options.risk,
+      nextStep: options.nextStep,
       json: options.json,
     });
   });
@@ -3127,7 +3148,7 @@ collaboration
   .option("--enforce", "Exit non-zero for REVIEW_REQUIRED or REQUIRES_ACK, not only BLOCKED")
   .option(
     "--ack-review-only",
-    "Under --enforce, acknowledge review-only stale-state and decision-consistency warnings"
+    "Under --enforce, persist one exact review-only acknowledgement for the next hook rerun"
   )
   .option("-d, --dir <directory>", "Repository directory (default: current)")
   .option("--json", "Print raw JSON")
@@ -4158,16 +4179,29 @@ program
   .command("final-commit")
   .description("Persist the final managed workflow outcome through snipara_end_of_task_commit")
   .requiredOption("-s, --summary <summary>", "Final outcome summary")
+  .option("--why <why>", "Decision rationale; never inferred when absent")
   .option("-c, --category <category>", "Category", "final-commit")
   .option("-o, --outcome <outcome>", "Outcome", "completed")
   .option("-f, --files <files...>", "Files touched")
+  .option(
+    "--evidence <evidence>",
+    "Verification evidence as passed|failed|not-run|unknown:text; repeatable",
+    collectOption,
+    []
+  )
+  .option("--risk <risk>", "Known residual risk; repeatable", collectOption, [])
+  .option("--next-step <nextStep>", "Recommended next action")
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await finalCommitCommand({
       summary: options.summary,
+      why: options.why,
       category: options.category,
       outcome: options.outcome,
       files: options.files,
+      evidence: options.evidence,
+      risks: options.risk,
+      nextStep: options.nextStep,
       json: options.json,
     });
   });

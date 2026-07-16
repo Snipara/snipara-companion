@@ -108,6 +108,19 @@ import {
   type TeamSyncWorkRecord,
 } from "./team-sync";
 import { resolveLocalWorkerRoutingDefaults, type LocalWorkerRoutingDefaults } from "./workers";
+import {
+  captureCompanionWhy,
+  readLatestWorkflowCommands,
+  type CompanionWhyCaptureReceipt,
+} from "./why-capture";
+import {
+  buildFinalCommitReport,
+  buildWorkflowPhaseCommitReceipt,
+  formatFinalCommitReport,
+  writeFinalCommitReport,
+  type FinalCommitReportArtifact,
+  type WorkflowPhaseCommitReceipt,
+} from "./final-commit-report";
 
 const DEFAULT_SESSION_CONTEXT_TOKENS = 1000;
 const DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS = 2000;
@@ -377,6 +390,41 @@ export interface ProducerLoopArtifactReportSummary {
   reviewer?: string;
 }
 
+export interface WorkerExecutionReceiptReportSummary {
+  receiptId: string;
+  schemaVersion: string;
+  recordedAt?: string;
+  workerId: string;
+  workCategory: string;
+  routingCardRef?: string;
+  workflowFingerprint?: string;
+  executionActor: string;
+  status?: string;
+  reviewStatus: "review_pending" | "accepted" | "blocked";
+  executed: boolean;
+  receiptFamilyComplete: boolean;
+  missingReceiptFamilies: string[];
+  path: string;
+  relativePath: string;
+  reviewPath?: string;
+  reviewRelativePath?: string;
+}
+
+export interface WorkerTrustReportRow {
+  workerId: string;
+  workCategory: string;
+  state: "probation_supervised";
+  sampleSize: number;
+  executedSampleSize: number;
+  reviewedSampleSize: number;
+  verifiedSampleSize: number;
+  blockedSampleSize: number;
+  incompleteReceiptSampleSize: number;
+  workflowFingerprints: string[];
+  hardGateReady: false;
+  nextRequired: string[];
+}
+
 export interface ProducerLoopReport {
   version: typeof PRODUCER_LOOP_REPORT_VERSION;
   generatedAt: string;
@@ -400,6 +448,17 @@ export interface ProducerLoopReport {
   reasonCodes: {
     counts: Record<string, number>;
   };
+  workerReceipts: {
+    sourceDirectories: string[];
+    sampleSize: number;
+    samples: WorkerExecutionReceiptReportSummary[];
+    invalidArtifacts: Array<{
+      path: string;
+      relativePath: string;
+      error: string;
+    }>;
+  };
+  workerTrust: WorkerTrustReportRow[];
   calibration: {
     status: "no_samples" | "insufficient_samples" | "reviewable_sample_set";
     sampleSize: number;
@@ -514,6 +573,8 @@ export interface ManagedWorkflowState {
   phases: ManagedWorkflowPhase[];
   runtime?: ManagedWorkflowRuntimeState;
   coordination?: ManagedWorkflowCoordinationState;
+  phaseCommitReceipts?: WorkflowPhaseCommitReceipt[];
+  finalReport?: FinalCommitReportArtifact;
   lastCommit?: {
     category: string;
     outcome: TaskCommitOutcome;
@@ -2633,6 +2694,7 @@ function normalizeManagedWorkflowState(state: ManagedWorkflowState): ManagedWork
   return {
     ...state,
     runtime: normalizeManagedWorkflowRuntimeState(state.runtime),
+    phaseCommitReceipts: Array.isArray(state.phaseCommitReceipts) ? state.phaseCommitReceipts : [],
   };
 }
 
@@ -3051,6 +3113,211 @@ function producerLoopCalibrationStatus(
   return "reviewable_sample_set" as const;
 }
 
+const WORKER_RECEIPT_RELATIVE_DIR = path.join(".snipara", "orchestrator", "executions");
+const WORKER_REVIEW_RELATIVE_DIR = path.join(".snipara", "orchestrator", "reviews");
+const REQUIRED_WORKER_RECEIPT_FAMILIES = [
+  "handoffReceiptId",
+  "claimId",
+  "proofReceiptIds",
+  "outcomeReceiptId",
+  "brainUpdateReceiptId",
+] as const;
+
+function listJsonFiles(relativeDir: string, cwd: string): string[] {
+  const directory = path.join(cwd, relativeDir);
+  if (!fs.existsSync(directory)) {
+    return [];
+  }
+  return fs
+    .readdirSync(directory, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+    .map((entry) => path.join(directory, entry.name))
+    .sort();
+}
+
+function readWorkerReviewFiles(cwd: string): {
+  reviews: Map<string, { value: Record<string, unknown>; path: string }>;
+  invalid: ProducerLoopReport["workerReceipts"]["invalidArtifacts"];
+} {
+  const reviews = new Map<string, { value: Record<string, unknown>; path: string }>();
+  const invalid: ProducerLoopReport["workerReceipts"]["invalidArtifacts"] = [];
+  for (const filePath of listJsonFiles(WORKER_REVIEW_RELATIVE_DIR, cwd)) {
+    try {
+      const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+      if (!isRecord(parsed)) {
+        throw new Error("review must be a JSON object");
+      }
+      const receiptId = stringValue(parsed.receiptId);
+      if (!receiptId) {
+        throw new Error("review is missing receiptId");
+      }
+      reviews.set(receiptId, { value: parsed, path: filePath });
+    } catch (error) {
+      invalid.push({
+        path: filePath,
+        relativePath: toProjectRelativePath(filePath, cwd),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return { reviews, invalid };
+}
+
+function missingWorkerReceiptFamilies(receipt: Record<string, unknown>): string[] {
+  const refs = isRecord(receipt.receiptRefs)
+    ? receipt.receiptRefs
+    : isRecord(receipt.receipt)
+      ? receipt.receipt
+      : {};
+  return REQUIRED_WORKER_RECEIPT_FAMILIES.filter((family) => {
+    const value = refs[family];
+    return family === "proofReceiptIds"
+      ? !Array.isArray(value) || value.filter((item) => Boolean(stringValue(item))).length === 0
+      : !stringValue(value);
+  });
+}
+
+function summarizeWorkerExecutionReceipts(cwd: string): {
+  samples: WorkerExecutionReceiptReportSummary[];
+  invalid: ProducerLoopReport["workerReceipts"]["invalidArtifacts"];
+} {
+  const reviewFiles = readWorkerReviewFiles(cwd);
+  const invalid = [...reviewFiles.invalid];
+  const samples: WorkerExecutionReceiptReportSummary[] = [];
+  for (const filePath of listJsonFiles(WORKER_RECEIPT_RELATIVE_DIR, cwd)) {
+    try {
+      const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+      if (!isRecord(parsed)) {
+        throw new Error("receipt must be a JSON object");
+      }
+      const receiptId = stringValue(parsed.receiptId);
+      const schemaVersion = stringValue(parsed.schemaVersion);
+      if (!receiptId || !schemaVersion) {
+        throw new Error("receipt is missing receiptId or schemaVersion");
+      }
+      const attribution = isRecord(parsed.workerAttribution) ? parsed.workerAttribution : {};
+      const gate = isRecord(parsed.gate) ? parsed.gate : {};
+      const review = reviewFiles.reviews.get(receiptId);
+      const reviewStatusValue = stringValue(review?.value.reviewStatus);
+      const reviewStatus =
+        reviewStatusValue === "accepted"
+          ? "accepted"
+          : reviewStatusValue === "blocked"
+            ? "blocked"
+            : "review_pending";
+      const workerId =
+        stringValue(parsed.workerId) ??
+        stringValue(attribution.workerId) ??
+        stringValue(parsed.selectedWorkerCandidateId) ??
+        stringValue(gate.selectedWorkerCandidateId) ??
+        "main_agent";
+      const workCategory =
+        stringValue(parsed.workCategory) ?? stringValue(attribution.workCategory) ?? "unknown";
+      const executionActor =
+        stringValue(parsed.executionActor) ??
+        stringValue(attribution.executionActor) ??
+        (Number(parsed.workersSpawned ?? 0) > 0 ? "worker" : "main_agent");
+      const missingReceiptFamilies = missingWorkerReceiptFamilies(parsed);
+      samples.push({
+        receiptId,
+        schemaVersion,
+        recordedAt: stringValue(parsed.recordedAt),
+        workerId,
+        workCategory,
+        routingCardRef:
+          stringValue(parsed.routingCardRef) ?? stringValue(attribution.routingCardRef),
+        workflowFingerprint:
+          stringValue(parsed.workflowFingerprint) ?? stringValue(attribution.workflowFingerprint),
+        executionActor,
+        status: stringValue(parsed.status),
+        reviewStatus,
+        executed: executionActor === "worker" || Number(parsed.workersSpawned ?? 0) > 0,
+        receiptFamilyComplete: missingReceiptFamilies.length === 0,
+        missingReceiptFamilies,
+        path: filePath,
+        relativePath: toProjectRelativePath(filePath, cwd),
+        ...(review
+          ? {
+              reviewPath: review.path,
+              reviewRelativePath: toProjectRelativePath(review.path, cwd),
+            }
+          : {}),
+      });
+    } catch (error) {
+      invalid.push({
+        path: filePath,
+        relativePath: toProjectRelativePath(filePath, cwd),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  samples.sort((left, right) =>
+    (left.recordedAt ?? left.receiptId).localeCompare(right.recordedAt ?? right.receiptId)
+  );
+  return { samples, invalid };
+}
+
+function buildWorkerTrustRows(
+  samples: WorkerExecutionReceiptReportSummary[],
+  minReviewSampleSize: number
+): WorkerTrustReportRow[] {
+  const grouped = new Map<string, WorkerExecutionReceiptReportSummary[]>();
+  for (const sample of samples) {
+    const key = `${sample.workerId}\u0000${sample.workCategory}`;
+    grouped.set(key, [...(grouped.get(key) ?? []), sample]);
+  }
+  return [...grouped.values()]
+    .map((group): WorkerTrustReportRow => {
+      const reviewedSampleSize = group.filter(
+        (sample) => sample.reviewStatus !== "review_pending"
+      ).length;
+      const verifiedSampleSize = group.filter(
+        (sample) => sample.reviewStatus === "accepted"
+      ).length;
+      const incompleteReceiptSampleSize = group.filter(
+        (sample) => !sample.receiptFamilyComplete
+      ).length;
+      const nextRequired = [
+        reviewedSampleSize < minReviewSampleSize
+          ? `${minReviewSampleSize - reviewedSampleSize} more supervised review sample(s)`
+          : undefined,
+        verifiedSampleSize < 3
+          ? `${3 - verifiedSampleSize} more accepted verified sample(s)`
+          : undefined,
+        incompleteReceiptSampleSize > 0
+          ? `${incompleteReceiptSampleSize} sample(s) need complete receipt families`
+          : undefined,
+        group[0].workCategory === "unknown"
+          ? "classify legacy samples by work category"
+          : undefined,
+        "Trust Promotion gate implementation remains required",
+      ].filter((item): item is string => Boolean(item));
+      return {
+        workerId: group[0].workerId,
+        workCategory: group[0].workCategory,
+        state: "probation_supervised",
+        sampleSize: group.length,
+        executedSampleSize: group.filter((sample) => sample.executed).length,
+        reviewedSampleSize,
+        verifiedSampleSize,
+        blockedSampleSize: group.filter((sample) => sample.reviewStatus === "blocked").length,
+        incompleteReceiptSampleSize,
+        workflowFingerprints: uniqueStrings(
+          group
+            .map((sample) => sample.workflowFingerprint)
+            .filter((value): value is string => Boolean(value))
+        ),
+        hardGateReady: false,
+        nextRequired,
+      };
+    })
+    .sort((left, right) =>
+      left.workerId === right.workerId
+        ? left.workCategory.localeCompare(right.workCategory)
+        : left.workerId.localeCompare(right.workerId)
+    );
+}
+
 export function buildProducerLoopReport(
   options: {
     cwd?: string;
@@ -3105,6 +3372,8 @@ export function buildProducerLoopReport(
     reviewedSampleSize,
     minReviewSampleSize
   );
+  const workerReceiptReport = summarizeWorkerExecutionReceipts(cwd);
+  const workerTrust = buildWorkerTrustRows(workerReceiptReport.samples, minReviewSampleSize);
   const recommendedActions = [
     artifacts.length === 0
       ? "Run a current Producer Loop producer, such as workflow phase-commit/final-commit or PR Answer Pack decision capture, to create samples."
@@ -3120,6 +3389,12 @@ export function buildProducerLoopReport(
       : undefined,
     invalidArtifacts.length > 0
       ? "Inspect invalid Producer Loop artifacts before trusting adoption counts."
+      : undefined,
+    workerReceiptReport.samples.length === 0
+      ? "Run agents execute-gated and persist agents review-gated results to create worker-attributed receipt samples."
+      : undefined,
+    workerReceiptReport.invalid.length > 0
+      ? "Inspect invalid worker execution receipts or reviews before trusting per-worker counts."
       : undefined,
     "Review false positives, missing outcomes, and reason-code drift before any future enforcement.",
   ].filter((item): item is string => Boolean(item));
@@ -3143,6 +3418,13 @@ export function buildProducerLoopReport(
     reasonCodes: {
       counts: reasonCodeCounts,
     },
+    workerReceipts: {
+      sourceDirectories: [WORKER_RECEIPT_RELATIVE_DIR, WORKER_REVIEW_RELATIVE_DIR],
+      sampleSize: workerReceiptReport.samples.length,
+      samples: workerReceiptReport.samples,
+      invalidArtifacts: workerReceiptReport.invalid,
+    },
+    workerTrust,
     calibration: {
       status: calibrationStatus,
       sampleSize: artifacts.length,
@@ -3381,6 +3663,19 @@ function printProducerLoopReport(report: ProducerLoopReport): void {
   }
   if (report.invalidArtifacts.length > 0) {
     printKeyValue("Invalid artifacts:", report.invalidArtifacts.length);
+  }
+  printKeyValue("Worker receipts:", report.workerReceipts.sampleSize);
+  if (report.workerReceipts.invalidArtifacts.length > 0) {
+    printKeyValue("Invalid worker evidence:", report.workerReceipts.invalidArtifacts.length);
+  }
+  if (report.workerTrust.length > 0) {
+    console.log("");
+    console.log(chalk.bold("Worker Trust (supervised probation)"));
+    for (const row of report.workerTrust) {
+      console.log(
+        `- ${row.workerId} / ${row.workCategory}: ${row.verifiedSampleSize} accepted, ${row.blockedSampleSize} blocked, ${row.reviewedSampleSize}/${row.sampleSize} reviewed`
+      );
+    }
   }
   if (report.recommendedActions.length > 0) {
     console.log("");
@@ -7018,6 +7313,18 @@ function printTaskCommitResult(result: Record<string, unknown>): void {
   }
   console.log("");
   printJson(result);
+}
+
+function printFinalCommitHandoffResult(result: Record<string, unknown>): void {
+  printKeyValue("Tool:", "snipara_end_of_task_commit");
+  printCompactObject(result, ["stored", "skipped", "status", "message"]);
+  const handoff = isRecord(result.team_sync_handoff) ? result.team_sync_handoff : null;
+  if (handoff) {
+    const status = typeof handoff.status === "string" ? handoff.status : "unknown";
+    const memoryId = typeof handoff.memory_id === "string" ? ` (${handoff.memory_id})` : "";
+    printKeyValue("Team Sync handoff:", `${status}${memoryId}`);
+  }
+  console.log("");
 }
 
 function printMultiQueryResult(result: unknown, queries: string[]): void {
@@ -10850,6 +11157,16 @@ function printProducerLoopArtifactNotice(result: ProducerLoopArtifactWriteResult
   }
 }
 
+function printWhyCaptureNotice(result: CompanionWhyCaptureReceipt): void {
+  if (result.status === "captured") {
+    console.log(`Why Capture: ${result.capturedCount} candidate(s) filed for review`);
+    return;
+  }
+  if (result.status === "error" && result.error) {
+    console.log(chalk.yellow(`Why Capture failed without blocking the commit: ${result.error}`));
+  }
+}
+
 export async function workflowPhaseCommitCommand(options: {
   phaseId: string;
   summary: string;
@@ -10890,6 +11207,17 @@ export async function workflowPhaseCommitCommand(options: {
   if (files && files.length > 0) {
     phase.files = files;
   }
+  const phaseCommitReceipt = buildWorkflowPhaseCommitReceipt({
+    phaseId: phase.id,
+    category,
+    outcome,
+    result,
+    capturedAt: now,
+  });
+  state.phaseCommitReceipts = [
+    ...(state.phaseCommitReceipts ?? []).filter((receipt) => receipt.phaseId !== phase.id),
+    phaseCommitReceipt,
+  ];
 
   const next = nextOpenPhase(state);
   state.currentPhaseId = next?.id;
@@ -10938,6 +11266,16 @@ export async function workflowPhaseCommitCommand(options: {
     journalAttempted: true,
     teamSyncCompletionAttempted: shouldCompleteTeamSyncWork,
   });
+  const whyCapture = await captureCompanionWhy({
+    sourceKind: "phase_commit",
+    sourceSessionId: state.workflowId,
+    task: `${state.goal} / ${phase.title}`,
+    summary: options.summary,
+    files,
+    commands: readLatestWorkflowCommands(process.cwd()),
+  });
+  phaseCommitReceipt.whyCapture = whyCapture;
+  writeWorkflowState(state);
   const coordinationRelease = await releaseWorkflowCoordination(
     state,
     `Workflow ${state.workflowId} phase ${phase.id} phase-commit.`
@@ -10959,6 +11297,10 @@ export async function workflowPhaseCommitCommand(options: {
       category,
       workflowStatus: state.status,
       producerLoopStatus: producerLoopArtifact.status,
+      whyCaptureStatus: whyCapture.status,
+      whyCaptureCandidateCount: whyCapture.capturedCount,
+      retainedMemoryCount: phaseCommitReceipt.stored.length,
+      skippedMemoryCount: phaseCommitReceipt.skipped.length,
       journalStatus: journal.status,
       teamSyncCompletedCount: completedTeamSyncWork.length,
       coordinationReleaseStatus: coordinationRelease?.hostedReleaseStatus,
@@ -10991,6 +11333,7 @@ export async function workflowPhaseCommitCommand(options: {
       journal,
       teamSyncCompletedWork: completedTeamSyncWork,
       producerLoopArtifact,
+      whyCapture,
       coordinationRelease,
     });
     return;
@@ -10999,15 +11342,20 @@ export async function workflowPhaseCommitCommand(options: {
   printJournalWarning(journal);
   printTeamSyncCompletionNotice(completedTeamSyncWork);
   printProducerLoopArtifactNotice(producerLoopArtifact);
+  printWhyCaptureNotice(whyCapture);
   printManagedWorkflowState(state);
   printManagedWorkflowNextCommands(state);
 }
 
 export async function finalCommitCommand(options: {
   summary: string;
+  why?: string;
   category?: string;
   outcome?: TaskCommitOutcome;
   files?: string[];
+  evidence?: string[];
+  risks?: string[];
+  nextStep?: string;
   json?: boolean;
 }): Promise<void> {
   await memoryGuardCheckCommand({
@@ -11069,9 +11417,35 @@ export async function finalCommitCommand(options: {
     journalAttempted: true,
     teamSyncCompletionAttempted: outcome === "completed",
   });
+  const whyCapture = await captureCompanionWhy({
+    sourceKind: "final_commit",
+    sourceSessionId: state?.workflowId ?? loadConfig().sessionId,
+    task: state?.goal,
+    summary: options.summary,
+    why: options.why,
+    files: options.files,
+    commands: readLatestWorkflowCommands(process.cwd()),
+  });
   const coordinationRelease = state
     ? await releaseWorkflowCoordination(state, `Workflow ${state.workflowId} final-commit.`)
     : undefined;
+  const report = buildFinalCommitReport({
+    state,
+    summary: options.summary,
+    why: options.why,
+    outcome,
+    files: options.files,
+    evidence: options.evidence,
+    risks: options.risks,
+    nextStep: options.nextStep,
+    whyCapture,
+    finalCommitResult: result,
+  });
+  const reportArtifact = writeFinalCommitReport(report);
+  if (state) {
+    state.finalReport = reportArtifact;
+    writeWorkflowState(state);
+  }
   const now = state?.lastCommit?.committedAt ?? new Date().toISOString();
   appendActivityEvent({
     source: "workflow",
@@ -11081,13 +11455,20 @@ export async function finalCommitCommand(options: {
     workflowId: state?.workflowId,
     outcome,
     files: options.files,
-    refs: [producerLoopArtifact.artifactId, producerLoopArtifact.relativePath].filter(
-      Boolean
-    ) as string[],
+    refs: [
+      producerLoopArtifact.artifactId,
+      producerLoopArtifact.relativePath,
+      reportArtifact.status === "written" ? reportArtifact.relativePath : undefined,
+    ].filter(Boolean) as string[],
     timestamp: now,
     metadata: {
       category,
       producerLoopStatus: producerLoopArtifact.status,
+      whyCaptureStatus: whyCapture.status,
+      whyCaptureCandidateCount: whyCapture.capturedCount,
+      finalReportStatus: reportArtifact.status,
+      retainedDecisionCount: report.retainedDecisions.items.length,
+      pendingDecisionCount: report.pendingDecisions.items.length,
       journalStatus: journal.status,
       teamSyncCompletedCount: completedTeamSyncWork.length,
       coordinationReleaseStatus: coordinationRelease?.hostedReleaseStatus,
@@ -11119,14 +11500,25 @@ export async function finalCommitCommand(options: {
       journal,
       teamSyncCompletedWork: completedTeamSyncWork,
       producerLoopArtifact,
+      whyCapture,
       coordinationRelease,
+      report,
+      reportArtifact,
     });
     return;
   }
-  printTaskCommitResult(result);
+  console.log(formatFinalCommitReport(report));
+  console.log("");
+  printFinalCommitHandoffResult(result);
+  if (reportArtifact.status === "written") {
+    printKeyValue("Final report:", reportArtifact.relativePath);
+  } else if (reportArtifact.error) {
+    console.log(chalk.yellow(`Final report write failed: ${reportArtifact.error}`));
+  }
   printJournalWarning(journal);
   printTeamSyncCompletionNotice(completedTeamSyncWork);
   printProducerLoopArtifactNotice(producerLoopArtifact);
+  printWhyCaptureNotice(whyCapture);
   if (state) {
     printManagedWorkflowState(state);
   }

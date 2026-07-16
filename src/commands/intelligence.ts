@@ -41,6 +41,7 @@ export interface ProjectIntelligenceBriefOptions {
 export interface ProjectIntelligenceBrief {
   version: "project-intelligence-brief-v1";
   generatedAt: string;
+  servedJudgmentId?: string;
   branch?: string;
   task?: string;
   changedFiles: string[];
@@ -55,6 +56,35 @@ export interface ProjectIntelligenceBrief {
   judgmentCard?: ProjectIntelligenceJudgmentCard;
   errors: Array<{ surface: string; message: string }>;
   suggestedCommands: string[];
+}
+
+export function servedJudgmentIdFromContext(value: unknown, depth = 0): string | undefined {
+  if (depth > 5 || value === null || value === undefined) return undefined;
+  if (Array.isArray(value)) {
+    for (const item of value.slice(0, 12)) {
+      const found = servedJudgmentIdFromContext(item, depth + 1);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  if (!isRecord(value)) return undefined;
+
+  const direct = value.servedJudgmentId ?? value.served_judgment_id;
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+
+  for (const key of [
+    "projectIntelligence",
+    "project_intelligence",
+    "brief",
+    "judgment",
+    "resumeContext",
+    "resume_context",
+    "data",
+  ]) {
+    const found = servedJudgmentIdFromContext(value[key], depth + 1);
+    if (found) return found;
+  }
+  return undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -338,6 +368,8 @@ export async function buildProjectIntelligenceBrief(
       ...(changedFiles.length > 0 ? { changedFiles } : {}),
       max_tokens: options.maxTokens ?? 4000,
     });
+    const servedJudgmentId = servedJudgmentIdFromContext(brief.resumeContext);
+    if (servedJudgmentId) brief.servedJudgmentId = servedJudgmentId;
   } catch (error) {
     errors.push({
       surface: "resume_context",

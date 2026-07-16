@@ -6,6 +6,7 @@
  * Judgment Card in one pass.
  */
 import { execFileSync, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import chalk from "chalk";
@@ -26,7 +27,11 @@ import {
   type AdvisorInfluenceRecommendationInput,
   type RecordAdvisorInfluenceReceiptResult,
 } from "../api/client";
-import { buildProjectIntelligenceBrief, type ProjectIntelligenceBrief } from "./intelligence";
+import {
+  buildProjectIntelligenceBrief,
+  servedJudgmentIdFromContext,
+  type ProjectIntelligenceBrief,
+} from "./intelligence";
 import {
   buildProjectJudgmentCard,
   formatProjectJudgmentCard,
@@ -84,9 +89,34 @@ export interface ProjectRunAdvisorReceiptWrite {
   agentDecision?: AdvisorInfluenceAgentDecision;
   changedBecauseOfRecommendation?: boolean;
   lifecycleState?: AdvisorInfluenceLifecycleState;
+  measurementState?: ProjectRunAdvisorMeasurementState;
+  targeted?: boolean;
   result?: RecordAdvisorInfluenceReceiptResult;
   reason?: ProjectRunAdvisorReceiptSkipReason;
   error?: string;
+}
+
+export type ProjectRunAdvisorMeasurementState =
+  | "unmeasured"
+  | "acknowledged_unscoped"
+  | "acknowledged"
+  | "applied"
+  | "verified"
+  | "blocked";
+
+export interface ProjectRunAdvisorMeasurementCoverage {
+  version: "project-intelligence.advisor-measurement-coverage.v1";
+  identityStatus: "linked" | "missing";
+  recommendationCount: number;
+  recordedCount: number;
+  targetedCount: number;
+  unscopedCount: number;
+  acknowledgedCount: number;
+  appliedCount: number;
+  verifiedCount: number;
+  blockedCount: number;
+  unmeasuredCount: number;
+  receiptCoverage: number | null;
 }
 
 export type ProjectRunAdvisorReceiptSkipReason =
@@ -105,6 +135,7 @@ export interface ProjectRunAdvisorReceiptCapture {
   recordedCount: number;
   skippedCount: number;
   writes: ProjectRunAdvisorReceiptWrite[];
+  measurement: ProjectRunAdvisorMeasurementCoverage;
   reason?: ProjectRunAdvisorReceiptSkipReason;
 }
 
@@ -122,6 +153,7 @@ export interface ProjectRunVerificationEvidence {
 export interface ProjectIntelligenceRunResult {
   version: "project-intelligence.production-run.v1";
   generatedAt: string;
+  runEnvelope: ProjectIntelligenceRunEnvelope;
   release: boolean;
   brief: ProjectIntelligenceBrief;
   guard?: ProjectRunGuardResult;
@@ -132,6 +164,13 @@ export interface ProjectIntelligenceRunResult {
   outcomeCalibration?: OutcomeIntelligenceCalibration;
   judgmentCard: ProjectIntelligenceJudgmentCard;
   suggestedCommands: string[];
+}
+
+export interface ProjectIntelligenceRunEnvelope {
+  version: "project-intelligence.judgment-run-envelope.v1";
+  runId: string;
+  identitySource: "snipara_session" | "codex_session" | "generated";
+  startedAt: string;
 }
 
 export interface ProjectRunPolicyDecisionRequests {
@@ -146,6 +185,23 @@ export interface ProjectRunPolicyDecisionRequests {
 const GUARD_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 const RAW_OUTPUT_PREVIEW_BYTES = 64_000;
 const ADVISOR_RECEIPT_WRITE_LIMIT = 6;
+
+export function buildProjectIntelligenceRunEnvelope(
+  startedAt = new Date()
+): ProjectIntelligenceRunEnvelope {
+  const sniparaSessionId = stringValue(process.env.SNIPARA_SESSION_ID)?.slice(0, 200);
+  const codexSessionId = stringValue(process.env.CODEX_SESSION_ID)?.slice(0, 200);
+  return {
+    version: "project-intelligence.judgment-run-envelope.v1",
+    runId: sniparaSessionId ?? codexSessionId ?? `judgment-run:${randomUUID()}`,
+    identitySource: sniparaSessionId
+      ? "snipara_session"
+      : codexSessionId
+        ? "codex_session"
+        : "generated",
+    startedAt: startedAt.toISOString(),
+  };
+}
 
 interface AdvisorRecommendationPlanScope {
   mode:
@@ -223,50 +279,50 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-function servedJudgmentIdFromUnknown(value: unknown, depth = 0): string | undefined {
-  if (depth > 5 || value === null || value === undefined) {
-    return undefined;
-  }
-  if (!isRecord(value)) {
-    if (Array.isArray(value)) {
-      for (const item of value.slice(0, 12)) {
-        const found = servedJudgmentIdFromUnknown(item, depth + 1);
-        if (found) return found;
-      }
-    }
-    return undefined;
-  }
-
-  const direct = stringValue(value.servedJudgmentId) ?? stringValue(value.served_judgment_id);
-  if (direct) {
-    return direct;
-  }
-
-  for (const key of [
-    "projectIntelligence",
-    "project_intelligence",
-    "brief",
-    "judgment",
-    "resumeContext",
-    "resume_context",
-    "data",
-  ]) {
-    const found = servedJudgmentIdFromUnknown(value[key], depth + 1);
-    if (found) return found;
-  }
-
-  return undefined;
-}
-
 function servedJudgmentIdForRun(
   options: ProjectRunCommandOptions,
   brief: ProjectIntelligenceBrief
 ): string | undefined {
   return (
     stringValue(options.servedJudgmentId) ??
-    servedJudgmentIdFromUnknown(brief.resumeContext) ??
-    servedJudgmentIdFromUnknown(brief.verificationPlan)
+    stringValue(brief.servedJudgmentId) ??
+    servedJudgmentIdFromContext(brief.resumeContext) ??
+    servedJudgmentIdFromContext(brief.verificationPlan)
   );
+}
+
+function advisorMeasurementState(args: {
+  agentDecision: AdvisorInfluenceAgentDecision;
+  lifecycle: AdvisorInfluenceLifecycle;
+  planScope: AdvisorRecommendationPlanScope;
+}): ProjectRunAdvisorMeasurementState {
+  if (args.agentDecision === "blocked") return "blocked";
+  if (args.lifecycle.state === "verified") return "verified";
+  if (args.lifecycle.state === "applied") return "applied";
+  return args.planScope.targeted ? "acknowledged" : "acknowledged_unscoped";
+}
+
+function advisorMeasurementCoverage(args: {
+  servedJudgmentId?: string;
+  recommendationCount: number;
+  writes: ProjectRunAdvisorReceiptWrite[];
+}): ProjectRunAdvisorMeasurementCoverage {
+  const states = args.writes.map((write) => write.measurementState ?? "unmeasured");
+  const recordedCount = args.writes.filter((write) => write.status === "recorded").length;
+  return {
+    version: "project-intelligence.advisor-measurement-coverage.v1",
+    identityStatus: args.servedJudgmentId ? "linked" : "missing",
+    recommendationCount: args.recommendationCount,
+    recordedCount,
+    targetedCount: args.writes.filter((write) => write.targeted === true).length,
+    unscopedCount: states.filter((state) => state === "acknowledged_unscoped").length,
+    acknowledgedCount: states.filter((state) => state === "acknowledged").length,
+    appliedCount: states.filter((state) => state === "applied").length,
+    verifiedCount: states.filter((state) => state === "verified").length,
+    blockedCount: states.filter((state) => state === "blocked").length,
+    unmeasuredCount: Math.max(0, args.recommendationCount - recordedCount),
+    receiptCoverage: args.recommendationCount > 0 ? recordedCount / args.recommendationCount : null,
+  };
 }
 
 function normalizeAdvisorSource(value: string): AdvisorInfluenceRecommendationInput["source"] {
@@ -458,6 +514,8 @@ function advisorReceiptMetadata(args: {
   verificationEvidence: ProjectRunVerificationEvidence[];
   lifecycle: AdvisorInfluenceLifecycle;
   planScope: AdvisorRecommendationPlanScope;
+  measurementState: ProjectRunAdvisorMeasurementState;
+  runEnvelope: ProjectIntelligenceRunEnvelope;
 }): Record<string, unknown> {
   const toolActions = normalizeStringList([
     ...args.recommendation.recommendedVerification,
@@ -471,7 +529,8 @@ function advisorReceiptMetadata(args: {
     source: "snipara-companion:run",
     firstParty: true,
     runVersion: "project-intelligence.production-run.v1",
-    runId: process.env.SNIPARA_SESSION_ID ?? process.env.CODEX_SESSION_ID ?? null,
+    runId: args.runEnvelope.runId,
+    runEnvelope: args.runEnvelope,
     generatedAt: args.judgmentCard.generatedAt,
     release: Boolean(args.options.release),
     task: args.brief.task ?? args.options.task ?? null,
@@ -483,6 +542,12 @@ function advisorReceiptMetadata(args: {
     changedBecauseOfRecommendation: args.lifecycle.planChange.changed,
     advisorInfluenceLifecycle: args.lifecycle,
     advisorPlanScope: args.planScope,
+    advisorMeasurement: {
+      version: "project-intelligence.advisor-measurement.v1",
+      state: args.measurementState,
+      targeted: args.planScope.targeted,
+      identityLinked: true,
+    },
     toolActions,
     humanOverride: null,
     judgmentState: args.judgmentCard.state,
@@ -683,9 +748,12 @@ async function recordFirstPartyAdvisorReceipts(args: {
   judgmentCard: ProjectIntelligenceJudgmentCard;
   verificationEvidence?: ProjectRunVerificationEvidence[];
   outcomeReceipts?: OutcomeIntelligenceReceipt[];
+  runEnvelope: ProjectIntelligenceRunEnvelope;
 }): Promise<ProjectRunAdvisorReceiptCapture | undefined> {
   const allRecommendations = args.judgmentCard.advisorRecommendations;
+  const servedJudgmentId = servedJudgmentIdForRun(args.options, args.brief);
   if (args.options.skipAdvisorReceipts) {
+    const writes: ProjectRunAdvisorReceiptWrite[] = [];
     return {
       status: "skipped",
       totalRecommendationCount: allRecommendations.length,
@@ -693,12 +761,18 @@ async function recordFirstPartyAdvisorReceipts(args: {
       attemptedCount: 0,
       recordedCount: 0,
       skippedCount: allRecommendations.length,
-      writes: [],
+      writes,
+      measurement: advisorMeasurementCoverage({
+        servedJudgmentId,
+        recommendationCount: allRecommendations.length,
+        writes,
+      }),
       reason: "explicitly_skipped",
     };
   }
 
   if (allRecommendations.length === 0) {
+    const writes: ProjectRunAdvisorReceiptWrite[] = [];
     return {
       status: "skipped",
       totalRecommendationCount: 0,
@@ -706,12 +780,12 @@ async function recordFirstPartyAdvisorReceipts(args: {
       attemptedCount: 0,
       recordedCount: 0,
       skippedCount: 0,
-      writes: [],
+      writes,
+      measurement: advisorMeasurementCoverage({ servedJudgmentId, recommendationCount: 0, writes }),
       reason: "no_advisor_recommendations",
     };
   }
 
-  const servedJudgmentId = servedJudgmentIdForRun(args.options, args.brief);
   if (!servedJudgmentId) {
     const writes = allRecommendations
       .slice(0, ADVISOR_RECEIPT_WRITE_LIMIT)
@@ -726,6 +800,10 @@ async function recordFirstPartyAdvisorReceipts(args: {
       recordedCount: 0,
       skippedCount: writes.length,
       writes,
+      measurement: advisorMeasurementCoverage({
+        recommendationCount: allRecommendations.length,
+        writes,
+      }),
       reason: "missing_served_judgment_id",
     };
   }
@@ -764,6 +842,11 @@ async function recordFirstPartyAdvisorReceipts(args: {
           );
           const changedBecauseOfRecommendation = lifecycle.planChange.changed;
           const verificationExecuted = verificationExecutedFromLifecycle(lifecycle);
+          const measurementState = advisorMeasurementState({
+            agentDecision,
+            lifecycle,
+            planScope,
+          });
 
           try {
             const behaviorChange = advisorReceiptBehaviorChange({
@@ -790,6 +873,8 @@ async function recordFirstPartyAdvisorReceipts(args: {
                 verificationEvidence,
                 lifecycle,
                 planScope,
+                measurementState,
+                runEnvelope: args.runEnvelope,
               }),
             });
             return {
@@ -798,6 +883,8 @@ async function recordFirstPartyAdvisorReceipts(args: {
               agentDecision,
               changedBecauseOfRecommendation,
               lifecycleState: lifecycle.state,
+              measurementState,
+              targeted: planScope.targeted,
               result,
             };
           } catch (error) {
@@ -807,6 +894,8 @@ async function recordFirstPartyAdvisorReceipts(args: {
               agentDecision,
               changedBecauseOfRecommendation,
               lifecycleState: lifecycle.state,
+              measurementState: "unmeasured",
+              targeted: planScope.targeted,
               error: error instanceof Error ? error.message : String(error),
             };
           }
@@ -834,6 +923,11 @@ async function recordFirstPartyAdvisorReceipts(args: {
     recordedCount,
     skippedCount,
     writes,
+    measurement: advisorMeasurementCoverage({
+      servedJudgmentId,
+      recommendationCount: allRecommendations.length,
+      writes,
+    }),
   };
 }
 
@@ -924,6 +1018,7 @@ function runPackageReview(options: ProjectRunCommandOptions): ProjectRunPackageR
 export async function buildProjectIntelligenceRun(
   options: ProjectRunCommandOptions
 ): Promise<ProjectIntelligenceRunResult> {
+  const runEnvelope = buildProjectIntelligenceRunEnvelope();
   const changedFiles = normalizeStringList(options.changedFiles);
   const brief = await buildProjectIntelligenceBrief({
     task: options.task,
@@ -1021,6 +1116,7 @@ export async function buildProjectIntelligenceRun(
     judgmentCard,
     verificationEvidence,
     outcomeReceipts,
+    runEnvelope,
   });
 
   const suggestedCommands = [
@@ -1038,7 +1134,8 @@ export async function buildProjectIntelligenceRun(
 
   const result: ProjectIntelligenceRunResult = {
     version: "project-intelligence.production-run.v1",
-    generatedAt: new Date().toISOString(),
+    generatedAt: runEnvelope.startedAt,
+    runEnvelope,
     release: Boolean(options.release),
     brief,
     ...(guard ? { guard } : {}),
@@ -1070,6 +1167,7 @@ export async function projectIntelligenceRunCommand(
       console.log(`Task: ${result.brief.task}`);
     }
     console.log(`Release: ${result.release ? "yes" : "no"}`);
+    console.log(`Run: ${result.runEnvelope.runId} (${result.runEnvelope.identitySource})`);
     console.log("");
 
     console.log(chalk.bold("Project Judgment"));
@@ -1123,6 +1221,10 @@ export async function projectIntelligenceRunCommand(
       }
       console.log(
         `Recorded: ${result.advisorReceiptCapture.recordedCount}/${result.advisorReceiptCapture.attemptedCount}`
+      );
+      const measurement = result.advisorReceiptCapture.measurement;
+      console.log(
+        `Measurement: ${measurement.identityStatus}; targeted ${measurement.targetedCount}, unscoped ${measurement.unscopedCount}, applied ${measurement.appliedCount}, verified ${measurement.verifiedCount}, unmeasured ${measurement.unmeasuredCount}`
       );
       if (result.advisorReceiptCapture.skippedCount > 0) {
         console.log(`Skipped: ${result.advisorReceiptCapture.skippedCount}`);

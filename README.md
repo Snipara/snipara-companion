@@ -49,6 +49,18 @@ Use this after `create-snipara` activation. `create-snipara` remains the
 canonical engine for first workspace setup; Companion owns the repeatable local
 continuity loop after that.
 
+## Retrieval And Outcome Correlation
+
+`snipara-companion init` creates and prints a bounded workspace session ID.
+Export it as `SNIPARA_SESSION_ID` before starting Codex, Claude, Cursor, VS Code,
+Continue, or another HTTP MCP client. Generated configs forward it as
+`X-Snipara-Session-Id`, while canonical execution events use the same Companion
+session automatically. Clients without environment-backed headers can pass the
+same value as `correlation_context.session_id` on retrieval tools.
+
+The identifier is opaque, project-scoped telemetry. It does not grant access or
+change authorization, and explicit per-call correlation remains authoritative.
+
 Example output excerpt:
 
 ```text
@@ -245,7 +257,30 @@ redacted Coding Intelligence Ledger, not automatic durable memory, worker
 execution, calibrated confidence, or server-side attestation. Use
 `workflow producer-report` to inspect local adoption, reason-code counts, sample
 size, reviewed/rejected/unreviewed counts, invalid artifacts, and calibration
-caveats before any future hard gate.
+caveats before any future hard gate. The report also joins attributed gated
+receipts from `.snipara/orchestrator/executions/` with persisted supervisor
+reviews, then emits `workerReceipts` and a per-`workerId`/`workCategory`
+`workerTrust` breakdown. This is observability only: every pair remains
+`probation_supervised` and `hardGateReady=false`.
+
+`final-commit` also prints a stable seven-section closeout report:
+
+1. What changed
+2. Why
+3. Evidence
+4. Decisions kept
+5. Decisions proposed for review
+6. Not persisted
+7. Risks and next step
+
+Pass an explicit rationale with `--why`, repeatable verification receipts with
+`--evidence <status:text>`, remaining risks with `--risk`, and the recommended
+follow-up with `--next-step`. Supported evidence statuses are `passed`,
+`failed`, `not-run`, and `unknown`; evidence without a status remains
+`unknown`. The same redacted, versioned report is written to
+`.snipara/workflow/final-report.json`, and `--json` includes the report plus its
+artifact path and SHA-256 hash. Stored phase outcomes appear under decisions
+kept, while Why Capture candidates remain explicitly pending review.
 The report also recognizes exported PR Answer Pack decision-capture artifacts
 with producer kind `pr_answer_pack_decision_capture`, so calibration can track
 more than the workflow producer once those artifacts are present locally.
@@ -343,3 +378,11 @@ Launch assets, demo scripts, and post drafts live in
 [docs/launch/LAUNCH_KIT.md](./docs/launch/LAUNCH_KIT.md).
 
 Release notes live in [CHANGELOG.md](./CHANGELOG.md).
+When project auth is configured, `workflow phase-commit`, `final-commit`, and
+`team-sync handoff` also run reviewed Why Capture. The Companion first sends a
+read-only preview and confirms only when the server detects durable rationale.
+Confirmed candidates enter the pending review queue; capture failures remain
+visible but do not block the primary workflow command. No documentation prompt
+is shown. `final-commit` remains handoff-only: the report explains what was
+stored or proposed, but it does not approve pending candidates or write final
+summary text as durable memory.

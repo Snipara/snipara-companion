@@ -69,6 +69,7 @@ const DEFAULT_LOCAL_CODE_MAX_FILES = 2000;
 const HOSTED_GUARD_MAX_FILES = 450;
 const HOSTED_GUARD_MAX_RESOURCES = 850;
 const HOSTED_GUARD_MAX_SYMBOL_RESOURCES = 160;
+const REVIEW_ONLY_ACK_TTL_MS = 15 * 60 * 1000;
 const HOOK_BLOCK_PREFIX = "snipara:collaboration-guard";
 const CHECKOUT_GIT_WRITE_RESOURCE: CollaborationResource = {
   kind: "SURFACE",
@@ -244,6 +245,14 @@ export interface CollaborationLocalLeaseRecord {
   workSessionId?: string;
 }
 
+export interface CollaborationReviewOnlyAcknowledgement {
+  profile: CollaborationGuardProfile;
+  action: string;
+  findingFingerprint: string;
+  acknowledgedAt: string;
+  expiresAt: string;
+}
+
 export interface CollaborationLocalState {
   schemaVersion: "snipara.collaboration.v1";
   updatedAt: string;
@@ -260,6 +269,7 @@ export interface CollaborationLocalState {
   files: string[];
   resources: CollaborationResource[];
   leases: CollaborationLocalLeaseRecord[];
+  reviewOnlyAcknowledgements: CollaborationReviewOnlyAcknowledgement[];
   lastGuard?: {
     decision: CollaborationGuardDecision;
     severity: string;
@@ -289,6 +299,7 @@ export function createEmptyCollaborationState(now = new Date()): CollaborationLo
     files: [],
     resources: [],
     leases: [],
+    reviewOnlyAcknowledgements: [],
   };
 }
 
@@ -324,9 +335,13 @@ export function loadCollaborationState(rootDir = process.cwd()): CollaborationLo
     files: normalizeFiles(parsed.files),
     resources: normalizeResources(parsed.resources),
     leases: normalizeLocalLeases(parsed.leases),
+    reviewOnlyAcknowledgements: normalizeReviewOnlyAcknowledgements(
+      parsed.reviewOnlyAcknowledgements
+    ),
     lastGuard: normalizeLastGuard(parsed.lastGuard),
   };
   expireLocalLeases(state);
+  expireReviewOnlyAcknowledgements(state);
   return state;
 }
 
@@ -335,6 +350,7 @@ export function saveCollaborationState(
   rootDir = process.cwd()
 ): void {
   expireLocalLeases(state);
+  expireReviewOnlyAcknowledgements(state);
   const statePath = getCollaborationStatePath(rootDir);
   fs.mkdirSync(path.dirname(statePath), { recursive: true });
   const tempPath = `${statePath}.${process.pid}.${Date.now()}.tmp`;
@@ -725,13 +741,14 @@ export async function collaborationGuardCommand(
   const context = resolveCollaborationContext(options);
   const state = loadCollaborationState(context.rootDir);
   const profile = normalizeGuardProfile(options.profile) ?? "edit";
+  const action = normalizeOptionalString(options.action) ?? profile;
   const files = resolveGuardFiles(context, options, profile);
   const resources = resolveCommandResources(context, files, options, profile);
   ensureFilesOrResources(files, resources, "guard");
   const hostedPayload = buildHostedGuardPayload(files, resources);
   const hosted = await maybeEvaluateHostedGuard(context, {
     workSessionId: options.workSessionId ?? state.workSessionId,
-    action: normalizeOptionalString(options.action) ?? profile,
+    action,
     files: hostedPayload.files,
     resources: hostedPayload.resources,
     persist: options.persist !== false,
@@ -744,30 +761,54 @@ export async function collaborationGuardCommand(
       decision: evaluation.decision,
       severity: evaluation.severity,
       checkedAt: evaluation.evaluatedAt,
-      action: normalizeOptionalString(options.action) ?? profile,
+      action,
       resources: evaluation.resources,
       conflictCount: evaluation.conflicts.length,
     };
     state.files = mergeStrings(state.files, files);
     state.resources = mergeResources(state.resources, evaluation.resources);
-    saveCollaborationState(state, context.rootDir);
   }
 
-  const reviewOnlyAcknowledged =
+  const explicitReviewOnlyAck =
     Boolean(options.enforce) &&
     Boolean(options.ackReviewOnly) &&
     isReviewOnlyGuardEvaluation(evaluation);
+  const findingFingerprint =
+    evaluation && isReviewOnlyGuardEvaluation(evaluation)
+      ? fingerprintReviewOnlyGuardEvaluation(evaluation)
+      : undefined;
+  const persistedReviewOnlyAck =
+    Boolean(options.enforce) &&
+    !options.ackReviewOnly &&
+    Boolean(
+      findingFingerprint &&
+      consumeReviewOnlyAcknowledgement(state, profile, action, findingFingerprint)
+    );
+  if (explicitReviewOnlyAck && findingFingerprint) {
+    persistReviewOnlyAcknowledgement(state, profile, action, findingFingerprint);
+  } else if (evaluation && !persistedReviewOnlyAck) {
+    invalidateReviewOnlyAcknowledgements(state, profile, action);
+  }
+  const reviewOnlyAcknowledged = explicitReviewOnlyAck || persistedReviewOnlyAck;
+  const ackSource = explicitReviewOnlyAck
+    ? "explicit"
+    : persistedReviewOnlyAck
+      ? "persisted"
+      : "none";
+  if (evaluation) {
+    saveCollaborationState(state, context.rootDir);
+  }
   const actionCards = buildCollaborationGuardActionCards(evaluation, {
     profile,
     enforced: Boolean(options.enforce),
-    ackReviewOnly: Boolean(options.ackReviewOnly),
+    ackReviewOnly: reviewOnlyAcknowledged,
     reviewOnlyAcknowledged,
   });
   const guardFailed = shouldFailCollaborationGuard({
     hostedStatus: hosted.status,
     evaluation,
     enforce: Boolean(options.enforce),
-    ackReviewOnly: Boolean(options.ackReviewOnly),
+    ackReviewOnly: reviewOnlyAcknowledged,
   });
 
   if (guardFailed) {
@@ -785,6 +826,7 @@ export async function collaborationGuardCommand(
         enforced: Boolean(options.enforce),
         ackReviewOnly: Boolean(options.ackReviewOnly),
         reviewOnlyAcknowledged,
+        ackSource,
         failed: guardFailed,
       },
     },
@@ -989,7 +1031,11 @@ export async function collaborationIdeStatusCommand(
 function resolveCollaborationContext(
   options: CollaborationCommandOptions
 ): ResolvedCollaborationContext {
-  const rootDir = path.resolve(options.dir ?? process.cwd());
+  const requestedDir =
+    normalizeOptionalString(options.dir) ??
+    normalizeOptionalString(process.env.SNIPARA_WORKSPACE_DIR) ??
+    process.cwd();
+  const rootDir = resolveRepoRoot(requestedDir);
   const config = loadConfig({ cwd: rootDir });
   const actor = buildCollaborationActor(options, config);
   return {
@@ -2476,6 +2522,109 @@ function normalizeLocalLeases(value: unknown): CollaborationLocalLeaseRecord[] {
       return lease;
     })
     .filter((item): item is CollaborationLocalLeaseRecord => Boolean(item));
+}
+
+function normalizeReviewOnlyAcknowledgements(
+  value: unknown,
+  now = new Date()
+): CollaborationReviewOnlyAcknowledgement[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const nowMs = now.getTime();
+  return value
+    .map<CollaborationReviewOnlyAcknowledgement | null>((item) => {
+      const parsed = item as Partial<CollaborationReviewOnlyAcknowledgement>;
+      const profile = normalizeGuardProfile(parsed.profile);
+      const action = normalizeOptionalString(parsed.action);
+      const findingFingerprint = normalizeOptionalString(parsed.findingFingerprint);
+      const acknowledgedAt = normalizeOptionalString(parsed.acknowledgedAt);
+      const expiresAt = normalizeOptionalString(parsed.expiresAt);
+      if (
+        !profile ||
+        !action ||
+        !findingFingerprint ||
+        !acknowledgedAt ||
+        !expiresAt ||
+        !Number.isFinite(Date.parse(expiresAt)) ||
+        Date.parse(expiresAt) <= nowMs
+      ) {
+        return null;
+      }
+      return { profile, action, findingFingerprint, acknowledgedAt, expiresAt };
+    })
+    .filter((item): item is CollaborationReviewOnlyAcknowledgement => Boolean(item));
+}
+
+function expireReviewOnlyAcknowledgements(state: CollaborationLocalState, now = new Date()): void {
+  state.reviewOnlyAcknowledgements = normalizeReviewOnlyAcknowledgements(
+    state.reviewOnlyAcknowledgements,
+    now
+  );
+}
+
+function fingerprintReviewOnlyGuardEvaluation(evaluation: CollaborationGuardEvaluation): string {
+  const findings = evaluation.conflicts
+    .map((conflict) => ({
+      code: conflict.code,
+      decision: conflict.decision,
+      severity: conflict.severity,
+      resource: `${conflict.resource.kind}:${conflict.resource.id}`,
+      actor: conflict.conflictingActor
+        ? `${conflict.conflictingActor.actorType}:${conflict.conflictingActor.actorId}`
+        : null,
+      workSessionId: conflict.workSessionId ?? null,
+      reason: conflict.reason,
+    }))
+    .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  return createHash("sha256").update(JSON.stringify(findings)).digest("hex");
+}
+
+function persistReviewOnlyAcknowledgement(
+  state: CollaborationLocalState,
+  profile: CollaborationGuardProfile,
+  action: string,
+  findingFingerprint: string,
+  now = new Date()
+): void {
+  invalidateReviewOnlyAcknowledgements(state, profile, action);
+  state.reviewOnlyAcknowledgements.push({
+    profile,
+    action,
+    findingFingerprint,
+    acknowledgedAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + REVIEW_ONLY_ACK_TTL_MS).toISOString(),
+  });
+}
+
+function consumeReviewOnlyAcknowledgement(
+  state: CollaborationLocalState,
+  profile: CollaborationGuardProfile,
+  action: string,
+  findingFingerprint: string
+): boolean {
+  expireReviewOnlyAcknowledgements(state);
+  const index = state.reviewOnlyAcknowledgements.findIndex(
+    (ack) =>
+      ack.profile === profile &&
+      ack.action === action &&
+      ack.findingFingerprint === findingFingerprint
+  );
+  if (index < 0) {
+    return false;
+  }
+  state.reviewOnlyAcknowledgements.splice(index, 1);
+  return true;
+}
+
+function invalidateReviewOnlyAcknowledgements(
+  state: CollaborationLocalState,
+  profile: CollaborationGuardProfile,
+  action: string
+): void {
+  state.reviewOnlyAcknowledgements = state.reviewOnlyAcknowledgements.filter(
+    (ack) => ack.profile !== profile || ack.action !== action
+  );
 }
 
 function normalizeLastGuard(value: unknown): CollaborationLocalState["lastGuard"] | undefined {

@@ -152,6 +152,7 @@ Claude Code should apply this workflow automatically for project-specific work; 
 
 - Bound Snipara project: \`${projectSlug}\`
 - Hosted MCP endpoint: \`${buildHostedMcpEndpoint(projectSlug)}\`
+- Keep \`SNIPARA_SESSION_ID\` equal to the active Companion session. Generated MCP configs send it as \`X-Snipara-Session-Id\`; when a client cannot send that header, pass the same value as \`correlation_context.session_id\` on retrieval tools.
 - At the start of substantial work, validate the hosted MCP surface with a tool-oriented call, then use \`snipara_recall\` and a targeted \`snipara_context_query\` before falling back to local search.
 - Do not treat empty MCP resources/templates as an outage. If the tool surface looks incomplete, call \`snipara_help(list_all=true)\` and compare exact tool names.
 - Use \`snipara_context_query\` for docs, business context, architecture notes, runbooks, and source truth. Use \`snipara_get_chunk\` for exact cited sections when references are returned.
@@ -172,6 +173,7 @@ function buildSharedWorkflowInstructionBlock(projectSlug: string, client: SetupC
 This workspace is bound to Snipara project \`${projectSlug}\` for ${formatClientName(client)}. Agents should use Snipara automatically for project-specific context, decisions, and workflow state.
 
 - Hosted MCP endpoint: \`${buildHostedMcpEndpoint(projectSlug)}\`
+- Keep \`SNIPARA_SESSION_ID\` equal to the active Companion session. Generated MCP configs send it as \`X-Snipara-Session-Id\`; when a client cannot send that header, pass the same value as \`correlation_context.session_id\` on retrieval tools.
 - At the start of substantial work, validate the hosted MCP surface with a tool-oriented call, then use \`snipara_recall\` and a targeted \`snipara_context_query\` before falling back to local search.
 - Do not treat empty MCP resources/templates as an outage. If the tool surface looks incomplete, call \`snipara_help(list_all=true)\` and compare exact tool names.
 - Use \`snipara_context_query\` for docs, business context, architecture notes, runbooks, and source truth. Use \`snipara_get_chunk\` for exact cited sections when references are returned.
@@ -519,6 +521,7 @@ function generateCodexConfigString(projectSlug: string): string {
 type = "streamable_http"
 url = "https://api.snipara.com/mcp/${projectSlug}"
 bearer_token_env_var = "SNIPARA_API_KEY"
+env_http_headers = { "X-Snipara-Session-Id" = "SNIPARA_SESSION_ID" }
 `;
 }
 
@@ -530,6 +533,7 @@ function generateGenericMcpReferenceString(client: SetupClient, projectSlug: str
         url: `https://api.snipara.com/mcp/${projectSlug}`,
         headers: {
           "X-API-Key": "${SNIPARA_API_KEY}",
+          "X-Snipara-Session-Id": "${SNIPARA_SESSION_ID}",
         },
       },
       null,
@@ -546,6 +550,7 @@ function generateGenericMcpReferenceString(client: SetupClient, projectSlug: str
           url: `https://api.snipara.com/mcp/${projectSlug}`,
           headers: {
             "X-API-Key": "${SNIPARA_API_KEY}",
+            "X-Snipara-Session-Id": "${SNIPARA_SESSION_ID}",
           },
         },
       },
@@ -608,6 +613,7 @@ async function callSniparaTool(name: string, args: Record<string, unknown>): Pro
     headers: {
       "Content-Type": "application/json",
       "X-API-Key": SNIPARA_API_KEY,
+      "X-Snipara-Session-Id": process.env.SNIPARA_SESSION_ID || "",
     },
     body: JSON.stringify({
       jsonrpc: "2.0",
@@ -1283,12 +1289,13 @@ export async function initCommand(options: {
   });
 
   // Save one workspace-local companion config: auth, project selection, and session state.
+  const sessionId = `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   saveConfig(
     {
       apiKey,
       apiUrl: existingConfig.apiUrl,
       projectId: projectIdentifier,
-      sessionId: `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      sessionId,
       client: selectedClient,
     },
     { cwd: projectDir, scope: "workspace" }
@@ -1429,6 +1436,10 @@ export async function initCommand(options: {
   console.log(`Companion config: ${configPaths.companion}`);
   console.log(`Selected project: ${formatProjectChoice(selectedProject)}`);
   console.log(`Selected client:  ${formatClientName(selectedClient)}`);
+  console.log(`Correlation session: ${sessionId}`);
+  console.log(
+    "Export SNIPARA_SESSION_ID with this value before starting the MCP client so served context and execution outcomes share one bounded session."
+  );
 
   if (options.withHooks) {
     console.log("\nNext steps:");

@@ -258,6 +258,58 @@ export interface SessionPersistResult {
   files_tracked: number;
 }
 
+export type WhyCaptureSourceKind = "phase_commit" | "final_commit" | "handoff";
+
+export interface WhyCaptureInput {
+  decision?: string;
+  why?: string;
+  rationale?: string;
+  sourceText?: string;
+  sourceKind: WhyCaptureSourceKind;
+  sourceSessionId?: string;
+  task?: string;
+  changedFiles?: string[];
+  commands?: string[];
+  commitSha?: string;
+  confirmed?: boolean;
+  previewOnly?: boolean;
+}
+
+export interface WhyCaptureResult {
+  previewOnly: boolean;
+  confirmed: boolean;
+  candidateCount: number;
+  capturedCount?: number;
+  candidates?: Array<{
+    content?: string;
+    type?: string;
+    category?: string;
+    reviewNotes?: string;
+    whyFields?: {
+      decision?: string | null;
+      why?: string | null;
+      outcome?: string | null;
+    };
+  }>;
+  memories?: Array<{
+    id?: string;
+    memory_id?: string;
+    content?: string;
+    type?: string;
+    category?: string;
+    reviewStatus?: string;
+    review_status?: string;
+  }>;
+  decisionCapture?: {
+    createdCount?: number;
+    duplicateCount?: number;
+    failedCount?: number;
+    created?: Array<Record<string, unknown>>;
+    duplicates?: Array<Record<string, unknown>>;
+    failed?: Array<Record<string, unknown>>;
+  };
+}
+
 export interface JournalAppendResult {
   success?: boolean;
   date?: string;
@@ -1861,6 +1913,23 @@ export class RLMClient {
       {
         invalidMessage: "Advisor influence receipt write failed",
         validate: (data) => Boolean(data.receipt && data.advisorInfluence),
+      }
+    );
+  }
+
+  async captureWhy(input: WhyCaptureInput): Promise<WhyCaptureResult> {
+    return this.dashboardProjectRequest<WhyCaptureResult>(
+      "/agents/memory/why-capture",
+      {
+        method: "POST",
+        body: input,
+      },
+      {
+        invalidMessage: "Why Capture request failed",
+        validate: (data) =>
+          typeof data.previewOnly === "boolean" &&
+          typeof data.confirmed === "boolean" &&
+          Number.isInteger(data.candidateCount),
       }
     );
   }

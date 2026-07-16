@@ -669,11 +669,102 @@ test("collaboration guard can acknowledge review-only release warnings", () => {
   const payload = JSON.parse(acknowledged.stdout);
   assert.equal(payload.hosted.data.evaluation.decision, "REVIEW_REQUIRED");
   assert.equal(payload.enforcement.reviewOnlyAcknowledged, true);
+  assert.equal(payload.enforcement.ackSource, "explicit");
   assert.equal(payload.enforcement.failed, false);
   assert.ok(payload.actionCards.some((card) => card.kind === "safe_to_ack" && card.safeToAck));
   assert.ok(payload.actionCards.some((card) => card.kind === "needs_handoff"));
   assert.equal(payload.state.lastGuard.decision, "REVIEW_REQUIRED");
   assert.equal(loadCollaborationState(dir).lastGuard.conflictCount, 2);
+  assert.equal(loadCollaborationState(dir).reviewOnlyAcknowledgements.length, 1);
+
+  const hookRerun = runCli(
+    [
+      "collaboration",
+      "guard",
+      "--profile",
+      "pre-deploy",
+      "--action",
+      "pre-deploy",
+      "--actor-id",
+      "agent_1",
+      "--enforce",
+      "--json",
+    ],
+    {
+      cwd: dir,
+      env: hostedEnv(),
+      nodeArgs: ["-r", preloadPath],
+    }
+  );
+
+  assert.equal(hookRerun.status, 0, hookRerun.stderr || hookRerun.stdout);
+  const hookPayload = JSON.parse(hookRerun.stdout);
+  assert.equal(hookPayload.enforcement.reviewOnlyAcknowledged, true);
+  assert.equal(hookPayload.enforcement.ackSource, "persisted");
+  assert.equal(loadCollaborationState(dir).reviewOnlyAcknowledgements.length, 0);
+
+  const secondHookRerun = runCli(
+    [
+      "collaboration",
+      "guard",
+      "--profile",
+      "pre-deploy",
+      "--action",
+      "pre-deploy",
+      "--actor-id",
+      "agent_1",
+      "--enforce",
+      "--json",
+    ],
+    {
+      cwd: dir,
+      env: hostedEnv(),
+      nodeArgs: ["-r", preloadPath],
+    }
+  );
+  assert.equal(secondHookRerun.status, 2, secondHookRerun.stderr || secondHookRerun.stdout);
+});
+
+test("collaboration guard stores state at the git root from nested package invocations", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-collaboration-git-root-"));
+  const nestedDir = path.join(dir, "packages", "cli");
+  fs.mkdirSync(nestedDir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+  const gitInit = spawnSync("git", ["init", "-q"], { cwd: dir, encoding: "utf8" });
+  assert.equal(gitInit.status, 0, gitInit.stderr);
+  const preloadPath = writeHostedReviewOnlyGuardPreload(dir);
+
+  const result = runCli(
+    [
+      "collaboration",
+      "guard",
+      "--profile",
+      "pre-commit",
+      "--action",
+      "pre-commit",
+      "--resource",
+      "SURFACE:checkout-git-write",
+      "--actor-id",
+      "agent_1",
+      "--enforce",
+      "--ack-review-only",
+      "--json",
+    ],
+    {
+      cwd: nestedDir,
+      env: hostedEnv(),
+      nodeArgs: ["-r", preloadPath],
+    }
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(
+    payload.statePath,
+    path.join(fs.realpathSync(dir), COLLABORATION_STATE_RELATIVE_PATH)
+  );
+  assert.equal(fs.existsSync(payload.statePath), true);
+  assert.equal(fs.existsSync(path.join(nestedDir, COLLABORATION_STATE_RELATIVE_PATH)), false);
 });
 
 test("collaboration guard action cards classify missing evaluations", () => {
