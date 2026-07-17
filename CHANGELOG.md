@@ -2,6 +2,13 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 3.4.0
+
+- Adds repeatable `workers execute --output-fragment` contracts so a worker
+  receipt fails closed when required output is missing.
+- Persists declared and missing output fragments in controlled-worker receipts
+  and the host-native orchestration contract.
+
 ## New In 3.3.0
 
 - Adds reviewed, scoped Worker Trust Promotion commands: `workers trust

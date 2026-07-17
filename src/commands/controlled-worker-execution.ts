@@ -46,6 +46,7 @@ export interface ControlledWorkerExecuteOptions {
   writeScope?: string[];
   acceptance?: string[];
   proof?: string[];
+  outputFragments?: string[];
   workCategory?: WorkerTrustCategory;
   trustEvent?: string;
   profileHash?: string;
@@ -75,6 +76,7 @@ export function controlledWorkerExecuteCommand(
   const execute = Boolean(options.execute);
   const mode = normalizeMode(options.mode, execute);
   const commandArgs = normalizeCommandArgs(options.commandArgs);
+  const outputFragments = normalizeOutputFragments(options.outputFragments);
   const legacyCommand = stringValue(options.command);
   const command = commandArgs.length > 0 ? commandArgs.join(" ") : legacyCommand;
   const risk = command ? commandRisk(command) : "none";
@@ -128,6 +130,7 @@ export function controlledWorkerExecuteCommand(
   let executionAttempted = false;
   let changedFiles: string[] = [];
   let scopeViolations: string[] = [];
+  let missingOutputFragments: string[] = [];
 
   if (execute) reasonCodes.add("controlled_worker_execution_requested");
   if (!execute) reasonCodes.add("controlled_worker_execution_dry_run_only");
@@ -170,6 +173,13 @@ export function controlledWorkerExecuteCommand(
     exitCode = typeof result.status === "number" ? result.status : 1;
     stdout = result.stdout ?? "";
     stderr = result.stderr ?? "";
+    missingOutputFragments = outputFragments.filter(
+      (fragment) => !normalizeComparableText(stdout).includes(normalizeComparableText(fragment))
+    );
+    if (missingOutputFragments.length > 0) {
+      blocked = true;
+      reasonCodes.add("controlled_worker_execution_output_contract_failed");
+    }
     reasonCodes.add(
       exitCode === 0
         ? "controlled_worker_execution_command_succeeded"
@@ -209,6 +219,8 @@ export function controlledWorkerExecuteCommand(
     writeScope: options.writeScope,
     acceptanceCriteria: options.acceptance,
     proofRequired: options.proof,
+    outputFragments,
+    missingOutputFragments,
     approvalReceiptId: options.approvalReceipt ?? null,
     outcomeReceiptId: options.outcomeReceipt ?? null,
     command: command ?? null,
@@ -287,6 +299,14 @@ export function controlledWorkerExecuteCommand(
 
 function normalizeCommandArgs(values: string[] | undefined): string[] {
   return (values ?? []).map((value) => value.trim()).filter(Boolean);
+}
+
+function normalizeOutputFragments(values: string[] | undefined): string[] {
+  return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))].slice(0, 32);
+}
+
+function normalizeComparableText(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, "");
 }
 
 function gitScopeSnapshot(workspaceRoot: string): GitScopeSnapshot | null {

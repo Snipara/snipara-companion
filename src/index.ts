@@ -2649,6 +2649,12 @@ workers
     []
   )
   .option(
+    "--output-fragment <fragment>",
+    "Required output fragment; repeatable and checked after execution",
+    collectOption,
+    []
+  )
+  .option(
     "--work-category <category>",
     "Trust category; conservative task and scope signals can only escalate it"
   )
@@ -2679,6 +2685,7 @@ workers
       writeScope: options.writeScope,
       acceptance: options.acceptance,
       proof: options.proof,
+      outputFragments: options.outputFragment,
       workCategory: options.workCategory,
       trustEvent: options.trustEvent,
       profileHash: options.profileHash,

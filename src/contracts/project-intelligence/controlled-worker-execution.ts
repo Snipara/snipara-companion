@@ -27,6 +27,8 @@ export interface ControlledWorkerExecutionReceipt {
     writeScope: string[];
     acceptanceCriteria: string[];
     proofRequired: string[];
+    outputFragments: string[];
+    missingOutputFragments: string[];
     approvalReceiptId: string | null;
     outcomeReceiptId: string | null;
   };
@@ -69,6 +71,8 @@ export interface BuildControlledWorkerExecutionReceiptInput {
   writeScope?: string[];
   acceptanceCriteria?: string[];
   proofRequired?: string[];
+  outputFragments?: string[];
+  missingOutputFragments?: string[];
   approvalReceiptId?: string | null;
   outcomeReceiptId?: string | null;
   command?: string | null;
@@ -102,6 +106,8 @@ export function buildControlledWorkerExecutionReceipt(
   const writeScope = uniqueStrings(input.writeScope ?? []);
   const acceptanceCriteria = uniqueStrings(input.acceptanceCriteria ?? []);
   const proofRequired = uniqueStrings(input.proofRequired ?? []);
+  const outputFragments = uniqueStrings(input.outputFragments ?? []);
+  const missingOutputFragments = uniqueStrings(input.missingOutputFragments ?? []);
   const reasonCodes = new Set<string>([
     "controlled_worker_execution_v0",
     `controlled_worker_execution_${mode}`,
@@ -121,6 +127,8 @@ export function buildControlledWorkerExecutionReceipt(
     writeScope,
     acceptanceCriteria,
     proofRequired,
+    outputFragments,
+    missingOutputFragments,
     approvalReceiptId: input.approvalReceiptId ?? null,
     outcomeReceiptId: input.outcomeReceiptId ?? null,
     command,
@@ -139,6 +147,9 @@ export function buildControlledWorkerExecutionReceipt(
   if (acceptanceCriteria.length === 0) {
     reasonCodes.add("controlled_worker_execution_missing_acceptance");
   }
+  if (missingOutputFragments.length > 0) {
+    reasonCodes.add("controlled_worker_execution_output_contract_failed");
+  }
 
   return {
     version: CONTROLLED_WORKER_EXECUTION_RECEIPT_VERSION,
@@ -152,6 +163,8 @@ export function buildControlledWorkerExecutionReceipt(
       writeScope,
       acceptanceCriteria,
       proofRequired,
+      outputFragments,
+      missingOutputFragments,
       approvalReceiptId: input.approvalReceiptId ?? null,
       outcomeReceiptId: input.outcomeReceiptId ?? null,
     },

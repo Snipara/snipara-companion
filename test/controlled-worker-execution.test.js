@@ -263,6 +263,46 @@ test("workers execute can run an approved low-risk command and requires verifica
   assert.ok(fs.existsSync(outputPath));
 });
 
+test("workers execute fails closed when declared output fragments are incomplete", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-worker-output-contract-"));
+  const result = runCli(
+    [
+      "workers",
+      "execute",
+      "--task",
+      "Return a complete bounded diff",
+      "--execute",
+      "--approval-receipt",
+      "approval-output-contract",
+      "--command-arg",
+      process.execPath,
+      "--command-arg",
+      "-e",
+      "--command-arg",
+      "console.log('return a + b')",
+      "--proof",
+      "review stdout",
+      "--output-fragment",
+      "return a - b",
+      "--output-fragment",
+      "return a + b",
+      "--json",
+    ],
+    { cwd: dir }
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.executed, true);
+  assert.equal(payload.blocked, true);
+  assert.equal(payload.receipt.status, "failed");
+  assert.deepEqual(payload.receipt.contract.outputFragments, ["return a - b", "return a + b"]);
+  assert.deepEqual(payload.receipt.contract.missingOutputFragments, ["return a - b"]);
+  assert.ok(
+    payload.receipt.reasonCodes.includes("controlled_worker_execution_output_contract_failed")
+  );
+});
+
 test("workers execute consumes reviewed delegated trust only through shell-free argv", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-worker-trusted-"));
   const eventPath = path.join(dir, "trust.json");

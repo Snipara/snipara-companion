@@ -228,6 +228,16 @@ Even `delegated_earned` is limited to the exact low-risk category, profile hash,
 write scope, and expiry. It removes only a repeated approval receipt; explicit
 execution, proof, verification, and all sensitive/release gates remain.
 
+For executed workers, declare the output that must be present in stdout:
+
+```bash
+npx -y snipara-companion workers execute \
+  --task "run docs smoke" --execute \
+  --output-fragment "type-check passed"
+```
+
+Missing required fragments fail closed and are recorded in the receipt.
+
 ## Agent Continuity
 
 After the first impact check, keep the work resumable:

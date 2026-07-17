@@ -1335,6 +1335,7 @@ snipara-companion workers execute \
   --write-scope docs/features/PROJECT_INTELLIGENCE.md \
   --acceptance "docs match shipped behavior" \
   --proof "pnpm --filter @snipara/web type-check" \
+  --output-fragment "type-check passed" \
   --project-id proj_123 \
   --json
 ```
@@ -1345,6 +1346,9 @@ values for real execution. A legacy `--command` string still requires a fresh
 approval receipt and cannot consume delegated trust. High-risk commands are
 blocked locally, and successful low-risk commands produce
 `verification_required` receipts so proof review remains explicit. When
+`--output-fragment` is provided, the command also fails closed when the required
+fragment is absent from stdout and records the missing fragments in the receipt.
+When
 `--project-id` is provided,
 Companion also writes a local Unified Receipt Ledger projection under
 `.snipara/unified-receipts/`; use `--unified-output <file>` to choose the sidecar

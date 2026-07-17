@@ -57,6 +57,7 @@ export interface HostNativeWorkPackage {
   writeScope: string[];
   acceptanceCriteria: string[];
   proofRequired: string[];
+  outputFragments?: string[];
   timeoutSeconds: number;
   metadata?: Record<string, string | number | boolean | null>;
 }
@@ -84,6 +85,11 @@ export interface HostNativeRunRecord {
     errorPreview: string | null;
     artifactRefs: string[];
     proofRefs: string[];
+    outputValidation?: {
+      passed: boolean;
+      missingFragments: string[];
+      validator: string;
+    } | null;
   };
   reasonCodes: string[];
   caveats: string[];
@@ -104,6 +110,11 @@ export interface BuildHostNativeRunRecordInput {
   totalCostUsd?: number | null;
   output?: string | null;
   error?: string | null;
+  outputValidation?: {
+    passed: boolean;
+    missingFragments: string[];
+    validator: string;
+  } | null;
   artifactRefs?: string[];
   proofRefs?: string[];
   reasonCodes?: string[];
@@ -120,12 +131,14 @@ export function buildHostNativeRunRecord(
   const writeScope = uniqueStrings(input.workPackage.writeScope);
   const acceptanceCriteria = uniqueStrings(input.workPackage.acceptanceCriteria);
   const proofRequired = uniqueStrings(input.workPackage.proofRequired);
+  const outputFragments = uniqueStrings(input.workPackage.outputFragments ?? []);
   const runFingerprint = hashDecisionJsonValue({
     adapter: input.adapter,
     task,
     workspaceRoot,
     writeScope,
     createdAt,
+    outputFragments,
   }).replace(/^sha256:/, "");
   return {
     schemaVersion: HOST_NATIVE_RUN_VERSION,
@@ -142,6 +155,7 @@ export function buildHostNativeRunRecord(
       writeScope,
       acceptanceCriteria,
       proofRequired,
+      ...(outputFragments.length > 0 ? { outputFragments } : {}),
       timeoutSeconds: Math.max(1, Math.floor(input.workPackage.timeoutSeconds || 600)),
       ...(input.workPackage.metadata ? { metadata: input.workPackage.metadata } : {}),
     },
@@ -157,6 +171,7 @@ export function buildHostNativeRunRecord(
       errorPreview: compactText(input.error, 2_000) || null,
       artifactRefs: uniqueStrings(input.artifactRefs ?? []),
       proofRefs: uniqueStrings(input.proofRefs ?? []),
+      outputValidation: input.outputValidation ?? null,
     },
     reasonCodes: uniqueStrings(["host_native_orchestration_v1", ...(input.reasonCodes ?? [])]),
     caveats: [
