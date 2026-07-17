@@ -209,6 +209,25 @@ valid:
 npx -y snipara-companion workers local remove local-openai-gpt-oss-20b
 ```
 
+Reviewed trust is separate from registration. Compute a scoped candidate from
+accepted, source-backed real-work receipts, emit a Decision Request, and inspect
+the resulting expiring event:
+
+```bash
+npx -y snipara-companion workers trust candidate --emit-decision-requests --json
+npx -y snipara-companion workers trust review \
+  --request-id decision-abc123 \
+  --choice approve \
+  --reviewer alice \
+  --expires-in-days 30
+npx -y snipara-companion workers trust status --json
+```
+
+Benchmarks, fixtures, model names, and self-attestation never promote a worker.
+Even `delegated_earned` is limited to the exact low-risk category, profile hash,
+write scope, and expiry. It removes only a repeated approval receipt; explicit
+execution, proof, verification, and all sensitive/release gates remain.
+
 ## Agent Continuity
 
 After the first impact check, keep the work resumable:
@@ -260,8 +279,10 @@ size, reviewed/rejected/unreviewed counts, invalid artifacts, and calibration
 caveats before any future hard gate. The report also joins attributed gated
 receipts from `.snipara/orchestrator/executions/` with persisted supervisor
 reviews, then emits `workerReceipts` and a per-`workerId`/`workCategory`
-`workerTrust` breakdown. This is observability only: every pair remains
-`probation_supervised` and `hardGateReady=false`.
+`workerTrust` breakdown. That report is observability only. The separate
+`workers trust candidate/review/status` flow can write a reviewed event after
+the evidence thresholds and human Decision Request pass; it never promotes from
+the report alone.
 
 `final-commit` also prints a stable seven-section closeout report:
 

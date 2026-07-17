@@ -35,6 +35,22 @@ export interface ControlledWorkerExecutionReceipt {
     exitCode: number | null;
     stdoutPreview: string | null;
     stderrPreview: string | null;
+    durationMs: number | null;
+    provider: string | null;
+    model: string | null;
+    inputTokens: number | null;
+    outputTokens: number | null;
+    totalCostUsd: number | null;
+    changedFiles: string[];
+    scopeViolations: string[];
+  };
+  trust: {
+    eventId: string | null;
+    workCategory: string | null;
+    profileHash: string | null;
+    state: string;
+    hardGateReady: boolean;
+    approvalReceiptRequired: boolean;
   };
   reasonCodes: string[];
   caveats: string[];
@@ -59,6 +75,22 @@ export interface BuildControlledWorkerExecutionReceiptInput {
   exitCode?: number | null;
   stdout?: string | null;
   stderr?: string | null;
+  durationMs?: number | null;
+  provider?: string | null;
+  model?: string | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  totalCostUsd?: number | null;
+  changedFiles?: string[];
+  scopeViolations?: string[];
+  trust?: {
+    eventId?: string | null;
+    workCategory?: string | null;
+    profileHash?: string | null;
+    state?: string;
+    hardGateReady?: boolean;
+    approvalReceiptRequired?: boolean;
+  };
   reasonCodes?: string[];
 }
 
@@ -96,7 +128,9 @@ export function buildControlledWorkerExecutionReceipt(
   };
   const receiptHash = hashDecisionJsonValue(core).replace(/^sha256:/, "");
 
-  if (!input.approvalReceiptId && mode !== "dry_run") {
+  const delegatedApprovalSatisfied =
+    input.trust?.hardGateReady === true && input.trust.approvalReceiptRequired === false;
+  if (!input.approvalReceiptId && mode !== "dry_run" && !delegatedApprovalSatisfied) {
     reasonCodes.add("controlled_worker_execution_missing_approval");
   }
   if (proofRequired.length === 0) {
@@ -126,6 +160,22 @@ export function buildControlledWorkerExecutionReceipt(
       exitCode: typeof input.exitCode === "number" ? input.exitCode : null,
       stdoutPreview: compactText(input.stdout ?? null, 2_000) || null,
       stderrPreview: compactText(input.stderr ?? null, 2_000) || null,
+      durationMs: finiteNumber(input.durationMs),
+      provider: compactText(input.provider ?? null, 120) || null,
+      model: compactText(input.model ?? null, 240) || null,
+      inputTokens: finiteNumber(input.inputTokens),
+      outputTokens: finiteNumber(input.outputTokens),
+      totalCostUsd: finiteNumber(input.totalCostUsd),
+      changedFiles: uniqueStrings(input.changedFiles ?? []),
+      scopeViolations: uniqueStrings(input.scopeViolations ?? []),
+    },
+    trust: {
+      eventId: compactText(input.trust?.eventId ?? null, 160) || null,
+      workCategory: compactText(input.trust?.workCategory ?? null, 120) || null,
+      profileHash: compactText(input.trust?.profileHash ?? null, 160) || null,
+      state: compactText(input.trust?.state ?? null, 80) || "probation_supervised",
+      hardGateReady: Boolean(input.trust?.hardGateReady),
+      approvalReceiptRequired: input.trust?.approvalReceiptRequired !== false,
     },
     reasonCodes: Array.from(reasonCodes).sort(),
     caveats: [
@@ -166,4 +216,8 @@ function uniqueStrings(values: string[]): string[] {
     result.push(normalized);
   }
   return result;
+}
+
+function finiteNumber(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }

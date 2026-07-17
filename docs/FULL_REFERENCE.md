@@ -1340,13 +1340,32 @@ snipara-companion workers execute \
 ```
 
 By default this writes a dry-run receipt under
-`.snipara/worker-executions/`. Add `--execute --approval-receipt <id>
---command <command>` only after policy approval. High-risk commands are blocked
-locally, and successful low-risk commands produce `verification_required`
-receipts so proof review remains explicit. When `--project-id` is provided,
+`.snipara/worker-executions/`. Prefer repeatable shell-free `--command-arg`
+values for real execution. A legacy `--command` string still requires a fresh
+approval receipt and cannot consume delegated trust. High-risk commands are
+blocked locally, and successful low-risk commands produce
+`verification_required` receipts so proof review remains explicit. When
+`--project-id` is provided,
 Companion also writes a local Unified Receipt Ledger projection under
 `.snipara/unified-receipts/`; use `--unified-output <file>` to choose the sidecar
 path. The sidecar is local evidence, not hosted worker supervision.
+
+Worker Trust Promotion is a separate human-reviewed flow:
+
+```bash
+snipara-companion workers trust candidate --emit-decision-requests --json
+snipara-companion workers trust review \
+  --request-id decision-abc123 \
+  --choice approve \
+  --reviewer alice
+snipara-companion workers trust status --json
+```
+
+Candidate generation counts only accepted, complete, source-backed samples for
+the same `(workerId, workCategory)`. Benchmark and fixture samples do not count.
+An approved expiring event can remove a repeated approval receipt only for an
+exact delegated low-risk profile/category/scope match. `--execute`, proof,
+verification, scope enforcement, and sensitive/release blocks stay mandatory.
 
 For the full Project Intelligence and Continuity Layer roadmap, scaffold the
 built-in managed workflow plan:

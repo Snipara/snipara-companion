@@ -15,13 +15,15 @@ export type DecisionRequestProducerKind =
   | "document_tombstone"
   | "unknown_registry_risk"
   | "project_policy_review"
-  | "policy_suggestion";
+  | "policy_suggestion"
+  | "worker_trust_promotion";
 
 export type DecisionRequestApplyPath =
   | "workflow producer-review"
   | "snipara_memory_resolve_queue_item"
   | "snipara_memory_verify"
   | "snipara_memory_invalidate"
+  | "workers trust review"
   | "manual_context_review";
 
 export interface DecisionRequestProducer {

@@ -2,6 +2,20 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 3.3.0
+
+- Adds reviewed, scoped Worker Trust Promotion commands: `workers trust
+candidate`, `workers trust review`, and `workers trust status`. Promotion is
+  bound to one worker profile hash, work category, write scope, expiry, and
+  human Decision Request.
+- Hardens `workers execute` with shell-free repeatable `--command-arg` argv,
+  explicit proof requirements, conservative category escalation, provider/model
+  telemetry, and exact trust-event consumption for delegated low-risk work.
+- Keeps execution fail closed: explicit `--execute`, proof, scope validation,
+  current profile identity, and post-run verification remain mandatory; auth,
+  billing, schema, release, deploy, destructive, and mismatched scopes cannot
+  inherit delegated trust.
+
 ## New In 3.2.33
 
 - Turns `final-commit` into a structured closeout report with seven stable

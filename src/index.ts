@@ -86,6 +86,11 @@ import {
 } from "./commands/workers";
 import { controlledWorkerExecuteCommand } from "./commands/controlled-worker-execution";
 import {
+  workerTrustCandidateCommand,
+  workerTrustReviewCommand,
+  workerTrustStatusCommand,
+} from "./commands/worker-trust";
+import {
   automationsDiffCommand,
   automationsInstallCommand,
   automationsStatusCommand,
@@ -332,6 +337,14 @@ export {
   workersLocalStatusCommand,
 } from "./commands/workers";
 export { controlledWorkerExecuteCommand } from "./commands/controlled-worker-execution";
+export {
+  buildWorkerTrustCandidates,
+  hashWorkerProfile,
+  readWorkerTrustEvent,
+  workerTrustCandidateCommand,
+  workerTrustReviewCommand,
+  workerTrustStatusCommand,
+} from "./commands/worker-trust";
 export { getPlanStepDisplayTitle } from "./commands/workflows";
 export {
   buildFinalCommitReport,
@@ -2618,6 +2631,12 @@ workers
   )
   .option("--mode <mode>", "Execution mode (dry_run|approval_required|auto_low_risk)")
   .option("--command <command>", "Command to run when --execute is provided")
+  .option(
+    "--command-arg <arg>",
+    "Structured executable and argument; repeat for shell-free execution",
+    collectOption,
+    []
+  )
   .option("--execute", "Actually execute the command after policy checks")
   .option("--approval-receipt <id>", "Approval receipt id required for non-dry-run execution")
   .option("--outcome-receipt <id>", "Linked Outcome Intelligence receipt id")
@@ -2629,6 +2648,14 @@ workers
     collectOption,
     []
   )
+  .option(
+    "--work-category <category>",
+    "Trust category; conservative task and scope signals can only escalate it"
+  )
+  .option("--trust-event <file>", "Explicit worker trust event file")
+  .option("--profile-hash <hash>", "Expected current worker profile hash")
+  .option("--provider <provider>", "Provider label for execution telemetry")
+  .option("--model <model>", "Model id for execution telemetry")
   .option("--output <file>", "Write receipt to a specific file")
   .option("--project-id <id>", "Project id to include in a local unified receipt projection")
   .option(
@@ -2645,15 +2672,85 @@ workers
       endpointType: options.endpointType,
       mode: options.mode,
       command: options.command,
+      commandArgs: options.commandArg,
       execute: Boolean(options.execute),
       approvalReceipt: options.approvalReceipt,
       outcomeReceipt: options.outcomeReceipt,
       writeScope: options.writeScope,
       acceptance: options.acceptance,
       proof: options.proof,
+      workCategory: options.workCategory,
+      trustEvent: options.trustEvent,
+      profileHash: options.profileHash,
+      provider: options.provider,
+      model: options.model,
       output: options.output,
       projectId: options.projectId,
       unifiedOutput: options.unifiedOutput,
+      dir: options.dir,
+      json: Boolean(options.json),
+    });
+  });
+
+const workerTrust = workers
+  .command("trust")
+  .description("Generate, review, and inspect scoped worker trust promotion events");
+
+workerTrust
+  .command("candidate")
+  .description("Compute trust candidates from reviewed worker evidence")
+  .option("--worker-id <id>", "Filter by worker id")
+  .option("--work-category <category>", "Filter by work category")
+  .option("--emit-decision-requests", "Write review requests for eligible candidates")
+  .option("-d, --dir <directory>", "Project directory (default: current)")
+  .option("--json", "Print raw JSON")
+  .action((options) => {
+    workerTrustCandidateCommand({
+      workerId: options.workerId,
+      workCategory: options.workCategory,
+      emitDecisionRequests: Boolean(options.emitDecisionRequests),
+      dir: options.dir,
+      json: Boolean(options.json),
+    });
+  });
+
+workerTrust
+  .command("review")
+  .description("Resolve a trust Decision Request and write the reviewed event")
+  .requiredOption("--request-id <id>", "Pending worker trust Decision Request id")
+  .requiredOption(
+    "--choice <choice>",
+    "Review choice: approve, keep_supervised, or demote",
+    /^(approve|keep_supervised|demote)$/
+  )
+  .requiredOption("--reviewer <reviewer>", "Human reviewer identity")
+  .option("--note <note>", "Review note")
+  .option("--expires-in-days <days>", "Promotion expiry in days", "30")
+  .option("-d, --dir <directory>", "Project directory (default: current)")
+  .option("--json", "Print raw JSON")
+  .action((options) => {
+    workerTrustReviewCommand({
+      requestId: options.requestId,
+      choice: options.choice,
+      reviewer: options.reviewer,
+      note: options.note,
+      expiresInDays: Number.parseInt(options.expiresInDays, 10),
+      dir: options.dir,
+      json: Boolean(options.json),
+    });
+  });
+
+workerTrust
+  .command("status")
+  .description("Show reviewed worker trust events")
+  .option("--worker-id <id>", "Filter by worker id")
+  .option("--work-category <category>", "Filter by work category")
+  .option("-d, --dir <directory>", "Project directory (default: current)")
+  .option("--json", "Print raw JSON")
+  .action((options) => {
+    workerTrustStatusCommand({
+      workerId: options.workerId,
+      workCategory: options.workCategory,
       dir: options.dir,
       json: Boolean(options.json),
     });
