@@ -24,6 +24,8 @@ const {
   formatFinalCommitReport,
   getPlanStepDisplayTitle,
   getOrchestratorRecommendation,
+  MEMORY_GUARD_CONTEXT_TIMEOUT_MS,
+  MEMORY_GUARD_RECALL_TIMEOUT_MS,
   normalizeGuardTag,
   ORCHESTRATOR_HANDOFF_RELATIVE_PATH,
   normalizeWorkflowPlanInput,
@@ -3908,6 +3910,12 @@ test("memory guard always recalls workflow policy for commit-like gates", async 
 
   assert.equal(result.triggered, false);
   assert.ok(result.categories.includes("workflow-policy"));
+});
+
+test("memory guard gives source context a longer bounded timeout than recall", () => {
+  assert.equal(MEMORY_GUARD_RECALL_TIMEOUT_MS, 15_000);
+  assert.equal(MEMORY_GUARD_CONTEXT_TIMEOUT_MS, 30_000);
+  assert.ok(MEMORY_GUARD_CONTEXT_TIMEOUT_MS > MEMORY_GUARD_RECALL_TIMEOUT_MS);
 });
 
 test("activity timeline appends events and builds fail-closed session snapshot", () => {

@@ -230,6 +230,8 @@ export {
   categoryFromGuardTag,
   detectReleaseSurfacesFromFiles,
   getStagedFiles,
+  MEMORY_GUARD_CONTEXT_TIMEOUT_MS,
+  MEMORY_GUARD_RECALL_TIMEOUT_MS,
   normalizeGuardTag,
   runMemoryGuardCheck,
 } from "./commands/memory-guard";

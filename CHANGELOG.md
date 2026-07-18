@@ -2,6 +2,14 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 3.5.5
+
+- Gives Memory Guard source-context retrieval its own bounded 30-second window
+  while keeping ordinary memory recalls at 15 seconds.
+- Skips Answer Pack generation and automatic decomposition for guard context so
+  pre-commit and pre-final checks consume raw source sections without needless
+  latency.
+
 ## New In 3.5.4
 
 - Makes `reality-check` auto-link bounded reviewed Team Sync decisions, keyword

@@ -43,6 +43,9 @@ export const MEMORY_GUARD_EXIT_CODES = {
   validationError: 22,
 } as const;
 
+export const MEMORY_GUARD_RECALL_TIMEOUT_MS = 15_000;
+export const MEMORY_GUARD_CONTEXT_TIMEOUT_MS = 30_000;
+
 export type MemoryGuardBlockReason = "confirmation_required" | "guidance_unavailable";
 
 export interface MemoryGuardContradiction {
@@ -742,7 +745,9 @@ export async function runMemoryGuardCheck(
     });
   }
 
-  const client = isConfigured() ? createClient(15000) : null;
+  const configured = isConfigured();
+  const client = configured ? createClient(MEMORY_GUARD_RECALL_TIMEOUT_MS) : null;
+  const contextClient = configured ? createClient(MEMORY_GUARD_CONTEXT_TIMEOUT_MS) : null;
   let recentFailures: MemoryGuardCheckResult["recentFailures"] = [];
   if (
     client &&
@@ -834,7 +839,10 @@ export async function runMemoryGuardCheck(
 
     if (options.includeContext !== false) {
       try {
-        contextResult = await client.queryContext(query, 1600);
+        contextResult = await (contextClient ?? client).queryContext(query, 1600, {
+          includeAnswerPack: false,
+          autoDecompose: false,
+        });
         contextAvailable = (contextResult.sections || []).length > 0;
       } catch (error) {
         warnings.push(
