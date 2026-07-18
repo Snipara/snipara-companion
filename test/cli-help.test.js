@@ -368,6 +368,8 @@ test("reality-check help exposes local and enforcement options", () => {
   assert.match(result.stdout, /Project Reality Check/);
   assert.match(result.stdout, /--changed-files/);
   assert.match(result.stdout, /--decision/);
+  assert.match(result.stdout, /--no-auto-context/);
+  assert.match(result.stdout, /--auto-context-timeout-ms/);
   assert.match(result.stdout, /--no-include-dirty/);
   assert.match(result.stdout, /--enforce/);
 });
@@ -1465,6 +1467,9 @@ test("query help exposes follow recommendation flag", () => {
   const result = runCli(["query", "--help"]);
   assert.equal(result.status, 0);
   assert.match(result.stdout, /follow-recommendation/);
+  assert.match(result.stdout, /--search-mode/);
+  assert.match(result.stdout, /--timeout-ms/);
+  assert.match(result.stdout, /--no-answer-pack/);
 });
 
 test("init help lists extended client presets", () => {

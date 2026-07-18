@@ -536,6 +536,9 @@ function buildDocumentIntentEntry(
       sectionIntent.freshnessHorizonDays,
     policy
   );
+  const affectedAnchors = uniqueStrings(
+    doc.affectedAnchors && doc.affectedAnchors.length > 0 ? doc.affectedAnchors : [doc.path]
+  );
   return {
     id: `intent:doc:${doc.path}`,
     title: doc.title || doc.path,
@@ -563,7 +566,7 @@ function buildDocumentIntentEntry(
       structuredSections: sectionIntent,
       fallbackUsed: goal === doc.path || goal === doc.title,
     }),
-    affectedAnchors: [doc.path],
+    affectedAnchors,
     owner: doc.intent?.owner ?? sectionIntent.owner ?? doc.owner ?? null,
     evidence: [
       {

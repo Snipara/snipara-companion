@@ -8508,15 +8508,34 @@ function printRecallResult(result: RecallResult): void {
 export async function queryCommand(options: {
   query: string;
   maxTokens?: number;
+  searchMode?: string;
+  includeAnswerPack?: boolean;
+  autoDecompose?: boolean;
+  includeSharedContext?: boolean;
+  timeoutMs?: number;
   json?: boolean;
   followRecommendation?: boolean;
 }): Promise<void> {
   ensureConfigured();
 
-  const client = createClient(15000);
+  const searchMode = options.searchMode ?? "hybrid";
+  if (!( ["keyword", "semantic", "hybrid"] as const).includes(searchMode as never)) {
+    throw new Error("--search-mode must be keyword, semantic, or hybrid");
+  }
+  const timeoutMs = Math.max(
+    1_000,
+    Math.min(options.timeoutMs ?? 30_000, 120_000),
+  );
+  const client = createClient(timeoutMs);
   const result = await client.queryContext(
     options.query,
     options.maxTokens || 8000,
+    {
+      searchMode: searchMode as "keyword" | "semantic" | "hybrid",
+      includeAnswerPack: options.includeAnswerPack,
+      autoDecompose: options.autoDecompose,
+      includeSharedContext: options.includeSharedContext,
+    },
   );
   const recommendedExecution =
     options.followRecommendation && result.recommended_tool

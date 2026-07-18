@@ -58,6 +58,7 @@ export interface ProjectRealityCheckResult {
   findings: ProjectRealityCheckFinding[];
   intentLedger: ProjectIntentLedgerSummary;
   unknownRegistry: ProjectUnknownRegistrySummary;
+  evidence: ProjectRealityCheckEvidenceRef[];
   requiredActions: string[];
   watchItems: string[];
   reasonCodes: string[];
@@ -118,6 +119,29 @@ function decisionEvidence(
   }));
 }
 
+function verificationEvidence(input: ProjectRealityCheckInput): ProjectRealityCheckEvidenceRef[] {
+  return (input.verificationChecklist ?? []).slice(0, 8).map((item, index) => ({
+    kind: /test|spec|vitest|pytest|e2e|smoke|lint|type.?check|build|health|ready|migration|schema|pack/i.test(
+      item
+    )
+      ? "test"
+      : "manual",
+    label: item,
+    sourceRef: `verification:${index + 1}`,
+    strength: 0.75,
+  }));
+}
+
+function uniqueEvidence(
+  evidence: ProjectRealityCheckEvidenceRef[]
+): ProjectRealityCheckEvidenceRef[] {
+  return [
+    ...new Map(
+      evidence.map((item) => [`${item.kind}:${item.sourceRef ?? item.label}`, item])
+    ).values(),
+  ];
+}
+
 export function buildProjectRealityCheck(
   input: ProjectRealityCheckInput
 ): ProjectRealityCheckResult {
@@ -127,7 +151,17 @@ export function buildProjectRealityCheck(
   const tests = testFiles(changedFiles);
   const findings: ProjectRealityCheckFinding[] = [];
   const decisions = input.decisions ?? [];
-  const contextEvidence = [...docEvidence(input), ...symbolEvidence(input)];
+  const verificationRefs = verificationEvidence(input);
+  const contextEvidence = uniqueEvidence([
+    ...docEvidence(input),
+    ...symbolEvidence(input),
+    ...(input.evidence ?? []),
+  ]);
+  const allEvidence = uniqueEvidence([
+    ...decisionEvidence(decisions),
+    ...verificationRefs,
+    ...contextEvidence,
+  ]).slice(0, 20);
   const intentLedger = buildProjectIntentLedger(input, changedFiles);
 
   for (const surface of SENSITIVE_SURFACES) {
@@ -179,7 +213,11 @@ export function buildProjectRealityCheck(
       } and ${hasVerification ? "some verification evidence" : "no obvious verification evidence"}.`,
       changedFiles: files.slice(0, 12),
       decisionIds: relatedDecisions.map((decision) => decision.id).slice(0, 8),
-      evidence: [...decisionEvidence(relatedDecisions), ...contextEvidence].slice(0, 8),
+      evidence: uniqueEvidence([
+        ...decisionEvidence(relatedDecisions),
+        ...verificationRefs,
+        ...contextEvidence,
+      ]).slice(0, 8),
       reasonCodes,
       recommendedActions,
       caveats: [
@@ -203,7 +241,7 @@ export function buildProjectRealityCheck(
         "This change spans architectural boundaries. Verify that the dependency direction and runtime ownership still match the intended architecture.",
       changedFiles: files.slice(0, 12),
       decisionIds: [],
-      evidence: contextEvidence.slice(0, 6),
+      evidence: uniqueEvidence([...verificationRefs, ...contextEvidence]).slice(0, 8),
       reasonCodes: [rule.key, "cross_boundary_change"],
       recommendedActions: [
         "Check that the changed modules do not introduce a forbidden runtime dependency.",
@@ -326,6 +364,7 @@ export function buildProjectRealityCheck(
     findings,
     intentLedger,
     unknownRegistry,
+    evidence: allEvidence,
     requiredActions,
     watchItems,
     reasonCodes: uniqueStrings([
@@ -404,10 +443,29 @@ export function renderProjectRealityCheckMarkdown(result: ProjectRealityCheckRes
       if (finding.decisionIds.length > 0) {
         lines.push(`  Decisions: ${finding.decisionIds.join(", ")}`);
       }
+      if (finding.evidence.length > 0) {
+        lines.push(
+          `  Evidence: ${finding.evidence
+            .slice(0, 4)
+            .map((item) => `${item.kind}:${item.label}`)
+            .join("; ")}`
+        );
+      }
       if (finding.recommendedActions.length > 0) {
         lines.push(`  Action: ${finding.recommendedActions[0]}`);
       }
     }
+  }
+
+  if (result.evidence.length > 0) {
+    lines.push("", "Evidence:");
+    lines.push(
+      ...result.evidence
+        .slice(0, 10)
+        .map(
+          (item) => `- ${item.kind}: ${item.label}${item.sourceRef ? ` (${item.sourceRef})` : ""}`
+        )
+    );
   }
 
   if (result.requiredActions.length > 0) {

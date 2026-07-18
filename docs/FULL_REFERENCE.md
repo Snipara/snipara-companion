@@ -1050,6 +1050,7 @@ npx -y snipara-companion@latest plan --query "plan the auth refactor" --write-pl
 npx -y snipara-companion@latest task-commit --summary "Shipped auth refactor" --files apps/web/src/lib/auth.ts
 
 snipara-companion query --query "auth middleware"
+snipara-companion query --query "auth middleware" --search-mode keyword --no-answer-pack --timeout-ms 30000
 snipara-companion query --query "who calls src.mcp_transport.handle_call_tool" --follow-recommendation
 snipara-companion status
 snipara-companion brief --task "ship auth hardening" --changed-files apps/web/src/lib/auth.ts tests/auth.test.ts --diff-summary "auth hardening"
@@ -1272,7 +1273,13 @@ snipara-companion reality-check \
 
 The command reads the local Git scope by default, includes dirty files unless
 `--no-include-dirty` is set, and also accepts explicit `--changed-files` for
-hooks or CI collectors. `--enforce` exits non-zero for `review_required` or
+hooks or CI collectors. When the workspace is configured, bounded auto-context
+loads reviewed Team Sync decisions, a narrow keyword document query, and local
+workflow receipts in parallel. Explicit `--decision`, `--document`, and
+`--verification` values take precedence. Use `--no-auto-context` for a purely
+local/explicit run or `--auto-context-timeout-ms` to tighten the hosted budget.
+Verification and workflow sources are retained in each finding's `evidence`
+array and in the top-level evidence summary. `--enforce` exits non-zero for `review_required` or
 `blocking` findings, but should stay opt-in until the matched surfaces,
 verification signals, and project-specific thresholds have been calibrated.
 Intent can be supplied as structured sections inside `--decision` or
@@ -1461,7 +1468,7 @@ snipara-companion workflow scaffold \
 
 Semantics:
 
-- `snipara-companion query --follow-recommendation` = execute the hosted recommended structural tool instead of only printing it
+- `snipara-companion query --follow-recommendation` = execute the hosted recommended structural tool instead of only printing it; context retrieval defaults to a 30-second timeout and supports `--search-mode keyword|semantic|hybrid`, `--no-answer-pack`, `--no-auto-decompose`, and `--no-shared-context`
 - `snipara-companion workflow run --mode lite` = zero mandatory hosted calls for small known-file work
 - `snipara-companion workflow run --mode standard` = context query plus automatic `snipara_code_*` follow-up when Snipara recommends one
 - `snipara-companion workflow run --mode auto` = routes to lite, standard, full, or orchestrate from task intent
@@ -1473,7 +1480,7 @@ Semantics:
 - `snipara-companion status` = top-level agentic work status across local workflow state, git dirtiness, and Team Sync carryover
 - `snipara-companion source init|sync|status|snapshot|watch` = automatic local source activation for folders with or without Git metadata; writes `.snipara/source/latest.json`, previews document sync, and refreshes the local code overlay cache
 - `snipara-companion brief` = short alias for `snipara-companion intelligence brief`
-- `snipara-companion reality-check` = local Project Reality Check plus Intent Ledger and Unknown Registry coverage for supplied or Git-derived changed files; `--enforce` is an opt-in strict mode for calibrated hooks
+- `snipara-companion reality-check` = Project Reality Check plus Intent Ledger, Unknown Registry, bounded auto-context, and inspectable evidence for supplied or Git-derived changed files; `--no-auto-context` keeps it local/explicit and `--enforce` is an opt-in strict mode for calibrated hooks
 - `snipara-companion timeline` = local timeline of workflow starts, phase starts, phase commits, final commits, and Team Sync handoffs
 - `snipara-companion workflow timeline` = append-only activity timeline from `.snipara/activity/timeline.jsonl`, including workflow, Producer Loop, Decision Request, and Team Sync events emitted by Companion commands; add `--export md` for a redacted Markdown artifact
 - `snipara-companion workflow session` = writes and prints Session Snapshot V0 at `.snipara/activity/session.json` with latest activity, risk, touched files, next action, advisory Intent Detection V0 intent/confidence/signals/suggested mode, workflow/session counts, Producer Loop calibration, decision counts, Team Sync counts, and `hardRoutingAllowed=false`

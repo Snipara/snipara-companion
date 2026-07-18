@@ -51,6 +51,21 @@ export interface ContextQueryResult {
   graph_hybrid_used?: boolean;
   graph_context_tool?: string;
   graph_context_summary?: string;
+  search_mode?: ContextQuerySearchMode;
+  timing?: Record<string, number>;
+  retrieval_diagnostics?: Record<string, unknown>;
+}
+
+export type ContextQuerySearchMode = "keyword" | "semantic" | "hybrid";
+
+export interface ContextQueryOptions {
+  searchMode?: ContextQuerySearchMode;
+  includeMetadata?: boolean;
+  includeAnswerPack?: boolean;
+  autoDecompose?: boolean;
+  includeSharedContext?: boolean;
+  includeAllTiers?: boolean;
+  returnReferences?: boolean;
 }
 
 export interface AnswerPackSource {
@@ -1583,6 +1598,7 @@ export class RLMClient {
   async queryContext(
     query: string,
     maxTokens: number = 8000,
+    options: ContextQueryOptions = {},
   ): Promise<ContextQueryResult> {
     interface MCPContextResult {
       sections: Array<{
@@ -1615,6 +1631,9 @@ export class RLMClient {
       graph_hybrid_used?: boolean;
       graph_context_tool?: string;
       graph_context_summary?: string;
+      search_mode?: ContextQuerySearchMode;
+      timing?: Record<string, number>;
+      retrieval_diagnostics?: Record<string, unknown>;
     }
 
     const result = await this.mcpCall<MCPContextResult>(
@@ -1622,9 +1641,13 @@ export class RLMClient {
       {
         query,
         max_tokens: maxTokens,
-        search_mode: "hybrid",
-        include_metadata: true,
-        include_answer_pack: true,
+        search_mode: options.searchMode ?? "hybrid",
+        include_metadata: options.includeMetadata ?? true,
+        include_answer_pack: options.includeAnswerPack ?? true,
+        auto_decompose: options.autoDecompose,
+        include_shared_context: options.includeSharedContext,
+        include_all_tiers: options.includeAllTiers,
+        return_references: options.returnReferences,
       },
     );
 
@@ -1659,6 +1682,9 @@ export class RLMClient {
       graph_hybrid_used: result.graph_hybrid_used,
       graph_context_tool: result.graph_context_tool,
       graph_context_summary: result.graph_context_summary,
+      search_mode: result.search_mode,
+      timing: result.timing,
+      retrieval_diagnostics: result.retrieval_diagnostics,
     };
   }
 

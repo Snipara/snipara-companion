@@ -6,7 +6,10 @@ const test = require("node:test");
 const { spawnSync } = require("node:child_process");
 
 const cliPath = path.join(__dirname, "..", "dist", "index.js");
-const { buildLocalProjectRealityCheck } = require("../dist/index.js");
+const {
+  buildLocalProjectRealityCheck,
+  buildLocalProjectRealityCheckWithAutoContext,
+} = require("../dist/index.js");
 
 function runCli(args, options = {}) {
   const env = {
@@ -78,6 +81,102 @@ test("buildLocalProjectRealityCheck links supplied decision intent", () => {
   assert.equal(result.intentLedger.coverage, "linked");
   assert.equal(result.intentLedger.linkedIntentCount, 1);
   assert.equal(result.intentLedger.entries[0].sourceDecisionId, "DEC-001");
+});
+
+test("auto-context links reviewed decisions and bounded keyword documents", async () => {
+  const dir = makeTempWorkspace();
+  const calls = [];
+  const client = {
+    getTeamSyncWhatChanged: async (args) => {
+      calls.push({ kind: "team-sync", args });
+      return {
+        whatChanged: {
+          decisions: [
+            {
+              id: "DEC-REALITY-CHECK",
+              title: "Keep Companion Reality Check evidence inspectable",
+              status: "ACTIVE",
+              impact: "HIGH",
+              summary:
+                "Companion reality-check must retain source-backed decision and verification evidence.",
+              tags: ["companion", "reality-check", "decision"],
+              recommendedAction: "Review high-impact decision before changing related work.",
+              updatedAt: "2026-07-18T00:00:00.000Z",
+            },
+          ],
+        },
+      };
+    },
+    queryContext: async (query, maxTokens, options) => {
+      calls.push({ kind: "context", query, maxTokens, options });
+      return {
+        sections: [
+          {
+            title: "Reality Check ADR",
+            content: "Goal: Keep reality-check verification evidence inspectable",
+            file: "docs/adr/reality-check.md",
+            lines: [1, 20],
+            relevance_score: 0.9,
+            token_count: 20,
+            truncated: false,
+          },
+        ],
+        total_tokens: 20,
+        max_tokens: maxTokens,
+        query,
+      };
+    },
+  };
+
+  const result = await buildLocalProjectRealityCheckWithAutoContext(
+    {
+      dir,
+      task: "Make Companion reality-check verification evidence inspectable",
+      changedFiles: ["packages/cli/src/commands/reality-check.ts"],
+      verification: ["pnpm --filter snipara-companion test passed"],
+    },
+    client
+  );
+
+  assert.equal(result.intentLedger.coverage, "linked");
+  assert.ok(
+    result.intentLedger.entries.some((entry) => entry.sourceDecisionId === "DEC-REALITY-CHECK")
+  );
+  assert.ok(result.evidence.some((item) => item.kind === "decision"));
+  assert.ok(result.evidence.some((item) => item.kind === "document"));
+  assert.ok(result.evidence.some((item) => item.kind === "test"));
+  const contextCall = calls.find((call) => call.kind === "context");
+  assert.equal(contextCall.maxTokens, 1200);
+  assert.equal(contextCall.options.searchMode, "keyword");
+  assert.equal(contextCall.options.includeAnswerPack, false);
+  assert.equal(contextCall.options.autoDecompose, false);
+});
+
+test("auto-context fails open and preserves explicit inputs", async () => {
+  const dir = makeTempWorkspace();
+  const client = {
+    getTeamSyncWhatChanged: async () => {
+      throw new Error("hosted Team Sync unavailable");
+    },
+    queryContext: async () => {
+      throw new Error("hosted context unavailable");
+    },
+  };
+
+  const result = await buildLocalProjectRealityCheckWithAutoContext(
+    {
+      dir,
+      changedFiles: ["src/auth/middleware.ts"],
+      decision: ["DEC-EXPLICIT: auth middleware stays explicit"],
+    },
+    client
+  );
+
+  assert.equal(result.intentLedger.entries[0].sourceDecisionId, "DEC-EXPLICIT");
+  assert.ok(
+    result.caveats.some((item) => /reviewed-decision auto-linking was unavailable/.test(item))
+  );
+  assert.ok(result.caveats.some((item) => /document auto-context was unavailable/.test(item)));
 });
 
 test("buildLocalProjectRealityCheck parses structured document intent sections", () => {

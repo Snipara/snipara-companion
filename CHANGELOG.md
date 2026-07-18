@@ -2,6 +2,17 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 3.5.4
+
+- Makes `reality-check` auto-link bounded reviewed Team Sync decisions, keyword
+  document context, managed workflow receipts, and current verification
+  evidence while preserving explicit CLI inputs and failing open when hosted
+  context is unavailable.
+- Keeps the evidence used by Reality Check inspectable in JSON and Markdown
+  findings instead of using verification only as a hidden severity signal.
+- Gives `query` a 30-second default timeout plus explicit search-mode,
+  Answer Pack, decomposition, and shared-context controls for fast recovery.
+
 ## New In 3.5.3
 
 - Propagates the configured Companion `sessionId` as

@@ -94,7 +94,7 @@ These commands are useful without hosted Snipara:
 | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | `source init` / `source sync` / `source status`                                       | Local source snapshot, document preview, and code overlay                    |
 | `impact` / `code impact`                                                              | File-level blast-radius from the local code overlay                          |
-| `reality-check`                                                                       | Intent Ledger, Unknown Registry, and verification checks                     |
+| `reality-check`                                                                       | Intent Ledger, Unknown Registry, auto-linked context, and inspectable proof  |
 | `code callers` / `imports` / `neighbors` / `shortest-path`                            | Structural repo questions from local files                                   |
 | `workflow start` / `phase-start` / `phase-commit` / `resume`                          | Agent continuity that survives compaction                                    |
 | `workflow timeline` / `workflow session`                                              | Append-only local activity log and Session Snapshot V0                       |

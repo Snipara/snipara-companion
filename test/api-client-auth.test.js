@@ -572,6 +572,9 @@ test("queryContext requests answer packs and maps quality metadata", async () =>
                   },
                   answer_pack_included: true,
                   answer_pack_tokens: 55,
+                  search_mode: "hybrid",
+                  timing: { total_ms: 1234 },
+                  retrieval_diagnostics: { cache: { status: "miss" } },
                 }),
               },
             ],
@@ -586,6 +589,7 @@ test("queryContext requests answer packs and maps quality metadata", async () =>
     assert.equal(payload.params.name, "snipara_context_query");
     assert.equal(payload.params.arguments.include_answer_pack, true);
     assert.equal(payload.params.arguments.include_metadata, true);
+    assert.equal(payload.params.arguments.search_mode, "hybrid");
     assert.equal(result.answer_pack_included, true);
     assert.equal(result.answer_pack_tokens, 55);
     assert.equal(
@@ -594,6 +598,58 @@ test("queryContext requests answer packs and maps quality metadata", async () =>
     );
     assert.equal(result.sections[0].quality_score, 0.87);
     assert.deepEqual(result.sections[0].quality_flags, ["is_truncated"]);
+    assert.equal(result.search_mode, "hybrid");
+    assert.equal(result.timing.total_ms, 1234);
+    assert.equal(result.retrieval_diagnostics.cache.status, "miss");
+  });
+});
+
+test("queryContext forwards bounded retrieval options", async () => {
+  await withTempHome(async () => {
+    process.env.SNIPARA_API_KEY = "test-key";
+    process.env.SNIPARA_PROJECT_ID = "snipara";
+
+    let payload;
+    global.fetch = async (_url, init) => {
+      payload = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  sections: [],
+                  total_tokens: 0,
+                  search_mode: "keyword",
+                }),
+              },
+            ],
+          },
+        }),
+      };
+    };
+
+    const client = createClient();
+    await client.queryContext("bounded intent lookup", 1200, {
+      searchMode: "keyword",
+      includeAnswerPack: false,
+      autoDecompose: false,
+      includeSharedContext: false,
+      includeAllTiers: false,
+    });
+
+    const args = payload.params.arguments;
+    assert.equal(args.search_mode, "keyword");
+    assert.equal(args.include_answer_pack, false);
+    assert.equal(args.auto_decompose, false);
+    assert.equal(args.include_shared_context, false);
+    assert.equal(args.include_all_tiers, false);
   });
 });
 

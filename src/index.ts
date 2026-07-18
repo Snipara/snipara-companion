@@ -246,6 +246,7 @@ export {
 } from "./commands/intelligence";
 export {
   buildLocalProjectRealityCheck,
+  buildLocalProjectRealityCheckWithAutoContext,
   realityCheckCommand,
 } from "./commands/reality-check";
 export {
@@ -548,6 +549,15 @@ function configureRealityCheckCommand(command: Command): Command {
       "Verification evidence or checklist item",
     )
     .option(
+      "--no-auto-context",
+      "Disable bounded hosted/local context auto-linking",
+    )
+    .option(
+      "--auto-context-timeout-ms <number>",
+      "Timeout for each hosted auto-context source",
+      "12000",
+    )
+    .option(
       "--no-include-dirty",
       "Exclude dirty working-tree files from local scope",
     )
@@ -567,6 +577,11 @@ function configureRealityCheckCommand(command: Command): Command {
         decision: options.decision,
         document: options.document,
         verification: options.verification,
+        autoContext: options.autoContext !== false,
+        autoContextTimeoutMs: Number.parseInt(
+          options.autoContextTimeoutMs,
+          10,
+        ),
         includeDirty: options.includeDirty,
         enforce: Boolean(options.enforce),
         dir: options.dir,
@@ -1651,6 +1666,19 @@ program
   .requiredOption("-q, --query <query>", "Search query")
   .option("-m, --max-tokens <number>", "Maximum tokens", "8000")
   .option(
+    "--search-mode <mode>",
+    "Search mode: keyword|semantic|hybrid",
+    "hybrid",
+  )
+  .option(
+    "--timeout-ms <number>",
+    "Hosted context query timeout in milliseconds",
+    "30000",
+  )
+  .option("--no-answer-pack", "Skip Answer Pack generation")
+  .option("--no-auto-decompose", "Disable automatic query decomposition")
+  .option("--no-shared-context", "Exclude linked shared context")
+  .option(
     "--follow-recommendation",
     "Automatically execute the recommended structural tool when Snipara returns one",
   )
@@ -1659,6 +1687,11 @@ program
     await queryCommand({
       query: options.query,
       maxTokens: parseInt(options.maxTokens, 10),
+      searchMode: options.searchMode,
+      timeoutMs: parseInt(options.timeoutMs, 10),
+      includeAnswerPack: options.answerPack !== false,
+      autoDecompose: options.autoDecompose !== false,
+      includeSharedContext: options.sharedContext !== false,
       followRecommendation: Boolean(options.followRecommendation),
       json: options.json,
     });

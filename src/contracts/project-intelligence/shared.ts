@@ -57,6 +57,7 @@ export interface ProjectRealityCheckDocumentInput {
   contentPreview?: string | null;
   kind?: string | null;
   sourceRef?: string | null;
+  affectedAnchors?: string[];
   intent?: ProjectRealityCheckIntentInput | null;
   owner?: string | null;
   freshnessHorizonDays?: number | null;
@@ -90,6 +91,7 @@ export interface ProjectRealityCheckInput {
   decisions?: ProjectRealityCheckDecisionInput[];
   documents?: ProjectRealityCheckDocumentInput[];
   symbols?: ProjectRealityCheckSymbolInput[];
+  evidence?: ProjectRealityCheckEvidenceRef[];
   verificationChecklist?: string[];
   dirtyFiles?: string[];
   intentPolicy?: ProjectRealityCheckIntentPolicy | null;
