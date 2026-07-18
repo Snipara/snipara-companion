@@ -10,8 +10,17 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AdvisorInfluenceLifecycle } from "../contracts/project-intelligence";
-import { loadConfig, type ConfigResolutionOptions, type RLMConfig } from "../config/store";
+import type {
+  AdvisorInfluenceLifecycle,
+  HostedContextControlApplyReceipt,
+  HostedContextControlPlan,
+  HostedContextControlSource,
+} from "../contracts/project-intelligence";
+import {
+  loadConfig,
+  type ConfigResolutionOptions,
+  type RLMConfig,
+} from "../config/store";
 import { resolveProject } from "../project/resolver";
 
 export interface ContextQueryResult {
@@ -74,6 +83,16 @@ export interface AnswerPack {
     impact_hint?: string | null;
   };
   token_count?: number;
+}
+
+export interface HostedContextControlDiffResponse {
+  project: { id: string; name: string; slug: string };
+  plan: HostedContextControlPlan;
+}
+
+export interface HostedContextControlApplyResponse {
+  project: { id: string; name: string; slug: string };
+  receipt: HostedContextControlApplyReceipt;
 }
 
 export interface CodeGraphNodeResult {
@@ -323,7 +342,13 @@ export interface ConnectionProbeResult {
   tool?: string;
 }
 
-export type MemoryType = "fact" | "decision" | "learning" | "preference" | "todo" | "context";
+export type MemoryType =
+  | "fact"
+  | "decision"
+  | "learning"
+  | "preference"
+  | "todo"
+  | "context";
 export type MemoryScope = "agent" | "project" | "team" | "user";
 export type MemoryStatus = "ACTIVE" | "INVALIDATED" | "SUPERSEDED";
 
@@ -471,8 +496,16 @@ export interface EmitEventResult {
   events: AutomationCheckpointSummary[];
 }
 
-export type AdvisorInfluenceAgentDecision = "accepted" | "modified" | "ignored" | "blocked";
-export type AdvisorInfluenceOutcomeLinkStatus = "pending" | "linked" | "missed" | "unevaluated";
+export type AdvisorInfluenceAgentDecision =
+  | "accepted"
+  | "modified"
+  | "ignored"
+  | "blocked";
+export type AdvisorInfluenceOutcomeLinkStatus =
+  | "pending"
+  | "linked"
+  | "missed"
+  | "unevaluated";
 export type AdvisorInfluenceReceiptCreationOutcomeLinkStatus = "pending";
 
 export interface AdvisorInfluenceRecommendationInput {
@@ -501,7 +534,10 @@ export interface RecordAdvisorInfluenceReceiptInput {
   metadata?: AdvisorInfluenceReceiptMetadataInput;
 }
 
-export interface AdvisorInfluenceReceiptMetadataInput extends Record<string, unknown> {
+export interface AdvisorInfluenceReceiptMetadataInput extends Record<
+  string,
+  unknown
+> {
   source?: string;
   firstParty?: boolean;
   planBefore?: string | null;
@@ -959,8 +995,16 @@ export type CollaborationLeaseMode =
   | "REQUIRES_ACK"
   | "EXCLUSIVE"
   | "HARD_BLOCK";
-export type CollaborationLeaseStatus = "ACTIVE" | "RELEASED" | "EXPIRED" | "OVERRIDDEN";
-export type CollaborationConflictSeverity = "INFO" | "WATCH" | "WARNING" | "CRITICAL";
+export type CollaborationLeaseStatus =
+  | "ACTIVE"
+  | "RELEASED"
+  | "EXPIRED"
+  | "OVERRIDDEN";
+export type CollaborationConflictSeverity =
+  | "INFO"
+  | "WATCH"
+  | "WARNING"
+  | "CRITICAL";
 export type CollaborationGuardDecision =
   | "CLEAR"
   | "WATCH"
@@ -1118,7 +1162,7 @@ function getSniparaTokenStorePath(): string {
 
 function loadProjectApiKeyFromTokenStore(
   projectIdentifier: string,
-  currentApiKey?: string
+  currentApiKey?: string,
 ): string | null {
   const tokensPath = getSniparaTokenStorePath();
   if (!fs.existsSync(tokensPath)) {
@@ -1136,7 +1180,8 @@ function loadProjectApiKeyFromTokenStore(
 
     for (const token of Object.values(parsed)) {
       if (
-        (token.project_slug === projectIdentifier || token.project_id === projectIdentifier) &&
+        (token.project_slug === projectIdentifier ||
+          token.project_id === projectIdentifier) &&
         token.api_key &&
         token.api_key !== currentApiKey
       ) {
@@ -1160,7 +1205,8 @@ function getResolvedApiUrl(apiUrl?: string): string {
 }
 
 function getResolvedDashboardApiUrl(apiUrl?: string): string {
-  const explicitDashboardUrl = process.env.SNIPARA_DASHBOARD_URL || process.env.SNIPARA_WEB_URL;
+  const explicitDashboardUrl =
+    process.env.SNIPARA_DASHBOARD_URL || process.env.SNIPARA_WEB_URL;
   if (explicitDashboardUrl) {
     return explicitDashboardUrl.replace(/\/+$/, "");
   }
@@ -1219,23 +1265,33 @@ function normalizeSessionMemoryTier(value: unknown): SessionMemoryTier {
   };
 }
 
-function normalizeSessionMemoryProfiles(value: unknown): SessionMemoryProfiles | undefined {
+function normalizeSessionMemoryProfiles(
+  value: unknown,
+): SessionMemoryProfiles | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
 
   return {
     ...value,
-    project_memory_id: typeof value.project_memory_id === "string" ? value.project_memory_id : null,
-    owner_memory_id: typeof value.owner_memory_id === "string" ? value.owner_memory_id : null,
+    project_memory_id:
+      typeof value.project_memory_id === "string"
+        ? value.project_memory_id
+        : null,
+    owner_memory_id:
+      typeof value.owner_memory_id === "string" ? value.owner_memory_id : null,
     tokens: typeof value.tokens === "number" ? value.tokens : undefined,
     precedence: Array.isArray(value.precedence)
-      ? value.precedence.filter((entry): entry is string => typeof entry === "string")
+      ? value.precedence.filter(
+          (entry): entry is string => typeof entry === "string",
+        )
       : undefined,
   };
 }
 
-export function normalizeSessionMemoriesResult(value: unknown): SessionMemoriesResult {
+export function normalizeSessionMemoriesResult(
+  value: unknown,
+): SessionMemoriesResult {
   const record = isRecord(value) ? value : {};
   const critical = normalizeSessionMemoryTier(record.critical);
   const daily = normalizeSessionMemoryTier(record.daily);
@@ -1255,7 +1311,10 @@ export function normalizeSessionMemoriesResult(value: unknown): SessionMemoriesR
   };
 }
 
-function connectionProbeFailure(error: unknown, tool: string): ConnectionProbeResult {
+function connectionProbeFailure(
+  error: unknown,
+  tool: string,
+): ConnectionProbeResult {
   const detail = error instanceof Error ? error.message : String(error);
   const match = detail.match(/\bHTTP (\d{3})\b/);
 
@@ -1290,7 +1349,9 @@ export class RLMClient {
   }
 
   private resolveProjectIdentifier(): string {
-    return this.config.projectId ?? resolveProject({ cwd: this.cwd }).identifier;
+    return (
+      this.config.projectId ?? resolveProject({ cwd: this.cwd }).identifier
+    );
   }
 
   private dashboardApiUrl(): string {
@@ -1305,11 +1366,13 @@ export class RLMClient {
       body?: string;
       signal?: globalThis.AbortSignal;
     },
-    projectIdentifier: string
+    projectIdentifier: string,
   ): Promise<Response> {
     const primaryApiKey = this.config.apiKey;
     if (!primaryApiKey) {
-      throw new Error("API key not configured. Run 'npx -y snipara-companion@latest init' first.");
+      throw new Error(
+        "API key not configured. Run 'npx -y snipara-companion@latest init' first.",
+      );
     }
 
     const baseHeaders = (init.headers ?? {}) as Record<string, string>;
@@ -1327,7 +1390,10 @@ export class RLMClient {
       return initialResponse;
     }
 
-    const fallbackApiKey = loadProjectApiKeyFromTokenStore(projectIdentifier, primaryApiKey);
+    const fallbackApiKey = loadProjectApiKeyFromTokenStore(
+      projectIdentifier,
+      primaryApiKey,
+    );
     if (!fallbackApiKey) {
       return initialResponse;
     }
@@ -1349,10 +1415,12 @@ export class RLMClient {
     options: {
       invalidMessage: string;
       validate?: (data: T) => boolean;
-    }
+    },
   ): Promise<T> {
     if (!this.config.apiKey) {
-      throw new Error("API key not configured. Run 'npx -y snipara-companion@latest init' first.");
+      throw new Error(
+        "API key not configured. Run 'npx -y snipara-companion@latest init' first.",
+      );
     }
 
     const projectIdentifier = this.resolveProjectIdentifier();
@@ -1372,7 +1440,7 @@ export class RLMClient {
           ...(init.body ? { body: JSON.stringify(init.body) } : {}),
           signal: controller.signal,
         },
-        projectIdentifier
+        projectIdentifier,
       );
 
       clearTimeout(timeoutId);
@@ -1386,7 +1454,11 @@ export class RLMClient {
         data?: T;
       };
 
-      if (!envelope.success || !envelope.data || options.validate?.(envelope.data) === false) {
+      if (
+        !envelope.success ||
+        !envelope.data ||
+        options.validate?.(envelope.data) === false
+      ) {
         throw new Error(options.invalidMessage);
       }
 
@@ -1399,9 +1471,14 @@ export class RLMClient {
   /**
    * Make an MCP JSON-RPC request
    */
-  private async mcpCall<T>(toolName: string, args: Record<string, unknown>): Promise<T> {
+  private async mcpCall<T>(
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<T> {
     if (!this.config.apiKey) {
-      throw new Error("API key not configured. Run 'npx -y snipara-companion@latest init' first.");
+      throw new Error(
+        "API key not configured. Run 'npx -y snipara-companion@latest init' first.",
+      );
     }
 
     // Prefer a stored projectId from config; fall back to per-workspace
@@ -1435,7 +1512,7 @@ export class RLMClient {
           body: JSON.stringify(payload),
           signal: controller.signal,
         },
-        identifier
+        identifier,
       );
 
       clearTimeout(timeoutId);
@@ -1460,14 +1537,20 @@ export class RLMClient {
     }
   }
 
-  async callTool<T>(toolName: string, args: Record<string, unknown>): Promise<T> {
+  async callTool<T>(
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<T> {
     return this.mcpCall<T>(toolName, args);
   }
 
   /**
    * Query for optimized context using snipara_context_query
    */
-  async queryContext(query: string, maxTokens: number = 8000): Promise<ContextQueryResult> {
+  async queryContext(
+    query: string,
+    maxTokens: number = 8000,
+  ): Promise<ContextQueryResult> {
     interface MCPContextResult {
       sections: Array<{
         title: string;
@@ -1501,13 +1584,16 @@ export class RLMClient {
       graph_context_summary?: string;
     }
 
-    const result = await this.mcpCall<MCPContextResult>("snipara_context_query", {
-      query,
-      max_tokens: maxTokens,
-      search_mode: "hybrid",
-      include_metadata: true,
-      include_answer_pack: true,
-    });
+    const result = await this.mcpCall<MCPContextResult>(
+      "snipara_context_query",
+      {
+        query,
+        max_tokens: maxTokens,
+        search_mode: "hybrid",
+        include_metadata: true,
+        include_answer_pack: true,
+      },
+    );
 
     // Transform MCP result to expected format
     return {
@@ -1548,7 +1634,7 @@ export class RLMClient {
       maxTokens?: number;
       categories?: string[];
       includeContent?: boolean;
-    } = {}
+    } = {},
   ): Promise<SharedContextResult> {
     return this.mcpCall<SharedContextResult>("snipara_shared_context", {
       max_tokens: options.maxTokens ?? 2000,
@@ -1563,7 +1649,7 @@ export class RLMClient {
       symbolKey?: string;
       depth?: number;
       limit?: number;
-    } = {}
+    } = {},
   ): Promise<CodeCallersResult> {
     return this.mcpCall<CodeCallersResult>("snipara_code_callers", {
       qualified_name: qualifiedName,
@@ -1598,7 +1684,7 @@ export class RLMClient {
       depth?: number;
       edgeKinds?: string[];
       limit?: number;
-    } = {}
+    } = {},
   ): Promise<CodeNeighborsResult> {
     return this.mcpCall<CodeNeighborsResult>("snipara_code_neighbors", {
       qualified_name: qualifiedName,
@@ -1617,7 +1703,7 @@ export class RLMClient {
       toSymbolKey?: string;
       edgeKinds?: string[];
       maxHops?: number;
-    } = {}
+    } = {},
   ): Promise<CodeShortestPathResult> {
     return this.mcpCall<CodeShortestPathResult>("snipara_code_shortest_path", {
       from: fromQualifiedName,
@@ -1702,7 +1788,7 @@ export class RLMClient {
       minRelevance?: number;
       includeInactive?: boolean;
       warningThreshold?: number;
-    } = {}
+    } = {},
   ): Promise<RecallResult> {
     return this.mcpCall<RecallResult>("snipara_recall", {
       query,
@@ -1747,7 +1833,7 @@ export class RLMClient {
       limit?: number;
       offset?: number;
       includeInactive?: boolean;
-    } = {}
+    } = {},
   ): Promise<MemoriesResult> {
     return this.mcpCall<MemoriesResult>("snipara_memories", {
       type: options.type,
@@ -1764,7 +1850,10 @@ export class RLMClient {
   /**
    * Invalidate a memory without deleting it.
    */
-  async invalidateMemory(memoryId: string, reason?: string): Promise<MemoryInvalidateResult> {
+  async invalidateMemory(
+    memoryId: string,
+    reason?: string,
+  ): Promise<MemoryInvalidateResult> {
     return this.mcpCall<MemoryInvalidateResult>("snipara_memory_invalidate", {
       memory_id: memoryId,
       reason,
@@ -1777,7 +1866,7 @@ export class RLMClient {
   async supersedeMemory(
     oldMemoryId: string,
     newMemoryId: string,
-    reason?: string
+    reason?: string,
   ): Promise<MemorySupersedeResult> {
     return this.mcpCall<MemorySupersedeResult>("snipara_memory_supersede", {
       old_memory_id: oldMemoryId,
@@ -1797,7 +1886,9 @@ export class RLMClient {
       minRelevance: 0,
     });
 
-    const fileMemories = (result.memories || []).filter((m) => m.category === "file-access");
+    const fileMemories = (result.memories || []).filter(
+      (m) => m.category === "file-access",
+    );
 
     return {
       session_id: this.config.sessionId || "none",
@@ -1853,11 +1944,15 @@ export class RLMClient {
     payload?: Record<string, unknown>;
   }): Promise<EmitEventResult> {
     if (!this.config.apiKey) {
-      throw new Error("API key not configured. Run 'npx -y snipara-companion@latest init' first.");
+      throw new Error(
+        "API key not configured. Run 'npx -y snipara-companion@latest init' first.",
+      );
     }
 
     if (!this.config.projectId) {
-      throw new Error("Project not configured. Run 'npx -y snipara-companion@latest init' first.");
+      throw new Error(
+        "Project not configured. Run 'npx -y snipara-companion@latest init' first.",
+      );
     }
 
     const projectId = encodeURIComponent(this.config.projectId);
@@ -1877,7 +1972,7 @@ export class RLMClient {
           body: JSON.stringify({ events: [event] }),
           signal: controller.signal,
         },
-        this.resolveProjectIdentifier()
+        this.resolveProjectIdentifier(),
       );
 
       clearTimeout(timeoutId);
@@ -1902,7 +1997,7 @@ export class RLMClient {
   }
 
   async recordAdvisorInfluenceReceipt(
-    input: RecordAdvisorInfluenceReceiptInput
+    input: RecordAdvisorInfluenceReceiptInput,
   ): Promise<RecordAdvisorInfluenceReceiptResult> {
     return this.dashboardProjectRequest<RecordAdvisorInfluenceReceiptResult>(
       "/project-intelligence/advisor-influence",
@@ -1913,7 +2008,7 @@ export class RLMClient {
       {
         invalidMessage: "Advisor influence receipt write failed",
         validate: (data) => Boolean(data.receipt && data.advisorInfluence),
-      }
+      },
     );
   }
 
@@ -1930,7 +2025,7 @@ export class RLMClient {
           typeof data.previewOnly === "boolean" &&
           typeof data.confirmed === "boolean" &&
           Number.isInteger(data.candidateCount),
-      }
+      },
     );
   }
 
@@ -1939,15 +2034,21 @@ export class RLMClient {
     limit?: number;
   }): Promise<RecentAutomationEventsResult> {
     if (!this.config.apiKey) {
-      throw new Error("API key not configured. Run 'npx -y snipara-companion@latest init' first.");
+      throw new Error(
+        "API key not configured. Run 'npx -y snipara-companion@latest init' first.",
+      );
     }
 
     if (!this.config.projectId) {
-      throw new Error("Project not configured. Run 'npx -y snipara-companion@latest init' first.");
+      throw new Error(
+        "Project not configured. Run 'npx -y snipara-companion@latest init' first.",
+      );
     }
 
     const projectId = encodeURIComponent(this.config.projectId);
-    const url = new URL(`${this.dashboardApiUrl()}/api/projects/${projectId}/automation/events`);
+    const url = new URL(
+      `${this.dashboardApiUrl()}/api/projects/${projectId}/automation/events`,
+    );
 
     if (args?.sessionId) {
       url.searchParams.set("sessionId", args.sessionId);
@@ -1969,7 +2070,7 @@ export class RLMClient {
           },
           signal: controller.signal,
         },
-        this.resolveProjectIdentifier()
+        this.resolveProjectIdentifier(),
       );
 
       clearTimeout(timeoutId);
@@ -1993,14 +2094,20 @@ export class RLMClient {
     }
   }
 
-  async getAutomationConfigBundle(client: string): Promise<AutomationConfigBundle> {
+  async getAutomationConfigBundle(
+    client: string,
+  ): Promise<AutomationConfigBundle> {
     if (!this.config.apiKey) {
-      throw new Error("API key not configured. Run 'npx -y snipara-companion@latest init' first.");
+      throw new Error(
+        "API key not configured. Run 'npx -y snipara-companion@latest init' first.",
+      );
     }
 
     const projectIdentifier = this.resolveProjectIdentifier();
     const projectId = encodeURIComponent(projectIdentifier);
-    const url = new URL(`${this.dashboardApiUrl()}/api/projects/${projectId}/automation/config`);
+    const url = new URL(
+      `${this.dashboardApiUrl()}/api/projects/${projectId}/automation/config`,
+    );
     url.searchParams.set("format", "files");
     url.searchParams.set("client", client);
 
@@ -2017,7 +2124,7 @@ export class RLMClient {
           },
           signal: controller.signal,
         },
-        projectIdentifier
+        projectIdentifier,
       );
 
       clearTimeout(timeoutId);
@@ -2036,13 +2143,16 @@ export class RLMClient {
       }
 
       return {
-        client: typeof data.data.client === "string" ? data.data.client : undefined,
+        client:
+          typeof data.data.client === "string" ? data.data.client : undefined,
         files: data.data.files.filter(
           (file): file is AutomationConfigFile =>
-            typeof file?.path === "string" && typeof file?.content === "string"
+            typeof file?.path === "string" && typeof file?.content === "string",
         ),
         instructions: Array.isArray(data.data.instructions)
-          ? data.data.instructions.filter((item): item is string => typeof item === "string")
+          ? data.data.instructions.filter(
+              (item): item is string => typeof item === "string",
+            )
           : [],
       };
     } finally {
@@ -2052,7 +2162,9 @@ export class RLMClient {
 
   async getAutomationSettings(): Promise<ProjectAutomationSettingsResult> {
     if (!this.config.apiKey) {
-      throw new Error("API key not configured. Run 'npx -y snipara-companion@latest init' first.");
+      throw new Error(
+        "API key not configured. Run 'npx -y snipara-companion@latest init' first.",
+      );
     }
 
     const projectIdentifier = this.resolveProjectIdentifier();
@@ -2072,7 +2184,7 @@ export class RLMClient {
           },
           signal: controller.signal,
         },
-        projectIdentifier
+        projectIdentifier,
       );
 
       clearTimeout(timeoutId);
@@ -2086,7 +2198,11 @@ export class RLMClient {
         data?: Partial<ProjectAutomationSettingsResult>;
       };
 
-      if (!data.success || !data.data?.settings || typeof data.data.settings !== "object") {
+      if (
+        !data.success ||
+        !data.data?.settings ||
+        typeof data.data.settings !== "object"
+      ) {
         throw new Error("Automation settings response was invalid");
       }
 
@@ -2105,13 +2221,19 @@ export class RLMClient {
     }
   }
 
-  async evaluateStuckGuard(args: EvaluateStuckGuardArgs = {}): Promise<StuckGuardEvaluationResult> {
+  async evaluateStuckGuard(
+    args: EvaluateStuckGuardArgs = {},
+  ): Promise<StuckGuardEvaluationResult> {
     if (!this.config.apiKey) {
-      throw new Error("API key not configured. Run 'npx -y snipara-companion@latest init' first.");
+      throw new Error(
+        "API key not configured. Run 'npx -y snipara-companion@latest init' first.",
+      );
     }
 
     if (!this.config.projectId) {
-      throw new Error("Project not configured. Run 'npx -y snipara-companion@latest init' first.");
+      throw new Error(
+        "Project not configured. Run 'npx -y snipara-companion@latest init' first.",
+      );
     }
 
     const projectId = encodeURIComponent(this.config.projectId);
@@ -2130,7 +2252,7 @@ export class RLMClient {
           body: JSON.stringify(args),
           signal: controller.signal,
         },
-        this.resolveProjectIdentifier()
+        this.resolveProjectIdentifier(),
       );
 
       clearTimeout(timeoutId);
@@ -2159,16 +2281,20 @@ export class RLMClient {
     limit?: number;
   }): Promise<StuckGuardEvaluationResult> {
     if (!this.config.apiKey) {
-      throw new Error("API key not configured. Run 'npx -y snipara-companion@latest init' first.");
+      throw new Error(
+        "API key not configured. Run 'npx -y snipara-companion@latest init' first.",
+      );
     }
 
     if (!this.config.projectId) {
-      throw new Error("Project not configured. Run 'npx -y snipara-companion@latest init' first.");
+      throw new Error(
+        "Project not configured. Run 'npx -y snipara-companion@latest init' first.",
+      );
     }
 
     const projectId = encodeURIComponent(this.config.projectId);
     const url = new URL(
-      `${this.dashboardApiUrl()}/api/projects/${projectId}/automation/stuck-guard`
+      `${this.dashboardApiUrl()}/api/projects/${projectId}/automation/stuck-guard`,
     );
 
     if (args?.sessionId) {
@@ -2191,7 +2317,7 @@ export class RLMClient {
           },
           signal: controller.signal,
         },
-        this.resolveProjectIdentifier()
+        this.resolveProjectIdentifier(),
       );
 
       clearTimeout(timeoutId);
@@ -2226,7 +2352,9 @@ export class RLMClient {
     limit?: number;
   }): Promise<TeamSyncWorkBriefResponse> {
     if (!this.config.apiKey) {
-      throw new Error("API key not configured. Run 'npx -y snipara-companion@latest init' first.");
+      throw new Error(
+        "API key not configured. Run 'npx -y snipara-companion@latest init' first.",
+      );
     }
 
     const projectIdentifier = this.resolveProjectIdentifier();
@@ -2246,7 +2374,7 @@ export class RLMClient {
           body: JSON.stringify(args),
           signal: controller.signal,
         },
-        projectIdentifier
+        projectIdentifier,
       );
 
       clearTimeout(timeoutId);
@@ -2279,12 +2407,16 @@ export class RLMClient {
     recentFiles?: string[];
   }): Promise<TeamSyncChangesResponse> {
     if (!this.config.apiKey) {
-      throw new Error("API key not configured. Run 'npx -y snipara-companion@latest init' first.");
+      throw new Error(
+        "API key not configured. Run 'npx -y snipara-companion@latest init' first.",
+      );
     }
 
     const projectIdentifier = this.resolveProjectIdentifier();
     const projectId = encodeURIComponent(projectIdentifier);
-    const url = new URL(`${this.dashboardApiUrl()}/api/projects/${projectId}/team-sync/changes`);
+    const url = new URL(
+      `${this.dashboardApiUrl()}/api/projects/${projectId}/team-sync/changes`,
+    );
 
     if (typeof args.limit === "number") {
       url.searchParams.set("limit", String(args.limit));
@@ -2318,7 +2450,7 @@ export class RLMClient {
           },
           signal: controller.signal,
         },
-        projectIdentifier
+        projectIdentifier,
       );
 
       clearTimeout(timeoutId);
@@ -2364,7 +2496,9 @@ export class RLMClient {
     durable?: boolean;
   }): Promise<TeamSyncHandoffResponse> {
     if (!this.config.apiKey) {
-      throw new Error("API key not configured. Run 'npx -y snipara-companion@latest init' first.");
+      throw new Error(
+        "API key not configured. Run 'npx -y snipara-companion@latest init' first.",
+      );
     }
 
     const projectIdentifier = this.resolveProjectIdentifier();
@@ -2384,7 +2518,7 @@ export class RLMClient {
           body: JSON.stringify(args),
           signal: controller.signal,
         },
-        projectIdentifier
+        projectIdentifier,
       );
 
       clearTimeout(timeoutId);
@@ -2415,13 +2549,15 @@ export class RLMClient {
     recentFiles?: string[];
   }): Promise<TeamSyncResumeResponse> {
     if (!this.config.apiKey) {
-      throw new Error("API key not configured. Run 'npx -y snipara-companion@latest init' first.");
+      throw new Error(
+        "API key not configured. Run 'npx -y snipara-companion@latest init' first.",
+      );
     }
 
     const projectIdentifier = this.resolveProjectIdentifier();
     const projectId = encodeURIComponent(projectIdentifier);
     const url = new URL(
-      `${this.dashboardApiUrl()}/api/projects/${projectId}/team-sync/handoffs/latest`
+      `${this.dashboardApiUrl()}/api/projects/${projectId}/team-sync/handoffs/latest`,
     );
 
     if (args?.sessionId) {
@@ -2450,7 +2586,7 @@ export class RLMClient {
           },
           signal: controller.signal,
         },
-        projectIdentifier
+        projectIdentifier,
       );
 
       clearTimeout(timeoutId);
@@ -2464,7 +2600,11 @@ export class RLMClient {
         data?: TeamSyncResumeResponse;
       };
 
-      if (!data.success || !data.data?.match || !Array.isArray(data.data.recommendedActions)) {
+      if (
+        !data.success ||
+        !data.data?.match ||
+        !Array.isArray(data.data.recommendedActions)
+      ) {
         throw new Error("Team Sync resume response was invalid");
       }
 
@@ -2482,8 +2622,9 @@ export class RLMClient {
       },
       {
         invalidMessage: "Collaboration state response was invalid",
-        validate: (data) => Array.isArray(data.sessions) && Array.isArray(data.leases),
-      }
+        validate: (data) =>
+          Array.isArray(data.sessions) && Array.isArray(data.leases),
+      },
     );
   }
 
@@ -2501,7 +2642,7 @@ export class RLMClient {
       dirtyFiles?: string[];
       resources?: CollaborationResource[];
       metadata?: Record<string, unknown>;
-    }
+    },
   ): Promise<CollaborationSessionResponse> {
     return this.dashboardProjectRequest<CollaborationSessionResponse>(
       "/collaboration/sessions",
@@ -2511,8 +2652,9 @@ export class RLMClient {
       },
       {
         invalidMessage: "Collaboration session response was invalid",
-        validate: (data) => Boolean(data.session?.id) && Array.isArray(data.resources),
-      }
+        validate: (data) =>
+          Boolean(data.session?.id) && Array.isArray(data.resources),
+      },
     );
   }
 
@@ -2531,7 +2673,7 @@ export class RLMClient {
       dirtyFiles?: string[];
       resources?: CollaborationResource[];
       metadata?: Record<string, unknown>;
-    }
+    },
   ): Promise<CollaborationSessionResponse> {
     return this.dashboardProjectRequest<CollaborationSessionResponse>(
       `/collaboration/sessions/${encodeURIComponent(workSessionId)}`,
@@ -2541,8 +2683,9 @@ export class RLMClient {
       },
       {
         invalidMessage: "Collaboration session update response was invalid",
-        validate: (data) => Boolean(data.session?.id) && Array.isArray(data.resources),
-      }
+        validate: (data) =>
+          Boolean(data.session?.id) && Array.isArray(data.resources),
+      },
     );
   }
 
@@ -2556,7 +2699,7 @@ export class RLMClient {
       files?: string[];
       resources?: CollaborationResource[];
       metadata?: Record<string, unknown>;
-    }
+    },
   ): Promise<CollaborationLeaseResponse> {
     return this.dashboardProjectRequest<CollaborationLeaseResponse>(
       "/collaboration/leases",
@@ -2566,8 +2709,9 @@ export class RLMClient {
       },
       {
         invalidMessage: "Collaboration lease response was invalid",
-        validate: (data) => Array.isArray(data.resources) && Array.isArray(data.leases),
-      }
+        validate: (data) =>
+          Array.isArray(data.resources) && Array.isArray(data.leases),
+      },
     );
   }
 
@@ -2576,7 +2720,7 @@ export class RLMClient {
     args: {
       action?: "heartbeat" | "release" | "override";
       reason?: string;
-    }
+    },
   ): Promise<CollaborationLeaseUpdateResponse> {
     return this.dashboardProjectRequest<CollaborationLeaseUpdateResponse>(
       `/collaboration/leases/${encodeURIComponent(leaseId)}`,
@@ -2587,7 +2731,7 @@ export class RLMClient {
       {
         invalidMessage: "Collaboration lease update response was invalid",
         validate: (data) => Boolean(data.lease?.id),
-      }
+      },
     );
   }
 
@@ -2599,7 +2743,7 @@ export class RLMClient {
       resources?: CollaborationResource[];
       persist?: boolean;
       metadata?: Record<string, unknown>;
-    }
+    },
   ): Promise<CollaborationGuardResponse> {
     return this.dashboardProjectRequest<CollaborationGuardResponse>(
       "/collaboration/guard",
@@ -2613,11 +2757,14 @@ export class RLMClient {
           Array.isArray(data.resources) &&
           Boolean(data.evaluation?.decision) &&
           Array.isArray(data.evaluation.conflicts),
-      }
+      },
     );
   }
 
-  async plan(query: string, maxTokens?: number): Promise<Record<string, unknown>> {
+  async plan(
+    query: string,
+    maxTokens?: number,
+  ): Promise<Record<string, unknown>> {
     return this.mcpCall("snipara_plan", {
       query,
       strategy: "relevance_first",
@@ -2628,7 +2775,7 @@ export class RLMClient {
   async uploadDocument(
     path: string,
     content: string,
-    options: UploadDocumentOptions = {}
+    options: UploadDocumentOptions = {},
   ): Promise<Record<string, unknown>> {
     return this.mcpCall("snipara_upload_document", {
       path,
@@ -2641,10 +2788,12 @@ export class RLMClient {
   }
 
   async listBusinessCollections(
-    options: ListBusinessCollectionsOptions = {}
+    options: ListBusinessCollectionsOptions = {},
   ): Promise<Record<string, unknown>> {
     return this.mcpCall("snipara_list_business_collections", {
-      ...(options.includeCustom !== undefined ? { include_custom: options.includeCustom } : {}),
+      ...(options.includeCustom !== undefined
+        ? { include_custom: options.includeCustom }
+        : {}),
       ...(options.includeMissingPresets !== undefined
         ? { include_missing_presets: options.includeMissingPresets }
         : {}),
@@ -2652,7 +2801,7 @@ export class RLMClient {
   }
 
   async ensureBusinessCollection(
-    options: EnsureBusinessCollectionOptions
+    options: EnsureBusinessCollectionOptions,
   ): Promise<Record<string, unknown>> {
     return this.mcpCall("snipara_ensure_business_collection", {
       ...(options.preset ? { preset: options.preset } : {}),
@@ -2663,17 +2812,21 @@ export class RLMClient {
   }
 
   async uploadBusinessDocument(
-    options: UploadBusinessDocumentOptions
+    options: UploadBusinessDocumentOptions,
   ): Promise<Record<string, unknown>> {
     return this.mcpCall("snipara_upload_business_document", {
       ...(options.collectionId ? { collection_id: options.collectionId } : {}),
       ...(options.preset ? { preset: options.preset } : {}),
-      ...(options.collectionSlug ? { collection_slug: options.collectionSlug } : {}),
+      ...(options.collectionSlug
+        ? { collection_slug: options.collectionSlug }
+        : {}),
       title: options.title,
       content: options.content,
       ...(options.category ? { category: options.category } : {}),
       ...(options.tags ? { tags: options.tags } : {}),
-      ...(typeof options.priority === "number" ? { priority: options.priority } : {}),
+      ...(typeof options.priority === "number"
+        ? { priority: options.priority }
+        : {}),
       ...(options.allowCustomCollection !== undefined
         ? { allow_custom_collection: options.allowCustomCollection }
         : {}),
@@ -2681,7 +2834,7 @@ export class RLMClient {
   }
 
   async listClientProjects(
-    options: ListClientProjectsOptions = {}
+    options: ListClientProjectsOptions = {},
   ): Promise<Record<string, unknown>> {
     return this.mcpCall("snipara_list_client_projects", {
       ...(options.includeInternal !== undefined
@@ -2691,18 +2844,22 @@ export class RLMClient {
     });
   }
 
-  async createClientProject(options: CreateClientProjectOptions): Promise<Record<string, unknown>> {
+  async createClientProject(
+    options: CreateClientProjectOptions,
+  ): Promise<Record<string, unknown>> {
     return this.mcpCall("snipara_create_client_project", {
       name: options.name,
       ...(options.slug ? { slug: options.slug } : {}),
       ...(options.description ? { description: options.description } : {}),
-      ...(options.externalClientId ? { external_client_id: options.externalClientId } : {}),
+      ...(options.externalClientId
+        ? { external_client_id: options.externalClientId }
+        : {}),
     });
   }
 
   async syncDocuments(
     documents: SyncDocumentInput[],
-    deleteMissing: boolean = false
+    deleteMissing: boolean = false,
   ): Promise<Record<string, unknown>> {
     return this.mcpCall("snipara_sync_documents", {
       documents,
@@ -2711,7 +2868,7 @@ export class RLMClient {
   }
 
   async syncProjectPolicyLedger(
-    artifacts: ProjectPolicyLedgerSyncArtifactInput[]
+    artifacts: ProjectPolicyLedgerSyncArtifactInput[],
   ): Promise<Record<string, unknown>> {
     return this.dashboardProjectRequest<Record<string, unknown>>(
       "/project-policy/ledger",
@@ -2729,7 +2886,36 @@ export class RLMClient {
       {
         invalidMessage: "Invalid Project Policy ledger sync response",
         validate: (data) => typeof data === "object" && data !== null,
-      }
+      },
+    );
+  }
+
+  async diffHostedContextControl(input: {
+    manifestHash: string;
+    sources: HostedContextControlSource[];
+  }): Promise<HostedContextControlDiffResponse> {
+    return this.dashboardProjectRequest<HostedContextControlDiffResponse>(
+      "/context-control",
+      { method: "POST", body: { action: "diff", ...input } },
+      {
+        invalidMessage: "Invalid hosted Context Control diff response",
+        validate: (data) => Boolean(data.project?.id && data.plan?.planHash),
+      },
+    );
+  }
+
+  async applyHostedContextControl(input: {
+    plan: HostedContextControlPlan;
+    approval?: unknown;
+  }): Promise<HostedContextControlApplyResponse> {
+    return this.dashboardProjectRequest<HostedContextControlApplyResponse>(
+      "/context-control",
+      { method: "POST", body: { action: "apply", ...input } },
+      {
+        invalidMessage: "Invalid hosted Context Control apply response",
+        validate: (data) =>
+          Boolean(data.project?.id && data.receipt?.receiptId),
+      },
     );
   }
 
@@ -2745,9 +2931,13 @@ export class RLMClient {
     });
   }
 
-  async indexHealth(staleThresholdDays?: number): Promise<Record<string, unknown>> {
+  async indexHealth(
+    staleThresholdDays?: number,
+  ): Promise<Record<string, unknown>> {
     return this.mcpCall("snipara_index_health", {
-      ...(staleThresholdDays ? { stale_threshold_days: staleThresholdDays } : {}),
+      ...(staleThresholdDays
+        ? { stale_threshold_days: staleThresholdDays }
+        : {}),
     });
   }
 
@@ -2759,7 +2949,7 @@ export class RLMClient {
 
   async multiQuery(
     queries: Array<{ query: string; maxTokens?: number }>,
-    maxTokens?: number
+    maxTokens?: number,
   ): Promise<Record<string, unknown>> {
     return this.mcpCall("snipara_multi_query", {
       queries: queries.map((item) => ({
@@ -2770,7 +2960,10 @@ export class RLMClient {
     });
   }
 
-  async orchestrate(query: string, maxTokens?: number): Promise<Record<string, unknown>> {
+  async orchestrate(
+    query: string,
+    maxTokens?: number,
+  ): Promise<Record<string, unknown>> {
     return this.mcpCall("snipara_orchestrate", {
       query,
       ...(maxTokens ? { max_tokens: maxTokens } : {}),
@@ -2786,12 +2979,18 @@ export class RLMClient {
   async getSessionMemories(
     maxCriticalTokens?: number,
     maxDailyTokens?: number,
-    includeYesterday?: boolean
+    includeYesterday?: boolean,
   ): Promise<SessionMemoriesResult> {
     const result = await this.mcpCall<unknown>("snipara_session_memories", {
-      ...(maxCriticalTokens !== undefined ? { max_critical_tokens: maxCriticalTokens } : {}),
-      ...(maxDailyTokens !== undefined ? { max_daily_tokens: maxDailyTokens } : {}),
-      ...(includeYesterday !== undefined ? { include_yesterday: includeYesterday } : {}),
+      ...(maxCriticalTokens !== undefined
+        ? { max_critical_tokens: maxCriticalTokens }
+        : {}),
+      ...(maxDailyTokens !== undefined
+        ? { max_daily_tokens: maxDailyTokens }
+        : {}),
+      ...(includeYesterday !== undefined
+        ? { include_yesterday: includeYesterday }
+        : {}),
     });
 
     return normalizeSessionMemoriesResult(result);
@@ -2811,11 +3010,16 @@ export class RLMClient {
       outcome: args.outcome || "completed",
       files_touched: args.filesTouched || [],
       persist_types: args.persistTypes ?? ["decision", "learning", "workflow"],
-      ...(args.handoffOnly !== undefined ? { handoff_only: args.handoffOnly } : {}),
+      ...(args.handoffOnly !== undefined
+        ? { handoff_only: args.handoffOnly }
+        : {}),
     });
   }
 
-  async journalAppend(text: string, tags?: string[]): Promise<JournalAppendResult> {
+  async journalAppend(
+    text: string,
+    tags?: string[],
+  ): Promise<JournalAppendResult> {
     return this.mcpCall<JournalAppendResult>("snipara_journal_append", {
       text,
       tags: tags && tags.length > 0 ? tags : undefined,
@@ -2826,20 +3030,23 @@ export class RLMClient {
 export async function listProjectsForApiKey(
   apiKey: string,
   apiUrl?: string,
-  timeout: number = 10000
+  timeout: number = 10000,
 ): Promise<ApiKeyProjectSummary[]> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
 
   try {
-    const response = await fetch(`${getResolvedDashboardApiUrl(apiUrl)}/api/cli/projects`, {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-        "X-API-Key": apiKey,
+    const response = await fetch(
+      `${getResolvedDashboardApiUrl(apiUrl)}/api/cli/projects`,
+      {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          "X-API-Key": apiKey,
+        },
+        signal: controller.signal,
       },
-      signal: controller.signal,
-    });
+    );
 
     const body = (await response.json().catch(() => null)) as {
       success?: boolean;
@@ -2850,7 +3057,9 @@ export async function listProjectsForApiKey(
 
     if (!response.ok || !body?.success || !Array.isArray(body.data)) {
       const message =
-        body?.error || body?.message || `HTTP ${response.status}: ${response.statusText}`;
+        body?.error ||
+        body?.message ||
+        `HTTP ${response.status}: ${response.statusText}`;
       throw new Error(message);
     }
 
@@ -2862,6 +3071,9 @@ export async function listProjectsForApiKey(
 /**
  * Create a default client instance
  */
-export function createClient(timeout?: number, options: ConfigResolutionOptions = {}): RLMClient {
+export function createClient(
+  timeout?: number,
+  options: ConfigResolutionOptions = {},
+): RLMClient {
   return new RLMClient(timeout, options);
 }

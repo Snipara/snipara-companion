@@ -2,12 +2,41 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 3.5.1
+
+- Adds Context Control V1 hosted diff/apply commands for declarative
+  `snipara.project-context.json` sources.
+- Binds hosted mutations to tenant-scoped server plans, remote compare-and-set
+  hashes, explicit resolved Decision Requests, EDITOR API-key access, and
+  detailed apply/reindex receipts.
+- Keeps reconciliation add/update-only: unmanaged hosted documents are reported
+  but never deleted, managed authority promotions are blocked, and stale plans
+  fail before writes.
+- Makes local V0 `context-control apply` enforce its review flag through an
+  explicit `--approve` acknowledgement.
+
+## New In 3.5.0
+
+- Adds an explicit `workflow run --strong-repair` handoff contract for one
+  bounded strong-adapter repair after local proof or output failure.
+- Keeps Companion recommendation-only: it records final authority, proof,
+  scope, and `main_agent` fallback without silently launching workers.
+
+## New In 3.4.1
+
+- Declares provider API keys by environment-variable name and supports
+  `authorization` or `x-api-key` headers without persisting secret values.
+- Resolves declared Codex and Claude CLI workers to explicit native adapters;
+  unsupported generic CLI profiles fail closed.
+- Preserves opt-in local routing behavior while forwarding provider auth metadata
+  to the orchestrator catalog.
+
 ## New In 3.4.0
 
-- Adds repeatable `workers execute --output-fragment` contracts so a worker
-  receipt fails closed when required output is missing.
-- Persists declared and missing output fragments in controlled-worker receipts
-  and the host-native orchestration contract.
+- Adds repeatable `workers execute --output-fragment` contracts.
+- Fails a worker receipt closed when declared output fragments are missing,
+  while preserving explicit approval, proof, and Git scope gates.
+- Persists missing output fragments in the receipt for review and calibration.
 
 ## New In 3.3.0
 

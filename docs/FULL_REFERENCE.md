@@ -233,7 +233,7 @@ snipara-companion workflow producer-report
 snipara-companion workflow producer-review --latest --outcome useful --reviewer alice
 snipara-companion workflow run --adaptive-routing-dry-run --route-local-workers "document a scoped change"
 snipara-companion context-control plan --summary "record reviewed context state" --output .snipara/context-control/plans/demo.json
-snipara-companion context-control apply --plan .snipara/context-control/plans/demo.json
+snipara-companion context-control apply --plan .snipara/context-control/plans/demo.json --approve
 snipara-companion context-control drift
 snipara-companion context-control validate --manifest snipara.project-context.json
 snipara-companion lead-plan --task "ship auth hardening" --changed-files src/auth.ts --proof "pnpm test auth" --acceptance "auth tests pass"
@@ -339,8 +339,9 @@ snipara-companion workflow resume --include-session-context
 - `context-control plan` writes a content-hashed local Context Mutation Plan V0
   for a bounded operation. The plan records the Git base and remains a preview
   until `context-control apply` writes the exact planned state.
-- `context-control apply --plan <file>` verifies the plan hash, rejects stale
-  Git bases by default, writes only under `.snipara/context-control/`, and emits
+- `context-control apply --plan <file> --approve` verifies the plan hash, records
+  explicit review, rejects stale Git bases by default, writes only under
+  `.snipara/context-control/`, and emits
   an apply receipt linked to the plan hash.
 - `context-control drift` is a read-only Project Drift V0 report. It checks Git
   upstream state, scoped Git dirty files, managed workflow state, pending
@@ -352,9 +353,21 @@ snipara-companion workflow resume --include-session-context
   `IN_SYNC`.
 - `context-control validate --manifest snipara.project-context.json` validates
   Context as Code V0. The manifest is JSON metadata declaring context sources,
-  tiers, authority, freshness, and review policies. It does not upload content,
-  refresh hosted context, reconcile manifest-vs-hosted state, or mutate hosted
-  Snipara state; hosted refresh/apply belongs to the future V1 surface.
+  tiers, authority, freshness, and review policies. Validation itself does not
+  upload content or mutate hosted state.
+- Context Control V1 uses `context-control hosted-diff` to produce a
+  tenant-scoped immutable plan and optional Decision Request, then
+  `context-control hosted-apply` to apply the resolved plan. The server rechecks
+  remote hashes atomically, allows only create/update, never deletes unmanaged
+  remote paths, blocks managed authority promotions, requires EDITOR API-key
+  access, and returns a per-source receipt plus reindex status.
+
+```text
+$ snipara-companion context-control hosted-diff --manifest snipara.project-context.json --output .snipara/context-control/plans/hosted.json --emit-decision-request
+$ snipara-companion workflow decide <request-id> --choose approve_hosted_apply --reviewer <name>
+$ snipara-companion context-control hosted-apply --plan .snipara/context-control/plans/hosted.json --approval .snipara/decisions/resolved/<request-id>.json
+```
+
 - `lead-plan` turns local workflow state, Team Sync, file scope, context refs,
   proof gates, and acceptance criteria into an advisory Engineering Lead Plan.
   It emits worker recommendations and handoff contracts, keeps
@@ -421,6 +434,7 @@ snipara-companion workflow run \
   --routing-allowed-endpoint local \
   --routing-allowed-endpoint cloud \
   --planner-retains-reasoning \
+  --strong-repair \
   "Update documentation for the new gateway"
 ```
 
@@ -464,7 +478,8 @@ snipara-companion workers local add \
   --role coding \
   --provider lm-studio \
   --base-url http://127.0.0.1:1234 \
-  --model openai/gpt-oss-20b
+  --model openai/gpt-oss-20b \
+  --api-key-env LM_STUDIO_API_KEY
 ```
 
 The declaration is written under `.snipara/workers/<worker-id>.json`; Companion
@@ -499,7 +514,11 @@ Do not store secrets in worker profiles. Local endpoints such as
 `http://127.0.0.1:1234` are safe to commit when they contain no credentials, but
 cloud CLI transports or authenticated endpoints must reference secrets through
 environment variables rather than embedding API keys, bearer tokens, passwords,
-or private URLs directly in `.snipara/workers/*.json`.
+or private URLs directly in `.snipara/workers/*.json`. `--api-key-env` stores
+only the variable name; pair it with `--api-key-header authorization` (default)
+or `--api-key-header x-api-key`. Native Codex and Claude profiles use their
+host-managed credentials. A generic `cli://command` profile fails closed unless
+the command maps to a supported Codex or Claude adapter.
 
 Use `workers local probe` to query a local endpoint and preview a declaration
 proposal before committing it:
@@ -517,6 +536,12 @@ and disables hosted catalog lookup for that run. The result is still a bounded
 routing/handoff contract: Companion resolves the local candidate through
 `snipara-orchestrator`, records metadata, and leaves execution plus proof review
 to the supervising agent workflow.
+
+Add `--strong-repair` when the supervising workflow should permit one strong
+adapter repair after a local proof or output failure. The handoff records the
+contract (`maxAttempts: 1`, same scope and proof, strong adapter as final
+authority, `main_agent` fallback); Companion remains recommendation-only and
+does not launch the worker.
 
 Use Qwen for reflection, architecture, and documentation:
 
@@ -558,6 +583,39 @@ snipara-orchestrator local-model-catalog \
   --capability refactor \
   --json > .snipara/local-devstral-runtime-catalog.json
 ```
+
+For a remote OpenAI-compatible runtime, use an explicit allowlist and an
+environment-backed key when running the native host:
+
+```bash
+snipara-orchestrator host run \
+  --adapter openai_compatible \
+  --base-url https://provider.example.com --allow-remote \
+  --api-key-env PROVIDER_API_KEY --api-key-header authorization \
+  --model provider/coder --task "Bounded task" --workspace . \
+  --write-scope docs/** --proof "git diff --check" --execute
+```
+
+For a loopback local worker with one explicit strong repair attempt:
+
+```bash
+snipara-orchestrator host run \
+  --adapter openai_compatible --base-url http://127.0.0.1:1234 \
+  --model local/coder --task "Bounded task" --workspace . \
+  --write-scope docs/** --proof "git diff --check" \
+  --strong-repair --repair-adapter codex_app_server --execute
+```
+
+The repair reuses the approval envelope when approval is required, reruns the
+same proof, and records redacted repair metrics in the durable host receipt.
+Scope violations, unavailable repair hosts, skipped proof, or a failed repair
+escalate without a retry loop.
+
+Native host proof commands run automatically after dispatch. Use
+`--no-run-proof` only when a reviewer will validate the receipt; the state then
+remains `verification_required`. Use `--require-approval` with both an approval
+receipt id and `--approval-receipt-file <json>` for unattended execution; an id
+alone never bypasses the approval gate.
 
 The local catalog records the OpenAI-compatible routes exposed by LM Studio:
 `GET /v1/models`, `POST /v1/responses`, `POST /v1/chat/completions`,
@@ -1335,7 +1393,7 @@ snipara-companion workers execute \
   --write-scope docs/features/PROJECT_INTELLIGENCE.md \
   --acceptance "docs match shipped behavior" \
   --proof "pnpm --filter @snipara/web type-check" \
-  --output-fragment "type-check passed" \
+  --output-fragment "expected output line" \
   --project-id proj_123 \
   --json
 ```
@@ -1346,9 +1404,8 @@ values for real execution. A legacy `--command` string still requires a fresh
 approval receipt and cannot consume delegated trust. High-risk commands are
 blocked locally, and successful low-risk commands produce
 `verification_required` receipts so proof review remains explicit. When
-`--output-fragment` is provided, the command also fails closed when the required
-fragment is absent from stdout and records the missing fragments in the receipt.
-When
+`--output-fragment` is provided, every declared fragment must appear in stdout;
+missing fragments fail the receipt closed and are listed in the contract.
 `--project-id` is provided,
 Companion also writes a local Unified Receipt Ledger projection under
 `.snipara/unified-receipts/`; use `--unified-output <file>` to choose the sidecar

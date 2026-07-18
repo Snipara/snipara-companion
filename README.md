@@ -100,7 +100,7 @@ These commands are useful without hosted Snipara:
 | `workflow producer-triage`                                                            | Ask for human review of unreviewed Producer Loop samples                     |
 | `workflow producer-report`                                                            | Local Producer Loop adoption and calibration report                          |
 | `workflow producer-review`                                                            | Mark local Producer Loop samples reviewed or rejected                        |
-| `context-control plan` / `apply` / `drift` / `validate`                               | Preview/apply local context mutations, report drift, and validate manifests  |
+| `context-control plan` / `apply` / `drift` / `validate` / `hosted-*`                  | Review local state and reconcile Context as Code with hosted project context |
 | `context-pack`                                                                        | Reversible local packs for long logs, diffs, and tool output                 |
 | `judgment-card`, `verify`, `lead-plan`, `agent-readiness`                             | Local review artifacts and delegation contracts                              |
 | `intelligence ledger-export`                                                          | Structured redacted ledger JSON for replay and review                        |
@@ -111,8 +111,9 @@ These commands are useful without hosted Snipara:
 `context-control` is the local trust layer for Project Intelligence state. It
 borrows Terraform's useful product grammar without copying Terraform: preview a
 bounded context mutation, inspect drift, then apply only the exact reviewed
-plan. V0 is intentionally local-only: it creates trust artifacts for review, not
-hosted context mutations.
+plan. V0 remains the local trust-artifact layer. Context Control V1 adds an
+authenticated hosted diff/apply path with tenant scoping, compare-and-set hashes,
+explicit Decision Request approval, detailed receipts, and add/update-only writes.
 
 ```bash
 npx -y snipara-companion context-control plan \
@@ -120,7 +121,8 @@ npx -y snipara-companion context-control plan \
   --output .snipara/context-control/plans/demo.json
 
 npx -y snipara-companion context-control apply \
-  --plan .snipara/context-control/plans/demo.json
+  --plan .snipara/context-control/plans/demo.json \
+  --approve
 
 npx -y snipara-companion context-control drift
 ```
@@ -150,6 +152,21 @@ locally:
   ]
 }
 ```
+
+To reconcile that manifest with hosted project context, first write a reviewed
+plan and Decision Request, resolve the request, then apply the exact plan:
+
+```text
+snipara-companion context-control hosted-diff --manifest snipara.project-context.json --output .snipara/context-control/plans/hosted.json --emit-decision-request
+snipara-companion workflow decide <request-id> --choose approve_hosted_apply --reviewer <name>
+snipara-companion context-control hosted-apply --plan .snipara/context-control/plans/hosted.json --approval .snipara/decisions/resolved/<request-id>.json --output .snipara/context-control/applied/hosted.json
+```
+
+V1 never deletes remote documents. It reports hosted paths outside the manifest,
+blocks authority promotions on existing managed sources, rejects stale remote
+hashes, and requires an EDITOR-authorized API key for mutation. The local
+approval artifact records declared human review; the API key remains the actual
+hosted mutation authority.
 
 ```bash
 npx -y snipara-companion context-control validate --manifest snipara.project-context.json
@@ -227,16 +244,6 @@ Benchmarks, fixtures, model names, and self-attestation never promote a worker.
 Even `delegated_earned` is limited to the exact low-risk category, profile hash,
 write scope, and expiry. It removes only a repeated approval receipt; explicit
 execution, proof, verification, and all sensitive/release gates remain.
-
-For executed workers, declare the output that must be present in stdout:
-
-```bash
-npx -y snipara-companion workers execute \
-  --task "run docs smoke" --execute \
-  --output-fragment "type-check passed"
-```
-
-Missing required fragments fail closed and are recorded in the receipt.
 
 ## Agent Continuity
 

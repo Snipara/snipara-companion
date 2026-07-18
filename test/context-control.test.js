@@ -37,7 +37,9 @@ function runGit(cwd, args) {
 }
 
 function createRepo() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-context-control-"));
+  const dir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "snipara-context-control-"),
+  );
   runGit(dir, ["init", "-b", "dev"]);
   fs.writeFileSync(path.join(dir, "README.md"), "# Fixture\n", "utf8");
   runGit(dir, ["add", "README.md"]);
@@ -50,7 +52,11 @@ function extractContextControlPlanExamples(markdown) {
   const examples = [];
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index].trim();
-    if (!line.includes("snipara-companion") || !line.includes("context-control plan")) continue;
+    if (
+      !line.includes("snipara-companion") ||
+      !line.includes("context-control plan")
+    )
+      continue;
     let command = line;
     while (command.endsWith("\\") && index + 1 < lines.length) {
       command = `${command.slice(0, -1).trimEnd()} ${lines[(index += 1)].trim()}`;
@@ -61,20 +67,23 @@ function extractContextControlPlanExamples(markdown) {
 }
 
 test("published context-control plan examples use the supported CLI contract", () => {
-  const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
+  const readme = fs.readFileSync(
+    path.join(__dirname, "..", "README.md"),
+    "utf8",
+  );
   const fullReference = fs.readFileSync(
     path.join(__dirname, "..", "docs", "FULL_REFERENCE.md"),
-    "utf8"
+    "utf8",
   );
   const expectedPlanPath = ".snipara/context-control/plans/demo.json";
 
   assert.match(
     readme,
-    /context-control plan \\\n\s+--summary "record reviewed context state" \\\n\s+--output \.snipara\/context-control\/plans\/demo\.json/
+    /context-control plan \\\n\s+--summary "record reviewed context state" \\\n\s+--output \.snipara\/context-control\/plans\/demo\.json/,
   );
   assert.match(
     fullReference,
-    /context-control plan --summary "record reviewed context state" --output \.snipara\/context-control\/plans\/demo\.json/
+    /context-control plan --summary "record reviewed context state" --output \.snipara\/context-control\/plans\/demo\.json/,
   );
   for (const publishedDoc of [readme, fullReference]) {
     const examples = extractContextControlPlanExamples(publishedDoc);
@@ -83,7 +92,8 @@ test("published context-control plan examples use the supported CLI contract", (
       assert.doesNotMatch(example, /--operation\b/);
       assert.doesNotMatch(example, /--content\b/);
       const explicitTarget = example.match(/--target\s+(\S+)/)?.[1];
-      if (explicitTarget) assert.match(explicitTarget, /^\.snipara\/context-control\//);
+      if (explicitTarget)
+        assert.match(explicitTarget, /^\.snipara\/context-control\//);
     }
   }
 
@@ -98,7 +108,7 @@ test("published context-control plan examples use the supported CLI contract", (
       expectedPlanPath,
       "--json",
     ],
-    { cwd: dir }
+    { cwd: dir },
   );
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -108,14 +118,21 @@ test("published context-control plan examples use the supported CLI contract", (
 test("context-control plan rejects targets outside its bounded write scope", () => {
   const dir = createRepo();
   const result = runCli(
-    ["context-control", "plan", "--summary", "invalid target", "--target", "demo.json"],
-    { cwd: dir }
+    [
+      "context-control",
+      "plan",
+      "--summary",
+      "invalid target",
+      "--target",
+      "demo.json",
+    ],
+    { cwd: dir },
   );
 
   assert.equal(result.status, 1);
   assert.match(
     result.stderr || result.stdout,
-    /Context-control apply can only write under \.snipara\/context-control/
+    /Context-control apply can only write under \.snipara\/context-control/,
   );
 });
 
@@ -132,38 +149,74 @@ test("context-control plan and apply write local receipts idempotently", () => {
       planPath,
       "--json",
     ],
-    { cwd: dir }
+    { cwd: dir },
   );
 
   assert.equal(planResult.status, 0, planResult.stderr || planResult.stdout);
   const planPayload = JSON.parse(planResult.stdout);
-  assert.equal(planPayload.plan.schemaVersion, "snipara.context_mutation_plan.v0");
+  assert.equal(
+    planPayload.plan.schemaVersion,
+    "snipara.context_mutation_plan.v0",
+  );
   assert.equal(fs.existsSync(path.join(dir, planPath)), true);
 
-  const applyResult = runCli(["context-control", "apply", "--plan", planPath, "--json"], {
-    cwd: dir,
-  });
+  const unapprovedApply = runCli(
+    ["context-control", "apply", "--plan", planPath, "--json"],
+    {
+      cwd: dir,
+    },
+  );
+  assert.equal(unapprovedApply.status, 1);
+  assert.equal(JSON.parse(unapprovedApply.stdout).receipt.status, "blocked");
+  assert.equal(
+    fs.existsSync(
+      path.join(
+        dir,
+        ".snipara/context-control/state/preview-memory-state.json",
+      ),
+    ),
+    false,
+  );
+
+  const applyResult = runCli(
+    ["context-control", "apply", "--plan", planPath, "--approve", "--json"],
+    {
+      cwd: dir,
+    },
+  );
   assert.equal(applyResult.status, 0, applyResult.stderr || applyResult.stdout);
   const applyPayload = JSON.parse(applyResult.stdout);
   assert.equal(applyPayload.receipt.status, "applied");
   assert.equal(
-    applyPayload.writtenFiles.includes(".snipara/context-control/state/preview-memory-state.json"),
-    true
+    applyPayload.writtenFiles.includes(
+      ".snipara/context-control/state/preview-memory-state.json",
+    ),
+    true,
   );
   assert.equal(
     applyPayload.writtenFiles.some((file) =>
-      /^\.snipara\/context-control\/applied\/ctxapply-[a-f0-9]{16}\.json$/.test(file)
+      /^\.snipara\/context-control\/applied\/ctxapply-[a-f0-9]{16}\.json$/.test(
+        file,
+      ),
     ),
-    true
+    true,
   );
   assert.equal(
-    fs.existsSync(path.join(dir, ".snipara/context-control/state/preview-memory-state.json")),
-    true
+    fs.existsSync(
+      path.join(
+        dir,
+        ".snipara/context-control/state/preview-memory-state.json",
+      ),
+    ),
+    true,
   );
 
-  const secondApply = runCli(["context-control", "apply", "--plan", planPath, "--json"], {
-    cwd: dir,
-  });
+  const secondApply = runCli(
+    ["context-control", "apply", "--plan", planPath, "--approve", "--json"],
+    {
+      cwd: dir,
+    },
+  );
   assert.equal(secondApply.status, 0, secondApply.stderr || secondApply.stdout);
   const secondPayload = JSON.parse(secondApply.stdout);
   assert.equal(secondPayload.receipt.status, "already_applied");
@@ -174,8 +227,16 @@ test("context-control apply rejects stale Git base by default", () => {
   const dir = createRepo();
   const planPath = ".snipara/context-control/plans/plan.json";
   const planResult = runCli(
-    ["context-control", "plan", "--summary", "Preview stale base", "--output", planPath, "--json"],
-    { cwd: dir }
+    [
+      "context-control",
+      "plan",
+      "--summary",
+      "Preview stale base",
+      "--output",
+      planPath,
+      "--json",
+    ],
+    { cwd: dir },
   );
   assert.equal(planResult.status, 0, planResult.stderr || planResult.stdout);
 
@@ -183,15 +244,20 @@ test("context-control apply rejects stale Git base by default", () => {
   runGit(dir, ["add", "README.md"]);
   runGit(dir, ["commit", "-m", "move base"]);
 
-  const applyResult = runCli(["context-control", "apply", "--plan", planPath, "--json"], {
-    cwd: dir,
-  });
+  const applyResult = runCli(
+    ["context-control", "apply", "--plan", planPath, "--approve", "--json"],
+    {
+      cwd: dir,
+    },
+  );
   assert.equal(applyResult.status, 1);
   const payload = JSON.parse(applyResult.stdout);
   assert.equal(payload.receipt.status, "stale_base");
   assert.equal(
-    fs.existsSync(path.join(dir, ".snipara/context-control/state/preview-stale-base.json")),
-    false
+    fs.existsSync(
+      path.join(dir, ".snipara/context-control/state/preview-stale-base.json"),
+    ),
+    false,
   );
 });
 
@@ -199,13 +265,27 @@ test("context-control drift reports pending and applied mutation plans", () => {
   const dir = createRepo();
   const planPath = ".snipara/context-control/plans/plan.json";
   const planResult = runCli(
-    ["context-control", "plan", "--summary", "Preview drift state", "--output", planPath, "--json"],
-    { cwd: dir }
+    [
+      "context-control",
+      "plan",
+      "--summary",
+      "Preview drift state",
+      "--output",
+      planPath,
+      "--json",
+    ],
+    { cwd: dir },
   );
   assert.equal(planResult.status, 0, planResult.stderr || planResult.stdout);
 
-  const pendingDrift = runCli(["context-control", "drift", "--json"], { cwd: dir });
-  assert.equal(pendingDrift.status, 0, pendingDrift.stderr || pendingDrift.stdout);
+  const pendingDrift = runCli(["context-control", "drift", "--json"], {
+    cwd: dir,
+  });
+  assert.equal(
+    pendingDrift.status,
+    0,
+    pendingDrift.stderr || pendingDrift.stdout,
+  );
   const pendingPayload = JSON.parse(pendingDrift.stdout);
   assert.equal(pendingPayload.schemaVersion, "snipara.project_drift_report.v0");
   assert.equal(pendingPayload.state, "DRIFT_DETECTED");
@@ -214,48 +294,67 @@ test("context-control drift reports pending and applied mutation plans", () => {
       (signal) =>
         signal.surface === "context_control" &&
         signal.state === "DRIFT_DETECTED" &&
-        signal.reasonCodes.includes("context_control_plan_pending_apply")
-    )
+        signal.reasonCodes.includes("context_control_plan_pending_apply"),
+    ),
   );
 
-  const applyResult = runCli(["context-control", "apply", "--plan", planPath, "--json"], {
-    cwd: dir,
-  });
+  const applyResult = runCli(
+    ["context-control", "apply", "--plan", planPath, "--approve", "--json"],
+    {
+      cwd: dir,
+    },
+  );
   assert.equal(applyResult.status, 0, applyResult.stderr || applyResult.stdout);
 
-  const appliedDrift = runCli(["context-control", "drift", "--json"], { cwd: dir });
-  assert.equal(appliedDrift.status, 0, appliedDrift.stderr || appliedDrift.stdout);
+  const appliedDrift = runCli(["context-control", "drift", "--json"], {
+    cwd: dir,
+  });
+  assert.equal(
+    appliedDrift.status,
+    0,
+    appliedDrift.stderr || appliedDrift.stdout,
+  );
   const appliedPayload = JSON.parse(appliedDrift.stdout);
   assert.ok(
     appliedPayload.signals.some(
       (signal) =>
         signal.surface === "context_control" &&
         signal.state === "IN_SYNC" &&
-        signal.reasonCodes.includes("context_control_plan_applied")
-    )
+        signal.reasonCodes.includes("context_control_plan_applied"),
+    ),
   );
 });
 
 test("context-control drift scopes dirty git signals to manifest and context-control paths", () => {
   const dir = createRepo();
-  fs.writeFileSync(path.join(dir, "scratch.tmp"), "orchestrator noise\n", "utf8");
+  fs.writeFileSync(
+    path.join(dir, "scratch.tmp"),
+    "orchestrator noise\n",
+    "utf8",
+  );
 
-  const outOfScopeDrift = runCli(["context-control", "drift", "--json"], { cwd: dir });
-  assert.equal(outOfScopeDrift.status, 0, outOfScopeDrift.stderr || outOfScopeDrift.stdout);
+  const outOfScopeDrift = runCli(["context-control", "drift", "--json"], {
+    cwd: dir,
+  });
+  assert.equal(
+    outOfScopeDrift.status,
+    0,
+    outOfScopeDrift.stderr || outOfScopeDrift.stdout,
+  );
   const outOfScopePayload = JSON.parse(outOfScopeDrift.stdout);
   assert.ok(
     outOfScopePayload.signals.some(
       (signal) =>
         signal.surface === "git" &&
         signal.state === "IN_SYNC" &&
-        signal.reasonCodes.includes("git_working_tree_dirty_out_of_scope")
-    )
+        signal.reasonCodes.includes("git_working_tree_dirty_out_of_scope"),
+    ),
   );
   assert.equal(
     outOfScopePayload.signals.some((signal) =>
-      signal.reasonCodes.includes("git_working_tree_dirty_relevant")
+      signal.reasonCodes.includes("git_working_tree_dirty_relevant"),
     ),
-    false
+    false,
   );
 
   fs.writeFileSync(
@@ -267,16 +366,26 @@ test("context-control drift scopes dirty git signals to manifest and context-con
         policies: [],
       },
       null,
-      2
+      2,
     ),
-    "utf8"
+    "utf8",
   );
   runGit(dir, ["add", "snipara.project-context.json"]);
   runGit(dir, ["commit", "-m", "add project context manifest"]);
-  fs.appendFileSync(path.join(dir, "README.md"), "\ncontext source drift\n", "utf8");
+  fs.appendFileSync(
+    path.join(dir, "README.md"),
+    "\ncontext source drift\n",
+    "utf8",
+  );
 
-  const relevantDrift = runCli(["context-control", "drift", "--json"], { cwd: dir });
-  assert.equal(relevantDrift.status, 0, relevantDrift.stderr || relevantDrift.stdout);
+  const relevantDrift = runCli(["context-control", "drift", "--json"], {
+    cwd: dir,
+  });
+  assert.equal(
+    relevantDrift.status,
+    0,
+    relevantDrift.stderr || relevantDrift.stdout,
+  );
   const relevantPayload = JSON.parse(relevantDrift.stdout);
   assert.equal(relevantPayload.state, "DRIFT_DETECTED");
   assert.ok(
@@ -285,8 +394,8 @@ test("context-control drift scopes dirty git signals to manifest and context-con
         signal.surface === "git" &&
         signal.state === "DRIFT_DETECTED" &&
         signal.refs.includes("README.md") &&
-        signal.reasonCodes.includes("git_working_tree_dirty_relevant")
-    )
+        signal.reasonCodes.includes("git_working_tree_dirty_relevant"),
+    ),
   );
 });
 
@@ -309,15 +418,24 @@ test("context-control validates and reconciles a ProjectContext manifest", () =>
         ],
       },
       null,
-      2
+      2,
     ),
-    "utf8"
+    "utf8",
   );
 
-  const validateResult = runCli(["context-control", "validate", "--json"], { cwd: dir });
-  assert.equal(validateResult.status, 0, validateResult.stderr || validateResult.stdout);
+  const validateResult = runCli(["context-control", "validate", "--json"], {
+    cwd: dir,
+  });
+  assert.equal(
+    validateResult.status,
+    0,
+    validateResult.stderr || validateResult.stdout,
+  );
   const validation = JSON.parse(validateResult.stdout);
-  assert.equal(validation.schemaVersion, "snipara.project_context_validation.v0");
+  assert.equal(
+    validation.schemaVersion,
+    "snipara.project_context_validation.v0",
+  );
   assert.equal(validation.status, "valid");
 
   const planPath = ".snipara/context-control/plans/project-context.json";
@@ -331,29 +449,37 @@ test("context-control validates and reconciles a ProjectContext manifest", () =>
       planPath,
       "--json",
     ],
-    { cwd: dir }
+    { cwd: dir },
   );
   assert.equal(planResult.status, 0, planResult.stderr || planResult.stdout);
   const planPayload = JSON.parse(planResult.stdout);
   assert.equal(planPayload.plan.producer.kind, "project_context_manifest");
   assert.equal(
     planPayload.plan.operations[0].target,
-    ".snipara/context-control/state/project-context-manifest.json"
+    ".snipara/context-control/state/project-context-manifest.json",
   );
 
-  const applyResult = runCli(["context-control", "apply", "--plan", planPath, "--json"], {
-    cwd: dir,
-  });
+  const applyResult = runCli(
+    ["context-control", "apply", "--plan", planPath, "--approve", "--json"],
+    {
+      cwd: dir,
+    },
+  );
   assert.equal(applyResult.status, 0, applyResult.stderr || applyResult.stdout);
   const state = JSON.parse(
     fs.readFileSync(
-      path.join(dir, ".snipara/context-control/state/project-context-manifest.json"),
-      "utf8"
-    )
+      path.join(
+        dir,
+        ".snipara/context-control/state/project-context-manifest.json",
+      ),
+      "utf8",
+    ),
   );
   assert.equal(state.validation.status, "valid");
 
-  const driftResult = runCli(["context-control", "drift", "--json"], { cwd: dir });
+  const driftResult = runCli(["context-control", "drift", "--json"], {
+    cwd: dir,
+  });
   assert.equal(driftResult.status, 0, driftResult.stderr || driftResult.stdout);
   const drift = JSON.parse(driftResult.stdout);
   assert.ok(
@@ -361,7 +487,7 @@ test("context-control validates and reconciles a ProjectContext manifest", () =>
       (signal) =>
         signal.surface === "project_context_manifest" &&
         signal.state === "IN_SYNC" &&
-        signal.reasonCodes.includes("project_context_manifest_valid")
-    )
+        signal.reasonCodes.includes("project_context_manifest_valid"),
+    ),
   );
 });
