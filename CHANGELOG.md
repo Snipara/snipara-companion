@@ -2,6 +2,15 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 3.5.3
+
+- Propagates the configured Companion `sessionId` as
+  `X-Snipara-Session-Id` on Hosted MCP calls.
+- Labels supported retrieval calls as `snipara-companion` while preserving an
+  explicit caller-provided client label and correlation context.
+- Keeps correlation telemetry-only and project-scoped; authentication and
+  ranking promotion remain separate contracts.
+
 ## New In 3.5.2
 
 - Replaces the retired Windsurf preset with Kimi Code CLI across setup,

@@ -1156,6 +1156,36 @@ interface SniparaStoredToken {
   api_key?: string;
 }
 
+const CORRELATED_RETRIEVAL_TOOL_NAMES = new Set([
+  "snipara_context_query",
+  "snipara_ask",
+  "snipara_search",
+  "snipara_recall",
+  "snipara_get_chunk",
+  "rlm_context_query",
+  "rlm_ask",
+  "rlm_search",
+  "rlm_recall",
+  "rlm_get_chunk",
+]);
+
+function withCompanionRetrievalClient(
+  toolName: string,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  if (
+    !CORRELATED_RETRIEVAL_TOOL_NAMES.has(toolName) ||
+    args.client !== undefined
+  ) {
+    return args;
+  }
+
+  return {
+    ...args,
+    client: "snipara-companion",
+  };
+}
+
 function getSniparaTokenStorePath(): string {
   return path.join(os.homedir(), ".snipara", "tokens.json");
 }
@@ -1494,7 +1524,7 @@ export class RLMClient {
       method: "tools/call",
       params: {
         name: toolName,
-        arguments: args,
+        arguments: withCompanionRetrievalClient(toolName, args),
       },
     };
 
@@ -1508,6 +1538,9 @@ export class RLMClient {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            ...(this.config.sessionId
+              ? { "X-Snipara-Session-Id": this.config.sessionId }
+              : {}),
           },
           body: JSON.stringify(payload),
           signal: controller.signal,

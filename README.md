@@ -60,6 +60,10 @@ same value as `correlation_context.session_id` on retrieval tools.
 
 The identifier is opaque, project-scoped telemetry. It does not grant access or
 change authorization, and explicit per-call correlation remains authoritative.
+Companion also forwards its configured `sessionId` automatically on every
+Hosted MCP call and labels supported retrieval traffic as
+`snipara-companion`, unless the caller supplied an explicit client label. This
+improves join coverage without inventing a second server-side identity.
 
 Example output excerpt:
 

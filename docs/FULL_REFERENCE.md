@@ -913,6 +913,12 @@ headers, pass the same value as `correlation_context.session_id` on
 `snipara_context_query`, `snipara_recall`, `snipara_search`, `snipara_ask`, and
 `snipara_get_chunk`.
 
+Companion's own Hosted MCP client always forwards the configured workspace
+`sessionId` as `X-Snipara-Session-Id`. For the five correlated retrieval tools,
+it also supplies `client: "snipara-companion"` when the caller did not provide a
+client label. The session value is telemetry-only: it never authenticates the
+request, changes project scope, or overrides explicit per-call correlation.
+
 OpenClaw hooks remain separate:
 
 ```bash

@@ -22,12 +22,14 @@ async function withTempHome(fn) {
   const previousApiUrl = process.env.SNIPARA_API_URL;
   const previousDashboardUrl = process.env.SNIPARA_DASHBOARD_URL;
   const previousWebUrl = process.env.SNIPARA_WEB_URL;
+  const previousSessionId = process.env.SNIPARA_SESSION_ID;
   const previousFetch = global.fetch;
 
   process.env.HOME = homeDir;
   process.env.SNIPARA_API_URL = "https://api.snipara.com";
   delete process.env.SNIPARA_DASHBOARD_URL;
   delete process.env.SNIPARA_WEB_URL;
+  delete process.env.SNIPARA_SESSION_ID;
   process.chdir(cwdDir);
 
   try {
@@ -70,6 +72,12 @@ async function withTempHome(fn) {
       delete process.env.SNIPARA_WEB_URL;
     } else {
       process.env.SNIPARA_WEB_URL = previousWebUrl;
+    }
+
+    if (previousSessionId === undefined) {
+      delete process.env.SNIPARA_SESSION_ID;
+    } else {
+      process.env.SNIPARA_SESSION_ID = previousSessionId;
     }
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -143,6 +151,58 @@ test("client retries with project token api key when env key gets 401", async ()
 
     assert.deepEqual(result.callers, []);
     assert.deepEqual(seenKeys, ["stale-env-key", "token-project-key"]);
+  });
+});
+
+test("client propagates its session id and labels correlated retrieval traffic", async () => {
+  await withTempHome(async () => {
+    process.env.SNIPARA_API_KEY = "test-key";
+    process.env.SNIPARA_PROJECT_ID = "snipara";
+    process.env.SNIPARA_SESSION_ID = "sess_outcome_contract_v1";
+
+    const requests = [];
+    global.fetch = async (_url, init) => {
+      requests.push({
+        sessionId: init.headers["X-Snipara-Session-Id"],
+        payload: JSON.parse(init.body),
+      });
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ sections: [], total_tokens: 0 }),
+              },
+            ],
+          },
+        }),
+      };
+    };
+
+    const client = createClient();
+    await client.queryContext("correlate this retrieval", 800);
+    await client.callTool("snipara_context_query", {
+      query: "preserve caller attribution",
+      client: "custom-retrieval-client",
+    });
+
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0].sessionId, "sess_outcome_contract_v1");
+    assert.equal(
+      requests[0].payload.params.arguments.client,
+      "snipara-companion",
+    );
+    assert.equal(requests[1].sessionId, "sess_outcome_contract_v1");
+    assert.equal(
+      requests[1].payload.params.arguments.client,
+      "custom-retrieval-client",
+    );
   });
 });
 
