@@ -1,6 +1,6 @@
 {
   "name": "snipara-companion",
-  "version": "3.5.1",
+  "version": "3.5.2",
   "description": "Local-first CLI that asks your repo what breaks before an AI coding agent edits it.",
   "main": "dist/index.js",
   "bin": {
@@ -31,7 +31,7 @@
     "llm",
     "claude",
     "cursor",
-    "windsurf",
+    "kimi",
     "codex",
     "gemini",
     "mistral",

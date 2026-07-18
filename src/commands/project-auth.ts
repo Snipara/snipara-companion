@@ -367,7 +367,7 @@ function setupClientToDeviceClientId(client?: string): string {
   if (
     normalized === "claude-code" ||
     normalized === "cursor" ||
-    normalized === "windsurf" ||
+    normalized === "kimi" ||
     normalized === "gemini" ||
     normalized === "codex" ||
     normalized === "mistral" ||

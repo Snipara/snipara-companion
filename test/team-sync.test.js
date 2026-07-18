@@ -561,7 +561,7 @@ test("top-level handoff normalizes claude adapter alias to Claude Code", () => {
 });
 
 test("top-level handoff supports portable ADE adapter targets", () => {
-  for (const target of ["cursor", "orca", "windsurf", "custom"]) {
+  for (const target of ["cursor", "orca", "kimi", "custom"]) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), `snipara-agentic-handoff-${target}-`));
 
     const result = runCli(

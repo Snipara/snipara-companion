@@ -151,7 +151,7 @@ const TARGET_LABELS: Record<AgentReadinessTarget, string> = {
   "claude-code": "Claude Code",
   cursor: "Cursor",
   orca: "Orca",
-  windsurf: "Windsurf",
+  kimi: "Kimi Code CLI",
   custom: "Custom worker",
 };
 

@@ -237,41 +237,39 @@ test("installAutomationBundle merges Claude hooks and project MCP separately", a
   assert.equal(mcpConfig.mcpServers.snipara.url, "https://api.snipara.com/mcp/demo");
 });
 
-test("installAutomationBundle merges Windsurf JSON config instead of overwriting", async () => {
+test("installAutomationBundle merges Kimi project MCP config and writes the plugin bundle", async () => {
   const dir = makeWorkspace();
-  fs.mkdirSync(path.join(dir, ".windsurf"), { recursive: true });
+  fs.mkdirSync(path.join(dir, ".kimi-code"), { recursive: true });
   fs.writeFileSync(
-    path.join(dir, ".windsurf", "cascade-hooks.json"),
-    JSON.stringify({ hooks: { existing_hook: { command: "echo existing", timeout: 1 } } }, null, 2),
-    "utf8"
-  );
-  fs.writeFileSync(
-    path.join(dir, ".windsurf", "mcp.json"),
-    JSON.stringify({ mcpServers: { other: { serverUrl: "https://example.test" } } }, null, 2),
+    path.join(dir, ".kimi-code", "mcp.json"),
+    JSON.stringify({ mcpServers: { other: { url: "https://example.test" } } }, null, 2),
     "utf8"
   );
 
   await installAutomationBundle({
-    client: "windsurf",
+    client: "kimi",
     projectDir: dir,
     bundle: {
       files: [
         {
-          path: ".windsurf/cascade-hooks.json",
+          path: ".kimi-code/snipara-plugin/kimi.plugin.json",
           content: JSON.stringify(
-            { hooks: { pre_read_code: { command: ".windsurf/hooks/pre-read.sh", timeout: 10 } } },
+            {
+              name: "snipara-companion",
+              hooks: [{ event: "PreToolUse", command: "node ./hooks/snipara-hook.mjs pre-tool" }],
+            },
             null,
             2
           ),
         },
         {
-          path: ".windsurf/mcp.json",
+          path: ".kimi-code/mcp.json",
           content: JSON.stringify(
             {
               mcpServers: {
                 snipara: {
-                  serverUrl: "https://api.snipara.com/mcp/demo",
-                  transport: "streamable-http",
+                  url: "https://api.snipara.com/mcp/demo",
+                  bearerTokenEnvVar: "SNIPARA_API_KEY",
                 },
               },
             },
@@ -285,15 +283,15 @@ test("installAutomationBundle merges Windsurf JSON config instead of overwriting
     force: true,
   });
 
-  const cascadeHooks = JSON.parse(
-    fs.readFileSync(path.join(dir, ".windsurf", "cascade-hooks.json"), "utf8")
+  const pluginManifest = JSON.parse(
+    fs.readFileSync(path.join(dir, ".kimi-code", "snipara-plugin", "kimi.plugin.json"), "utf8")
   );
-  assert.equal(cascadeHooks.hooks.existing_hook.command, "echo existing");
-  assert.equal(cascadeHooks.hooks.pre_read_code.command, ".windsurf/hooks/pre-read.sh");
+  assert.equal(pluginManifest.name, "snipara-companion");
+  assert.equal(pluginManifest.hooks[0].event, "PreToolUse");
 
-  const mcpConfig = JSON.parse(fs.readFileSync(path.join(dir, ".windsurf", "mcp.json"), "utf8"));
-  assert.equal(mcpConfig.mcpServers.other.serverUrl, "https://example.test");
-  assert.equal(mcpConfig.mcpServers.snipara.transport, "streamable-http");
+  const mcpConfig = JSON.parse(fs.readFileSync(path.join(dir, ".kimi-code", "mcp.json"), "utf8"));
+  assert.equal(mcpConfig.mcpServers.other.url, "https://example.test");
+  assert.equal(mcpConfig.mcpServers.snipara.bearerTokenEnvVar, "SNIPARA_API_KEY");
 });
 
 test("installAutomationBundle allows MCP and rule files for Cursor", async () => {

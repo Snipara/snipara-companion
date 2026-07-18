@@ -20,15 +20,15 @@ import {
   writeProjectBinding,
 } from "./project-auth";
 
-type HookClient = "claude-code" | "cursor" | "windsurf" | "gemini" | "codex";
-type InstallableHookClient = "claude-code" | "cursor" | "windsurf" | "gemini" | "codex";
-type LegacyHookClient = "claude-code" | "cursor" | "windsurf";
+type HookClient = "claude-code" | "cursor" | "kimi" | "gemini" | "codex";
+type InstallableHookClient = "claude-code" | "cursor" | "kimi" | "gemini" | "codex";
+type LegacyHookClient = "claude-code" | "cursor";
 type SetupClient = HookClient | "mistral" | "chatgpt" | "vscode" | "continue" | "custom";
 
 const SETUP_CLIENTS = new Set<SetupClient>([
   "claude-code",
   "cursor",
-  "windsurf",
+  "kimi",
   "codex",
   "gemini",
   "mistral",
@@ -50,7 +50,7 @@ function isHookClient(client: SetupClient): client is HookClient {
   return (
     client === "claude-code" ||
     client === "cursor" ||
-    client === "windsurf" ||
+    client === "kimi" ||
     client === "gemini" ||
     client === "codex"
   );
@@ -60,14 +60,14 @@ function canInstallNativeHookClient(client: SetupClient): client is InstallableH
   return (
     client === "claude-code" ||
     client === "cursor" ||
-    client === "windsurf" ||
+    client === "kimi" ||
     client === "gemini" ||
     client === "codex"
   );
 }
 
 function canUseLegacyHookFallback(client: SetupClient): client is LegacyHookClient {
-  return client === "claude-code" || client === "cursor" || client === "windsurf";
+  return client === "claude-code" || client === "cursor";
 }
 
 function getNativeHookBlockReason(client: SetupClient): string | null {
@@ -94,7 +94,7 @@ function formatClientName(client: SetupClient): string {
   const names: Record<SetupClient, string> = {
     "claude-code": "Claude Code",
     cursor: "Cursor",
-    windsurf: "Windsurf",
+    kimi: "Kimi Code CLI",
     codex: "OpenAI Codex",
     gemini: "Gemini",
     mistral: "Mistral Le Chat / Vibe",
@@ -526,6 +526,21 @@ env_http_headers = { "X-Snipara-Session-Id" = "SNIPARA_SESSION_ID" }
 }
 
 function generateGenericMcpReferenceString(client: SetupClient, projectSlug: string): string {
+  if (client === "kimi") {
+    return `${JSON.stringify(
+      {
+        mcpServers: {
+          snipara: {
+            url: `https://api.snipara.com/mcp/${projectSlug}`,
+            bearerTokenEnvVar: "SNIPARA_API_KEY",
+          },
+        },
+      },
+      null,
+      2
+    )}\n`;
+  }
+
   if (client === "chatgpt") {
     return `${JSON.stringify(
       {
@@ -682,14 +697,18 @@ function generateHookConfigString(client: SetupClient, projectSlug = "YOUR_PROJE
     return JSON.stringify(generateCursorHookConfig(), null, 2);
   }
 
+  if (client === "kimi") {
+    return generateGenericMcpReferenceString(client, projectSlug);
+  }
+
   if (!canInstallNativeHookClient(client)) {
     return generateGenericMcpReferenceString(client, projectSlug);
   }
 
-  const config =
-    client === "windsurf"
-      ? generateWindsurfHookConfig()
-      : generateClaudeHookConfig({ preserveOnCompaction: true, restoreOnSessionStart: true });
+  const config = generateClaudeHookConfig({
+    preserveOnCompaction: true,
+    restoreOnSessionStart: true,
+  });
   return JSON.stringify(config, null, 2);
 }
 
@@ -939,55 +958,6 @@ fi
 `;
 }
 
-function generateWindsurfHookConfig(): object {
-  return {
-    hooks: {
-      pre_read_code: { command: ".windsurf/hooks/pre-read.sh", timeout: 10 },
-      post_read_code: { command: ".windsurf/hooks/post-read.sh", timeout: 5 },
-      post_write_code: { command: ".windsurf/hooks/post-write.sh", timeout: 5 },
-    },
-  };
-}
-
-function generateWindsurfPreReadScript(): string {
-  return `#!/bin/bash
-# Windsurf pre_read_code Hook for Snipara Context Injection
-
-INPUT=$(cat)
-if [ -z "$INPUT" ]; then
-  exit 0
-fi
-
-snipara-companion pre-tool "$INPUT" || true
-`;
-}
-
-function generateWindsurfPostReadScript(): string {
-  return `#!/bin/bash
-# Windsurf post_read_code Hook for Snipara File Tracking
-
-INPUT=$(cat)
-if [ -z "$INPUT" ]; then
-  exit 0
-fi
-
-snipara-companion post-tool "$INPUT" || true
-`;
-}
-
-function generateWindsurfPostWriteScript(): string {
-  return `#!/bin/bash
-# Windsurf post_write_code Hook for Snipara File Tracking
-
-INPUT=$(cat)
-if [ -z "$INPUT" ]; then
-  exit 0
-fi
-
-snipara-companion post-tool "$INPUT" || true
-`;
-}
-
 /**
  * Install hooks to the project directory
  */
@@ -1027,35 +997,6 @@ function installHooks(
       fs.chmodSync(afterEditPath, "755");
 
       fs.writeFileSync(hooksPath, JSON.stringify(generateCursorHookConfig(), null, 2));
-
-      return { success: true };
-    }
-
-    if (client === "windsurf") {
-      const windsurfDir = path.join(projectDir, ".windsurf");
-      const hooksDir = path.join(windsurfDir, "hooks");
-      const hooksPath = path.join(windsurfDir, "cascade-hooks.json");
-
-      if (!fs.existsSync(windsurfDir)) {
-        fs.mkdirSync(windsurfDir, { recursive: true });
-      }
-      if (!fs.existsSync(hooksDir)) {
-        fs.mkdirSync(hooksDir, { recursive: true });
-      }
-
-      const preReadPath = path.join(hooksDir, "pre-read.sh");
-      fs.writeFileSync(preReadPath, generateWindsurfPreReadScript());
-      fs.chmodSync(preReadPath, "755");
-
-      const postReadPath = path.join(hooksDir, "post-read.sh");
-      fs.writeFileSync(postReadPath, generateWindsurfPostReadScript());
-      fs.chmodSync(postReadPath, "755");
-
-      const postWritePath = path.join(hooksDir, "post-write.sh");
-      fs.writeFileSync(postWritePath, generateWindsurfPostWriteScript());
-      fs.chmodSync(postWritePath, "755");
-
-      fs.writeFileSync(hooksPath, JSON.stringify(generateWindsurfHookConfig(), null, 2));
 
       return { success: true };
     }
@@ -1397,9 +1338,11 @@ export async function initCommand(options: {
       console.log(
         "Add this to .cursor/hooks.json, or rerun with --with-hooks to install the full bundle:\n"
       );
-    } else if (hookClient === "windsurf") {
-      console.log("\n📝 Windsurf Hook Configuration\n");
-      console.log("Add this to your .windsurf/cascade-hooks.json:\n");
+    } else if (hookClient === "kimi") {
+      console.log("\n📝 Kimi Code CLI MCP Configuration\n");
+      console.log(
+        "Save this as .kimi-code/mcp.json, or rerun with --with-hooks for the plugin bundle:\n"
+      );
     } else if (hookClient === "codex") {
       console.log("\n📝 OpenAI Codex MCP Configuration\n");
       console.log("Merge this into ~/.codex/config.toml or project .codex/config.toml:\n");
@@ -1446,9 +1389,10 @@ export async function initCommand(options: {
     if (hookClient === "cursor") {
       console.log("  1. Restart Cursor to load the new MCP, rules, and hooks");
       console.log("  2. Verify with: cursor mcp list");
-    } else if (hookClient === "windsurf") {
-      console.log("  1. Restart Windsurf to load the new hooks");
-      console.log("  2. Verify your cascade hooks are enabled");
+    } else if (hookClient === "kimi") {
+      console.log("  1. Review and install .kimi-code/snipara-plugin with /plugins install");
+      console.log("  2. Run /reload or start a new Kimi Code CLI session");
+      console.log("  3. Run /mcp and verify the Snipara Hosted MCP tools");
     } else if (hookClient === "codex") {
       console.log("  1. Restart Codex to load the MCP config and hooks");
       console.log("  2. Verify the snipara MCP tools and /hooks are available in Codex");
@@ -1474,9 +1418,9 @@ export async function initCommand(options: {
     if (hookClient === "cursor") {
       console.log("  2. Add it to .cursor/hooks.json in your project");
       console.log("  3. Restart Cursor");
-    } else if (hookClient === "windsurf") {
-      console.log("  2. Add it to .windsurf/cascade-hooks.json in your project");
-      console.log("  3. Restart Windsurf");
+    } else if (hookClient === "kimi") {
+      console.log("  2. Save it as .kimi-code/mcp.json in your project");
+      console.log("  3. Restart Kimi Code CLI and run /mcp");
     } else if (hookClient === "codex") {
       console.log("  2. Add it to ~/.codex/config.toml or project .codex/config.toml");
       console.log("  3. Restart Codex");

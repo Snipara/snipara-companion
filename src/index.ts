@@ -619,7 +619,7 @@ program
   .option("--project-id <id>", "Project slug or ID (deprecated alias)")
   .option(
     "-c, --client <client>",
-    "Client type (claude-code|cursor|windsurf|codex|gemini|mistral|chatgpt|vscode|continue|custom)",
+    "Client type (claude-code|cursor|kimi|codex|gemini|mistral|chatgpt|vscode|continue|custom)",
   )
   .option("-f, --force", "Force overwrite existing configuration")
   .option("-w, --with-hooks", "Install hooks automatically")
@@ -696,7 +696,7 @@ program
   )
   .option(
     "--target <target>",
-    "ADE adapter-pack target (codex|claude-code|cursor|orca|windsurf|custom)",
+    "ADE adapter-pack target (codex|claude-code|cursor|orca|kimi|custom)",
   )
   .option("--context <refs...>", "Context references for the adapter pack")
   .option("--proof <proof...>", "Proof gates expected from the receiving agent")
@@ -780,7 +780,7 @@ program
       )
       .option(
         "--target <target>",
-        "Target agent or ADE (codex|claude-code|cursor|orca|windsurf|custom)",
+        "Target agent or ADE (codex|claude-code|cursor|orca|kimi|custom)",
       )
       .option("--task <task>", "Delegated task summary")
       .option("--changed-files <files...>", "Changed or relevant files")
@@ -925,7 +925,7 @@ program
   .option("--task <task>", "Current task or work package summary")
   .option(
     "--target <target>",
-    "Target agent or ADE (codex|claude-code|cursor|orca|windsurf|custom)",
+    "Target agent or ADE (codex|claude-code|cursor|orca|kimi|custom)",
   )
   .option("--changed-files <files...>", "Changed or relevant files")
   .option(
@@ -1266,7 +1266,7 @@ program
       .description("Fetch and install the project automation bundle")
       .option(
         "-c, --client <client>",
-        "Client type (claude-code|cursor|windsurf|codex|gemini|mistral|chatgpt|vscode|continue|custom)",
+        "Client type (claude-code|cursor|kimi|codex|gemini|mistral|chatgpt|vscode|continue|custom)",
       )
       .option("-d, --dir <directory>", "Project directory (default: current)")
       .option("-f, --force", "Overwrite local files even when they differ")

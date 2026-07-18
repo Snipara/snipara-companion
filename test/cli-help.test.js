@@ -1474,7 +1474,7 @@ test("init help lists extended client presets", () => {
   assert.match(result.stdout, /--project-id <id>/);
   assert.match(
     result.stdout,
-    /claude-code\|cursor\|windsurf\|codex\|gemini\|mistral\|chatgpt\|vscode\|continue\|custom/
+    /claude-code\|cursor\|kimi\|codex\|gemini\|mistral\|chatgpt\|vscode\|continue\|custom/
   );
 });
 

@@ -227,7 +227,7 @@ export type AgenticHandoffAdapterTarget =
   | "claude-code"
   | "cursor"
   | "orca"
-  | "windsurf"
+  | "kimi"
   | "custom";
 
 export type AgenticHandoffConflictPosture =
@@ -900,11 +900,11 @@ const ADAPTER_TARGETS: Record<
     instruction:
       "Use the portable MCP plus companion handoff path, echo the receipt fields, and do not assume native hooks.",
   },
-  windsurf: {
-    label: "Windsurf",
-    profile: "IDE coding assistant with portable context and proof gates",
+  kimi: {
+    label: "Kimi Code CLI",
+    profile: "CLI coding agent with project MCP and an explicit Companion plugin",
     instruction:
-      "Use portable context, file scope, and proof gates around the IDE workflow; return evidence through companion handoff.",
+      "Load the project MCP config, install the generated Snipara plugin, keep hook failures fail-open, and return evidence through companion handoff.",
   },
   custom: {
     label: "Custom worker",

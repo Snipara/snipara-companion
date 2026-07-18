@@ -35,7 +35,7 @@ const WORKSPACE_MARKERS = [
   ".snipara",
   ".claude",
   ".cursor",
-  ".windsurf",
+  ".kimi-code",
   ".vibe",
   "package.json",
   "pnpm-workspace.yaml",

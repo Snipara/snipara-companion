@@ -2,6 +2,15 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 3.5.2
+
+- Replaces the retired Windsurf preset with Kimi Code CLI across setup,
+  automation, readiness, handoff, and help surfaces.
+- Adds merge-safe `.kimi-code/mcp.json` installation plus a reviewable Kimi
+  plugin bundle for Companion lifecycle hooks, skills, and commands.
+- Keeps the Kimi adapter fail-open and requires explicit plugin installation;
+  risky tool approval and Hosted MCP tenant boundaries remain authoritative.
+
 ## New In 3.5.1
 
 - Adds Context Control V1 hosted diff/apply commands for declarative

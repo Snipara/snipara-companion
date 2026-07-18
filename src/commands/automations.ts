@@ -25,7 +25,7 @@ const SUPPORTED_CLIENTS = new Set([
   "claude-code",
   "cursor",
   "continue",
-  "windsurf",
+  "kimi",
   "gemini",
   "mistral",
   "chatgpt",
@@ -48,19 +48,12 @@ const MERGEABLE_JSON_CONFIG_FILES = new Set([
   ".cursor/hooks.json",
   ".cursor/mcp.json",
   ".gemini/settings.json",
+  ".kimi-code/mcp.json",
   ".vscode/mcp.json",
-  ".windsurf/cascade-hooks.json",
-  ".windsurf/mcp.json",
   "mcp.json",
 ]);
 
-const NATIVE_HOOK_CAPABLE_CLIENTS = new Set([
-  "claude-code",
-  "cursor",
-  "windsurf",
-  "gemini",
-  "codex",
-]);
+const NATIVE_HOOK_CAPABLE_CLIENTS = new Set(["claude-code", "cursor", "kimi", "gemini", "codex"]);
 
 type AutomationFileState = "create" | "update" | "unchanged" | "conflict";
 
@@ -183,7 +176,8 @@ function ensureSupportedClient(client: string): string {
 
 function configuredAutomationClient(projectDir: string): string | undefined {
   const config = loadConfig({ cwd: projectDir });
-  return config.client && SUPPORTED_CLIENTS.has(config.client) ? config.client : undefined;
+  const client = config.client === "windsurf" ? "custom" : config.client;
+  return client && SUPPORTED_CLIENTS.has(client) ? client : undefined;
 }
 
 function resolveAutomationClient(args: {
@@ -436,8 +430,7 @@ function isNativeHookFilePath(filePath: string): boolean {
     normalized.startsWith(".claude/hooks/") ||
     normalized.startsWith(".cursor/hooks/") ||
     normalized === ".cursor/hooks.json" ||
-    normalized.startsWith(".windsurf/hooks/") ||
-    normalized === ".windsurf/cascade-hooks.json" ||
+    normalized.startsWith(".kimi-code/snipara-plugin/") ||
     normalized.startsWith(".gemini/hooks/") ||
     normalized.startsWith(".codex/hooks/") ||
     normalized === ".codex/hooks.json" ||

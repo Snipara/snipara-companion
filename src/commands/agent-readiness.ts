@@ -8,13 +8,7 @@
 import * as fs from "fs";
 import * as path from "path";
 
-export type AgentReadinessTarget =
-  | "codex"
-  | "claude-code"
-  | "cursor"
-  | "orca"
-  | "windsurf"
-  | "custom";
+export type AgentReadinessTarget = "codex" | "claude-code" | "cursor" | "orca" | "kimi" | "custom";
 
 export type AgentReadinessCheckStatus = "pass" | "warning" | "fail" | "manual";
 export type AgentReadinessGapSeverity = "low" | "medium" | "high" | "blocker";
@@ -144,9 +138,10 @@ const TARGETS: Record<AgentReadinessTarget, { label: string; posture: string }> 
     label: "Orca",
     posture: "Use MCP plus companion handoffs; avoid assuming native Snipara task control.",
   },
-  windsurf: {
-    label: "Windsurf",
-    posture: "Use portable context, proof, and resume artifacts around the IDE workflow.",
+  kimi: {
+    label: "Kimi Code CLI",
+    posture:
+      "Use project-local MCP plus the explicit Snipara plugin for fail-open hooks, resume state, and proof gates.",
   },
   custom: {
     label: "Custom worker",
