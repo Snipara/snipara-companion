@@ -125,6 +125,26 @@ function pendingMemoryReceipt(value: unknown): CompanionWhyCaptureMemory | undef
   };
 }
 
+function pendingDecisionReceipt(value: unknown): CompanionWhyCaptureMemory | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const recordId = boundedText(value.id, 200);
+  const decisionId = boundedText(value.decision_id ?? value.decisionId, 200);
+  if (!recordId && !decisionId) {
+    return undefined;
+  }
+  const rawStatus = boundedText(value.status ?? value.review_status ?? value.reviewStatus, 80);
+  const normalizedStatus = rawStatus?.toUpperCase();
+  return {
+    ...(recordId ? { memoryId: recordId } : {}),
+    text: `Project decision ${decisionId ?? recordId}`,
+    type: "decision",
+    category: "why-capture",
+    reviewStatus: normalizedStatus === "DRAFT" ? "PENDING" : (normalizedStatus ?? "PENDING"),
+  };
+}
+
 function issueReceipt(
   value: unknown,
   fallbackReason?: string
@@ -235,9 +255,14 @@ export function taskCommitWhyCaptureReceipt(
   const previewCandidates = candidates
     .map(previewCandidateReceipt)
     .filter((item): item is CompanionWhyCaptureCandidate => Boolean(item));
-  const pendingMemories = storedCandidates
+  const createdDecisionReceipts = recordItems(decisionCapture.created)
+    .map(pendingDecisionReceipt)
+    .filter((item): item is CompanionWhyCaptureMemory => Boolean(item));
+  const storedMemoryReceipts = storedCandidates
     .map(pendingMemoryReceipt)
     .filter((item): item is CompanionWhyCaptureMemory => Boolean(item));
+  const pendingMemories =
+    createdDecisionReceipts.length > 0 ? createdDecisionReceipts : storedMemoryReceipts;
   const baseReceipt = {
     sourceKind,
     previewCandidateCount: previewCandidates.length,
@@ -259,7 +284,12 @@ export function taskCommitWhyCaptureReceipt(
       error: "why_requires_human_owner",
     };
   }
-  if (candidates.length === 0) {
+  if (
+    candidates.length === 0 &&
+    pendingMemories.length === 0 &&
+    duplicates.length === 0 &&
+    failed.length === 0
+  ) {
     return { ...baseReceipt, status: "no_candidates" };
   }
   return { ...baseReceipt, status: "captured" };

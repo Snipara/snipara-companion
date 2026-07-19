@@ -2,6 +2,12 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 3.5.10
+
+- Reports hosted `decision_capture.created` drafts as pending Why Capture
+  decisions in phase/final receipts and final reports, instead of incorrectly
+  showing zero captured candidates when the memory write was deduplicated.
+
 ## New In 3.5.9
 
 - Routes explicit `workflow phase-commit` and `final-commit` rationale through

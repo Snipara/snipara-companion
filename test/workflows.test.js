@@ -193,7 +193,7 @@ function writeWorkflowPreload(dir) {
       "        commitResult.candidates = [whyCandidate];",
       "        commitResult.stored_candidates = [whyCandidate];",
       "        commitResult.stored_count = 1;",
-      "        commitResult.decision_capture = { created_count: 1, duplicate_count: 0, failed_count: 0, created: [{ id: 'decision_pending_1' }], duplicates: [], failed: [] };",
+      "        commitResult.decision_capture = { created_count: 1, duplicate_count: 0, failed_count: 0, created: [{ id: 'decision_pending_1', decision_id: 'DEC-TEST', status: 'DRAFT' }], duplicates: [], failed: [] };",
       "      }",
       "      if (commitArgs.category === 'final-commit') {",
       "        commitResult.team_sync_handoff = { status: 'created', memory_id: 'mem_handoff' };",
@@ -1534,8 +1534,8 @@ test("workflow phase-commit appends a journal checkpoint alongside durable memor
     ],
     pendingMemories: [
       {
-        memoryId: "mem_pending_why",
-        text: "Decision: Store workflow checkpoints atomically. Why: One hosted write keeps the decision and rationale together",
+        memoryId: "decision_pending_1",
+        text: "Project decision DEC-TEST",
         type: "decision",
         category: "why-capture",
         reviewStatus: "PENDING",
@@ -2422,7 +2422,7 @@ test("final-commit surfaces the backend Team Sync handoff invariant", () => {
   assert.equal(payload.report.retainedDecisions.status, "confirmed");
   assert.equal(payload.report.retainedDecisions.items[0].memoryId, "mem_kept_decision");
   assert.equal(payload.report.pendingDecisions.status, "pending_review");
-  assert.equal(payload.report.pendingDecisions.items[0].memoryId, "mem_pending_why");
+  assert.equal(payload.report.pendingDecisions.items[0].memoryId, "decision_pending_1");
   assert.ok(
     payload.report.notPersisted.items.some((item) => item.reason === "handoff_only_by_design")
   );
