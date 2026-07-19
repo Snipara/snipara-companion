@@ -2,6 +2,14 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 3.5.9
+
+- Routes explicit `workflow phase-commit` and `final-commit` rationale through
+  the hosted atomic `why` block instead of issuing a second Why Capture request.
+- Exposes decision, rationale, alternatives, constraints, and observed outcome
+  inputs on workflow commits while keeping candidates review-pending.
+- Preserves handoff-only final commits when no structured rationale is supplied.
+
 ## New In 3.5.8
 
 - Preserves the exact collaboration actor identity on hosted lease heartbeat

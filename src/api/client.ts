@@ -344,6 +344,14 @@ export interface WhyCaptureResult {
   };
 }
 
+export interface EndOfTaskCommitWhyInput {
+  decision?: string;
+  rationale?: string;
+  alternatives?: string[];
+  constraints?: string[];
+  observedOutcome?: string;
+}
+
 export interface JournalAppendResult {
   success?: boolean;
   date?: string;
@@ -3100,6 +3108,8 @@ export class RLMClient {
 
   async endOfTaskCommit(args: {
     summary: string;
+    task?: string;
+    why?: EndOfTaskCommitWhyInput;
     category?: string;
     outcome?: "completed" | "partial" | "blocked" | "abandoned";
     filesTouched?: string[];
@@ -3108,6 +3118,20 @@ export class RLMClient {
   }): Promise<Record<string, unknown>> {
     return this.mcpCall("snipara_end_of_task_commit", {
       summary: args.summary,
+      ...(args.task ? { task: args.task } : {}),
+      ...(args.why
+        ? {
+            why: {
+              ...(args.why.decision ? { decision: args.why.decision } : {}),
+              ...(args.why.rationale ? { rationale: args.why.rationale } : {}),
+              ...(args.why.alternatives ? { alternatives: args.why.alternatives } : {}),
+              ...(args.why.constraints ? { constraints: args.why.constraints } : {}),
+              ...(args.why.observedOutcome
+                ? { observed_outcome: args.why.observedOutcome }
+                : {}),
+            },
+          }
+        : {}),
       category: args.category,
       outcome: args.outcome || "completed",
       files_touched: args.filesTouched || [],

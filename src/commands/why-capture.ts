@@ -80,16 +80,22 @@ function previewCandidateReceipt(value: unknown): CompanionWhyCaptureCandidate |
   if (!isRecord(value)) {
     return undefined;
   }
-  const whyFields = isRecord(value.whyFields) ? value.whyFields : undefined;
+  const whyFields = isRecord(value.whyFields)
+    ? value.whyFields
+    : isRecord(value.why_fields)
+      ? value.why_fields
+      : undefined;
   const decision = boundedText(whyFields?.decision);
-  const rationale = boundedText(whyFields?.why);
-  const text = boundedText(value.content) ?? decision;
+  const rationale = boundedText(whyFields?.why ?? whyFields?.rationale);
+  const text = boundedText(value.content ?? value.text) ?? decision;
   if (!text) {
     return undefined;
   }
   return {
     text,
-    ...(boundedText(value.type, 80) ? { type: boundedText(value.type, 80) } : {}),
+    ...(boundedText(value.type ?? value.memory_type, 80)
+      ? { type: boundedText(value.type ?? value.memory_type, 80) }
+      : {}),
     ...(boundedText(value.category, 120) ? { category: boundedText(value.category, 120) } : {}),
     ...(decision ? { decision } : {}),
     ...(rationale ? { rationale } : {}),
@@ -101,16 +107,21 @@ function pendingMemoryReceipt(value: unknown): CompanionWhyCaptureMemory | undef
     return undefined;
   }
   const memoryId = boundedText(value.memory_id ?? value.memoryId ?? value.id, 200);
-  const text = boundedText(value.content) ?? (memoryId ? `Memory ${memoryId}` : undefined);
+  const text =
+    boundedText(value.content ?? value.text) ??
+    (memoryId ? `Memory ${memoryId}` : undefined);
   if (!text) {
     return undefined;
   }
   return {
     ...(memoryId ? { memoryId } : {}),
     text,
-    ...(boundedText(value.type, 80) ? { type: boundedText(value.type, 80) } : {}),
-    ...(boundedText(value.category, 120) ? { category: boundedText(value.category, 120) } : {}),
-    reviewStatus: boundedText(value.review_status ?? value.reviewStatus, 80) ?? "pending",
+    ...(boundedText(value.type ?? value.memory_type, 80)
+      ? { type: boundedText(value.type ?? value.memory_type, 80) }
+      : {}),
+    category: boundedText(value.category, 120) ?? "why-capture",
+    reviewStatus:
+      boundedText(value.review_status ?? value.reviewStatus, 80) ?? "PENDING",
   };
 }
 
@@ -122,7 +133,15 @@ function issueReceipt(
     return undefined;
   }
   const text =
-    boundedText(value.content ?? value.decision ?? value.title ?? value.error ?? value.reason) ??
+    boundedText(
+      value.content ??
+        value.decision ??
+        value.title ??
+        value.error ??
+        value.reason ??
+        value.decision_id ??
+        value.id,
+    ) ??
     "Why Capture item";
   const reason = boundedText(value.reason ?? value.error, 160) ?? fallbackReason;
   return { text, ...(reason ? { reason } : {}) };
@@ -170,6 +189,80 @@ export function readLatestWorkflowCommands(cwd: string): string[] {
     // Missing or partial workflow state should never block the primary command.
   }
   return [];
+}
+
+function recordItems(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+export function taskCommitWhyCaptureReceipt(
+  result: Record<string, unknown>,
+  sourceKind: WhyCaptureSourceKind,
+  cwd: string = process.cwd(),
+): CompanionWhyCaptureReceipt {
+  const commitSha = readCommitSha(cwd);
+  const candidates = recordItems(result.candidates).filter(
+    (candidate) =>
+      isRecord(candidate.why_fields) || isRecord(candidate.whyFields),
+  );
+  const storedCandidates = recordItems(result.stored_candidates).filter(
+    (candidate) =>
+      isRecord(candidate.why_fields) || isRecord(candidate.whyFields),
+  );
+  const decisionCapture = isRecord(result.decision_capture)
+    ? result.decision_capture
+    : {};
+  const duplicates = recordItems(decisionCapture.duplicates)
+    .map((item) => issueReceipt(item, "duplicate"))
+    .filter((item): item is CompanionWhyCaptureIssue => Boolean(item));
+  const failed = recordItems(decisionCapture.failed)
+    .map((item) => issueReceipt(item, "capture_failed"))
+    .filter((item): item is CompanionWhyCaptureIssue => Boolean(item));
+  const caveats = Array.isArray(result.caveats)
+    ? result.caveats.filter(
+        (item): item is string => typeof item === "string",
+      )
+    : [];
+  const hostedPhaseCommit = isRecord(result.hosted_phase_commit)
+    ? result.hosted_phase_commit
+    : undefined;
+  const hostedFinalCommit = isRecord(result.hosted_final_commit)
+    ? result.hosted_final_commit
+    : undefined;
+  const hostedError = boundedText(
+    hostedPhaseCommit?.error ?? hostedFinalCommit?.error,
+  );
+  const previewCandidates = candidates
+    .map(previewCandidateReceipt)
+    .filter((item): item is CompanionWhyCaptureCandidate => Boolean(item));
+  const pendingMemories = storedCandidates
+    .map(pendingMemoryReceipt)
+    .filter((item): item is CompanionWhyCaptureMemory => Boolean(item));
+  const baseReceipt = {
+    sourceKind,
+    previewCandidateCount: previewCandidates.length,
+    capturedCount: pendingMemories.length,
+    previewCandidates,
+    pendingMemories,
+    duplicates,
+    failed,
+    ...(commitSha ? { commitSha } : {}),
+  };
+
+  if (hostedError) {
+    return { ...baseReceipt, status: "error", error: hostedError };
+  }
+  if (caveats.includes("why_requires_human_owner")) {
+    return {
+      ...baseReceipt,
+      status: "skipped",
+      error: "why_requires_human_owner",
+    };
+  }
+  if (candidates.length === 0) {
+    return { ...baseReceipt, status: "no_candidates" };
+  }
+  return { ...baseReceipt, status: "captured" };
 }
 
 export async function captureCompanionWhy(

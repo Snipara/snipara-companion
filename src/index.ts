@@ -3164,6 +3164,27 @@ workflow
   )
   .argument("<phaseId>", "Workflow phase id")
   .requiredOption("-s, --summary <summary>", "Phase outcome summary")
+  .option(
+    "--decision <decision>",
+    "Decision text; defaults to summary when --why is set",
+  )
+  .option("--why <why>", "Decision rationale; never inferred when absent")
+  .option(
+    "--alternative <alternative>",
+    "Rejected alternative; repeatable",
+    collectOption,
+    [],
+  )
+  .option(
+    "--constraint <constraint>",
+    "Decision constraint; repeatable",
+    collectOption,
+    [],
+  )
+  .option(
+    "--observed-outcome <outcome>",
+    "Observed result, distinct from execution status",
+  )
   .option("-c, --category <category>", "Memory category", "workflow-phase")
   .option(
     "-o, --outcome <outcome>",
@@ -3182,6 +3203,11 @@ workflow
     await workflowPhaseCommitCommand({
       phaseId,
       summary: options.summary,
+      decision: options.decision,
+      why: options.why,
+      alternatives: options.alternative,
+      constraints: options.constraint,
+      observedOutcome: options.observedOutcome,
       category: options.category,
       outcome: options.outcome,
       files: options.files,
@@ -3196,7 +3222,27 @@ workflow
     "Persist the final workflow outcome and close the local workflow state",
   )
   .requiredOption("-s, --summary <summary>", "Final outcome summary")
+  .option(
+    "--decision <decision>",
+    "Decision text; defaults to summary when --why is set",
+  )
   .option("--why <why>", "Decision rationale; never inferred when absent")
+  .option(
+    "--alternative <alternative>",
+    "Rejected alternative; repeatable",
+    collectOption,
+    [],
+  )
+  .option(
+    "--constraint <constraint>",
+    "Decision constraint; repeatable",
+    collectOption,
+    [],
+  )
+  .option(
+    "--observed-outcome <outcome>",
+    "Observed result, distinct from execution status",
+  )
   .option("-c, --category <category>", "Memory category", "final-commit")
   .option(
     "-o, --outcome <outcome>",
@@ -3216,7 +3262,11 @@ workflow
   .action(async (options) => {
     await finalCommitCommand({
       summary: options.summary,
+      decision: options.decision,
       why: options.why,
+      alternatives: options.alternative,
+      constraints: options.constraint,
+      observedOutcome: options.observedOutcome,
       category: options.category,
       outcome: options.outcome,
       files: options.files,
@@ -5648,7 +5698,27 @@ program
     "Persist the final managed workflow outcome through snipara_end_of_task_commit",
   )
   .requiredOption("-s, --summary <summary>", "Final outcome summary")
+  .option(
+    "--decision <decision>",
+    "Decision text; defaults to summary when --why is set",
+  )
   .option("--why <why>", "Decision rationale; never inferred when absent")
+  .option(
+    "--alternative <alternative>",
+    "Rejected alternative; repeatable",
+    collectOption,
+    [],
+  )
+  .option(
+    "--constraint <constraint>",
+    "Decision constraint; repeatable",
+    collectOption,
+    [],
+  )
+  .option(
+    "--observed-outcome <outcome>",
+    "Observed result, distinct from execution status",
+  )
   .option("-c, --category <category>", "Category", "final-commit")
   .option("-o, --outcome <outcome>", "Outcome", "completed")
   .option("-f, --files <files...>", "Files touched")
@@ -5664,7 +5734,11 @@ program
   .action(async (options) => {
     await finalCommitCommand({
       summary: options.summary,
+      decision: options.decision,
       why: options.why,
+      alternatives: options.alternative,
+      constraints: options.constraint,
+      observedOutcome: options.observedOutcome,
       category: options.category,
       outcome: options.outcome,
       files: options.files,

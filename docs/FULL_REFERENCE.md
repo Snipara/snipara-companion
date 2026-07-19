@@ -1632,10 +1632,17 @@ Companion separates two concepts:
   `workflow phase-commit` and `final-commit` keep local workflow state moving on transient
   hosted commit timeouts and surface that local fallback explicitly in the result.
 
-`final-commit` itself remains handoff-only. Its seven-section report reads the
-durable phase receipts already stored, marks Why Capture candidates as pending
-review, lists skipped/duplicate/failed items as not persisted, and never treats
-the final summary or handoff as newly approved durable memory.
+`final-commit` remains handoff-only when no structured rationale is supplied.
+When `--why` or another structured Why Capture field is present, Companion sends
+one atomic `why` block with the handoff commit; it does not issue a second capture
+request. `--decision` overrides the decision text, while `--why` uses the commit
+summary as the decision fallback. Repeat `--alternative` and `--constraint` as
+needed, and use `--observed-outcome` only for an observed result rather than the
+execution status. `workflow phase-commit` exposes the same fields. The resulting
+candidate remains pending review. The seven-section final report reads durable
+phase receipts already stored, marks Why Capture candidates as pending review,
+lists skipped/duplicate/failed items as not persisted, and never treats the final
+summary or handoff as newly approved durable memory.
 
 Do not call `snipara_end_of_task_commit` mechanically for every Git commit. For risky commits,
 package releases, or retries after failures, run Memory Guard first so the agent sees relevant

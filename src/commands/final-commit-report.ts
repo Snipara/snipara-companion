@@ -225,6 +225,7 @@ export function buildWorkflowPhaseCommitReceipt(input: {
   capturedAt?: string;
 }): WorkflowPhaseCommitReceipt {
   const stored = recordList(input.result.stored_candidates)
+    .filter((item) => !isRecord(item.why_fields) && !isRecord(item.whyFields))
     .map((item) => normalizedMemoryItem(item, "phase_commit", input.phaseId))
     .filter((item): item is FinalCommitMemoryItem => Boolean(item));
   const skipped = recordList(input.result.skipped_candidates)

@@ -124,8 +124,7 @@ import {
   type LocalWorkerRoutingDefaults,
 } from "./workers";
 import {
-  captureCompanionWhy,
-  readLatestWorkflowCommands,
+  taskCommitWhyCaptureReceipt,
   type CompanionWhyCaptureReceipt,
 } from "./why-capture";
 import {
@@ -142,7 +141,10 @@ import {
   type ProjectIntelligenceRunEnvelope,
   type ProjectRunAdvisorReceiptCapture,
 } from "./run";
-import type { AdvisorInfluenceAgentDecision } from "../api/client";
+import type {
+  AdvisorInfluenceAgentDecision,
+  EndOfTaskCommitWhyInput,
+} from "../api/client";
 import type { ProjectIntelligenceBrief } from "./intelligence";
 import { formatProjectJudgmentCard, type ProjectIntelligenceJudgmentCard } from "./judgment-card";
 
@@ -12866,6 +12868,8 @@ function printWorkflowTeamSyncResume(
 
 async function commitTaskMemory(options: {
   summary: string;
+  task?: string;
+  why?: EndOfTaskCommitWhyInput;
   category?: string;
   outcome?: TaskCommitOutcome;
   files?: string[];
@@ -12875,6 +12879,8 @@ async function commitTaskMemory(options: {
   const client = createClient(TASK_COMMIT_TIMEOUT_MS);
   return client.endOfTaskCommit({
     summary: options.summary,
+    task: options.task,
+    why: options.why,
     category: options.category,
     outcome: options.outcome,
     filesTouched: options.files,
@@ -12883,6 +12889,8 @@ async function commitTaskMemory(options: {
 
 async function commitPhaseTaskMemory(options: {
   summary: string;
+  task?: string;
+  why?: EndOfTaskCommitWhyInput;
   category?: string;
   outcome: TaskCommitOutcome;
   files?: string[];
@@ -12952,6 +12960,8 @@ function recordLocalFinalCommitHandoff(options: {
 
 async function commitFinalTaskMemory(options: {
   workflowId?: string;
+  task?: string;
+  why?: EndOfTaskCommitWhyInput;
   summary: string;
   category?: string;
   outcome: TaskCommitOutcome;
@@ -12977,9 +12987,11 @@ async function commitFinalTaskMemory(options: {
     timeoutMs: number,
   ): Promise<Record<string, unknown>> => {
     const client = createClient(timeoutMs);
-    const handoffOnly = isFinalCommitCategory(category);
+    const handoffOnly = isFinalCommitCategory(category) && !options.why;
     return client.endOfTaskCommit({
       summary,
+      task: options.task,
+      why: options.why,
       category,
       outcome: options.outcome,
       filesTouched: options.files,
@@ -13045,6 +13057,47 @@ async function commitFinalTaskMemory(options: {
   };
 }
 
+function structuredTaskCommitWhy(options: {
+  summary: string;
+  decision?: string;
+  why?: string;
+  alternatives?: string[];
+  constraints?: string[];
+  observedOutcome?: string;
+}): EndOfTaskCommitWhyInput | undefined {
+  const rationale = compactWhitespace(options.why ?? "");
+  const explicitDecision = compactWhitespace(options.decision ?? "");
+  const alternatives = [
+    ...new Set(
+      (options.alternatives ?? []).map(compactWhitespace).filter(Boolean),
+    ),
+  ];
+  const constraints = [
+    ...new Set(
+      (options.constraints ?? []).map(compactWhitespace).filter(Boolean),
+    ),
+  ];
+  const observedOutcome = compactWhitespace(options.observedOutcome ?? "");
+  const decision =
+    explicitDecision || (rationale ? compactWhitespace(options.summary) : "");
+  if (
+    !decision &&
+    !rationale &&
+    alternatives.length === 0 &&
+    constraints.length === 0 &&
+    !observedOutcome
+  ) {
+    return undefined;
+  }
+  return {
+    ...(decision ? { decision } : {}),
+    ...(rationale ? { rationale } : {}),
+    ...(alternatives.length > 0 ? { alternatives } : {}),
+    ...(constraints.length > 0 ? { constraints } : {}),
+    ...(observedOutcome ? { observedOutcome } : {}),
+  };
+}
+
 function printJournalWarning(result?: JournalWriteResult): void {
   if (result?.status === "error" && result.error) {
     console.log(`Journal checkpoint: ${result.error}`);
@@ -13093,6 +13146,11 @@ function printWhyCaptureNotice(result: CompanionWhyCaptureReceipt): void {
 export async function workflowPhaseCommitCommand(options: {
   phaseId: string;
   summary: string;
+  decision?: string;
+  why?: string;
+  alternatives?: string[];
+  constraints?: string[];
+  observedOutcome?: string;
   category?: string;
   outcome?: TaskCommitOutcome;
   files?: string[];
@@ -13117,8 +13175,11 @@ export async function workflowPhaseCommitCommand(options: {
     phase,
     summary: options.summary,
   });
+  const structuredWhy = structuredTaskCommitWhy(options);
   const result = await commitPhaseTaskMemory({
     summary: durableSummary,
+    task: `${state.goal} / ${phase.title}`,
+    why: structuredWhy,
     category,
     outcome,
     files,
@@ -13204,14 +13265,7 @@ export async function workflowPhaseCommitCommand(options: {
     journalAttempted: true,
     teamSyncCompletionAttempted: shouldCompleteTeamSyncWork,
   });
-  const whyCapture = await captureCompanionWhy({
-    sourceKind: "phase_commit",
-    sourceSessionId: state.workflowId,
-    task: `${state.goal} / ${phase.title}`,
-    summary: options.summary,
-    files,
-    commands: readLatestWorkflowCommands(process.cwd()),
-  });
+  const whyCapture = taskCommitWhyCaptureReceipt(result, "phase_commit");
   phaseCommitReceipt.whyCapture = whyCapture;
   writeWorkflowState(state);
   const coordinationRelease = await releaseWorkflowCoordination(
@@ -13295,7 +13349,11 @@ export async function workflowPhaseCommitCommand(options: {
 
 export async function finalCommitCommand(options: {
   summary: string;
+  decision?: string;
   why?: string;
+  alternatives?: string[];
+  constraints?: string[];
+  observedOutcome?: string;
   category?: string;
   outcome?: TaskCommitOutcome;
   files?: string[];
@@ -13326,8 +13384,11 @@ export async function finalCommitCommand(options: {
 
   const outcome = options.outcome ?? "completed";
   const category = normalizeFinalCommitCategory(options.category);
+  const structuredWhy = structuredTaskCommitWhy(options);
   const result = await commitFinalTaskMemory({
     workflowId: state?.workflowId,
+    task: state?.goal,
+    why: structuredWhy,
     summary: options.summary,
     category,
     outcome,
@@ -13386,15 +13447,7 @@ export async function finalCommitCommand(options: {
     journalAttempted: true,
     teamSyncCompletionAttempted: outcome === "completed",
   });
-  const whyCapture = await captureCompanionWhy({
-    sourceKind: "final_commit",
-    sourceSessionId: state?.workflowId ?? loadConfig().sessionId,
-    task: state?.goal,
-    summary: options.summary,
-    why: options.why,
-    files: options.files,
-    commands: readLatestWorkflowCommands(process.cwd()),
-  });
+  const whyCapture = taskCommitWhyCaptureReceipt(result, "final_commit");
   const coordinationRelease = state
     ? await releaseWorkflowCoordination(
         state,

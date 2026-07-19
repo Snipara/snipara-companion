@@ -187,10 +187,17 @@ function writeWorkflowPreload(dir) {
       "        error.name = 'AbortError';",
       "        throw error;",
       "      }",
-      "      const commitResult = { success: true, stored: true, stored_candidates: [], skipped_candidates: [] };",
+      "      const commitResult = { success: true, stored: true, candidates: [], stored_candidates: [], skipped_candidates: [] };",
+      "      if (commitArgs.why) {",
+      "        const whyCandidate = { text: `Decision: ${commitArgs.why.decision}. Why: ${commitArgs.why.rationale}`, memory_type: 'decision', category: 'why-capture', stored: true, memory_id: 'mem_pending_why', reason: 'novel', source_kind: commitArgs.category === 'final-commit' ? 'final_commit' : 'phase_commit', confidence: 0.86, confidence_formula_version: 'why-capture-confidence-v1', why_fields: { decision: commitArgs.why.decision, rationale: commitArgs.why.rationale, alternatives: commitArgs.why.alternatives || [], constraints: commitArgs.why.constraints || [], observed_outcome: commitArgs.why.observed_outcome || null } };",
+      "        commitResult.candidates = [whyCandidate];",
+      "        commitResult.stored_candidates = [whyCandidate];",
+      "        commitResult.stored_count = 1;",
+      "        commitResult.decision_capture = { created_count: 1, duplicate_count: 0, failed_count: 0, created: [{ id: 'decision_pending_1' }], duplicates: [], failed: [] };",
+      "      }",
       "      if (commitArgs.category === 'final-commit') {",
       "        commitResult.team_sync_handoff = { status: 'created', memory_id: 'mem_handoff' };",
-      "      } else {",
+      "      } else if (!commitArgs.why) {",
       "        commitResult.stored_candidates = [{ text: 'Keep phase decisions attributable to their workflow receipts', memory_type: 'decision', category: commitArgs.category, stored: true, memory_id: 'mem_phase_decision', reason: 'stored' }];",
       "        commitResult.skipped_candidates = [{ text: 'Ran a transient local inspection', memory_type: 'context', reason: 'operational_receipt' }];",
       "      }",
@@ -534,11 +541,25 @@ test("final-commit help exposes structured closeout inputs", () => {
   ]) {
     const result = runCli(args);
     assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /--decision/);
     assert.match(result.stdout, /--why/);
+    assert.match(result.stdout, /--alternative/);
+    assert.match(result.stdout, /--constraint/);
+    assert.match(result.stdout, /--observed-outcome/);
     assert.match(result.stdout, /--evidence/);
     assert.match(result.stdout, /--risk/);
     assert.match(result.stdout, /--next-step/);
   }
+});
+
+test("workflow phase-commit help exposes structured Why Capture inputs", () => {
+  const result = runCli(["workflow", "phase-commit", "--help"]);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /--decision/);
+  assert.match(result.stdout, /--why/);
+  assert.match(result.stdout, /--alternative/);
+  assert.match(result.stdout, /--constraint/);
+  assert.match(result.stdout, /--observed-outcome/);
 });
 
 test("agentic status summarizes workflow, git, and Team Sync state", () => {
@@ -1457,6 +1478,7 @@ test("workflow phase-commit appends a journal checkpoint alongside durable memor
   const preloadPath = writeWorkflowPreload(dir);
   const journalLog = path.join(dir, "workflow-journal.jsonl");
   const whyCaptureLog = path.join(dir, "workflow-why-capture.jsonl");
+  const commitLog = path.join(dir, "workflow-commit.jsonl");
 
   const result = runCli(
     [
@@ -1465,6 +1487,16 @@ test("workflow phase-commit appends a journal checkpoint alongside durable memor
       "companion-journal-checkpoints",
       "--summary",
       "Added journal writes to workflow checkpoints",
+      "--decision",
+      "Store workflow checkpoints atomically",
+      "--why",
+      "One hosted write keeps the decision and rationale together",
+      "--alternative",
+      "Write a second Why Capture request",
+      "--constraint",
+      "Keep review status pending",
+      "--observed-outcome",
+      "The phase receipt references one pending memory",
       "--json",
     ],
     {
@@ -1477,6 +1509,7 @@ test("workflow phase-commit appends a journal checkpoint alongside durable memor
         SNIPARA_AUTOMATION_CLIENT: "codex",
         SNIPARA_TEST_JOURNAL_LOG: journalLog,
         SNIPARA_TEST_WHY_CAPTURE_LOG: whyCaptureLog,
+        SNIPARA_TEST_COMMIT_LOG: commitLog,
       },
       nodeArgs: ["-r", preloadPath],
     }
@@ -1492,18 +1525,18 @@ test("workflow phase-commit appends a journal checkpoint alongside durable memor
     capturedCount: 1,
     previewCandidates: [
       {
-        text: "Decision: Preserve review-first final commit reporting. Why: Pending rationale must never be shown as approved memory.",
-        type: "DECISION",
+        text: "Decision: Store workflow checkpoints atomically. Why: One hosted write keeps the decision and rationale together",
+        type: "decision",
         category: "why-capture",
-        decision: "Preserve review-first final commit reporting",
-        rationale: "Pending rationale must never be shown as approved memory",
+        decision: "Store workflow checkpoints atomically",
+        rationale: "One hosted write keeps the decision and rationale together",
       },
     ],
     pendingMemories: [
       {
         memoryId: "mem_pending_why",
-        text: "Decision: Preserve review-first final commit reporting. Why: Pending rationale must never be shown as approved memory.",
-        type: "DECISION",
+        text: "Decision: Store workflow checkpoints atomically. Why: One hosted write keeps the decision and rationale together",
+        type: "decision",
         category: "why-capture",
         reviewStatus: "PENDING",
       },
@@ -1511,18 +1544,24 @@ test("workflow phase-commit appends a journal checkpoint alongside durable memor
     duplicates: [],
     failed: [],
   });
-  const phaseWhyCapture = fs
-    .readFileSync(whyCaptureLog, "utf8")
+  const phaseCommitCalls = fs
+    .readFileSync(commitLog, "utf8")
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line));
-  assert.equal(phaseWhyCapture.length, 2);
-  assert.equal(phaseWhyCapture[0].previewOnly, true);
-  assert.equal(phaseWhyCapture[0].confirmed, false);
-  assert.equal(phaseWhyCapture[1].previewOnly, false);
-  assert.equal(phaseWhyCapture[1].confirmed, true);
-  assert.equal(phaseWhyCapture[1].sourceKind, "phase_commit");
-  assert.equal(phaseWhyCapture[1].sourceSessionId, "companion-journal");
+  assert.equal(phaseCommitCalls.length, 1);
+  assert.equal(
+    phaseCommitCalls[0].task,
+    "Write journal checkpoints / Companion Journal Checkpoints",
+  );
+  assert.deepEqual(phaseCommitCalls[0].why, {
+    decision: "Store workflow checkpoints atomically",
+    rationale: "One hosted write keeps the decision and rationale together",
+    alternatives: ["Write a second Why Capture request"],
+    constraints: ["Keep review status pending"],
+    observed_outcome: "The phase receipt references one pending memory",
+  });
+  assert.equal(fs.existsSync(whyCaptureLog), false);
   assert.equal(payload.producerLoopArtifact.status, "written");
   assert.equal(payload.producerLoopArtifact.schemaVersion, PRODUCER_LOOP_ARTIFACT_VERSION);
   assert.match(payload.producerLoopArtifact.relativePath, /^\.snipara\/producer-loop\//);
@@ -1546,8 +1585,8 @@ test("workflow phase-commit appends a journal checkpoint alongside durable memor
   );
   assert.equal(current.phases[0].status, "completed");
   assert.equal(current.phaseCommitReceipts.length, 1);
-  assert.equal(current.phaseCommitReceipts[0].stored[0].memoryId, "mem_phase_decision");
-  assert.equal(current.phaseCommitReceipts[0].skipped[0].reason, "operational_receipt");
+  assert.equal(current.phaseCommitReceipts[0].stored.length, 0);
+  assert.equal(current.phaseCommitReceipts[0].skipped.length, 0);
   assert.equal(
     current.phaseCommitReceipts[0].whyCapture.pendingMemories[0].reviewStatus,
     "PENDING"
@@ -2333,8 +2372,16 @@ test("final-commit surfaces the backend Team Sync handoff invariant", () => {
       "final-commit",
       "--summary",
       "Closed the managed workflow",
+      "--decision",
+      "Keep final rationale on the handoff commit",
       "--why",
       "Make closeout memory status explicit without auto-approving rationale",
+      "--alternative",
+      "Send a second Why Capture request",
+      "--constraint",
+      "Keep the candidate review-pending",
+      "--observed-outcome",
+      "One hosted response contains the handoff and candidate",
       "--evidence",
       "passed:pnpm --filter snipara-companion test",
       "--evidence",
@@ -2388,15 +2435,7 @@ test("final-commit surfaces the backend Team Sync handoff invariant", () => {
   assert.equal(payload.reportArtifact.status, "written");
   assert.equal(payload.reportArtifact.relativePath, FINAL_COMMIT_REPORT_RELATIVE_PATH);
   assert.match(payload.reportArtifact.hash, /^sha256:/);
-  const finalWhyCapture = fs
-    .readFileSync(whyCaptureLog, "utf8")
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line));
-  assert.equal(finalWhyCapture.length, 2);
-  assert.equal(finalWhyCapture[0].previewOnly, true);
-  assert.equal(finalWhyCapture[1].confirmed, true);
-  assert.equal(finalWhyCapture[1].sourceSessionId, "agentic-work");
+  assert.equal(fs.existsSync(whyCaptureLog), false);
   assert.equal(payload.producerLoopArtifact.status, "written");
   assert.equal(payload.producerLoopArtifact.schemaVersion, PRODUCER_LOOP_ARTIFACT_VERSION);
   assert.match(payload.producerLoopArtifact.relativePath, /^\.snipara\/producer-loop\//);
@@ -2432,8 +2471,20 @@ test("final-commit surfaces the backend Team Sync handoff invariant", () => {
     .map((line) => JSON.parse(line));
   assert.equal(logged.length, 1);
   assert.equal(logged[0].category, "final-commit");
-  assert.equal(logged[0].handoff_only, true);
-  assert.deepEqual(logged[0].persist_types, []);
+  assert.equal(logged[0].handoff_only, false);
+  assert.equal(logged[0].task, "Ship companion continuity commands");
+  assert.deepEqual(logged[0].persist_types, [
+    "decision",
+    "learning",
+    "workflow",
+  ]);
+  assert.deepEqual(logged[0].why, {
+    decision: "Keep final rationale on the handoff commit",
+    rationale: "Make closeout memory status explicit without auto-approving rationale",
+    alternatives: ["Send a second Why Capture request"],
+    constraints: ["Keep the candidate review-pending"],
+    observed_outcome: "One hosted response contains the handoff and candidate",
+  });
   assert.ok(logged[0].summary.length <= 1200);
   assert.deepEqual(logged[0].files_touched, ["packages/cli/src/commands/workflows.ts"]);
 });
