@@ -2819,7 +2819,7 @@ export class RLMClient {
 
   async updateCollaborationLease(
     leaseId: string,
-    args: {
+    args: CollaborationActorPayload & {
       action?: "heartbeat" | "release" | "override";
       reason?: string;
     },

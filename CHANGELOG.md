@@ -2,6 +2,12 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 3.5.8
+
+- Preserves the exact collaboration actor identity on hosted lease heartbeat
+  and release requests, preventing owner-authenticated cleanup from falling
+  back to the API-key actor and returning a false `403`.
+
 ## New In 3.5.7
 
 - Bounds the best-effort hosted judgment lookup in `run` to 8 seconds instead

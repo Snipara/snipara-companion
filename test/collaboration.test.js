@@ -529,6 +529,70 @@ test("collaboration claim creates hosted leases and keeps local lease state", ()
   assert.equal(loadCollaborationState(dir).leases[0].status, "ACTIVE");
 });
 
+test("collaboration heartbeat and release preserve the lease owner identity", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-collaboration-lease-owner-"));
+  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+  fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "src/index.ts"), "export const value = 1;\n", "utf8");
+  const preloadPath = writeHostedCollaborationPreload(dir);
+  const logPath = path.join(dir, "collab-log.jsonl");
+  const identityArgs = [
+    "--actor-id",
+    "agent_1",
+    "--actor-type",
+    "AGENT",
+    "--actor",
+    "Codex lease owner",
+    "--session-id",
+    "session_1",
+  ];
+  const options = {
+    cwd: dir,
+    env: hostedEnv({ SNIPARA_TEST_COLLAB_LOG: logPath }),
+    nodeArgs: ["-r", preloadPath],
+  };
+
+  const claimed = runCli(
+    ["collaboration", "claim", "--files", "src/index.ts", ...identityArgs, "--json"],
+    options
+  );
+  assert.equal(claimed.status, 0, claimed.stderr || claimed.stdout);
+
+  const watched = runCli(
+    ["collaboration", "watch", "--once", "--files", "src/index.ts", ...identityArgs, "--json"],
+    options
+  );
+  assert.equal(watched.status, 0, watched.stderr || watched.stdout);
+
+  const released = runCli(
+    ["collaboration", "release", "--all", ...identityArgs, "--json"],
+    options
+  );
+  assert.equal(released.status, 0, released.stderr || released.stdout);
+
+  const patchBodies = fs
+    .readFileSync(logPath, "utf8")
+    .trim()
+    .split("\n")
+    .map(JSON.parse)
+    .filter((entry) => entry.method === "PATCH")
+    .map((entry) => entry.body);
+  assert.equal(
+    patchBodies.some((body) => body.action === "heartbeat"),
+    true
+  );
+  assert.equal(
+    patchBodies.some((body) => body.action === "release"),
+    true
+  );
+  for (const body of patchBodies) {
+    assert.equal(body.actorId, "agent_1");
+    assert.equal(body.actorType, "AGENT");
+    assert.equal(body.actorLabel, "Codex lease owner");
+    assert.equal(body.sessionId, "session_1");
+  }
+});
+
 test("collaboration guard exits non-zero for hosted blocking conflicts", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-collaboration-guard-"));
   fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");

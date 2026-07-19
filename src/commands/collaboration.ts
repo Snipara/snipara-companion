@@ -1238,7 +1238,12 @@ async function heartbeatHostedLeases(
 
   try {
     const data = await Promise.all(
-      leaseIds.map((leaseId) => client.updateCollaborationLease(leaseId, { action: "heartbeat" }))
+      leaseIds.map((leaseId) =>
+        client.updateCollaborationLease(leaseId, {
+          ...context.actor,
+          action: "heartbeat",
+        })
+      )
     );
     return { status: "ok", data };
   } catch (error) {
@@ -1260,6 +1265,7 @@ async function releaseHostedLeases(
     const data = await Promise.all(
       leaseIds.map((leaseId) =>
         client.updateCollaborationLease(leaseId, {
+          ...context.actor,
           action: "release",
           reason: input.reason,
         })
