@@ -61,6 +61,10 @@ export interface ProjectRunCommandOptions {
   advisorPlanBefore?: string;
   advisorPlanAfter?: string;
   advisorRecommendationId?: string;
+  advisorDecision?: AdvisorInfluenceAgentDecision;
+  advisorReceiptScope?: "all" | "selected";
+  advisorReceiptSource?: string;
+  advisorReceiptTrigger?: string;
   outcomeReceiptFiles?: string[];
   emitPolicyDecisions?: boolean;
   json?: boolean;
@@ -150,12 +154,21 @@ export interface ProjectRunVerificationEvidence {
   exitCode?: number | null;
 }
 
+export interface ProjectRunHostedJudgmentLink {
+  version: "project-intelligence.hosted-judgment-link.v1";
+  status: "linked" | "unlinked" | "unavailable";
+  timeoutMs: number;
+  servedJudgmentId?: string;
+  error?: string;
+}
+
 export interface ProjectIntelligenceRunResult {
   version: "project-intelligence.production-run.v1";
   generatedAt: string;
   runEnvelope: ProjectIntelligenceRunEnvelope;
   release: boolean;
   brief: ProjectIntelligenceBrief;
+  hostedJudgment: ProjectRunHostedJudgmentLink;
   guard?: ProjectRunGuardResult;
   packageReview?: ProjectRunPackageReview;
   policyGates: ProjectPolicyGatesResult;
@@ -171,6 +184,18 @@ export interface ProjectIntelligenceRunEnvelope {
   runId: string;
   identitySource: "snipara_session" | "codex_session" | "generated";
   startedAt: string;
+}
+
+const HOSTED_PROJECT_INTELLIGENCE_BRIEF_TIMEOUT_MS = 8_000;
+const HOSTED_PROJECT_INTELLIGENCE_ERROR_MAX_LENGTH = 500;
+
+function hostedProjectIntelligenceError(error: unknown): string {
+  if (error instanceof Error && error.name === "AbortError") {
+    return `Timed out after ${HOSTED_PROJECT_INTELLIGENCE_BRIEF_TIMEOUT_MS}ms`;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  return message.trim().slice(0, HOSTED_PROJECT_INTELLIGENCE_ERROR_MAX_LENGTH) || "Unknown error";
 }
 
 export interface ProjectRunPolicyDecisionRequests {
@@ -376,8 +401,10 @@ function advisorReceiptRecommendation(
 function advisorReceiptDecision(
   recommendation: ProjectIntelligenceJudgmentCard["advisorRecommendations"][number],
   judgmentCard: ProjectIntelligenceJudgmentCard,
-  lifecycle: AdvisorInfluenceLifecycle
+  lifecycle: AdvisorInfluenceLifecycle,
+  explicitDecision?: AdvisorInfluenceAgentDecision
 ): AdvisorInfluenceAgentDecision {
+  if (explicitDecision) return explicitDecision;
   if (recommendation.severity === "block" && judgmentCard.canProceed === "block") {
     return "blocked";
   }
@@ -475,8 +502,15 @@ function advisorReceiptBehaviorChange(args: {
   recommendation: ProjectIntelligenceJudgmentCard["advisorRecommendations"][number];
   lifecycle: AdvisorInfluenceLifecycle;
   planScope: AdvisorRecommendationPlanScope;
+  agentDecision: AdvisorInfluenceAgentDecision;
 }): string {
-  const { lifecycle, recommendation, planScope } = args;
+  const { agentDecision, lifecycle, recommendation, planScope } = args;
+  if (agentDecision === "ignored") {
+    return `Recommendation '${recommendation.title}' was explicitly ignored; no plan adaptation or verification is claimed.`;
+  }
+  if (agentDecision === "blocked") {
+    return `Recommendation '${recommendation.title}' explicitly blocked the workflow; no successful application is claimed.`;
+  }
   const beforeHash = lifecycle.planChange.beforeHash?.slice(0, 20) ?? "missing";
   const afterHash = lifecycle.planChange.afterHash?.slice(0, 20) ?? "missing";
   if (lifecycle.state === "verified") {
@@ -526,7 +560,7 @@ function advisorReceiptMetadata(args: {
     ...(args.options.changedFiles ?? []),
   ]).slice(0, 80);
   return {
-    source: "snipara-companion:run",
+    source: args.options.advisorReceiptSource ?? "snipara-companion:run",
     firstParty: true,
     runVersion: "project-intelligence.production-run.v1",
     runId: args.runEnvelope.runId,
@@ -563,7 +597,7 @@ function advisorReceiptMetadata(args: {
     },
     receiptAutomation: {
       version: "first-party-advisor-receipt-automation-v2",
-      trigger: "snipara-companion run",
+      trigger: args.options.advisorReceiptTrigger ?? "snipara-companion run",
       selectedRecommendationRank: args.recommendationIndex + 1,
       totalRecommendations: args.totalRecommendations,
       writeLimit: ADVISOR_RECEIPT_WRITE_LIMIT,
@@ -742,7 +776,7 @@ function emitPolicyDecisionRequests(
   };
 }
 
-async function recordFirstPartyAdvisorReceipts(args: {
+export async function recordFirstPartyAdvisorReceipts(args: {
   options: ProjectRunCommandOptions;
   brief: ProjectIntelligenceBrief;
   judgmentCard: ProjectIntelligenceJudgmentCard;
@@ -750,7 +784,13 @@ async function recordFirstPartyAdvisorReceipts(args: {
   outcomeReceipts?: OutcomeIntelligenceReceipt[];
   runEnvelope: ProjectIntelligenceRunEnvelope;
 }): Promise<ProjectRunAdvisorReceiptCapture | undefined> {
-  const allRecommendations = args.judgmentCard.advisorRecommendations;
+  const cardRecommendations = args.judgmentCard.advisorRecommendations;
+  const allRecommendations =
+    args.options.advisorReceiptScope === "selected"
+      ? cardRecommendations.filter(
+          (recommendation) => recommendation.id === args.options.advisorRecommendationId
+        )
+      : cardRecommendations;
   const servedJudgmentId = servedJudgmentIdForRun(args.options, args.brief);
   if (args.options.skipAdvisorReceipts) {
     const writes: ProjectRunAdvisorReceiptWrite[] = [];
@@ -838,7 +878,8 @@ async function recordFirstPartyAdvisorReceipts(args: {
           const agentDecision = advisorReceiptDecision(
             recommendation,
             args.judgmentCard,
-            lifecycle
+            lifecycle,
+            args.options.advisorDecision
           );
           const changedBecauseOfRecommendation = lifecycle.planChange.changed;
           const verificationExecuted = verificationExecutedFromLifecycle(lifecycle);
@@ -853,6 +894,7 @@ async function recordFirstPartyAdvisorReceipts(args: {
               recommendation,
               lifecycle,
               planScope,
+              agentDecision,
             });
             const result = await client.recordAdvisorInfluenceReceipt({
               servedJudgmentId,
@@ -1030,6 +1072,44 @@ export async function buildProjectIntelligenceRun(
     skipImpact: options.skipImpact,
     skipMemoryHealth: options.skipMemoryHealth,
   });
+  let hostedProjectIntelligenceBrief:
+    | Awaited<ReturnType<ReturnType<typeof createClient>["createProjectIntelligenceBrief"]>>
+    | undefined;
+  let hostedJudgment: ProjectRunHostedJudgmentLink;
+  try {
+    hostedProjectIntelligenceBrief = await createClient(
+      HOSTED_PROJECT_INTELLIGENCE_BRIEF_TIMEOUT_MS
+    ).createProjectIntelligenceBrief({
+      ...(options.task ? { task: options.task } : {}),
+      ...(options.diffSummary ? { diffSummary: options.diffSummary } : {}),
+      ...(changedFiles.length > 0 ? { changedFiles: changedFiles.slice(0, 120) } : {}),
+    });
+    if (hostedProjectIntelligenceBrief.servedJudgmentId) {
+      brief.servedJudgmentId = hostedProjectIntelligenceBrief.servedJudgmentId;
+      hostedJudgment = {
+        version: "project-intelligence.hosted-judgment-link.v1",
+        status: "linked",
+        timeoutMs: HOSTED_PROJECT_INTELLIGENCE_BRIEF_TIMEOUT_MS,
+        servedJudgmentId: hostedProjectIntelligenceBrief.servedJudgmentId,
+      };
+    } else {
+      hostedJudgment = {
+        version: "project-intelligence.hosted-judgment-link.v1",
+        status: "unlinked",
+        timeoutMs: HOSTED_PROJECT_INTELLIGENCE_BRIEF_TIMEOUT_MS,
+      };
+    }
+  } catch (error) {
+    // Hosted Judgment V1 is best-effort for backward compatibility with older
+    // deployments. The local card remains useful but cannot produce a linked
+    // influence receipt without a persisted served judgment identity.
+    hostedJudgment = {
+      version: "project-intelligence.hosted-judgment-link.v1",
+      status: "unavailable",
+      timeoutMs: HOSTED_PROJECT_INTELLIGENCE_BRIEF_TIMEOUT_MS,
+      error: hostedProjectIntelligenceError(error),
+    };
+  }
 
   const guard = options.release && !options.skipGuard ? runGuard(options, changedFiles) : undefined;
   const packageReview =
@@ -1087,6 +1167,7 @@ export async function buildProjectIntelligenceRun(
     guard: guardPayload(guard),
     packageReview: packageReview as unknown as Record<string, unknown> | undefined,
     advisoryObservability: outcomeCalibration as unknown as Record<string, unknown> | undefined,
+    advisorRecommendations: hostedProjectIntelligenceBrief?.brief.judgment?.advisorRecommendations,
     errors: runErrors,
   });
   const policyGates = evaluateProjectPolicyGates({
@@ -1138,6 +1219,7 @@ export async function buildProjectIntelligenceRun(
     runEnvelope,
     release: Boolean(options.release),
     brief,
+    hostedJudgment,
     ...(guard ? { guard } : {}),
     ...(packageReview ? { packageReview } : {}),
     policyGates,
@@ -1168,6 +1250,17 @@ export async function projectIntelligenceRunCommand(
     }
     console.log(`Release: ${result.release ? "yes" : "no"}`);
     console.log(`Run: ${result.runEnvelope.runId} (${result.runEnvelope.identitySource})`);
+    if (result.hostedJudgment.status === "linked") {
+      console.log(`Hosted judgment: linked (${result.hostedJudgment.servedJudgmentId})`);
+    } else if (result.hostedJudgment.status === "unlinked") {
+      console.log("Hosted judgment: unlinked (no served identity returned)");
+    } else {
+      console.log(
+        chalk.yellow(
+          `Hosted judgment: unavailable (${result.hostedJudgment.error ?? "unknown error"})`
+        )
+      );
+    }
     console.log("");
 
     console.log(chalk.bold("Project Judgment"));

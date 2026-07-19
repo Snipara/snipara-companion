@@ -177,6 +177,8 @@ import {
   workflowDecisionProducerMemoryCommand,
   workflowDecisionsCommand,
   workflowImpactGateCommand,
+  workflowJudgmentCommand,
+  workflowJudgmentRespondCommand,
   workflowPolicyLedgerCommand,
   workflowPhaseCommitCommand,
   workflowPhaseStartCommand,
@@ -2850,6 +2852,36 @@ workflow
   });
 
 workflow
+  .command("judgment")
+  .description("Serve and persist a Project Intelligence Judgment Card for the managed workflow")
+  .option("--refresh", "Refresh the card before any recommendation response is recorded")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await workflowJudgmentCommand({
+      refresh: Boolean(options.refresh),
+      json: Boolean(options.json),
+    });
+  });
+
+workflow
+  .command("judgment-respond")
+  .description("Record one explicit accepted, modified, ignored, or blocked Advisor response")
+  .argument("<recommendation-id>", "Advisor recommendation id from workflow judgment")
+  .requiredOption("--decision <decision>", "accepted|modified|ignored|blocked")
+  .option("--plan-before <plan>", "Bounded plan before the selected recommendation")
+  .option("--plan-after <plan>", "Bounded plan after the selected recommendation")
+  .option("--json", "Print raw JSON")
+  .action(async (recommendationId, options) => {
+    await workflowJudgmentRespondCommand({
+      recommendationId,
+      decision: options.decision,
+      planBefore: options.planBefore,
+      planAfter: options.planAfter,
+      json: Boolean(options.json),
+    });
+  });
+
+workflow
   .command("status")
   .description("Show the current local Snipara workflow state")
   .option("--json", "Print raw JSON")
@@ -3139,6 +3171,12 @@ workflow
     "completed",
   )
   .option("-f, --files <files...>", "Files touched")
+  .option(
+    "--evidence <evidence>",
+    "Phase evidence as passed|failed|not-run|unknown:text; repeatable",
+    collectOption,
+    []
+  )
   .option("--json", "Print raw JSON")
   .action(async (phaseId, options) => {
     await workflowPhaseCommitCommand({
@@ -3147,6 +3185,7 @@ workflow
       category: options.category,
       outcome: options.outcome,
       files: options.files,
+      evidence: options.evidence,
       json: options.json,
     });
   });

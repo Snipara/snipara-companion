@@ -151,6 +151,11 @@ function writeWorkflowPreload(dir) {
       "    if (toolLogPath && toolName) {",
       "      fs.appendFileSync(toolLogPath, `${toolName}\\n`, 'utf8');",
       "    }",
+      "    if (toolName === 'snipara_resume_context' && process.env.SNIPARA_TEST_WORKFLOW_JUDGMENT) {",
+      "      const judgment = JSON.parse(process.env.SNIPARA_TEST_WORKFLOW_JUDGMENT);",
+      "      const result = { projectIntelligence: { servedJudgmentId: judgment.servedJudgmentId, judgment: { advisorRecommendations: judgment.advisorRecommendations } }, resumeContext: { recommendedActions: ['Respond to Advisor recommendations explicitly'], caveats: [] } };",
+      "      return { ok: true, status: 200, statusText: 'OK', json: async () => ({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } }) };",
+      "    }",
       "    if (toolName === 'snipara_journal_append') {",
       "      const logPath = process.env.SNIPARA_TEST_JOURNAL_LOG;",
       "      if (logPath) {",
@@ -201,6 +206,7 @@ function writeWorkflowPreload(dir) {
       "      };",
       "    }",
       "    if (toolName === 'snipara_recall') {",
+      "      const guardMemories = process.env.SNIPARA_TEST_WORKFLOW_JUDGMENT ? [{ id: 'memory-release-proof', content: 'Run focused tests and package smoke checks before publishing workflow changes.', type: 'LEARNING', category: 'release', relevance: 0.9 }] : [];",
       "      return {",
       "        ok: true,",
       "        status: 200,",
@@ -208,7 +214,7 @@ function writeWorkflowPreload(dir) {
       "        json: async () => ({",
       "          jsonrpc: '2.0',",
       "          id: 1,",
-      "          result: { content: [{ type: 'text', text: JSON.stringify({ memories: [], warnings: [], total_searched: 0, query: '' }) }] },",
+      "          result: { content: [{ type: 'text', text: JSON.stringify({ memories: guardMemories, warnings: [], total_searched: guardMemories.length, query: '' }) }] },",
       "        }),",
       "      };",
       "    }",
@@ -265,6 +271,17 @@ function writeWorkflowPreload(dir) {
       "  const teamSyncLogPath = process.env.SNIPARA_TEST_TEAM_SYNC_LOG;",
       "  if (teamSyncLogPath && pathname.includes('/team-sync/')) {",
       "    fs.appendFileSync(teamSyncLogPath, `${JSON.stringify({ pathname, method: init.method, body })}\\n`, 'utf8');",
+      "  }",
+      "  if (pathname.endsWith('/project-intelligence/brief') && init.method === 'POST' && process.env.SNIPARA_TEST_WORKFLOW_JUDGMENT) {",
+      "    const judgment = JSON.parse(process.env.SNIPARA_TEST_WORKFLOW_JUDGMENT);",
+      "    return { ok: true, status: 200, statusText: 'OK', json: async () => ({ success: true, data: { project: { id: 'project_1', name: 'App', slug: 'app' }, servedJudgmentId: judgment.servedJudgmentId, persistedShadowSignalCount: 0, brief: { version: 'project-intelligence-brief-v2', task: body.task || null, judgment: { advisorRecommendations: judgment.advisorRecommendations } } } }) };",
+      "  }",
+      "  if (pathname.endsWith('/project-intelligence/advisor-influence') && init.method === 'POST') {",
+      "    const receiptLogPath = process.env.SNIPARA_TEST_ADVISOR_RECEIPT_LOG;",
+      "    if (receiptLogPath) {",
+      "      fs.appendFileSync(receiptLogPath, `${JSON.stringify(body)}\\n`, 'utf8');",
+      "    }",
+      "    return { ok: true, status: 200, statusText: 'OK', json: async () => ({ success: true, data: { project: { id: 'project_1', name: 'App', slug: 'app' }, receipt: { id: `receipt:${body.servedJudgmentId}:${body.recommendation.id}`, advisorRecommendationId: body.recommendation.id, agentDecision: body.agentDecision, outcomeLinkStatus: 'pending' }, advisorInfluence: { version: 'advisor-influence-outcome-loop-v0', receiptCount: 1 } } }) };",
       "  }",
       "  if (pathname.endsWith('/agents/memory/why-capture') && init.method === 'POST') {",
       "    const whyCaptureLogPath = process.env.SNIPARA_TEST_WHY_CAPTURE_LOG;",
@@ -2081,6 +2098,226 @@ test("workflow runtime-checkpoint records local context pack receipts without ho
     JSON.stringify(checkpoint.contextPackReceipts).includes("runtime log output"),
     false
   );
+});
+
+test("managed workflow serves a judgment, records an explicit response, and enriches one receipt through closeout", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-judgment-loop-"));
+  fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "app" }), "utf8");
+  fs.writeFileSync(path.join(dir, "src", "app.ts"), "export const app = true;\n", "utf8");
+  const planFile = path.join(dir, "workflow-plan.json");
+  fs.writeFileSync(
+    planFile,
+    JSON.stringify({
+      mode: "full",
+      steps: [
+        {
+          id: "implement",
+          title: "Implement judgment loop",
+          query: "Implement judgment loop",
+          files: ["src/app.ts"],
+        },
+      ],
+    }),
+    "utf8"
+  );
+  const preloadPath = writeWorkflowPreload(dir);
+  const receiptLog = path.join(dir, "advisor-receipts.jsonl");
+  const recommendationId = "advisor:verification:managed-workflow";
+  const env = {
+    SNIPARA_API_KEY: "test-key",
+    SNIPARA_PROJECT_ID: "project_1",
+    SNIPARA_API_URL: "https://api.example.test",
+    SNIPARA_TEST_ADVISOR_RECEIPT_LOG: receiptLog,
+    SNIPARA_TEST_WORKFLOW_JUDGMENT: JSON.stringify({
+      servedJudgmentId: "served_workflow_1",
+      advisorRecommendations: [
+        {
+          id: recommendationId,
+          source: "verification",
+          severity: "watch",
+          title: "Add managed workflow proof",
+          rationale: "The workflow needs explicit verification evidence.",
+          reasonCodes: ["managed_workflow_proof"],
+          recommendedVerification: ["Run the workflow tests."],
+          expectedBehaviorChange: "Add a test gate before closeout.",
+        },
+      ],
+    }),
+  };
+  const run = (args) => runCli(args, { cwd: dir, env, nodeArgs: ["--require", preloadPath] });
+
+  const started = run([
+    "workflow",
+    "start",
+    "--goal",
+    "Ship managed workflow judgment receipts",
+    "--plan-file",
+    planFile,
+    "--json",
+  ]);
+  assert.equal(started.status, 0, started.stderr || started.stdout);
+
+  const judged = run(["workflow", "judgment", "--json"]);
+  assert.equal(judged.status, 0, judged.stderr || judged.stdout);
+  const judgmentPayload = JSON.parse(judged.stdout);
+  assert.equal(judgmentPayload.judgment.brief.servedJudgmentId, "served_workflow_1");
+  assert.equal(judgmentPayload.judgment.card.advisorRecommendations.length, 1);
+  assert.equal(judgmentPayload.judgment.responses.length, 0);
+
+  const responded = run([
+    "workflow",
+    "judgment-respond",
+    recommendationId,
+    "--decision",
+    "modified",
+    "--plan-before",
+    "Implement\nClose",
+    "--plan-after",
+    "Implement\nRun workflow tests\nClose",
+    "--json",
+  ]);
+  assert.equal(responded.status, 0, responded.stderr || responded.stdout);
+  assert.equal(JSON.parse(responded.stdout).response.initialReceipt.status, "recorded");
+
+  const phaseCommitted = run([
+    "workflow",
+    "phase-commit",
+    "implement",
+    "--summary",
+    "Implemented and tested the managed judgment loop",
+    "--evidence",
+    "passed:pnpm --filter snipara-companion test",
+    "--files",
+    "src/app.ts",
+    "--json",
+  ]);
+  assert.equal(phaseCommitted.status, 0, phaseCommitted.stderr || phaseCommitted.stdout);
+  assert.equal(
+    JSON.parse(phaseCommitted.stdout.slice(phaseCommitted.stdout.indexOf("{"))).judgmentReceipts[0]
+      .status,
+    "recorded"
+  );
+
+  const finalized = run([
+    "workflow",
+    "final-commit",
+    "--summary",
+    "Released the managed judgment loop",
+    "--why",
+    "Make advisor influence observable in normal managed work",
+    "--evidence",
+    "passed:production workflow smoke",
+    "--files",
+    "src/app.ts",
+    "--json",
+  ]);
+  assert.equal(finalized.status, 0, finalized.stderr || finalized.stdout);
+  const finalPayload = JSON.parse(finalized.stdout.slice(finalized.stdout.indexOf("{")));
+  assert.equal(finalPayload.judgmentReceipts[0].status, "recorded");
+
+  const calls = fs
+    .readFileSync(receiptLog, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(calls.length, 3);
+  assert.deepEqual(
+    calls.map((call) => [call.recommendation.id, call.agentDecision]),
+    [
+      [recommendationId, "modified"],
+      [recommendationId, "modified"],
+      [recommendationId, "modified"],
+    ]
+  );
+  assert.deepEqual(
+    calls.map((call) => call.metadata.advisorInfluenceLifecycle.state),
+    ["applied", "verified", "verified"]
+  );
+  assert.equal(
+    calls[0].metadata.receiptAutomation.trigger,
+    "snipara-companion workflow judgment-respond"
+  );
+  assert.equal(
+    calls[1].metadata.receiptAutomation.trigger,
+    "snipara-companion workflow phase-commit"
+  );
+  assert.equal(
+    calls[2].metadata.receiptAutomation.trigger,
+    "snipara-companion workflow final-commit"
+  );
+  assert.equal(calls[2].metadata.source, "snipara-companion:workflow");
+  assert.ok(calls[2].verificationExecuted.length >= 2);
+
+  const current = JSON.parse(
+    fs.readFileSync(path.join(dir, ".snipara", "workflow", "current.json"), "utf8")
+  );
+  assert.equal(current.status, "completed");
+  assert.equal(current.judgment.responses[0].decision, "modified");
+  assert.equal(current.judgment.responses[0].outcomeReceipts.length, 2);
+  assert.equal(current.judgment.responses[0].closeoutReceipt.status, "recorded");
+});
+
+test("final-commit refuses to invent an implicit response for a served workflow judgment", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-judgment-required-"));
+  fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "app" }), "utf8");
+  writeWorkflowState(dir);
+  const statePath = path.join(dir, ".snipara", "workflow", "current.json");
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  state.judgment = {
+    version: "snipara.workflow.judgment.v1",
+    generatedAt: "2026-07-18T10:00:00.000Z",
+    runEnvelope: {
+      version: "project-intelligence.judgment-run-envelope.v1",
+      runId: "judgment-run:test",
+      identitySource: "generated",
+      startedAt: "2026-07-18T10:00:00.000Z",
+    },
+    brief: {
+      version: "project-intelligence-brief-v1",
+      generatedAt: "2026-07-18T10:00:00.000Z",
+      servedJudgmentId: "served_required",
+      task: state.goal,
+      changedFiles: [],
+      recentFiles: [],
+      errors: [],
+      suggestedCommands: [],
+    },
+    card: {
+      version: "project-intelligence.judgment-card.v1",
+      generatedAt: "2026-07-18T10:00:00.000Z",
+      target: { changedFiles: [] },
+      score: 80,
+      band: "high",
+      state: "watch",
+      canProceed: "review",
+      summary: "Explicit response required",
+      reasons: [],
+      requiredActions: [],
+      advisories: [],
+      advisorRecommendations: [
+        {
+          id: "advisor:required",
+          source: "verification",
+          severity: "watch",
+          title: "Review verification",
+          reasonCodes: ["verification_required"],
+          recommendedVerification: ["Run tests"],
+        },
+      ],
+      evidence: [],
+      caveats: [],
+    },
+    responses: [],
+  };
+  fs.writeFileSync(statePath, JSON.stringify(state, null, 2), "utf8");
+
+  const result = runCli(
+    ["workflow", "final-commit", "--summary", "Do not infer a response", "--json"],
+    { cwd: dir }
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /unanswered recommendation/i);
 });
 
 test("final-commit surfaces the backend Team Sync handoff invariant", () => {

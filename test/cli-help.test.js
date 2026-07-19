@@ -174,6 +174,25 @@ function writeAdvisorReceiptPreload(
       "      })",
       "    };",
       "  }",
+      "  if (String(url).includes('/project-intelligence/brief')) {",
+      "    if (process.env.SNIPARA_TEST_HOSTED_BRIEF_FAILURE === '1') {",
+      "      return { ok: false, status: 503, statusText: 'Service Unavailable' };",
+      "    }",
+      "    return {",
+      "      ok: true,",
+      "      status: 200,",
+      "      statusText: 'OK',",
+      "      json: async () => ({",
+      "        success: true,",
+      "        data: {",
+      "          project: { id: 'project_1', name: 'Snipara', slug: 'snipara' },",
+      `          servedJudgmentId: ${JSON.stringify(servedJudgmentId ?? null)},`,
+      "          persistedShadowSignalCount: 0,",
+      `          brief: { version: 'project-intelligence-brief-v2', judgment: { advisorRecommendations: ${JSON.stringify(advisorRecommendations)} } }`,
+      "        }",
+      "      })",
+      "    };",
+      "  }",
       "  const toolName = body.params?.name;",
       "  const args = body.params?.arguments || {};",
       "  let result;",
@@ -1084,7 +1103,32 @@ test("run command skips advisor receipts with stable reason when served judgment
   assert.equal(payload.advisorReceiptCapture.writes[0].reason, "missing_served_judgment_id");
   assert.equal(payload.advisorReceiptCapture.measurement.identityStatus, "missing");
   assert.equal(payload.advisorReceiptCapture.measurement.unmeasuredCount, 1);
+  assert.deepEqual(payload.hostedJudgment, {
+    version: "project-intelligence.hosted-judgment-link.v1",
+    status: "unlinked",
+    timeoutMs: 8000,
+  });
   assert.equal(fs.existsSync(callsPath), false);
+});
+
+test("run command reports a best-effort hosted judgment failure without blocking local output", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-hosted-judgment-failure-"));
+  const { preloadPath } = writeAdvisorReceiptPreload(dir);
+
+  const result = runCli(["run", "--task", "keep local judgment available"], {
+    cwd: dir,
+    env: {
+      SNIPARA_API_KEY: "test-key",
+      SNIPARA_PROJECT_ID: "snipara",
+      SNIPARA_API_URL: "https://api.snipara.com",
+      SNIPARA_TEST_HOSTED_BRIEF_FAILURE: "1",
+    },
+    nodeArgs: ["--require", preloadPath],
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Hosted judgment: unavailable \(HTTP 503: Service Unavailable\)/);
+  assert.match(result.stdout, /Project Judgment/);
 });
 
 test("run command promotes hosted served judgment identity into the first-class brief", () => {
@@ -1111,6 +1155,12 @@ test("run command promotes hosted served judgment identity into the first-class 
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.brief.servedJudgmentId, "served_from_resume");
+  assert.deepEqual(payload.hostedJudgment, {
+    version: "project-intelligence.hosted-judgment-link.v1",
+    status: "linked",
+    timeoutMs: 8000,
+    servedJudgmentId: "served_from_resume",
+  });
   assert.equal(payload.advisorReceiptCapture.servedJudgmentId, "served_from_resume");
   assert.equal(payload.advisorReceiptCapture.measurement.identityStatus, "linked");
   const calls = fs.readFileSync(callsPath, "utf8").trim().split("\n").map(JSON.parse);

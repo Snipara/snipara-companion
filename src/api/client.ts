@@ -578,6 +578,31 @@ export interface RecordAdvisorInfluenceReceiptResult {
   advisorInfluence: Record<string, unknown>;
 }
 
+export interface ProjectIntelligenceBriefRequest {
+  task?: string;
+  diffSummary?: string;
+  changedFiles?: string[];
+  symbols?: string[];
+  routes?: string[];
+}
+
+export interface HostedProjectIntelligenceBriefResult {
+  project: {
+    id: string;
+    name: string;
+    slug: string;
+  };
+  servedJudgmentId: string | null;
+  persistedShadowSignalCount: number;
+  brief: {
+    version: string;
+    task?: string | null;
+    judgment?: {
+      advisorRecommendations?: unknown[];
+    };
+  };
+}
+
 export interface AutomationConfigFile {
   path: string;
   content: string;
@@ -2068,6 +2093,24 @@ export class RLMClient {
         invalidMessage: "Advisor influence receipt write failed",
         validate: (data) => Boolean(data.receipt && data.advisorInfluence),
       },
+    );
+  }
+
+  async createProjectIntelligenceBrief(
+    input: ProjectIntelligenceBriefRequest
+  ): Promise<HostedProjectIntelligenceBriefResult> {
+    return this.dashboardProjectRequest<HostedProjectIntelligenceBriefResult>(
+      "/project-intelligence/brief",
+      {
+        method: "POST",
+        body: input,
+      },
+      {
+        invalidMessage: "Project Intelligence brief generation failed",
+        validate: (data) =>
+          Boolean(data.project && data.brief) &&
+          (typeof data.servedJudgmentId === "string" || data.servedJudgmentId === null),
+      }
     );
   }
 

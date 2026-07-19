@@ -2,6 +2,36 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 3.5.7
+
+- Bounds the best-effort hosted judgment lookup in `run` to 8 seconds instead
+  of silently waiting for up to 30 seconds.
+- Exposes `hostedJudgment.status` as `linked`, `unlinked`, or `unavailable` in
+  JSON and prints one concise human-readable diagnostic without blocking the
+  local Judgment Card.
+- Compatibility note: hosted context queries now treat an explicit
+  `max_tokens` value as immutable. Small conceptual or multi-hop budgets may
+  return less context than older servers that silently enlarged the request;
+  increase the requested budget when more context is intentional.
+- Clarifies that references mode budgets the Answer Pack plus previews. Full
+  referenced chunks remain retrievable and their `token_count` is planning
+  metadata rather than initial response usage.
+
+## New In 3.5.6
+
+- Adds a managed workflow Judgment V1 loop: `workflow judgment` serves and
+  persists a bounded Project Intelligence card, while `workflow
+judgment-respond` records one explicit accepted, modified, ignored, or
+  blocked response per recommendation.
+- Uses the canonical hosted Project Intelligence Brief V2 endpoint to persist
+  the served judgment identity; the endpoint now accepts validated,
+  project-scoped API keys used by Companion.
+- Replays the same hosted Advisor Influence receipt at evidence-bearing phase
+  commits and final closeout, so one idempotent receipt advances from
+  acknowledgement/application to verified outcome evidence without duplicates.
+- Refuses managed final closeout when a served recommendation has no explicit
+  response; Companion never manufactures an implicit ignored decision.
+
 ## New In 3.5.5
 
 - Gives Memory Guard source-context retrieval its own bounded 30-second window

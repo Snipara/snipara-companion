@@ -1341,6 +1341,12 @@ path. Without either identity, receipt capture remains fail-closed and reports
 recommendation is only `acknowledged` by default: its `expectedBehaviorChange`,
 severity, required actions, and recommended checks never prove adaptation.
 
+The hosted lookup is best-effort and bounded to 8 seconds. `run --json` exposes
+`hostedJudgment.status` as `linked`, `unlinked`, or `unavailable`, including a
+bounded failure message when the hosted endpoint cannot be reached. Human
+output prints the same state in one line. A hosted failure never removes the
+local Judgment Card or turns network availability into implicit receipt proof.
+
 To record `applied`, provide both explicit plan snapshots. Companion normalizes
 and bounds each snapshot to 4,000 characters, then compares stable hashes:
 
@@ -1382,6 +1388,28 @@ whose `decision.advisorRecommendationIds` contains that recommendation id and
 which contains non-skipped execution evidence or a known outcome. Guard,
 package-review, and policy-gate diagnostics remain available in compatibility
 metadata, but they do not advance this lifecycle by themselves.
+
+Managed FULL workflows expose the same contract directly. Serve one bounded
+card before editing, then answer every recommendation explicitly:
+
+```bash
+snipara-companion workflow judgment
+snipara-companion workflow judgment-respond \
+  advisor:verification:release-check \
+  --decision modified \
+  --plan-before $'Build\nDeploy' \
+  --plan-after $'Build\nRun pack smoke\nDeploy'
+```
+
+`accepted` may omit plan snapshots or provide an unchanged pair. `modified`
+requires distinct bounded snapshots. `ignored` and `blocked` are explicit
+non-application decisions and cannot carry plan snapshots. Companion writes a
+targeted Advisor Influence receipt immediately, then idempotently replays that
+same `(served judgment, recommendation)` receipt when `workflow phase-commit`
+has explicit `--evidence` and again at `final-commit`. The backend preserves
+monotone lifecycle progress and owns canonical OutcomeSignal linking. A final
+commit fails closed while any served recommendation is unanswered; there is no
+implicit ignored receipt.
 
 `run` can also consume Outcome Intelligence V0 receipts:
 
@@ -1620,13 +1648,14 @@ Use this when the user's LLM has already produced a plan and Snipara should enfo
 
 1. Generate or save a visible plan into a JSON file. `snipara-companion plan --query "<goal>" --write-plan-file ./plan.json` converts hosted `snipara_plan` output into a managed workflow plan; keep a Markdown/Text copy only when you also want a human-facing contract alongside the machine plan. Keep simple Q&A and single-source lookups on targeted `snipara_context_query`; for FULL-mode audits, comparisons, roadmap/implementation planning, release readiness, or package-surface reviews, preserve the axes with `snipara_decompose` and execute independent follow-up questions with `snipara_multi_query` when those tools are exposed.
 2. Run `snipara-companion workflow start --goal "<goal>" --plan-file ./plan.json`.
-3. At each phase/chunk, run `snipara-companion workflow phase-start <phase_id>`, then `snipara-companion workflow run --mode full --query "<phase query>"`. Add `--include-session-context` after compaction, handoff, or another agent's work may matter.
-4. Before risky code changes, routes/services/jobs work, or any "what is missing" conclusion, run `snipara-companion code impact --changed-files <files...> --diff-summary "<change>"`. For an important symbol, run `snipara-companion code symbol-card --qualified-name <symbol>`.
-5. After compaction, first run `snipara-companion workflow resume --include-session-context`, then rerun `snipara-companion workflow phase-start <phase_id>` before editing again.
-6. For execution/test/debug/finalization that benefits from repeatable isolation, use Snipara Sandbox MCP `execute_python` from the AI client or standalone `snipara-sandbox run`. After material runtime progress, capture a resume-ready checkpoint with `snipara-companion workflow runtime-checkpoint <phase_id> --summary "<state>" --rehydrate-file <state.json>`.
-7. For production gates, drift checks, or htask coordination, hand off explicitly to `snipara-orchestrator`; companion should detect and suggest the package but must not spawn workers automatically.
-8. End every phase with `snipara-companion workflow phase-commit <phase_id> --summary "<outcome>" --files <files...>`.
-9. End the whole task with `snipara-companion final-commit --summary "<final outcome>" --why "<rationale>" --evidence "passed:<proof>" --risk "<remaining risk>" --next-step "<recommended follow-up>" --files <files...>`.
+3. Run `snipara-companion workflow judgment`, then answer every served Advisor recommendation with `workflow judgment-respond <recommendation-id> --decision accepted|modified|ignored|blocked`. Use distinct `--plan-before` and `--plan-after` snapshots only for `modified`.
+4. At each phase/chunk, run `snipara-companion workflow phase-start <phase_id>`, then `snipara-companion workflow run --mode full --query "<phase query>"`. Add `--include-session-context` after compaction, handoff, or another agent's work may matter.
+5. Before risky code changes, routes/services/jobs work, or any "what is missing" conclusion, run `snipara-companion code impact --changed-files <files...> --diff-summary "<change>"`. For an important symbol, run `snipara-companion code symbol-card --qualified-name <symbol>`.
+6. After compaction, first run `snipara-companion workflow resume --include-session-context`, then rerun `workflow judgment` to inspect the persisted card and `workflow phase-start <phase_id>` before editing again.
+7. For execution/test/debug/finalization that benefits from repeatable isolation, use Snipara Sandbox MCP `execute_python` from the AI client or standalone `snipara-sandbox run`. After material runtime progress, capture a resume-ready checkpoint with `snipara-companion workflow runtime-checkpoint <phase_id> --summary "<state>" --rehydrate-file <state.json>`.
+8. For production gates, drift checks, or htask coordination, hand off explicitly to `snipara-orchestrator`; companion should detect and suggest the package but must not spawn workers automatically.
+9. End every phase with `snipara-companion workflow phase-commit <phase_id> --summary "<outcome>" --evidence "passed:<proof>" --files <files...>` when the phase produced concrete verification evidence.
+10. End the whole task with `snipara-companion final-commit --summary "<final outcome>" --why "<rationale>" --evidence "passed:<proof>" --risk "<remaining risk>" --next-step "<recommended follow-up>" --files <files...>`.
 
 After compaction or resume, run `snipara-companion workflow resume --include-session-context` when short-lived carryover matters, then rerun `snipara-companion workflow phase-start <phase_id>`. The local state file tells the agent the current phase, and hosted memory contains durable phase outcomes.
 

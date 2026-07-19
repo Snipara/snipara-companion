@@ -75,9 +75,12 @@ import {
 } from "./coding-ledger";
 import { buildLocalImpactResult } from "./code";
 import {
+  buildOutcomeIntelligenceReceipt,
   DECISION_RESPONSE_VERSION,
   buildDecisionRequest,
   stableDecisionJsonStringify,
+  type OutcomeIntelligenceEvidence,
+  type OutcomeIntelligenceReceipt,
   type DecisionRequest,
 } from "../contracts/project-intelligence";
 import {
@@ -133,6 +136,15 @@ import {
   type FinalCommitReportArtifact,
   type WorkflowPhaseCommitReceipt,
 } from "./final-commit-report";
+import {
+  buildProjectIntelligenceRun,
+  recordFirstPartyAdvisorReceipts,
+  type ProjectIntelligenceRunEnvelope,
+  type ProjectRunAdvisorReceiptCapture,
+} from "./run";
+import type { AdvisorInfluenceAgentDecision } from "../api/client";
+import type { ProjectIntelligenceBrief } from "./intelligence";
+import { formatProjectJudgmentCard, type ProjectIntelligenceJudgmentCard } from "./judgment-card";
 
 const DEFAULT_SESSION_CONTEXT_TOKENS = 1000;
 const DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS = 2000;
@@ -613,6 +625,38 @@ export interface ManagedWorkflowPhase {
   outcome?: TaskCommitOutcome;
 }
 
+export interface ManagedWorkflowJudgmentBrief {
+  version: "project-intelligence-brief-v1";
+  generatedAt: string;
+  servedJudgmentId?: string;
+  branch?: string;
+  task?: string;
+  changedFiles: string[];
+  recentFiles: string[];
+  errors: Array<{ surface: string; message: string }>;
+  suggestedCommands: string[];
+}
+
+export interface ManagedWorkflowJudgmentResponse {
+  recommendationId: string;
+  decision: AdvisorInfluenceAgentDecision;
+  respondedAt: string;
+  planBefore?: string;
+  planAfter?: string;
+  initialReceipt?: ProjectRunAdvisorReceiptCapture;
+  closeoutReceipt?: ProjectRunAdvisorReceiptCapture;
+  outcomeReceipts?: OutcomeIntelligenceReceipt[];
+}
+
+export interface ManagedWorkflowJudgmentState {
+  version: "snipara.workflow.judgment.v1";
+  generatedAt: string;
+  runEnvelope: ProjectIntelligenceRunEnvelope;
+  brief: ManagedWorkflowJudgmentBrief;
+  card: ProjectIntelligenceJudgmentCard;
+  responses: ManagedWorkflowJudgmentResponse[];
+}
+
 export interface ManagedWorkflowState {
   schemaVersion: ManagedWorkflowSchemaVersion;
   workflowId: string;
@@ -626,6 +670,7 @@ export interface ManagedWorkflowState {
   phases: ManagedWorkflowPhase[];
   runtime?: ManagedWorkflowRuntimeState;
   coordination?: ManagedWorkflowCoordinationState;
+  judgment?: ManagedWorkflowJudgmentState;
   phaseCommitReceipts?: WorkflowPhaseCommitReceipt[];
   finalReport?: FinalCommitReportArtifact;
   lastCommit?: {
@@ -2971,6 +3016,12 @@ function normalizeManagedWorkflowState(
   return {
     ...state,
     runtime: normalizeManagedWorkflowRuntimeState(state.runtime),
+    judgment: state.judgment
+      ? {
+          ...state.judgment,
+          responses: Array.isArray(state.judgment.responses) ? state.judgment.responses : [],
+        }
+      : undefined,
     phaseCommitReceipts: Array.isArray(state.phaseCommitReceipts)
       ? state.phaseCommitReceipts
       : [],
@@ -5393,6 +5444,16 @@ function printManagedWorkflowState(state: ManagedWorkflowState): void {
       printKeyValue("Sandbox session:", runtimeBinding.sessionId);
     }
   }
+  if (state.judgment) {
+    printKeyValue(
+      "Judgment:",
+      `${state.judgment.card.state} (${state.judgment.responses.length}/${state.judgment.card.advisorRecommendations.length} response(s))`
+    );
+    printKeyValue(
+      "Judgment identity:",
+      state.judgment.brief.servedJudgmentId ? "linked" : "missing"
+    );
+  }
   console.log("");
 
   console.log(chalk.bold("Phases"));
@@ -5406,6 +5467,38 @@ function printManagedWorkflowState(state: ManagedWorkflowState): void {
       console.log(`  Files: ${phase.files.join(", ")}`);
     }
   }
+  console.log("");
+}
+
+function printManagedWorkflowJudgmentNextCommands(state: ManagedWorkflowState): void {
+  const judgment = state.judgment;
+  if (!judgment) return;
+  console.log("");
+  console.log(chalk.bold("Explicit advisor responses"));
+  if (!judgment.brief.servedJudgmentId) {
+    console.log(
+      "No served judgment identity was returned. The card is inspectable, but hosted influence receipts cannot be linked yet."
+    );
+  }
+  if (judgment.card.advisorRecommendations.length === 0) {
+    console.log("No Advisor recommendation requires a response for this judgment.");
+    console.log("");
+    return;
+  }
+  for (const recommendation of judgment.card.advisorRecommendations) {
+    const response = judgment.responses.find((item) => item.recommendationId === recommendation.id);
+    console.log(
+      `- ${recommendation.id}: ${response ? `${response.decision} (${response.initialReceipt?.status ?? "local"})` : "pending explicit response"}`
+    );
+    if (!response) {
+      console.log(
+        `  snipara-companion workflow judgment-respond ${shellQuote(recommendation.id)} --decision accepted`
+      );
+    }
+  }
+  console.log(
+    "Use --decision modified with distinct --plan-before/--plan-after snapshots when the judgment changed the plan; use ignored or blocked explicitly when applicable."
+  );
   console.log("");
 }
 
@@ -5446,6 +5539,13 @@ function printManagedWorkflowDiscipline(): void {
 function printManagedWorkflowNextCommands(state: ManagedWorkflowState): void {
   const phase = currentWorkflowPhase(state);
   printManagedWorkflowDiscipline();
+  if (!state.judgment) {
+    console.log(chalk.bold("Judgment gate"));
+    console.log("snipara-companion workflow judgment");
+    console.log("");
+  } else {
+    printManagedWorkflowJudgmentNextCommands(state);
+  }
   if (!phase || state.status === "completed") {
     console.log(chalk.bold("Next commands"));
     console.log(
@@ -11070,6 +11170,283 @@ function plannedWorkflowFiles(state: ManagedWorkflowState): string[] {
   );
 }
 
+function managedWorkflowJudgmentFiles(state: ManagedWorkflowState): string[] {
+  const planned = plannedWorkflowFiles(state);
+  try {
+    const repoRoot = readGitRepoRoot();
+    const dirty = (readLocalGitState(repoRoot).statusLines ?? [])
+      .map(parseDirtyFileFromStatusLine)
+      .filter((file): file is string => Boolean(file));
+    return uniqueStrings([...planned, ...dirty]);
+  } catch {
+    return planned;
+  }
+}
+
+function managedWorkflowJudgmentBrief(
+  brief: ProjectIntelligenceBrief
+): ManagedWorkflowJudgmentBrief {
+  return {
+    version: brief.version,
+    generatedAt: brief.generatedAt,
+    ...(brief.servedJudgmentId ? { servedJudgmentId: brief.servedJudgmentId } : {}),
+    ...(brief.branch ? { branch: brief.branch } : {}),
+    ...(brief.task ? { task: brief.task } : {}),
+    changedFiles: brief.changedFiles,
+    recentFiles: brief.recentFiles,
+    errors: brief.errors,
+    suggestedCommands: brief.suggestedCommands,
+  };
+}
+
+function projectIntelligenceBriefFromManagedJudgment(
+  judgment: ManagedWorkflowJudgmentState
+): ProjectIntelligenceBrief {
+  return { ...judgment.brief };
+}
+
+function normalizeWorkflowAdvisorDecision(value: string): AdvisorInfluenceAgentDecision {
+  const normalized = value.trim().toLowerCase();
+  if (
+    normalized === "accepted" ||
+    normalized === "modified" ||
+    normalized === "ignored" ||
+    normalized === "blocked"
+  ) {
+    return normalized;
+  }
+  throw new Error("Advisor decision must be accepted, modified, ignored, or blocked.");
+}
+
+function normalizeWorkflowPlanSnapshot(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized) return undefined;
+  if (normalized.length > 4_000) {
+    throw new Error("Advisor plan snapshots must be at most 4000 characters.");
+  }
+  return normalized;
+}
+
+function comparableWorkflowPlan(value: string | undefined): string | undefined {
+  return value
+    ?.replace(/\r\n/g, "\n")
+    .replace(/[ \t]+$/gm, "")
+    .trim();
+}
+
+function validateWorkflowJudgmentResponse(args: {
+  decision: AdvisorInfluenceAgentDecision;
+  planBefore?: string;
+  planAfter?: string;
+}): void {
+  const before = comparableWorkflowPlan(args.planBefore);
+  const after = comparableWorkflowPlan(args.planAfter);
+  const hasCompletePair = Boolean(before && after);
+  const changed = hasCompletePair && before !== after;
+
+  if (args.decision === "modified" && (!hasCompletePair || !changed)) {
+    throw new Error(
+      "A modified judgment response requires distinct --plan-before and --plan-after snapshots."
+    );
+  }
+  if (args.decision === "accepted" && changed) {
+    throw new Error(
+      "Changed plan snapshots require --decision modified; accepted cannot claim a plan adaptation."
+    );
+  }
+  if ((args.decision === "ignored" || args.decision === "blocked") && (before || after)) {
+    throw new Error(
+      `${args.decision} judgment responses cannot include plan snapshots because no applied adaptation is claimed.`
+    );
+  }
+}
+
+async function captureManagedWorkflowJudgmentResponse(args: {
+  state: ManagedWorkflowState;
+  response: ManagedWorkflowJudgmentResponse;
+  outcomeReceipts?: OutcomeIntelligenceReceipt[];
+  trigger: string;
+}): Promise<ProjectRunAdvisorReceiptCapture | undefined> {
+  const judgment = args.state.judgment;
+  if (!judgment) return undefined;
+  return recordFirstPartyAdvisorReceipts({
+    options: {
+      task: judgment.brief.task ?? args.state.goal,
+      branch: judgment.brief.branch,
+      changedFiles: judgment.brief.changedFiles,
+      servedJudgmentId: judgment.brief.servedJudgmentId,
+      advisorRecommendationId: args.response.recommendationId,
+      advisorDecision: args.response.decision,
+      advisorPlanBefore: args.response.planBefore,
+      advisorPlanAfter: args.response.planAfter,
+      advisorReceiptScope: "selected",
+      advisorReceiptSource: "snipara-companion:workflow",
+      advisorReceiptTrigger: args.trigger,
+    },
+    brief: projectIntelligenceBriefFromManagedJudgment(judgment),
+    judgmentCard: judgment.card,
+    outcomeReceipts: args.outcomeReceipts,
+    runEnvelope: judgment.runEnvelope,
+  });
+}
+
+function workflowOutcomeEvidence(values: string[] | undefined): OutcomeIntelligenceEvidence[] {
+  return (values ?? []).flatMap((value): OutcomeIntelligenceEvidence[] => {
+    const text = value.trim();
+    if (!text) return [];
+    const matched = text.match(
+      /^(passed|pass|ok|success|failed|fail|error|not[-_ ]?run|skipped|unknown)\s*:\s*(.+)$/i
+    );
+    const rawStatus = matched?.[1]?.toLowerCase() ?? "unknown";
+    const detail = (matched?.[2] ?? text).trim();
+    const status: OutcomeIntelligenceEvidence["status"] =
+      rawStatus === "passed" ||
+      rawStatus === "pass" ||
+      rawStatus === "ok" ||
+      rawStatus === "success"
+        ? "passed"
+        : rawStatus === "failed" || rawStatus === "fail" || rawStatus === "error"
+          ? "failed"
+          : "skipped";
+    const normalizedDetail = detail.toLowerCase();
+    const source: OutcomeIntelligenceEvidence["source"] = normalizedDetail.includes("typecheck")
+      ? "typecheck"
+      : normalizedDetail.includes("lint")
+        ? "lint"
+        : normalizedDetail.includes("build")
+          ? "build"
+          : normalizedDetail.includes("deploy") || normalizedDetail.includes("health")
+            ? "deploy_health"
+            : normalizedDetail.includes("publish") || normalizedDetail.includes("npm")
+              ? "package_publish"
+              : normalizedDetail.includes("guard")
+                ? "guard"
+                : normalizedDetail.includes("test") || normalizedDetail.includes("smoke")
+                  ? "test"
+                  : "manual";
+    return [
+      {
+        source,
+        label: detail.slice(0, 900),
+        status,
+        ...(detail ? { command: detail.slice(0, 900) } : {}),
+      },
+    ];
+  });
+}
+
+function workflowOutcomeSurfaces(
+  files: string[]
+): Array<"web" | "backend" | "database" | "package" | "docs" | "workflow" | "memory" | "unknown"> {
+  const surfaces = new Set<
+    "web" | "backend" | "database" | "package" | "docs" | "workflow" | "memory" | "unknown"
+  >(["workflow"]);
+  for (const file of files) {
+    if (file.startsWith("packages/")) surfaces.add("package");
+    if (file.startsWith("apps/web/")) surfaces.add("web");
+    if (file.startsWith("apps/mcp-server/")) surfaces.add("backend");
+    if (file.includes("prisma") || file.includes("migration")) surfaces.add("database");
+    if (file.startsWith("docs/") || file.endsWith(".md")) surfaces.add("docs");
+    if (file.includes("memory")) surfaces.add("memory");
+  }
+  return [...surfaces];
+}
+
+function workflowOutcomeStatus(
+  outcome: TaskCommitOutcome
+): "success" | "failure" | "blocked" | "partial" {
+  if (outcome === "completed") return "success";
+  if (outcome === "partial") return "partial";
+  if (outcome === "blocked") return "blocked";
+  return "failure";
+}
+
+function buildManagedWorkflowOutcomeReceipt(args: {
+  state: ManagedWorkflowState;
+  response: ManagedWorkflowJudgmentResponse;
+  summary: string;
+  outcome: TaskCommitOutcome;
+  files?: string[];
+  evidence?: string[];
+  sourceRef: string;
+}): OutcomeIntelligenceReceipt {
+  const judgment = args.state.judgment;
+  if (!judgment) {
+    throw new Error("Managed workflow judgment is missing.");
+  }
+  const recommendation = judgment.card.advisorRecommendations.find(
+    (item) => item.id === args.response.recommendationId
+  );
+  const files = uniqueStringList(args.files ?? judgment.brief.changedFiles) ?? [];
+  const releaseLike = /\b(release|deploy|production|publish|promotion)\b/i.test(args.state.goal);
+  return buildOutcomeIntelligenceReceipt({
+    sourceRef: args.sourceRef,
+    taskProfile: {
+      kind: releaseLike ? "release" : "unknown",
+      risk: releaseLike ? "high" : "medium",
+      surfaces: workflowOutcomeSurfaces(files),
+      changedFiles: files,
+      workflowFingerprint: args.state.workflowId,
+    },
+    decision: {
+      summary: `${args.response.decision} advisor recommendation: ${recommendation?.title ?? args.response.recommendationId}`,
+      reasonCodes: recommendation?.reasonCodes ?? ["managed_workflow_judgment"],
+      advisorRecommendationIds: [args.response.recommendationId],
+    },
+    evidence: workflowOutcomeEvidence(args.evidence),
+    outcome: {
+      status: workflowOutcomeStatus(args.outcome),
+      summary: args.summary,
+    },
+  });
+}
+
+async function closeManagedWorkflowJudgment(args: {
+  state: ManagedWorkflowState | undefined;
+  summary: string;
+  outcome: TaskCommitOutcome;
+  files?: string[];
+  evidence?: string[];
+  sourceRef: string;
+  trigger: string;
+  requireEvidence?: boolean;
+}): Promise<ProjectRunAdvisorReceiptCapture[]> {
+  if (!args.state?.judgment || args.state.judgment.responses.length === 0) return [];
+  if (args.requireEvidence && workflowOutcomeEvidence(args.evidence).length === 0) return [];
+
+  const captures: ProjectRunAdvisorReceiptCapture[] = [];
+  for (const response of args.state.judgment.responses) {
+    const outcomeReceipt = buildManagedWorkflowOutcomeReceipt({
+      state: args.state,
+      response,
+      summary: args.summary,
+      outcome: args.outcome,
+      files: args.files,
+      evidence: args.evidence,
+      sourceRef: args.sourceRef,
+    });
+    response.outcomeReceipts = [
+      ...(response.outcomeReceipts ?? []).filter(
+        (receipt) => receipt.receiptId !== outcomeReceipt.receiptId
+      ),
+      outcomeReceipt,
+    ];
+    const capture = await captureManagedWorkflowJudgmentResponse({
+      state: args.state,
+      response,
+      outcomeReceipts: response.outcomeReceipts,
+      trigger: args.trigger,
+    });
+    if (capture) {
+      response.closeoutReceipt = capture;
+      captures.push(capture);
+    }
+  }
+  args.state.updatedAt = new Date().toISOString();
+  writeWorkflowState(args.state);
+  return captures;
+}
+
 async function publishWorkflowStartCoordination(
   state: ManagedWorkflowState,
   mode: ManagedWorkflowCoordinationMode,
@@ -11195,6 +11572,142 @@ export async function workflowStartCommand(options: {
   }
   printManagedWorkflowState(state);
   printManagedWorkflowNextCommands(state);
+}
+
+export async function workflowJudgmentCommand(options: {
+  refresh?: boolean;
+  json?: boolean;
+}): Promise<void> {
+  const state = readRequiredWorkflowState();
+  if (state.judgment && !options.refresh) {
+    if (options.json) {
+      printJson({ workflowId: state.workflowId, judgment: state.judgment });
+      return;
+    }
+    console.log(formatProjectJudgmentCard(state.judgment.card));
+    printManagedWorkflowJudgmentNextCommands(state);
+    return;
+  }
+  if (state.judgment?.responses.length) {
+    throw new Error(
+      "Cannot refresh a managed judgment after responses were recorded; start a new workflow for a new served judgment."
+    );
+  }
+
+  const result = await buildProjectIntelligenceRun({
+    task: state.goal,
+    changedFiles: managedWorkflowJudgmentFiles(state),
+    diffSummary: state.goal,
+    skipGuard: true,
+    skipAdvisorReceipts: true,
+  });
+  state.judgment = {
+    version: "snipara.workflow.judgment.v1",
+    generatedAt: result.generatedAt,
+    runEnvelope: result.runEnvelope,
+    brief: managedWorkflowJudgmentBrief(result.brief),
+    card: result.judgmentCard,
+    responses: [],
+  };
+  state.updatedAt = new Date().toISOString();
+  writeWorkflowState(state);
+  appendActivityEvent({
+    source: "workflow",
+    kind: "workflow-judgment",
+    title: state.judgment.card.summary,
+    summary: `${state.judgment.card.advisorRecommendations.length} advisor recommendation(s) served for explicit response.`,
+    workflowId: state.workflowId,
+    files: state.judgment.brief.changedFiles,
+    refs: [state.judgment.brief.servedJudgmentId].filter(Boolean) as string[],
+    timestamp: state.judgment.generatedAt,
+    metadata: {
+      state: state.judgment.card.state,
+      canProceed: state.judgment.card.canProceed,
+      recommendationCount: state.judgment.card.advisorRecommendations.length,
+      identityStatus: state.judgment.brief.servedJudgmentId ? "linked" : "missing",
+    },
+  });
+  writeSessionSnapshot();
+
+  if (options.json) {
+    printJson({ workflowId: state.workflowId, judgment: state.judgment });
+    return;
+  }
+  console.log(formatProjectJudgmentCard(state.judgment.card));
+  printManagedWorkflowJudgmentNextCommands(state);
+}
+
+export async function workflowJudgmentRespondCommand(options: {
+  recommendationId: string;
+  decision: string;
+  planBefore?: string;
+  planAfter?: string;
+  json?: boolean;
+}): Promise<void> {
+  const state = readRequiredWorkflowState();
+  const judgment = state.judgment;
+  if (!judgment) {
+    throw new Error("No managed judgment found. Run 'snipara-companion workflow judgment' first.");
+  }
+  const recommendation = judgment.card.advisorRecommendations.find(
+    (item) => item.id === options.recommendationId
+  );
+  if (!recommendation) {
+    throw new Error(
+      `Advisor recommendation '${options.recommendationId}' was not served by this workflow judgment.`
+    );
+  }
+  const decision = normalizeWorkflowAdvisorDecision(options.decision);
+  const planBefore = normalizeWorkflowPlanSnapshot(options.planBefore);
+  const planAfter = normalizeWorkflowPlanSnapshot(options.planAfter);
+  validateWorkflowJudgmentResponse({ decision, planBefore, planAfter });
+  const response: ManagedWorkflowJudgmentResponse = {
+    recommendationId: recommendation.id,
+    decision,
+    respondedAt: new Date().toISOString(),
+    ...(planBefore ? { planBefore } : {}),
+    ...(planAfter ? { planAfter } : {}),
+  };
+  response.initialReceipt = await captureManagedWorkflowJudgmentResponse({
+    state,
+    response,
+    trigger: "snipara-companion workflow judgment-respond",
+  });
+  judgment.responses = [
+    ...judgment.responses.filter((item) => item.recommendationId !== recommendation.id),
+    response,
+  ];
+  state.updatedAt = response.respondedAt;
+  writeWorkflowState(state);
+  appendActivityEvent({
+    source: "workflow",
+    kind: "workflow-judgment-response",
+    title: recommendation.title,
+    summary: `Agent explicitly ${decision} recommendation ${recommendation.id}.`,
+    workflowId: state.workflowId,
+    files: judgment.brief.changedFiles,
+    refs: [judgment.brief.servedJudgmentId, recommendation.id].filter(Boolean) as string[],
+    timestamp: response.respondedAt,
+    metadata: {
+      decision,
+      receiptStatus: response.initialReceipt?.status ?? "unavailable",
+      recordedCount: response.initialReceipt?.recordedCount ?? 0,
+    },
+  });
+  writeSessionSnapshot();
+
+  if (options.json) {
+    printJson({ workflowId: state.workflowId, recommendation, response });
+    return;
+  }
+  console.log(chalk.bold("Workflow judgment response"));
+  printKeyValue("Recommendation:", recommendation.id);
+  printKeyValue("Decision:", decision);
+  printKeyValue("Receipt:", response.initialReceipt?.status ?? "unavailable");
+  if (response.initialReceipt?.reason) {
+    printKeyValue("Reason:", response.initialReceipt.reason);
+  }
+  console.log("");
 }
 
 export async function workflowStatusCommand(options: {
@@ -12583,6 +13096,7 @@ export async function workflowPhaseCommitCommand(options: {
   category?: string;
   outcome?: TaskCommitOutcome;
   files?: string[];
+  evidence?: string[];
   json?: boolean;
 }): Promise<void> {
   const state = readRequiredWorkflowState();
@@ -12649,6 +13163,16 @@ export async function workflowPhaseCommitCommand(options: {
     committedAt: now,
   };
   writeWorkflowState(state);
+  const judgmentReceipts = await closeManagedWorkflowJudgment({
+    state,
+    summary: options.summary,
+    outcome,
+    files,
+    evidence: options.evidence,
+    sourceRef: `workflow:${state.workflowId}:phase:${phase.id}`,
+    trigger: "snipara-companion workflow phase-commit",
+    requireEvidence: true,
+  });
   const shouldCompleteTeamSyncWork =
     outcome === "completed" && state.status === "completed";
   const completedTeamSyncWork = shouldCompleteTeamSyncWork
@@ -12719,6 +13243,7 @@ export async function workflowPhaseCommitCommand(options: {
       journalStatus: journal.status,
       teamSyncCompletedCount: completedTeamSyncWork.length,
       coordinationReleaseStatus: coordinationRelease?.hostedReleaseStatus,
+      judgmentReceiptCount: judgmentReceipts.length,
     },
   });
   if (producerLoopArtifact.status === "written") {
@@ -12750,6 +13275,7 @@ export async function workflowPhaseCommitCommand(options: {
       producerLoopArtifact,
       whyCapture,
       coordinationRelease,
+      judgmentReceipts,
     });
     return;
   }
@@ -12758,6 +13284,11 @@ export async function workflowPhaseCommitCommand(options: {
   printTeamSyncCompletionNotice(completedTeamSyncWork);
   printProducerLoopArtifactNotice(producerLoopArtifact);
   printWhyCaptureNotice(whyCapture);
+  if (judgmentReceipts.length > 0) {
+    console.log(
+      `Judgment receipts: ${judgmentReceipts.filter((receipt) => receipt.status === "recorded").length}/${judgmentReceipts.length} recorded`
+    );
+  }
   printManagedWorkflowState(state);
   printManagedWorkflowNextCommands(state);
 }
@@ -12773,13 +13304,26 @@ export async function finalCommitCommand(options: {
   nextStep?: string;
   json?: boolean;
 }): Promise<void> {
+  const state = readWorkflowState();
+  const pendingJudgmentResponses = state?.judgment?.card.advisorRecommendations.filter(
+    (recommendation) =>
+      !state.judgment?.responses.some((response) => response.recommendationId === recommendation.id)
+  );
+  if (pendingJudgmentResponses && pendingJudgmentResponses.length > 0) {
+    throw new Error(
+      `Managed workflow judgment has ${pendingJudgmentResponses.length} unanswered recommendation(s): ${pendingJudgmentResponses
+        .map((item) => item.id)
+        .join(
+          ", "
+        )}. Record accepted, modified, ignored, or blocked explicitly before final-commit.`
+    );
+  }
   await memoryGuardCheckCommand({
     trigger: "pre-final",
     files: options.files,
     strict: true,
   });
 
-  const state = readWorkflowState();
   const outcome = options.outcome ?? "completed";
   const category = normalizeFinalCommitCategory(options.category);
   const result = await commitFinalTaskMemory({
@@ -12804,6 +13348,15 @@ export async function finalCommitCommand(options: {
     };
     writeWorkflowState(state);
   }
+  const judgmentReceipts = await closeManagedWorkflowJudgment({
+    state,
+    summary: options.summary,
+    outcome,
+    files: options.files,
+    evidence: options.evidence,
+    sourceRef: `workflow:${state?.workflowId ?? "unmanaged"}:final`,
+    trigger: "snipara-companion workflow final-commit",
+  });
   const completedTeamSyncWork =
     outcome === "completed"
       ? completeTeamSyncStateFromEvidence(process.cwd(), {
@@ -12893,6 +13446,7 @@ export async function finalCommitCommand(options: {
       journalStatus: journal.status,
       teamSyncCompletedCount: completedTeamSyncWork.length,
       coordinationReleaseStatus: coordinationRelease?.hostedReleaseStatus,
+      judgmentReceiptCount: judgmentReceipts.length,
     },
   });
   if (producerLoopArtifact.status === "written") {
@@ -12925,6 +13479,7 @@ export async function finalCommitCommand(options: {
       coordinationRelease,
       report,
       reportArtifact,
+      judgmentReceipts,
     });
     return;
   }
@@ -12942,6 +13497,11 @@ export async function finalCommitCommand(options: {
   printTeamSyncCompletionNotice(completedTeamSyncWork);
   printProducerLoopArtifactNotice(producerLoopArtifact);
   printWhyCaptureNotice(whyCapture);
+  if (judgmentReceipts.length > 0) {
+    console.log(
+      `Judgment receipts: ${judgmentReceipts.filter((receipt) => receipt.status === "recorded").length}/${judgmentReceipts.length} recorded`
+    );
+  }
   if (state) {
     printManagedWorkflowState(state);
   }
