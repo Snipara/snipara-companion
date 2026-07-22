@@ -2,6 +2,38 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 3.6.2
+
+- Adds `snipara.semantic.v1` to local code overlays and impact results with
+  evidence-backed public APIs, implicit contracts, architecture roles, and
+  critical-versus-incidental dependency classification.
+- Marks explicit TypeScript and Go exports during extraction and bumps the
+  local extractor version to `3` while preserving the overlay v2 envelope.
+- Adds semantic risk points to local impact, preserving every contributing
+  assertion and rule as inspectable evidence.
+- Merges local and hosted semantic assertions with explicit provenance in
+  hybrid mode. Historical regression-path associations stay shadow-only and
+  cannot silently change the risk score.
+
+## New In 3.6.1
+
+- Enforces `--max-nodes` as a strict total traversal budget, including seed
+  symbols, so impact analysis cannot exceed the configured graph bound for
+  symbol-heavy files.
+
+## New In 3.6.0
+
+- Upgrades the local code overlay to v2 with TypeScript Compiler API symbols,
+  stable identities, and `CALLS`, `REFERENCES`, `IMPORTS`, and `CONTAINS` edges.
+- Adds bounded transitive callers, neighbors, shortest paths, and impact with
+  depth/direction/edge filters, cycle and node budgets, chains, and explainable
+  local risk scoring.
+- Reuses unchanged per-file extraction slices during sync and `source watch`.
+- Adds `--source hybrid` and `--fallback-hosted`: configured dirty/ahead
+  checkouts preserve the hosted canonical base plus the local delta, with
+  explicit degraded provenance when hosted enrichment fails.
+- Sends impact depth, direction, and edge-kind controls to hosted MCP.
+
 ## New In 3.5.10
 
 - Reports hosted `decision_capture.created` drafts as pending Why Capture

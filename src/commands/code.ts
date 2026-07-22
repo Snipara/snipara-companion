@@ -15,6 +15,7 @@ import http, { IncomingMessage, ServerResponse } from "http";
 import type { AddressInfo } from "net";
 import path from "path";
 import chalk from "chalk";
+import ts from "typescript";
 import { createClient } from "../api/client";
 import { findWorkspaceRoot, isConfigured, loadConfig } from "../config/store";
 import { emitCanonicalEvent } from "./events";
@@ -37,6 +38,8 @@ export interface LocalCodeOverlayFile {
   sha256: string;
   symbolCount: number;
   importCount: number;
+  referenceCount: number;
+  edgeCount: number;
 }
 
 export interface LocalCodeOverlaySymbol {
@@ -44,13 +47,113 @@ export interface LocalCodeOverlaySymbol {
   kind: "function" | "class" | "interface" | "type" | "variable" | "method";
   filePath: string;
   line: number;
+  endLine?: number;
+  qualifiedName: string;
   localKey: string;
+  exported?: boolean;
+  defaultExport?: boolean;
+}
+
+export type LocalSemanticPredicate =
+  | "public_api"
+  | "implicit_contract"
+  | "architecture_role"
+  | "dependency_criticality";
+
+export interface LocalSemanticEvidence {
+  kind: string;
+  detail: string;
+  filePath?: string;
+  line?: number;
+  edgeKind?: LocalCodeOverlayEdge["kind"];
+}
+
+export interface LocalSemanticAssertion {
+  id: string;
+  subject: string;
+  predicate: LocalSemanticPredicate;
+  value: string | boolean;
+  confidence: number;
+  source:
+    | "typescript-compiler-api"
+    | "language-parser"
+    | "architecture-pattern-rules"
+    | "criticality-rules"
+    | "graph-criticality-rules";
+  extractorVersion: 1;
+  evidence: LocalSemanticEvidence[];
+}
+
+export interface LocalSemanticModel {
+  version: "snipara.semantic.v1";
+  extractorVersion: 1;
+  source: "deterministic-graph-inference";
+  scope: "repository" | "impact";
+  assertions: LocalSemanticAssertion[];
+  publicContracts: LocalSemanticAssertion[];
+  architectureRoles: LocalSemanticAssertion[];
+  dependencyCriticality: LocalSemanticAssertion[];
+  truncation: {
+    truncated: boolean;
+    totalAssertionCount: number;
+    returnedAssertionCount: number;
+    assertionLimit: number;
+  };
+  historicalRegression: {
+    mode: "shadow";
+    sampleThreshold: 3;
+    failureEventCount: 0;
+    associations: [];
+    riskContributionEnabled: false;
+    suggestedRiskDelta: 0;
+    caveat: string;
+  };
+  summary: {
+    assertionCount: number;
+    publicContractCount: number;
+    architectureRoleCount: number;
+    criticalDependencyCount: number;
+    criticalEdgeCount: number;
+    incidentalDependencyCount: number;
+    historicalAssociationCount: 0;
+  };
+  caveats: string[];
+}
+
+export interface LocalCodeOverlayImportBinding {
+  localName: string;
+  importedName: string;
+  kind: "named" | "default" | "namespace";
 }
 
 export interface LocalCodeOverlayImport {
   filePath: string;
   specifier: string;
   line: number;
+  bindings?: LocalCodeOverlayImportBinding[];
+}
+
+export interface LocalCodeOverlayReference {
+  filePath: string;
+  from: string;
+  name: string;
+  kind: "CALLS" | "REFERENCES";
+  line: number;
+  confidence: number;
+}
+
+export interface LocalCodeOverlayEdge {
+  from: string;
+  to: string;
+  kind: "IMPORTS" | "CALLS" | "REFERENCES" | "CONTAINS";
+  filePath: string;
+  line: number;
+  confidence: number;
+  source: "typescript-compiler-api" | "language-parser" | "import-resolver";
+  evidence: {
+    filePath: string;
+    line: number;
+  };
 }
 
 export interface LocalCodeOverlayWarning {
@@ -67,7 +170,8 @@ export interface LocalCodeOverlayExcludedFile {
 }
 
 export interface LocalCodeOverlayManifest {
-  version: "snipara.local_code_overlay.v1";
+  version: "snipara.local_code_overlay.v2";
+  extractorVersion: 2 | 3;
   generatedAt: string;
   indexedAt: string;
   repoRoot: string;
@@ -85,6 +189,14 @@ export interface LocalCodeOverlayManifest {
   files: LocalCodeOverlayFile[];
   symbols: LocalCodeOverlaySymbol[];
   imports: LocalCodeOverlayImport[];
+  references: LocalCodeOverlayReference[];
+  edges: LocalCodeOverlayEdge[];
+  semantic?: LocalSemanticModel;
+  incremental: {
+    reusedFiles: number;
+    parsedFiles: number;
+    deletedFiles: number;
+  };
   excluded: {
     total: number;
     byReason: Record<LocalCodeOverlayExcludedFile["reason"], number>;
@@ -125,18 +237,21 @@ export interface LocalCodeQueryCommandOptions extends CodeStatusCommandOptions {
   from?: string;
   to?: string;
   maxHops?: number;
+  depth?: number;
+  direction?: "in" | "out" | "both";
+  edgeKinds?: string[];
+  maxNodes?: number;
+  transitive?: boolean;
 }
 
-export type CodeGraphSource = "auto" | "hosted" | "local";
-export type ResolvedCodeGraphSource = "hosted_graph" | "local_overlay";
+export type CodeGraphSource = "auto" | "hosted" | "local" | "hybrid";
+export type ResolvedCodeGraphSource = "hosted_graph" | "local_overlay" | "hybrid_graph";
 export type CodeGraphVerb = "callers" | "imports" | "neighbors" | "shortest-path" | "impact";
 
 export interface CodeGraphAutoSourceOptions extends LocalCodeQueryCommandOptions {
   source?: CodeGraphSource;
-  depth?: number;
-  direction?: "in" | "out";
+  fallbackHosted?: boolean;
   includeFileNodes?: boolean;
-  edgeKinds?: string[];
   diffSummary?: string;
   limit?: number;
 }
@@ -161,12 +276,14 @@ export interface CodeGraphSourceSelection {
     fileCount: number;
     symbolCount: number;
     importCount: number;
+    edgeCount: number;
     warnings: LocalCodeOverlayManifest["warnings"];
   };
   hosted?: {
     configured: boolean;
     indexFreshness?: unknown;
     contextScope?: unknown;
+    error?: string;
   };
   limitations: string[];
 }
@@ -249,8 +366,12 @@ export interface LocalCodeOverlaySummary {
     files: number;
     symbols: number;
     imports: number;
+    references: number;
+    edges: number;
+    semanticAssertions: number;
     excluded: number;
   };
+  incremental: LocalCodeOverlayManifest["incremental"];
   excludedByReason: Record<LocalCodeOverlayExcludedFile["reason"], number>;
   fileSamples: string[];
   warnings: LocalCodeOverlayManifest["warnings"];
@@ -377,6 +498,15 @@ function positiveInteger(value: number | undefined, fallback: number, label = "v
     return Math.floor(value);
   }
   throw new Error(`${label} must be a positive integer.`);
+}
+
+function traversalDirection(
+  value: LocalCodeQueryCommandOptions["direction"],
+  fallback: "in" | "out" | "both" = "both"
+): "in" | "out" | "both" {
+  if (value === undefined) return fallback;
+  if (value === "in" || value === "out" || value === "both") return value;
+  throw new Error("--direction must be one of: in, out, both");
 }
 
 function nonNegativeInteger(value: number | undefined, fallback: number): number {
@@ -693,61 +823,259 @@ function lineNumberFromIndex(content: string, index: number): number {
   return content.slice(0, index).split(/\r?\n/).length;
 }
 
-function buildSymbolKey(filePath: string, name: string, line: number): string {
-  return `local::${filePath}::${name}::${line}`;
+function buildSymbolKey(
+  filePath: string,
+  qualifiedName: string,
+  kind: LocalCodeOverlaySymbol["kind"]
+): string {
+  return `local::${filePath}::${kind}::${qualifiedName}`;
 }
 
-function extractTypeScript(
-  content: string,
-  filePath: string
-): {
+function buildFileNodeKey(filePath: string): string {
+  return `local-file::${filePath}`;
+}
+
+interface ExtractedLocalCode {
   symbols: LocalCodeOverlaySymbol[];
   imports: LocalCodeOverlayImport[];
-} {
+  references: LocalCodeOverlayReference[];
+  edges: LocalCodeOverlayEdge[];
+}
+
+function typeScriptScriptKind(filePath: string): ts.ScriptKind {
+  if (filePath.endsWith(".tsx")) return ts.ScriptKind.TSX;
+  if (filePath.endsWith(".mts")) return ts.ScriptKind.TS;
+  if (filePath.endsWith(".cts")) return ts.ScriptKind.TS;
+  return ts.ScriptKind.TS;
+}
+
+function typeScriptNodeName(node: ts.NamedDeclaration): string | null {
+  if (!node.name) return null;
+  if (ts.isIdentifier(node.name) || ts.isPrivateIdentifier(node.name)) {
+    return node.name.text;
+  }
+  if (ts.isStringLiteral(node.name) || ts.isNumericLiteral(node.name)) {
+    return node.name.text;
+  }
+  return node.name.getText();
+}
+
+function typeScriptLine(sourceFile: ts.SourceFile, node: ts.Node): number {
+  return sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+}
+
+function typeScriptEndLine(sourceFile: ts.SourceFile, node: ts.Node): number {
+  return sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
+}
+
+function typeScriptExportStatus(
+  node: ts.Node,
+  name: string,
+  namedExports: Set<string>
+): { exported: boolean; defaultExport: boolean } {
+  let declaration: ts.Node = node;
+  if (ts.isVariableDeclaration(node) && ts.isVariableDeclarationList(node.parent)) {
+    const statement = node.parent.parent;
+    if (ts.isVariableStatement(statement)) declaration = statement;
+  }
+  const modifiers = ts.canHaveModifiers(declaration) ? ts.getModifiers(declaration) : undefined;
+  const exported =
+    namedExports.has(name) ||
+    modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword);
+  const defaultExport =
+    modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword) ?? false;
+  return { exported: Boolean(exported || defaultExport), defaultExport };
+}
+
+function extractTypeScript(content: string, filePath: string): ExtractedLocalCode {
   const symbols: LocalCodeOverlaySymbol[] = [];
   const imports: LocalCodeOverlayImport[] = [];
-  const symbolPattern =
-    /^\s*(?:export\s+)?(?:(?:async\s+)?function|class|interface|type|const|let|var)\s+([A-Za-z_$][\w$]*)/gm;
-  const importPattern =
-    /\b(?:import|export)\s+(?:[^"']*?\s+from\s+)?["']([^"']+)["']|\brequire\(\s*["']([^"']+)["']\s*\)|\bimport\(\s*["']([^"']+)["']\s*\)/g;
-
-  for (const match of content.matchAll(symbolPattern)) {
-    const name = match[1];
-    if (!name || match.index === undefined) {
-      continue;
+  const references: LocalCodeOverlayReference[] = [];
+  const edges: LocalCodeOverlayEdge[] = [];
+  const sourceFile = ts.createSourceFile(
+    filePath,
+    content,
+    ts.ScriptTarget.Latest,
+    true,
+    typeScriptScriptKind(filePath)
+  );
+  const namedExports = new Set<string>();
+  for (const statement of sourceFile.statements) {
+    if (
+      ts.isExportDeclaration(statement) &&
+      !statement.moduleSpecifier &&
+      statement.exportClause &&
+      ts.isNamedExports(statement.exportClause)
+    ) {
+      for (const element of statement.exportClause.elements) {
+        namedExports.add(element.propertyName?.text ?? element.name.text);
+      }
     }
-    const source = match[0];
-    const kind = source.includes("class")
-      ? "class"
-      : source.includes("interface")
-        ? "interface"
-        : source.includes("type")
-          ? "type"
-          : source.includes("function")
-            ? "function"
-            : "variable";
-    const line = lineNumberFromIndex(content, match.index);
-    symbols.push({ name, kind, filePath, line, localKey: buildSymbolKey(filePath, name, line) });
   }
 
-  for (const match of content.matchAll(importPattern)) {
-    const specifier = match[1] ?? match[2] ?? match[3];
-    if (!specifier || match.index === undefined) {
-      continue;
+  const addSymbol = (
+    node: ts.Node,
+    name: string,
+    kind: LocalCodeOverlaySymbol["kind"],
+    ownerQualifiedName?: string,
+    ownerKey?: string
+  ): LocalCodeOverlaySymbol => {
+    const qualifiedName = ownerQualifiedName ? `${ownerQualifiedName}.${name}` : name;
+    const line = typeScriptLine(sourceFile, node);
+    const exportStatus = ownerQualifiedName
+      ? { exported: false, defaultExport: false }
+      : typeScriptExportStatus(node, name, namedExports);
+    const symbol: LocalCodeOverlaySymbol = {
+      name,
+      kind,
+      filePath,
+      line,
+      endLine: typeScriptEndLine(sourceFile, node),
+      qualifiedName,
+      localKey: buildSymbolKey(filePath, qualifiedName, kind),
+      exported: exportStatus.exported,
+      defaultExport: exportStatus.defaultExport,
+    };
+    symbols.push(symbol);
+    if (ownerKey) {
+      edges.push({
+        from: ownerKey,
+        to: symbol.localKey,
+        kind: "CONTAINS",
+        filePath,
+        line,
+        confidence: 1,
+        source: "typescript-compiler-api",
+        evidence: { filePath, line },
+      });
     }
-    imports.push({ filePath, specifier, line: lineNumberFromIndex(content, match.index) });
-  }
+    return symbol;
+  };
 
-  return { symbols, imports };
+  const addImport = (node: ts.ImportDeclaration | ts.ExportDeclaration): void => {
+    if (!node.moduleSpecifier || !ts.isStringLiteral(node.moduleSpecifier)) return;
+    const bindings: LocalCodeOverlayImportBinding[] = [];
+    if (ts.isImportDeclaration(node) && node.importClause) {
+      if (node.importClause.name) {
+        bindings.push({
+          localName: node.importClause.name.text,
+          importedName: "default",
+          kind: "default",
+        });
+      }
+      const namedBindings = node.importClause.namedBindings;
+      if (namedBindings && ts.isNamespaceImport(namedBindings)) {
+        bindings.push({
+          localName: namedBindings.name.text,
+          importedName: "*",
+          kind: "namespace",
+        });
+      } else if (namedBindings && ts.isNamedImports(namedBindings)) {
+        for (const element of namedBindings.elements) {
+          bindings.push({
+            localName: element.name.text,
+            importedName: element.propertyName?.text ?? element.name.text,
+            kind: "named",
+          });
+        }
+      }
+    }
+    imports.push({
+      filePath,
+      specifier: node.moduleSpecifier.text,
+      line: typeScriptLine(sourceFile, node),
+      bindings,
+    });
+  };
+
+  const visit = (
+    node: ts.Node,
+    owner?: LocalCodeOverlaySymbol,
+    ownerQualifiedName?: string
+  ): void => {
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+      addImport(node);
+      return;
+    }
+
+    let childOwner = owner;
+    let childQualifiedName = ownerQualifiedName;
+    if (ts.isFunctionDeclaration(node) && node.name) {
+      childOwner = addSymbol(node, node.name.text, "function", ownerQualifiedName, owner?.localKey);
+      childQualifiedName = childOwner.qualifiedName;
+    } else if (ts.isClassDeclaration(node) && node.name) {
+      childOwner = addSymbol(node, node.name.text, "class", ownerQualifiedName, owner?.localKey);
+      childQualifiedName = childOwner.qualifiedName;
+    } else if (ts.isInterfaceDeclaration(node)) {
+      addSymbol(node, node.name.text, "interface", ownerQualifiedName, owner?.localKey);
+    } else if (ts.isTypeAliasDeclaration(node)) {
+      addSymbol(node, node.name.text, "type", ownerQualifiedName, owner?.localKey);
+    } else if (ts.isMethodDeclaration(node)) {
+      const name = typeScriptNodeName(node);
+      if (name) {
+        childOwner = addSymbol(node, name, "method", ownerQualifiedName, owner?.localKey);
+        childQualifiedName = childOwner.qualifiedName;
+      }
+    } else if (ts.isPropertyDeclaration(node)) {
+      const name = typeScriptNodeName(node);
+      if (
+        name &&
+        node.initializer &&
+        (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+      ) {
+        childOwner = addSymbol(node, name, "method", ownerQualifiedName, owner?.localKey);
+        childQualifiedName = childOwner.qualifiedName;
+      }
+    } else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+      const callable =
+        node.initializer &&
+        (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer));
+      const declarationStatement = node.parent?.parent;
+      const topLevel =
+        declarationStatement &&
+        ts.isVariableStatement(declarationStatement) &&
+        ts.isSourceFile(declarationStatement.parent);
+      if (callable || topLevel) {
+        childOwner = addSymbol(
+          node,
+          node.name.text,
+          callable ? "function" : "variable",
+          ownerQualifiedName,
+          owner?.localKey
+        );
+        childQualifiedName = callable ? childOwner.qualifiedName : ownerQualifiedName;
+      }
+    }
+
+    const referenceOwner = childOwner ?? owner;
+    if (referenceOwner && ts.isCallExpression(node)) {
+      references.push({
+        filePath,
+        from: referenceOwner.localKey,
+        name: node.expression.getText(sourceFile),
+        kind: "CALLS",
+        line: typeScriptLine(sourceFile, node),
+        confidence: 0.85,
+      });
+    } else if (referenceOwner && ts.isTypeReferenceNode(node)) {
+      references.push({
+        filePath,
+        from: referenceOwner.localKey,
+        name: node.typeName.getText(sourceFile),
+        kind: "REFERENCES",
+        line: typeScriptLine(sourceFile, node),
+        confidence: 0.65,
+      });
+    }
+
+    ts.forEachChild(node, (child) => visit(child, childOwner, childQualifiedName));
+  };
+
+  visit(sourceFile);
+  return { symbols, imports, references, edges };
 }
 
-function extractPython(
-  content: string,
-  filePath: string
-): {
-  symbols: LocalCodeOverlaySymbol[];
-  imports: LocalCodeOverlayImport[];
-} {
+function extractPython(content: string, filePath: string): ExtractedLocalCode {
   const symbols: LocalCodeOverlaySymbol[] = [];
   const imports: LocalCodeOverlayImport[] = [];
   const symbolPattern = /^(\s*)(class|def|async\s+def)\s+([A-Za-z_][\w]*)/gm;
@@ -767,7 +1095,17 @@ function extractPython(
           ? "class"
           : "function";
     const line = lineNumberFromIndex(content, match.index);
-    symbols.push({ name, kind, filePath, line, localKey: buildSymbolKey(filePath, name, line) });
+    const qualifiedName = name;
+    symbols.push({
+      name,
+      kind,
+      filePath,
+      line,
+      qualifiedName,
+      localKey: buildSymbolKey(filePath, qualifiedName, kind),
+      exported: /^[A-Z]/.test(name),
+      defaultExport: false,
+    });
   }
 
   for (const match of content.matchAll(importPattern)) {
@@ -778,16 +1116,10 @@ function extractPython(
     imports.push({ filePath, specifier, line: lineNumberFromIndex(content, match.index) });
   }
 
-  return { symbols, imports };
+  return { symbols, imports, references: [], edges: [] };
 }
 
-function extractGo(
-  content: string,
-  filePath: string
-): {
-  symbols: LocalCodeOverlaySymbol[];
-  imports: LocalCodeOverlayImport[];
-} {
+function extractGo(content: string, filePath: string): ExtractedLocalCode {
   const symbols: LocalCodeOverlaySymbol[] = [];
   const imports: LocalCodeOverlayImport[] = [];
   const symbolPattern = /^\s*(func|type)\s+(?:\([^)]*\)\s*)?([A-Za-z_][\w]*)/gm;
@@ -800,7 +1132,15 @@ function extractGo(
     }
     const kind = match[1] === "type" ? "type" : "function";
     const line = lineNumberFromIndex(content, match.index);
-    symbols.push({ name, kind, filePath, line, localKey: buildSymbolKey(filePath, name, line) });
+    const qualifiedName = name;
+    symbols.push({
+      name,
+      kind,
+      filePath,
+      line,
+      qualifiedName,
+      localKey: buildSymbolKey(filePath, qualifiedName, kind),
+    });
   }
 
   for (const match of content.matchAll(importPattern)) {
@@ -825,17 +1165,14 @@ function extractGo(
     }
   }
 
-  return { symbols, imports };
+  return { symbols, imports, references: [], edges: [] };
 }
 
 function extractCode(
   content: string,
   filePath: string,
   language: LocalCodeOverlayFile["language"]
-): {
-  symbols: LocalCodeOverlaySymbol[];
-  imports: LocalCodeOverlayImport[];
-} {
+): ExtractedLocalCode {
   switch (language) {
     case "typescript":
       return extractTypeScript(content, filePath);
@@ -920,9 +1257,15 @@ export function buildLocalCodeOverlay(
   const sniparaIgnore = readSniparaIgnore(repoRoot);
   const candidateFiles =
     mode === "local_commit" ? listCommitFiles(repoRoot, commit) : listWorkingTreeFiles(repoRoot);
+  const previous = readLocalCodeOverlayCache(repoRoot);
+  const previousFiles = new Map((previous?.files ?? []).map((file) => [file.path, file]));
   const files: LocalCodeOverlayFile[] = [];
   const symbols: LocalCodeOverlaySymbol[] = [];
   const imports: LocalCodeOverlayImport[] = [];
+  const references: LocalCodeOverlayReference[] = [];
+  const extractedEdges: LocalCodeOverlayEdge[] = [];
+  let reusedFiles = 0;
+  let parsedFiles = 0;
   const excludedSamples: LocalCodeOverlayExcludedFile[] = [];
   const secretRedactionSamples: SecretRedactionSample[] = [];
   const byReason: Record<LocalCodeOverlayExcludedFile["reason"], number> = {
@@ -980,18 +1323,50 @@ export function buildLocalCodeOverlay(
       secretRedactionSamples.push({ path: filePath, findings: redaction.findings });
     }
 
-    const extracted = extractCode(indexedContent, filePath, language);
+    const contentHash = sha256(indexedContent);
+    const previousFile = previousFiles.get(filePath);
+    const canReuse =
+      previous?.version === "snipara.local_code_overlay.v2" &&
+      previous.extractorVersion === 3 &&
+      previousFile?.sha256 === contentHash &&
+      previousFile.language === language;
+    const extracted: ExtractedLocalCode = canReuse
+      ? {
+          symbols: previous.symbols.filter((item) => item.filePath === filePath),
+          imports: previous.imports.filter((item) => item.filePath === filePath),
+          references: previous.references.filter((item) => item.filePath === filePath),
+          edges: previous.edges.filter(
+            (item) => item.filePath === filePath && item.kind === "CONTAINS"
+          ),
+        }
+      : extractCode(indexedContent, filePath, language);
+    if (canReuse) reusedFiles += 1;
+    else parsedFiles += 1;
     files.push({
       path: filePath,
       language,
       sizeBytes: contentBuffer.length,
-      sha256: sha256(indexedContent),
+      sha256: contentHash,
       symbolCount: extracted.symbols.length,
       importCount: extracted.imports.length,
+      referenceCount: extracted.references.length,
+      edgeCount: extracted.edges.length,
     });
     symbols.push(...extracted.symbols);
     imports.push(...extracted.imports);
+    references.push(...extracted.references);
+    extractedEdges.push(...extracted.edges);
   }
+
+  const edges = resolveLocalGraphEdges(files, symbols, imports, references, extractedEdges);
+  const semantic = buildLocalSemanticModel({ symbols, edges });
+  for (const file of files) {
+    file.edgeCount = edges.filter((edge) => edge.filePath === file.path).length;
+  }
+  const currentFilePaths = new Set(files.map((file) => file.path));
+  const deletedFiles = previous
+    ? previous.files.filter((file) => !currentFilePaths.has(file.path)).length
+    : 0;
 
   if (mode === "working_tree" && !localHeadSha && files.length > 0) {
     warnings.push({
@@ -1030,7 +1405,8 @@ export function buildLocalCodeOverlay(
       : null;
 
   return {
-    version: "snipara.local_code_overlay.v1",
+    version: "snipara.local_code_overlay.v2",
+    extractorVersion: 3,
     generatedAt: now,
     indexedAt: now,
     repoRoot,
@@ -1054,6 +1430,14 @@ export function buildLocalCodeOverlay(
     files,
     symbols,
     imports,
+    references,
+    edges,
+    semantic,
+    incremental: {
+      reusedFiles,
+      parsedFiles,
+      deletedFiles,
+    },
     excluded: {
       total: Object.values(byReason).reduce((sum, count) => sum + count, 0),
       byReason,
@@ -1086,8 +1470,12 @@ export function summarizeLocalCodeOverlay(
       files: manifest.files.length,
       symbols: manifest.symbols.length,
       imports: manifest.imports.length,
+      references: manifest.references.length,
+      edges: manifest.edges.length,
+      semanticAssertions: manifest.semantic?.assertions.length ?? 0,
       excluded: manifest.excluded.total,
     },
+    incremental: manifest.incremental,
     excludedByReason: manifest.excluded.byReason,
     fileSamples: manifest.files.slice(0, 20).map((file) => file.path),
     warnings: manifest.warnings,
@@ -1109,8 +1497,14 @@ export function readLocalCodeOverlayCache(
     return null;
   }
   try {
-    const parsed = JSON.parse(fs.readFileSync(cachePath, "utf8")) as LocalCodeOverlayManifest;
-    return parsed && parsed.version === "snipara.local_code_overlay.v1" ? parsed : null;
+    const parsed = JSON.parse(fs.readFileSync(cachePath, "utf8")) as Record<string, unknown>;
+    if (parsed?.version === "snipara.local_code_overlay.v2") {
+      return parsed as unknown as LocalCodeOverlayManifest;
+    }
+    if (parsed?.version === "snipara.local_code_overlay.v1") {
+      return upgradeLegacyLocalCodeOverlay(parsed);
+    }
+    return null;
   } catch {
     return null;
   }
@@ -1148,6 +1542,11 @@ function printManifestSummary(manifest: LocalCodeOverlayManifest, cachePath?: st
   console.log(`Files: ${manifest.files.length}`);
   console.log(`Symbols: ${manifest.symbols.length}`);
   console.log(`Imports: ${manifest.imports.length}`);
+  console.log(`References: ${manifest.references.length}`);
+  console.log(`Edges: ${manifest.edges.length}`);
+  console.log(
+    `Incremental: ${manifest.incremental.reusedFiles} reused, ${manifest.incremental.parsedFiles} parsed, ${manifest.incremental.deletedFiles} deleted`
+  );
   console.log(`Excluded: ${manifest.excluded.total}`);
   if (manifest.dirtyTreeHash) {
     console.log(`Dirty tree hash: ${manifest.dirtyTreeHash}`);
@@ -1165,6 +1564,7 @@ function printManifestSummary(manifest: LocalCodeOverlayManifest, cachePath?: st
 function compactSymbol(symbol: LocalCodeOverlaySymbol): Record<string, unknown> {
   return {
     name: symbol.name,
+    qualifiedName: symbol.qualifiedName,
     kind: symbol.kind,
     filePath: symbol.filePath,
     line: symbol.line,
@@ -1224,11 +1624,19 @@ function findSymbol(
 }
 
 function resolveImportTarget(
-  manifest: LocalCodeOverlayManifest,
+  manifest: Pick<LocalCodeOverlayManifest, "files">,
   fromFile: string,
   specifier: string
 ): string | null {
   const files = new Set(manifest.files.map((file) => file.path));
+  return resolveImportTargetFromSet(files, fromFile, specifier);
+}
+
+function resolveImportTargetFromSet(
+  files: Set<string>,
+  fromFile: string,
+  specifier: string
+): string | null {
   const candidates: string[] = [];
   if (specifier.startsWith(".")) {
     const base = normalizeRepoPath(path.join(path.dirname(fromFile), specifier));
@@ -1259,6 +1667,903 @@ function buildLocalFileEdges(manifest: LocalCodeOverlayManifest): Array<{
       ? [{ from: item.filePath, to: target, specifier: item.specifier, line: item.line }]
       : [];
   });
+}
+
+function normalizedReferenceParts(name: string): { root: string; member: string } {
+  const normalized = name
+    .replace(/\?\./g, ".")
+    .replace(/<[^>]*>/g, "")
+    .trim();
+  const parts = normalized.split(".").filter(Boolean);
+  return {
+    root: parts[0] ?? normalized,
+    member: parts.at(-1) ?? normalized,
+  };
+}
+
+interface LocalGraphResolutionIndex {
+  filePaths: Set<string>;
+  symbolsByFile: Map<string, LocalCodeOverlaySymbol[]>;
+  symbolsByKey: Map<string, LocalCodeOverlaySymbol>;
+  importsByFile: Map<string, LocalCodeOverlayImport[]>;
+}
+
+function resolveReferenceTarget(
+  index: LocalGraphResolutionIndex,
+  reference: LocalCodeOverlayReference
+): { key: string; confidence: number } | null {
+  const { root, member } = normalizedReferenceParts(reference.name);
+  const source = index.symbolsByKey.get(reference.from);
+  const sameFile = index.symbolsByFile.get(reference.filePath) ?? [];
+
+  if (root === "this" && source) {
+    const owner = source.qualifiedName.split(".").slice(0, -1).join(".");
+    const method = sameFile.find(
+      (symbol) => symbol.name === member && symbol.qualifiedName.startsWith(`${owner}.`)
+    );
+    if (method) return { key: method.localKey, confidence: reference.confidence };
+  }
+
+  const local = sameFile.find(
+    (symbol) =>
+      symbol.localKey !== reference.from &&
+      (symbol.name === root || symbol.name === member || symbol.qualifiedName === reference.name)
+  );
+  if (local) return { key: local.localKey, confidence: reference.confidence };
+
+  for (const item of index.importsByFile.get(reference.filePath) ?? []) {
+    const binding = item.bindings?.find((candidate) => candidate.localName === root);
+    if (!binding) continue;
+    const targetFile = resolveImportTargetFromSet(
+      index.filePaths,
+      reference.filePath,
+      item.specifier
+    );
+    if (!targetFile) continue;
+    const targetName =
+      binding.kind === "namespace"
+        ? member
+        : binding.importedName === "default"
+          ? member === root
+            ? root
+            : member
+          : binding.importedName;
+    const target = (index.symbolsByFile.get(targetFile) ?? []).find(
+      (symbol) =>
+        symbol.filePath === targetFile &&
+        (symbol.name === targetName || symbol.qualifiedName.endsWith(`.${targetName}`))
+    );
+    return target
+      ? { key: target.localKey, confidence: reference.confidence }
+      : { key: buildFileNodeKey(targetFile), confidence: reference.confidence * 0.65 };
+  }
+
+  return null;
+}
+
+function dedupeLocalGraphEdges(edges: LocalCodeOverlayEdge[]): LocalCodeOverlayEdge[] {
+  const seen = new Set<string>();
+  return edges.filter((edge) => {
+    const key = `${edge.from}\u0000${edge.to}\u0000${edge.kind}\u0000${edge.filePath}\u0000${edge.line}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function resolveLocalGraphEdges(
+  files: LocalCodeOverlayFile[],
+  symbols: LocalCodeOverlaySymbol[],
+  imports: LocalCodeOverlayImport[],
+  references: LocalCodeOverlayReference[],
+  extractedEdges: LocalCodeOverlayEdge[]
+): LocalCodeOverlayEdge[] {
+  const edges: LocalCodeOverlayEdge[] = [...extractedEdges];
+  const symbolsByFile = new Map<string, LocalCodeOverlaySymbol[]>();
+  const symbolsByKey = new Map<string, LocalCodeOverlaySymbol>();
+  const importsByFile = new Map<string, LocalCodeOverlayImport[]>();
+  for (const symbol of symbols) {
+    symbolsByFile.set(symbol.filePath, [...(symbolsByFile.get(symbol.filePath) ?? []), symbol]);
+    symbolsByKey.set(symbol.localKey, symbol);
+  }
+  for (const item of imports) {
+    importsByFile.set(item.filePath, [...(importsByFile.get(item.filePath) ?? []), item]);
+  }
+  const resolutionIndex: LocalGraphResolutionIndex = {
+    filePaths: new Set(files.map((file) => file.path)),
+    symbolsByFile,
+    symbolsByKey,
+    importsByFile,
+  };
+
+  for (const symbol of symbols) {
+    edges.push({
+      from: buildFileNodeKey(symbol.filePath),
+      to: symbol.localKey,
+      kind: "CONTAINS",
+      filePath: symbol.filePath,
+      line: symbol.line,
+      confidence: 1,
+      source: symbol.filePath.match(/\.(?:ts|tsx|mts|cts)$/)
+        ? "typescript-compiler-api"
+        : "language-parser",
+      evidence: { filePath: symbol.filePath, line: symbol.line },
+    });
+  }
+
+  for (const item of imports) {
+    const target = resolveImportTargetFromSet(
+      resolutionIndex.filePaths,
+      item.filePath,
+      item.specifier
+    );
+    if (!target) continue;
+    edges.push({
+      from: buildFileNodeKey(item.filePath),
+      to: buildFileNodeKey(target),
+      kind: "IMPORTS",
+      filePath: item.filePath,
+      line: item.line,
+      confidence: 1,
+      source: "import-resolver",
+      evidence: { filePath: item.filePath, line: item.line },
+    });
+  }
+
+  for (const reference of references) {
+    const target = resolveReferenceTarget(resolutionIndex, reference);
+    if (!target || target.key === reference.from) continue;
+    edges.push({
+      from: reference.from,
+      to: target.key,
+      kind: reference.kind,
+      filePath: reference.filePath,
+      line: reference.line,
+      confidence: target.confidence,
+      source: "typescript-compiler-api",
+      evidence: { filePath: reference.filePath, line: reference.line },
+    });
+  }
+
+  return dedupeLocalGraphEdges(edges);
+}
+
+function upgradeLegacyLocalCodeOverlay(parsed: Record<string, unknown>): LocalCodeOverlayManifest {
+  const legacy = parsed as unknown as {
+    generatedAt: string;
+    indexedAt: string;
+    repoRoot: string;
+    repositoryId: string;
+    branch: string | null;
+    baseSha: string | null;
+    localHeadSha: string | null;
+    commit: string | null;
+    dirtyTreeHash: string | null;
+    overlayKind: LocalCodeOverlayKind;
+    canonicalIndexedSha: null;
+    currentWorkingTreeVisible: boolean;
+    canonical: false;
+    mode: LocalCodeOverlayMode;
+    files: Array<Omit<LocalCodeOverlayFile, "referenceCount" | "edgeCount">>;
+    symbols: Array<Omit<LocalCodeOverlaySymbol, "qualifiedName">>;
+    imports: LocalCodeOverlayImport[];
+    excluded: LocalCodeOverlayManifest["excluded"];
+    warnings: LocalCodeOverlayWarning[];
+  };
+  const symbols = (legacy.symbols ?? []).map((symbol) => {
+    const qualifiedName = symbol.name;
+    return {
+      ...symbol,
+      qualifiedName,
+      localKey: buildSymbolKey(symbol.filePath, qualifiedName, symbol.kind),
+    };
+  });
+  const imports = legacy.imports ?? [];
+  const files = (legacy.files ?? []).map((file) => ({
+    ...file,
+    referenceCount: 0,
+    edgeCount: 0,
+  }));
+  const edges = resolveLocalGraphEdges(files, symbols, imports, [], []);
+  for (const file of files) {
+    file.edgeCount = edges.filter((edge) => edge.filePath === file.path).length;
+  }
+  return {
+    ...legacy,
+    version: "snipara.local_code_overlay.v2",
+    extractorVersion: 2,
+    files,
+    symbols,
+    imports,
+    references: [],
+    edges,
+    incremental: {
+      reusedFiles: 0,
+      parsedFiles: files.length,
+      deletedFiles: 0,
+    },
+  };
+}
+
+interface LocalGraphTraversalNode {
+  key: string;
+  depth: number;
+  filePath: string | null;
+  path: string[];
+  edges: LocalCodeOverlayEdge[];
+}
+
+interface LocalGraphTraversalResult {
+  nodes: LocalGraphTraversalNode[];
+  traversedEdges: LocalCodeOverlayEdge[];
+  truncated: boolean;
+  visitedCount: number;
+}
+
+function graphNodeFilePath(manifest: LocalCodeOverlayManifest, key: string): string | null {
+  if (key.startsWith("local-file::")) return key.slice("local-file::".length);
+  return manifest.symbols.find((symbol) => symbol.localKey === key)?.filePath ?? null;
+}
+
+function graphNodePayload(
+  manifest: LocalCodeOverlayManifest,
+  node: LocalGraphTraversalNode
+): Record<string, unknown> {
+  const symbol = manifest.symbols.find((candidate) => candidate.localKey === node.key);
+  return symbol
+    ? { ...compactSymbol(symbol), depth: node.depth, path: node.path }
+    : { key: node.key, kind: "file", filePath: node.filePath, depth: node.depth, path: node.path };
+}
+
+function findGraphSeedKeys(
+  manifest: LocalCodeOverlayManifest,
+  options: Pick<LocalCodeQueryCommandOptions, "qualifiedName" | "symbolKey" | "filePath">
+): string[] {
+  const symbol = findSymbol(manifest, options);
+  if (symbol) return [symbol.localKey];
+  if (options.filePath) {
+    const normalized = normalizeRepoPath(options.filePath);
+    return manifest.files.some((file) => file.path === normalized)
+      ? [buildFileNodeKey(normalized)]
+      : [];
+  }
+  return [];
+}
+
+function traverseLocalGraph(
+  manifest: LocalCodeOverlayManifest,
+  seeds: string[],
+  options: {
+    depth: number;
+    direction: "in" | "out" | "both";
+    edgeKinds?: string[];
+    maxNodes: number;
+  }
+): LocalGraphTraversalResult {
+  const allowed = new Set(
+    (options.edgeKinds?.length
+      ? options.edgeKinds
+      : ["IMPORTS", "CALLS", "REFERENCES", "CONTAINS"]
+    ).map((kind) => kind.toUpperCase())
+  );
+  const incoming = new Map<string, LocalCodeOverlayEdge[]>();
+  const outgoing = new Map<string, LocalCodeOverlayEdge[]>();
+  for (const edge of manifest.edges) {
+    if (!allowed.has(edge.kind)) continue;
+    incoming.set(edge.to, [...(incoming.get(edge.to) ?? []), edge]);
+    outgoing.set(edge.from, [...(outgoing.get(edge.from) ?? []), edge]);
+  }
+
+  const uniqueSeeds = [...new Set(seeds)];
+  const boundedSeeds = uniqueSeeds.slice(0, options.maxNodes);
+  const visited = new Set(boundedSeeds);
+  const queue = boundedSeeds.map((key) => ({
+    key,
+    depth: 0,
+    path: [key],
+    edges: [] as LocalCodeOverlayEdge[],
+  }));
+  const nodes: LocalGraphTraversalNode[] = [];
+  const traversedEdges: LocalCodeOverlayEdge[] = [];
+  let truncated = boundedSeeds.length < uniqueSeeds.length;
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || current.depth >= options.depth) continue;
+    const candidates = [
+      ...(options.direction !== "in"
+        ? (outgoing.get(current.key) ?? []).map((edge) => ({ edge, next: edge.to }))
+        : []),
+      ...(options.direction !== "out"
+        ? (incoming.get(current.key) ?? []).map((edge) => ({ edge, next: edge.from }))
+        : []),
+    ];
+    for (const candidate of candidates) {
+      if (visited.has(candidate.next)) continue;
+      if (visited.size >= options.maxNodes) {
+        truncated = true;
+        queue.length = 0;
+        break;
+      }
+      visited.add(candidate.next);
+      const next = {
+        key: candidate.next,
+        depth: current.depth + 1,
+        filePath: graphNodeFilePath(manifest, candidate.next),
+        path: [...current.path, candidate.next],
+        edges: [...current.edges, candidate.edge],
+      };
+      nodes.push(next);
+      traversedEdges.push(candidate.edge);
+      queue.push(next);
+    }
+  }
+
+  return {
+    nodes,
+    traversedEdges: dedupeLocalGraphEdges(traversedEdges),
+    truncated,
+    visitedCount: visited.size,
+  };
+}
+
+function uniqueTraversalFiles(nodes: LocalGraphTraversalNode[], excluded: Set<string>): string[] {
+  return [
+    ...new Set(
+      nodes
+        .map((node) => node.filePath)
+        .filter(
+          (filePath): filePath is string => typeof filePath === "string" && !excluded.has(filePath)
+        )
+    ),
+  ].sort();
+}
+
+interface LocalRiskConfig {
+  depthDecay: number;
+  criticality: Array<{ pattern: string; weight: number }>;
+  edgeWeights: Partial<Record<LocalCodeOverlayEdge["kind"], number>>;
+}
+
+const LOCAL_SEMANTIC_TEST_PATH = /(^|\/)(tests?|__tests__|fixtures?)(\/|$)|\.(test|spec)\./i;
+const LOCAL_SEMANTIC_SENSITIVE_PATH =
+  /(^|\/)(auth|middleware|billing|payments?|stripe|webhooks?|prisma|schema|migrations?|deploy)(\/|\.|$)/i;
+const LOCAL_SEMANTIC_CONTRACT_PATH =
+  /(^|\/)(schemas?|contracts?|protocols?|interfaces?|config|tool_defs)(\/|\.|$)|route\.(ts|tsx|py)$/i;
+
+function localSemanticEvidence(
+  kind: string,
+  detail: string,
+  metadata: Omit<LocalSemanticEvidence, "kind" | "detail"> = {}
+): LocalSemanticEvidence {
+  return { kind, detail, ...metadata };
+}
+
+function localSemanticAssertion(
+  subject: string,
+  predicate: LocalSemanticPredicate,
+  value: string | boolean,
+  confidence: number,
+  source: LocalSemanticAssertion["source"],
+  evidence: LocalSemanticEvidence[]
+): LocalSemanticAssertion {
+  const identity = JSON.stringify([subject, predicate, value, source]);
+  return {
+    id: `semantic-${sha256(identity).slice(0, 16)}`,
+    subject,
+    predicate,
+    value,
+    confidence: Math.round(Math.max(0, Math.min(1, confidence)) * 1000) / 1000,
+    source,
+    extractorVersion: 1,
+    evidence,
+  };
+}
+
+function localArchitectureRoles(symbol: LocalCodeOverlaySymbol): LocalSemanticAssertion[] {
+  const haystack = `${symbol.filePath} ${symbol.name}`;
+  const candidates: Array<{
+    role: string;
+    pattern: RegExp;
+    confidence: number;
+  }> = [
+    { role: "repository", pattern: /repository|(^|[_.])repo($|[_.])/i, confidence: 0.9 },
+    { role: "adapter", pattern: /adapter/i, confidence: 0.9 },
+    { role: "facade", pattern: /facade/i, confidence: 0.9 },
+    { role: "controller", pattern: /controller/i, confidence: 0.85 },
+    { role: "service", pattern: /service/i, confidence: 0.78 },
+    { role: "worker", pattern: /worker|background[_-]?job|indexer/i, confidence: 0.82 },
+    { role: "factory", pattern: /factory|builder/i, confidence: 0.76 },
+  ];
+  const roles: LocalSemanticAssertion[] = [];
+  if (/\/app\/api\//i.test(symbol.filePath) || /\/route\.(ts|tsx|py)$/i.test(symbol.filePath)) {
+    roles.push(
+      localSemanticAssertion(
+        symbol.localKey,
+        "architecture_role",
+        "route_handler",
+        0.94,
+        "architecture-pattern-rules",
+        [
+          localSemanticEvidence("route_path", "Route path identifies an API boundary.", {
+            filePath: symbol.filePath,
+            line: symbol.line,
+          }),
+        ]
+      )
+    );
+  }
+  if (LOCAL_SEMANTIC_TEST_PATH.test(symbol.filePath)) {
+    roles.push(
+      localSemanticAssertion(
+        symbol.localKey,
+        "architecture_role",
+        "test",
+        0.98,
+        "architecture-pattern-rules",
+        [localSemanticEvidence("test_path", "File is under a test surface.")]
+      )
+    );
+  }
+  for (const candidate of candidates) {
+    if (!candidate.pattern.test(haystack)) continue;
+    roles.push(
+      localSemanticAssertion(
+        symbol.localKey,
+        "architecture_role",
+        candidate.role,
+        candidate.confidence,
+        "architecture-pattern-rules",
+        [
+          localSemanticEvidence(
+            "name_or_path_pattern",
+            `Name or path matches the ${candidate.role} pattern.`,
+            { filePath: symbol.filePath, line: symbol.line }
+          ),
+        ]
+      )
+    );
+  }
+  return roles;
+}
+
+function localSymbolSemanticAssertions(symbol: LocalCodeOverlaySymbol): LocalSemanticAssertion[] {
+  const assertions: LocalSemanticAssertion[] = [];
+  const routeSurface =
+    /\/app\/api\//i.test(symbol.filePath) || /\/route\.(ts|tsx|py)$/i.test(symbol.filePath);
+  const toolSurface = /(^|\/)(mcp|tool_defs)(\/|\.|$)/i.test(symbol.filePath);
+  const publicEvidence: LocalSemanticEvidence[] = [];
+  if (symbol.exported) {
+    publicEvidence.push(
+      localSemanticEvidence(
+        "explicit_export",
+        "TypeScript/Go declaration is explicitly exported.",
+        {
+          filePath: symbol.filePath,
+          line: symbol.line,
+        }
+      )
+    );
+  }
+  if (routeSurface) {
+    publicEvidence.push(
+      localSemanticEvidence("route_path", "Symbol is declared in a route module.", {
+        filePath: symbol.filePath,
+        line: symbol.line,
+      })
+    );
+  }
+  if (toolSurface) {
+    publicEvidence.push(
+      localSemanticEvidence(
+        "tool_surface",
+        "Symbol is declared in an MCP/tool-definition surface.",
+        {
+          filePath: symbol.filePath,
+          line: symbol.line,
+        }
+      )
+    );
+  }
+  if (publicEvidence.length > 0) {
+    assertions.push(
+      localSemanticAssertion(
+        symbol.localKey,
+        "public_api",
+        true,
+        Math.min(0.98, 0.82 + publicEvidence.length * 0.05),
+        symbol.exported ? "typescript-compiler-api" : "architecture-pattern-rules",
+        publicEvidence
+      )
+    );
+  }
+
+  let contractKind: string | null = null;
+  const contractEvidence: LocalSemanticEvidence[] = [];
+  if (symbol.exported && ["interface", "type"].includes(symbol.kind)) {
+    contractKind = "exported_type_contract";
+    contractEvidence.push(
+      localSemanticEvidence("symbol_kind", `Exported ${symbol.kind} defines a structural contract.`)
+    );
+  } else if (LOCAL_SEMANTIC_CONTRACT_PATH.test(symbol.filePath)) {
+    contractKind = "repository_boundary_contract";
+    contractEvidence.push(
+      localSemanticEvidence(
+        "contract_path",
+        "File path denotes a schema, contract, config, route, or tool boundary."
+      )
+    );
+  } else if (symbol.exported) {
+    contractKind = "public_surface_contract";
+    contractEvidence.push(...publicEvidence.slice(0, 1));
+  }
+  if (contractKind) {
+    assertions.push(
+      localSemanticAssertion(
+        symbol.localKey,
+        "implicit_contract",
+        contractKind,
+        ["interface", "type"].includes(symbol.kind) ? 0.92 : 0.78,
+        symbol.exported ? "typescript-compiler-api" : "architecture-pattern-rules",
+        contractEvidence
+      )
+    );
+  }
+
+  assertions.push(...localArchitectureRoles(symbol));
+  let criticality = "ordinary";
+  let criticalityConfidence = 0.58;
+  let criticalityEvidence = [
+    localSemanticEvidence("default", "No critical or incidental evidence matched."),
+  ];
+  if (LOCAL_SEMANTIC_TEST_PATH.test(symbol.filePath)) {
+    criticality = "incidental";
+    criticalityConfidence = 0.95;
+    criticalityEvidence = [localSemanticEvidence("test_path", "Test-only dependency.")];
+  } else if (LOCAL_SEMANTIC_SENSITIVE_PATH.test(symbol.filePath) || routeSurface || toolSurface) {
+    criticality = "critical";
+    criticalityConfidence = 0.92;
+    criticalityEvidence = [
+      localSemanticEvidence(
+        "sensitive_surface",
+        "Path identifies an auth, billing, schema, webhook, deploy, route, or MCP surface."
+      ),
+    ];
+  } else if (publicEvidence.length > 0) {
+    criticality = "important";
+    criticalityConfidence = 0.85;
+    criticalityEvidence = [
+      localSemanticEvidence(
+        "exported_surface",
+        "Explicit export defines a module contract but is not by itself a critical runtime surface."
+      ),
+    ];
+  } else if (contractKind) {
+    criticality = "important";
+    criticalityConfidence = 0.82;
+    criticalityEvidence = [
+      localSemanticEvidence("contract_surface", "Dependency defines a repository contract."),
+    ];
+  }
+  assertions.push(
+    localSemanticAssertion(
+      symbol.localKey,
+      "dependency_criticality",
+      criticality,
+      criticalityConfidence,
+      "criticality-rules",
+      criticalityEvidence
+    )
+  );
+  return assertions;
+}
+
+function buildLocalSemanticModel(
+  manifest: Pick<LocalCodeOverlayManifest, "symbols" | "edges">,
+  options: {
+    scope?: LocalSemanticModel["scope"];
+    symbolKeys?: Set<string>;
+    edges?: LocalCodeOverlayEdge[];
+  } = {}
+): LocalSemanticModel {
+  const symbols = options.symbolKeys
+    ? manifest.symbols.filter((symbol) => options.symbolKeys?.has(symbol.localKey))
+    : manifest.symbols;
+  const assertions = symbols.flatMap(localSymbolSemanticAssertions);
+  const symbolByKey = new Map(manifest.symbols.map((symbol) => [symbol.localKey, symbol]));
+  const criticalityBySymbol = new Map(
+    assertions
+      .filter((assertion) => assertion.predicate === "dependency_criticality")
+      .map((assertion) => [assertion.subject, String(assertion.value)])
+  );
+  const criticalityRank: Record<string, number> = {
+    incidental: 0,
+    ordinary: 1,
+    important: 2,
+    critical: 3,
+  };
+  const criticalityByFile = new Map<string, string>();
+  for (const symbol of manifest.symbols) {
+    const value = criticalityBySymbol.get(symbol.localKey);
+    if (!value) continue;
+    const current = criticalityByFile.get(symbol.filePath);
+    if (!current || criticalityRank[value] > criticalityRank[current]) {
+      criticalityByFile.set(symbol.filePath, value);
+    }
+  }
+  for (const edge of options.edges ?? []) {
+    const fromSymbol = symbolByKey.get(edge.from);
+    const toSymbol = symbolByKey.get(edge.to);
+    const fromFile = fromSymbol?.filePath ?? edge.from.replace(/^local-file::/, "");
+    const toFile = toSymbol?.filePath ?? edge.to.replace(/^local-file::/, "");
+    const fromCriticality = criticalityBySymbol.get(edge.from) ?? criticalityByFile.get(fromFile);
+    const toCriticality = criticalityBySymbol.get(edge.to) ?? criticalityByFile.get(toFile);
+    const edgeSubject = `edge::${edge.from}::${edge.kind}::${edge.to}`;
+    const evidence = [
+      localSemanticEvidence("graph_edge", `${edge.kind} from ${fromFile} to ${toFile}.`, {
+        filePath: edge.filePath,
+        line: edge.line,
+        edgeKind: edge.kind,
+      }),
+    ];
+    let value = "ordinary";
+    let confidence = 0.62;
+    if (LOCAL_SEMANTIC_TEST_PATH.test(fromFile) || LOCAL_SEMANTIC_TEST_PATH.test(toFile)) {
+      value = "incidental";
+      confidence = 0.92;
+      evidence.push(localSemanticEvidence("test_path", "At least one edge endpoint is test-only."));
+    } else if (fromCriticality === "critical" || toCriticality === "critical") {
+      value = "critical";
+      confidence = 0.9;
+      evidence.push(
+        localSemanticEvidence("critical_endpoint", "At least one dependency endpoint is critical.")
+      );
+    } else if (edge.kind === "CONTAINS" || edge.confidence < 0.65) {
+      value = "incidental";
+      confidence = 0.78;
+      evidence.push(
+        localSemanticEvidence(
+          "weak_or_structural",
+          "Containment or low-confidence evidence is incidental to change propagation."
+        )
+      );
+    } else if (fromCriticality === "important" || toCriticality === "important") {
+      value = "important";
+      confidence = 0.82;
+      evidence.push(
+        localSemanticEvidence(
+          "contract_endpoint",
+          "At least one dependency endpoint is a contract."
+        )
+      );
+    }
+    assertions.push(
+      localSemanticAssertion(
+        edgeSubject,
+        "dependency_criticality",
+        value,
+        confidence,
+        "graph-criticality-rules",
+        evidence
+      )
+    );
+  }
+
+  const allAssertions = [
+    ...new Map(assertions.map((assertion) => [assertion.id, assertion])).values(),
+  ].sort((left, right) =>
+    `${left.subject}:${left.predicate}:${String(left.value)}`.localeCompare(
+      `${right.subject}:${right.predicate}:${String(right.value)}`
+    )
+  );
+  const assertionLimit = (options.scope ?? "repository") === "impact" ? 2000 : 5000;
+  const returnedAssertions = allAssertions.slice(0, assertionLimit);
+  const allPublicContracts = allAssertions.filter(
+    (assertion) =>
+      assertion.predicate === "public_api" || assertion.predicate === "implicit_contract"
+  );
+  const allArchitectureRoles = allAssertions.filter(
+    (assertion) => assertion.predicate === "architecture_role"
+  );
+  const allDependencyCriticality = allAssertions.filter(
+    (assertion) => assertion.predicate === "dependency_criticality"
+  );
+  const publicContracts = returnedAssertions.filter(
+    (assertion) =>
+      assertion.predicate === "public_api" || assertion.predicate === "implicit_contract"
+  );
+  const architectureRoles = returnedAssertions.filter(
+    (assertion) => assertion.predicate === "architecture_role"
+  );
+  const dependencyCriticality = returnedAssertions.filter(
+    (assertion) => assertion.predicate === "dependency_criticality"
+  );
+  return {
+    version: "snipara.semantic.v1",
+    extractorVersion: 1,
+    source: "deterministic-graph-inference",
+    scope: options.scope ?? "repository",
+    assertions: returnedAssertions,
+    publicContracts,
+    architectureRoles,
+    dependencyCriticality,
+    truncation: {
+      truncated: allAssertions.length > assertionLimit,
+      totalAssertionCount: allAssertions.length,
+      returnedAssertionCount: returnedAssertions.length,
+      assertionLimit,
+    },
+    historicalRegression: {
+      mode: "shadow",
+      sampleThreshold: 3,
+      failureEventCount: 0,
+      associations: [],
+      riskContributionEnabled: false,
+      suggestedRiskDelta: 0,
+      caveat:
+        "The local overlay has no durable regression outcome stream. Historical path learning stays shadow-only until hosted evidence is available.",
+    },
+    summary: {
+      assertionCount: allAssertions.length,
+      publicContractCount: allPublicContracts.length,
+      architectureRoleCount: allArchitectureRoles.length,
+      criticalDependencyCount: allDependencyCriticality.filter(
+        (assertion) => assertion.value === "critical"
+      ).length,
+      criticalEdgeCount: allDependencyCriticality.filter(
+        (assertion) => assertion.value === "critical" && assertion.subject.startsWith("edge::")
+      ).length,
+      incidentalDependencyCount: allDependencyCriticality.filter(
+        (assertion) => assertion.value === "incidental"
+      ).length,
+      historicalAssociationCount: 0,
+    },
+    caveats: [
+      "Semantic assertions are deterministic inferences, not declarations of author intent.",
+      "Name-only architecture patterns use lower confidence than explicit export or path evidence.",
+      "Historical regression learning requires hosted outcome evidence and remains shadow-only.",
+    ],
+  };
+}
+
+function loadLocalRiskConfig(repoRoot: string): LocalRiskConfig {
+  const defaults: LocalRiskConfig = {
+    depthDecay: 0.65,
+    criticality: [
+      { pattern: "(^|/)(auth|middleware)(/|\\.|$)", weight: 1.8 },
+      { pattern: "(^|/)(billing|payments|stripe)(/|\\.|$)", weight: 1.8 },
+      { pattern: "(^|/)(schema|migrations|deploy)(/|\\.|$)", weight: 1.6 },
+      { pattern: "(^|/)route\\.(ts|tsx|py)$", weight: 1.25 },
+    ],
+    edgeWeights: { CALLS: 1.3, REFERENCES: 0.8, IMPORTS: 1, CONTAINS: 0.25 },
+  };
+  const configPath = path.join(repoRoot, ".snipara", "code-risk.json");
+  if (!fs.existsSync(configPath)) return defaults;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configPath, "utf8")) as Partial<LocalRiskConfig>;
+    return {
+      depthDecay:
+        typeof parsed.depthDecay === "number" && parsed.depthDecay > 0 && parsed.depthDecay <= 1
+          ? parsed.depthDecay
+          : defaults.depthDecay,
+      criticality: Array.isArray(parsed.criticality) ? parsed.criticality : defaults.criticality,
+      edgeWeights: { ...defaults.edgeWeights, ...(parsed.edgeWeights ?? {}) },
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+function buildLocalRisk(
+  manifest: LocalCodeOverlayManifest,
+  changedFiles: string[],
+  traversal: LocalGraphTraversalResult,
+  depth: number,
+  semantic: LocalSemanticModel
+): Record<string, unknown> {
+  const config = loadLocalRiskConfig(manifest.repoRoot);
+  const allFiles = [
+    ...changedFiles,
+    ...traversal.nodes.flatMap((node) => (node.filePath ? [node.filePath] : [])),
+  ];
+  let criticality = 1;
+  const criticalMatches: string[] = [];
+  for (const rule of config.criticality) {
+    let regex: RegExp;
+    try {
+      regex = new RegExp(rule.pattern, "i");
+    } catch {
+      continue;
+    }
+    if (allFiles.some((filePath) => regex.test(filePath))) {
+      criticality = Math.max(criticality, Math.max(1, rule.weight));
+      criticalMatches.push(rule.pattern);
+    }
+  }
+  const directFiles = new Set(
+    traversal.nodes
+      .filter((node) => node.depth === 1)
+      .flatMap((node) => (node.filePath ? [node.filePath] : []))
+  );
+  const transitiveFiles = new Set(
+    traversal.nodes
+      .filter((node) => node.depth > 1)
+      .flatMap((node) => (node.filePath ? [node.filePath] : []))
+  );
+  let propagation = 0;
+  for (const node of traversal.nodes) {
+    const lastEdge = node.edges.at(-1);
+    const weight = lastEdge ? (config.edgeWeights[lastEdge.kind] ?? 1) : 1;
+    propagation += weight * Math.pow(config.depthDecay, Math.max(0, node.depth - 1));
+  }
+  const resolvedReferenceKeys = new Set(
+    manifest.edges
+      .filter((edge) => edge.kind === "CALLS" || edge.kind === "REFERENCES")
+      .map((edge) => `${edge.from}:${edge.line}`)
+  );
+  const unresolvedReferences = manifest.references.filter(
+    (reference) =>
+      changedFiles.includes(reference.filePath) &&
+      !resolvedReferenceKeys.has(`${reference.from}:${reference.line}`)
+  ).length;
+  const uncertaintyPenalty = Math.min(15, unresolvedReferences * 2 + (traversal.truncated ? 8 : 0));
+  const criticalSemanticDependencies = semantic.summary.criticalEdgeCount;
+  const changedSymbolKeys = new Set(
+    manifest.symbols
+      .filter((symbol) => changedFiles.includes(symbol.filePath))
+      .map((symbol) => symbol.localKey)
+  );
+  const changedContracts = manifest.symbols
+    .filter((symbol) => changedSymbolKeys.has(symbol.localKey))
+    .flatMap(localSymbolSemanticAssertions)
+    .filter(
+      (assertion) =>
+        assertion.predicate === "public_api" || assertion.predicate === "implicit_contract"
+    ).length;
+  const semanticRiskPoints =
+    Math.min(20, criticalSemanticDependencies * 3) + Math.min(10, changedContracts * 2);
+  const rawScore =
+    criticality * (directFiles.size * 8 + propagation * 4) +
+    uncertaintyPenalty +
+    semanticRiskPoints;
+  const score = Math.max(0, Math.min(100, Math.round(rawScore)));
+  const reasons = [
+    `${directFiles.size} direct dependent file${directFiles.size === 1 ? "" : "s"}`,
+    `${transitiveFiles.size} transitive dependent file${transitiveFiles.size === 1 ? "" : "s"}`,
+    ...(criticalMatches.length ? [`critical-surface multiplier ${criticality.toFixed(2)}`] : []),
+    ...(unresolvedReferences
+      ? [`${unresolvedReferences} unresolved reference${unresolvedReferences === 1 ? "" : "s"}`]
+      : []),
+    ...(criticalSemanticDependencies
+      ? [
+          `${criticalSemanticDependencies} critical semantic dependenc${
+            criticalSemanticDependencies === 1 ? "y" : "ies"
+          }`,
+        ]
+      : []),
+    ...(changedContracts
+      ? [
+          `${changedContracts} public or implicit contract assertion${changedContracts === 1 ? "" : "s"}`,
+        ]
+      : []),
+    ...(traversal.truncated ? ["traversal truncated by max-nodes"] : []),
+  ];
+  return {
+    score,
+    level: score >= 70 ? "high" : score >= 35 ? "medium" : "low",
+    depth,
+    directDependentFiles: directFiles.size,
+    transitiveDependentFiles: transitiveFiles.size,
+    criticality,
+    uncertaintyPenalty,
+    semanticRiskPoints,
+    criticalSemanticDependencies,
+    changedContracts,
+    unresolvedReferences,
+    reasons,
+    formula:
+      "criticality * (directImpact + decayedEdgePropagation) + uncertaintyPenalty + semanticRiskPoints",
+  };
 }
 
 function missingTargetDetail(
@@ -1405,14 +2710,18 @@ function localOverlaySelection(
       fileCount: manifest.files.length,
       symbolCount: manifest.symbols.length,
       importCount: manifest.imports.length,
+      edgeCount: manifest.edges.length,
       warnings: manifest.warnings,
     },
     hosted: {
       configured: isConfigured({ cwd: manifest.repoRoot }),
     },
     limitations: [
-      "local_overlay_file_import_model",
-      "local callers and impact use file-level import and symbol analysis from the current checkout",
+      "local overlay uses compiler-AST edges for TypeScript and import-level fallback for Python and Go",
+      "unresolved dynamic dispatch and runtime reflection remain outside deterministic local analysis",
+      ...(reason === "fallback_hosted_not_configured" || reason === "hybrid_hosted_not_configured"
+        ? ["hosted enrichment was requested but this workspace is not configured"]
+        : []),
     ],
   };
 }
@@ -1452,6 +2761,64 @@ function hostedSelection(
   };
 }
 
+function hybridSelection(
+  requested: CodeGraphSource,
+  reason: string,
+  manifest: LocalCodeOverlayManifest,
+  aheadCount: number | null,
+  dirtyFiles: string[],
+  hostedResult: unknown,
+  hostedError?: string
+): CodeGraphSourceSelection {
+  const hostedRecord =
+    hostedResult && typeof hostedResult === "object"
+      ? (hostedResult as Record<string, unknown>)
+      : {};
+  return {
+    requested,
+    selected: "hybrid_graph",
+    reason,
+    guidance: [
+      "Hosted graph is the canonical committed base; the local overlay contributes checkout-only structure.",
+      "Inspect result.provenance before relying on an edge that exists in only one source.",
+      ...(hostedError
+        ? [
+            "Hosted enrichment failed, so this response contains only the local delta with explicit degraded provenance.",
+          ]
+        : []),
+    ],
+    repositoryId: manifest.repositoryId,
+    branch: manifest.branch,
+    localHeadSha: manifest.localHeadSha,
+    baseSha: manifest.baseSha,
+    aheadCount,
+    dirtyFileCount: dirtyFiles.length,
+    dirtyFilesSample: dirtyFiles.slice(0, 12),
+    localOverlay: {
+      indexedAt: manifest.indexedAt,
+      overlayKind: manifest.overlayKind,
+      dirtyTreeHash: manifest.dirtyTreeHash,
+      currentWorkingTreeVisible: manifest.currentWorkingTreeVisible,
+      fileCount: manifest.files.length,
+      symbolCount: manifest.symbols.length,
+      importCount: manifest.imports.length,
+      edgeCount: manifest.edges.length,
+      warnings: manifest.warnings,
+    },
+    hosted: {
+      configured: isConfigured({ cwd: manifest.repoRoot }),
+      indexFreshness: hostedRecord.index_freshness,
+      contextScope: hostedRecord.context_scope,
+      ...(hostedError ? { error: hostedError } : {}),
+    },
+    limitations: [
+      "cross-source edges are not synthesized when stable symbol identities differ",
+      "dynamic dispatch and runtime reflection remain outside deterministic local analysis",
+      ...(hostedError ? ["hosted graph was unavailable for this request"] : []),
+    ],
+  };
+}
+
 function localOverlayGuidance(reason: string): string[] {
   const selectedBecause =
     reason === "working_tree_dirty"
@@ -1460,9 +2827,11 @@ function localOverlayGuidance(reason: string): string[] {
         ? "Local overlay selected because local commits are ahead of upstream."
         : reason === "hosted_not_configured"
           ? "Local overlay selected because hosted Snipara is not configured."
-          : reason === "auto_local_default"
-            ? "Local overlay selected by default; no account or network call is required."
-            : "Local overlay selected by request.";
+          : reason === "fallback_hosted_not_configured" || reason === "hybrid_hosted_not_configured"
+            ? "Local overlay selected because hosted enrichment was requested but Snipara is not configured."
+            : reason === "auto_local_default"
+              ? "Local overlay selected by default; no account or network call is required."
+              : "Local overlay selected by request.";
   return [
     selectedBecause,
     "Use --source hosted after login when you want shared team context, cloud indexing, or cross-machine graph state.",
@@ -1486,25 +2855,229 @@ function hostedGraphGuidance(reason: string, dirtyFileCount: number): string[] {
   ];
 }
 
-function shouldUseLocalOverlay(args: {
+function resolveRequestedCodeGraphSource(value: unknown): CodeGraphSource {
+  if (value === undefined || value === null || value === "") return "auto";
+  if (value === "auto" || value === "local" || value === "hosted" || value === "hybrid") {
+    return value;
+  }
+  throw new Error("--source must be one of: auto, local, hosted, hybrid");
+}
+
+export function resolveCodeGraphMode(args: {
   requested: CodeGraphSource;
-  repoRoot: string;
   dirtyFiles: string[];
   aheadCount: number | null;
-}): { useLocal: boolean; reason: string } {
+  hostedConfigured: boolean;
+  fallbackHosted: boolean;
+}): { selected: ResolvedCodeGraphSource; reason: string } {
+  if (args.fallbackHosted && args.requested !== "hosted") {
+    return args.hostedConfigured
+      ? { selected: "hybrid_graph", reason: "fallback_hosted_requested" }
+      : { selected: "local_overlay", reason: "fallback_hosted_not_configured" };
+  }
   if (args.requested === "local") {
-    return { useLocal: true, reason: "source_forced_local" };
+    return { selected: "local_overlay", reason: "source_forced_local" };
   }
   if (args.requested === "hosted") {
-    return { useLocal: false, reason: "source_forced_hosted" };
+    return { selected: "hosted_graph", reason: "source_forced_hosted" };
+  }
+  if (args.requested === "hybrid") {
+    return args.hostedConfigured
+      ? { selected: "hybrid_graph", reason: "source_forced_hybrid" }
+      : { selected: "local_overlay", reason: "hybrid_hosted_not_configured" };
   }
   if (args.dirtyFiles.length > 0) {
-    return { useLocal: true, reason: "working_tree_dirty" };
+    return {
+      selected: args.hostedConfigured ? "hybrid_graph" : "local_overlay",
+      reason: "working_tree_dirty",
+    };
   }
   if ((args.aheadCount ?? 0) > 0) {
-    return { useLocal: true, reason: "local_head_ahead_of_upstream" };
+    return {
+      selected: args.hostedConfigured ? "hybrid_graph" : "local_overlay",
+      reason: "local_head_ahead_of_upstream",
+    };
   }
-  return { useLocal: true, reason: "auto_local_default" };
+  if (!args.hostedConfigured) {
+    return { selected: "local_overlay", reason: "auto_local_default" };
+  }
+  return { selected: "hosted_graph", reason: "auto_hosted_clean_checkout" };
+}
+
+function collectStringValues(value: unknown, keys: Set<string>, result: Set<string>): void {
+  if (Array.isArray(value)) {
+    for (const item of value) collectStringValues(item, keys, result);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (keys.has(key) && Array.isArray(item)) {
+      for (const candidate of item) {
+        if (typeof candidate === "string") result.add(candidate);
+        if (candidate && typeof candidate === "object") {
+          const record = candidate as Record<string, unknown>;
+          const filePath = record.filePath ?? record.file_path ?? record.path;
+          if (typeof filePath === "string") result.add(filePath);
+        }
+      }
+    }
+    collectStringValues(item, keys, result);
+  }
+}
+
+function asUnknownRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function mergeResultArrays(records: Record<string, unknown>[], keys: string[]): unknown[] {
+  const seen = new Set<string>();
+  const merged: unknown[] = [];
+  for (const record of records) {
+    for (const key of keys) {
+      const value = record[key];
+      if (!Array.isArray(value)) continue;
+      for (const item of value) {
+        const identity = typeof item === "string" ? item : JSON.stringify(item);
+        if (seen.has(identity)) continue;
+        seen.add(identity);
+        merged.push(item);
+      }
+    }
+  }
+  return merged;
+}
+
+function hybridRisk(local: Record<string, unknown>, hosted: Record<string, unknown>): unknown {
+  const candidates = [
+    { source: "local_overlay", value: asUnknownRecord(local.risk) },
+    { source: "hosted_graph", value: asUnknownRecord(hosted.risk) },
+  ].filter((candidate) => Object.keys(candidate.value).length > 0);
+  if (candidates.length === 0) return undefined;
+  const rank = (candidate: (typeof candidates)[number]): number => {
+    const score = candidate.value.score;
+    if (typeof score === "number") return score;
+    return candidate.value.level === "high" ? 70 : candidate.value.level === "medium" ? 35 : 0;
+  };
+  const selected = [...candidates].sort((left, right) => rank(right) - rank(left))[0];
+  return {
+    ...selected.value,
+    source: selected.source,
+    sourceScores: Object.fromEntries(
+      candidates.map((candidate) => [candidate.source, candidate.value.score ?? null])
+    ),
+  };
+}
+
+function hybridSemantic(
+  local: Record<string, unknown>,
+  hosted: Record<string, unknown>
+): Record<string, unknown> | undefined {
+  const localSemantic = asUnknownRecord(local.semantic);
+  const hostedSemantic = asUnknownRecord(hosted.semantic);
+  if (Object.keys(localSemantic).length === 0 && Object.keys(hostedSemantic).length === 0) {
+    return undefined;
+  }
+  const assertions = mergeResultArrays(
+    [{ assertions: hostedSemantic.assertions }, { assertions: localSemantic.assertions }],
+    ["assertions"]
+  );
+  return {
+    version: "snipara.semantic.hybrid.v1",
+    mode: "hybrid",
+    provenance: {
+      canonicalBase: Object.keys(hostedSemantic).length > 0 ? "hosted_graph" : "unavailable",
+      checkoutDelta: Object.keys(localSemantic).length > 0 ? "local_overlay" : "unavailable",
+      crossSourceAssertionSynthesis: false,
+    },
+    assertions,
+    summary: {
+      assertionCount: assertions.length,
+      publicContractCount: assertions.filter(
+        (item) =>
+          asUnknownRecord(item).predicate === "public_api" ||
+          asUnknownRecord(item).predicate === "implicit_contract"
+      ).length,
+      architectureRoleCount: assertions.filter(
+        (item) => asUnknownRecord(item).predicate === "architecture_role"
+      ).length,
+      criticalDependencyCount: assertions.filter(
+        (item) =>
+          asUnknownRecord(item).predicate === "dependency_criticality" &&
+          asUnknownRecord(item).value === "critical"
+      ).length,
+    },
+    historicalRegression:
+      hostedSemantic.historical_regression ??
+      hostedSemantic.historicalRegression ??
+      localSemantic.historicalRegression ??
+      null,
+    local: Object.keys(localSemantic).length > 0 ? localSemantic : null,
+    hosted: Object.keys(hostedSemantic).length > 0 ? hostedSemantic : null,
+  };
+}
+
+export function mergeHybridCodeResults(
+  verb: CodeGraphVerb,
+  localResult: unknown,
+  hostedResult: unknown,
+  hostedError?: string
+): Record<string, unknown> {
+  const local = asUnknownRecord(localResult);
+  const hosted = asUnknownRecord(hostedResult);
+  const affectedFiles = new Set<string>();
+  const affectedKeys = new Set([
+    "affected_files",
+    "affectedFiles",
+    "impactedFiles",
+    "transitiveFiles",
+    "changedFiles",
+    "test_files",
+    "testFiles",
+  ]);
+  collectStringValues(local, affectedKeys, affectedFiles);
+  collectStringValues(hosted, affectedKeys, affectedFiles);
+  const changedFiles = new Set<string>();
+  collectStringValues(local, new Set(["changed_files", "changedFiles"]), changedFiles);
+  collectStringValues(hosted, new Set(["changed_files", "changedFiles"]), changedFiles);
+  const risk = hybridRisk(local, hosted);
+  const semantic = hybridSemantic(local, hosted);
+  const recommendedTests = mergeResultArrays(
+    [hosted, local],
+    ["recommended_tests", "recommendedTests", "related_tests", "relatedTests", "tests"]
+  );
+  const recommendedActions = mergeResultArrays(
+    [hosted, local],
+    ["recommended_actions", "recommendedActions"]
+  );
+  const coverageGaps = mergeResultArrays([hosted, local], ["coverage_gaps", "coverageGaps"]);
+  const warnings = mergeResultArrays([hosted, local], ["warnings"]);
+  return {
+    title: `Hybrid ${verb}`,
+    mode: hostedError ? "hybrid_degraded_local" : "hybrid",
+    provenance: {
+      canonicalBase: hostedError ? "unavailable" : "hosted_graph",
+      checkoutDelta: "local_overlay",
+      mergeStrategy: "provenance_preserving_union",
+      crossSourceEdgeSynthesis: false,
+      ...(hostedError ? { hostedError } : {}),
+    },
+    merged: {
+      affectedFiles: [...affectedFiles].sort(),
+      affectedFileCount: affectedFiles.size,
+    },
+    changed_files: [...changedFiles].sort(),
+    impactedFiles: [...affectedFiles].sort(),
+    ...(risk ? { risk } : {}),
+    ...(semantic ? { semantic } : {}),
+    recommended_tests: recommendedTests,
+    recommended_actions: recommendedActions,
+    coverage_gaps: coverageGaps,
+    warnings,
+    ...(hosted.index_freshness !== undefined ? { index_freshness: hosted.index_freshness } : {}),
+    ...(hosted.impact !== undefined ? { impact: hosted.impact } : {}),
+    local: localResult,
+    hosted: hostedError ? null : hostedResult,
+  };
 }
 
 function buildLocalResultForVerb(
@@ -1552,7 +3125,7 @@ async function callHostedCodeTool(
         qualifiedName: options.qualifiedName,
         symbolKey: options.symbolKey,
         filePath: options.filePath,
-        direction: options.direction,
+        direction: options.direction === "in" ? "in" : "out",
         includeFileNodes: options.includeFileNodes,
         limit: options.limit,
       });
@@ -1592,6 +3165,9 @@ async function callHostedCodeTool(
         filePath: options.filePath,
         changedFiles: options.changedFiles,
         diffSummary: options.diffSummary,
+        depth: options.depth,
+        direction: traversalDirection(options.direction),
+        edgeKinds: options.edgeKinds,
         limit: options.limit,
       });
     }
@@ -1816,20 +3392,22 @@ export async function resolveCodeGraphAutoSourceResult(
   options: CodeGraphAutoSourceOptions
 ): Promise<CodeGraphAutoSourceResult> {
   const startedAt = Date.now();
-  const requested = options.source ?? "auto";
+  const requested = resolveRequestedCodeGraphSource(options.source);
   const repoRoot = resolveRepoRoot(options.dir ?? process.cwd());
   const dirtyStatus = readGitStatus(repoRoot);
   const dirtyFiles = parseDirtyFiles(dirtyStatus);
   const aheadCount = readAheadCount(repoRoot);
-  const decision = shouldUseLocalOverlay({
+  const hostedConfigured = isConfigured({ cwd: repoRoot });
+  const decision = resolveCodeGraphMode({
     requested,
-    repoRoot,
     dirtyFiles,
     aheadCount,
+    hostedConfigured,
+    fallbackHosted: options.fallbackHosted === true,
   });
 
   let autoResult: CodeGraphAutoSourceResult;
-  if (decision.useLocal) {
+  if (decision.selected === "local_overlay") {
     const manifest = loadQueryManifest({
       ...options,
       dir: repoRoot,
@@ -1849,8 +3427,8 @@ export async function resolveCodeGraphAutoSourceResult(
       ),
       result,
     };
-  } else {
-    if (!isConfigured({ cwd: repoRoot })) {
+  } else if (decision.selected === "hosted_graph") {
+    if (!hostedConfigured) {
       throw new Error(
         "Hosted Snipara is not configured. Use --source local or run snipara-companion code sync."
       );
@@ -1861,6 +3439,38 @@ export async function resolveCodeGraphAutoSourceResult(
       title: `Code ${verb}`,
       sourceSelection: hostedSelection(requested, decision.reason, repoRoot, hostedResult),
       result: hostedResult,
+    };
+  } else {
+    const manifest = loadQueryManifest({
+      ...options,
+      dir: repoRoot,
+      mode: options.mode ?? "working_tree",
+    });
+    writeLocalCodeOverlayCache(manifest);
+    const localResult = buildLocalResultForVerb(verb, {
+      ...options,
+      dir: repoRoot,
+      cached: true,
+    });
+    let hostedResult: unknown = null;
+    let hostedError: string | undefined;
+    try {
+      hostedResult = await callHostedCodeTool(verb, { ...options, dir: repoRoot });
+    } catch (error) {
+      hostedError = error instanceof Error ? error.message : String(error);
+    }
+    autoResult = {
+      title: `Code ${verb}`,
+      sourceSelection: hybridSelection(
+        requested,
+        decision.reason,
+        manifest,
+        aheadCount,
+        dirtyFiles,
+        hostedResult,
+        hostedError
+      ),
+      result: mergeHybridCodeResults(verb, localResult, hostedResult, hostedError),
     };
   }
 
@@ -2000,21 +3610,62 @@ export function buildLocalCallersResult(
   const manifest = loadQueryManifest(options);
   const symbol = findSymbol(manifest, options);
   const targetFile = options.filePath ?? symbol?.filePath;
-  const edges = targetFile
+  const directImportEdges = targetFile
     ? buildLocalFileEdges(manifest).filter((edge) => edge.to === targetFile)
     : [];
+  const depth = positiveInteger(options.depth, 1, "--depth");
+  const maxNodes = positiveInteger(options.maxNodes, 200, "--max-nodes");
+  let seeds = findGraphSeedKeys(manifest, options);
+  let edgeKinds = options.edgeKinds?.length ? options.edgeKinds : ["CALLS"];
+  const hasIncomingCalls = seeds.some((seed) =>
+    manifest.edges.some((edge) => edge.kind === "CALLS" && edge.to === seed)
+  );
+  if (!hasIncomingCalls && targetFile) {
+    seeds = [buildFileNodeKey(targetFile)];
+    edgeKinds = ["IMPORTS"];
+  }
+  const traversal = traverseLocalGraph(manifest, seeds, {
+    depth,
+    direction: "in",
+    edgeKinds,
+    maxNodes,
+  });
+  const callersByFile = new Map<
+    string,
+    { filePath: string; depth: number; path: string[]; symbols: Record<string, unknown>[] }
+  >();
+  for (const node of traversal.nodes) {
+    if (!node.filePath || node.filePath === targetFile) continue;
+    const current = callersByFile.get(node.filePath);
+    if (current && current.depth <= node.depth) continue;
+    callersByFile.set(node.filePath, {
+      filePath: node.filePath,
+      depth: node.depth,
+      path: node.path,
+      symbols: manifest.symbols
+        .filter((item) => item.filePath === node.filePath)
+        .map(compactSymbol),
+    });
+  }
   return {
     title: "Local callers",
     caveat:
-      "Local callers are file-level importers in this CLI overlay slice, not call-site AST edges.",
+      "TypeScript callers use compiler-AST call edges; unsupported or unresolved languages fall back to file importers.",
     scope: summarizeLocalCodeOverlay(manifest),
     target: symbol ? compactSymbol(symbol) : { filePath: targetFile },
-    callers: edges.map((edge) => ({
-      filePath: edge.from,
-      importSpecifier: edge.specifier,
-      line: edge.line,
-      symbols: manifest.symbols.filter((item) => item.filePath === edge.from).map(compactSymbol),
+    depth,
+    edgeKinds,
+    callers: [...callersByFile.values()].sort(
+      (left, right) => left.depth - right.depth || left.filePath.localeCompare(right.filePath)
+    ),
+    directImporters: directImportEdges,
+    paths: traversal.nodes.map((node) => ({
+      depth: node.depth,
+      path: node.path,
+      edges: node.edges,
     })),
+    truncated: traversal.truncated,
+    visitedCount: traversal.visitedCount,
   };
 }
 
@@ -2027,6 +3678,15 @@ export function buildLocalNeighborsResult(
   const edges = buildLocalFileEdges(manifest);
   const outgoing = targetFile ? edges.filter((edge) => edge.from === targetFile) : [];
   const incoming = targetFile ? edges.filter((edge) => edge.to === targetFile) : [];
+  const depth = positiveInteger(options.depth, 2, "--depth");
+  const maxNodes = positiveInteger(options.maxNodes, 200, "--max-nodes");
+  const direction = traversalDirection(options.direction);
+  const traversal = traverseLocalGraph(manifest, findGraphSeedKeys(manifest, options), {
+    depth,
+    direction,
+    edgeKinds: options.edgeKinds,
+    maxNodes,
+  });
   return {
     title: "Local neighbors",
     scope: summarizeLocalCodeOverlay(manifest),
@@ -2036,6 +3696,17 @@ export function buildLocalNeighborsResult(
       : [],
     incoming,
     outgoing,
+    depth,
+    direction,
+    nodes: traversal.nodes.map((node) => graphNodePayload(manifest, node)),
+    edges: traversal.traversedEdges,
+    paths: traversal.nodes.map((node) => ({
+      depth: node.depth,
+      path: node.path,
+      edges: node.edges,
+    })),
+    truncated: traversal.truncated,
+    visitedCount: traversal.visitedCount,
   };
 }
 
@@ -2048,30 +3719,26 @@ export function buildLocalShortestPathResult(
   const fromFile = fromSymbol?.filePath ?? options.from;
   const toFile = toSymbol?.filePath ?? options.to;
   const maxHops = positiveInteger(options.maxHops, 6);
-  const edges = buildLocalFileEdges(manifest);
-  const queue: Array<{ file: string; path: string[] }> = fromFile
-    ? [{ file: fromFile, path: [fromFile] }]
-    : [];
-  const seen = new Set<string>();
-  let found: string[] | null = null;
-
-  while (queue.length > 0) {
-    const next = queue.shift();
-    if (!next || seen.has(next.file)) {
-      continue;
-    }
-    seen.add(next.file);
-    if (next.file === toFile) {
-      found = next.path;
-      break;
-    }
-    if (next.path.length > maxHops) {
-      continue;
-    }
-    for (const edge of edges.filter((item) => item.from === next.file)) {
-      queue.push({ file: edge.to, path: [...next.path, edge.to] });
-    }
-  }
+  const direction = traversalDirection(options.direction);
+  const fromKey = fromSymbol?.localKey ?? (fromFile ? buildFileNodeKey(fromFile) : "");
+  const toKey = toSymbol?.localKey ?? (toFile ? buildFileNodeKey(toFile) : "");
+  const traversal = traverseLocalGraph(manifest, fromKey ? [fromKey] : [], {
+    depth: maxHops,
+    direction,
+    edgeKinds: options.edgeKinds,
+    maxNodes: positiveInteger(options.maxNodes, 500, "--max-nodes"),
+  });
+  const foundNode = traversal.nodes.find((node) => node.key === toKey);
+  const nodePath = foundNode?.path ?? null;
+  const found = nodePath
+    ? [
+        ...new Set(
+          nodePath
+            .map((key) => graphNodeFilePath(manifest, key))
+            .filter((filePath): filePath is string => Boolean(filePath))
+        ),
+      ]
+    : null;
 
   return {
     title: "Local shortest path",
@@ -2079,9 +3746,14 @@ export function buildLocalShortestPathResult(
     from: fromSymbol ? compactSymbol(fromSymbol) : { filePath: fromFile },
     to: toSymbol ? compactSymbol(toSymbol) : { filePath: toFile },
     path: found,
+    nodePath,
+    edges: foundNode?.edges ?? [],
     found: Boolean(found),
+    hops: foundNode?.depth ?? 0,
+    direction,
+    truncated: traversal.truncated,
     caveat:
-      "Shortest path currently traverses resolved file-level import edges in the local overlay.",
+      "Shortest path traverses AST calls/references plus resolved imports and containment edges.",
   };
 }
 
@@ -2108,9 +3780,47 @@ export function buildLocalImpactResult(
   const missingTargetFiles = requestedFiles.filter((filePath) => !manifestFiles.has(filePath));
   const incoming = edges.filter((edge) => selectedFiles.has(edge.to));
   const outgoing = edges.filter((edge) => selectedFiles.has(edge.from));
-  const impactedFiles = [
+  const directImpactedFiles = [
     ...new Set([...incoming.map((edge) => edge.from), ...outgoing.map((edge) => edge.to)]),
   ].sort();
+  const depth = positiveInteger(options.depth, options.transitive === false ? 1 : 3, "--depth");
+  const maxNodes = positiveInteger(options.maxNodes, 500, "--max-nodes");
+  const direction = traversalDirection(options.direction);
+  const changedFileSet = new Set(changedFiles);
+  const seedKeys = [
+    ...changedFiles.map(buildFileNodeKey),
+    ...manifest.symbols
+      .filter((candidate) => changedFileSet.has(candidate.filePath))
+      .map((candidate) => candidate.localKey),
+  ];
+  const traversal = traverseLocalGraph(manifest, seedKeys, {
+    depth,
+    direction,
+    edgeKinds: options.edgeKinds?.length ? options.edgeKinds : ["IMPORTS", "CALLS", "REFERENCES"],
+    maxNodes,
+  });
+  const traversalEdges = [
+    ...new Map(
+      traversal.nodes
+        .flatMap((node) => node.edges)
+        .map((edge) => [`${edge.from}:${edge.kind}:${edge.to}:${edge.line}`, edge])
+    ).values(),
+  ];
+  const semanticSymbolKeys = new Set([...seedKeys, ...traversal.nodes.map((node) => node.key)]);
+  const semanticFiles = new Set([
+    ...changedFiles,
+    ...traversal.nodes.flatMap((node) => (node.filePath ? [node.filePath] : [])),
+  ]);
+  for (const candidate of manifest.symbols) {
+    if (semanticFiles.has(candidate.filePath)) semanticSymbolKeys.add(candidate.localKey);
+  }
+  const semantic = buildLocalSemanticModel(manifest, {
+    scope: "impact",
+    symbolKeys: semanticSymbolKeys,
+    edges: traversalEdges,
+  });
+  const transitiveFiles = uniqueTraversalFiles(traversal.nodes, selectedFiles);
+  const impactedFiles = [...new Set([...directImpactedFiles, ...transitiveFiles])].sort();
   const relevantWarningFiles = new Set<string>([
     ...selectedFiles,
     ...impactedFiles,
@@ -2126,7 +3836,7 @@ export function buildLocalImpactResult(
   return {
     title: "Local impact",
     caveat:
-      "Local impact reports file-level import neighbors from the current checkout. Use --source hosted only when you want the hosted team graph.",
+      "Local impact traverses TypeScript AST calls/references plus resolved file imports from the current checkout; Python and Go use import fallback.",
     scope: summarizeLocalCodeOverlay(manifest),
     target: symbol ? compactSymbol(symbol) : { changedFiles, missingTargetFiles },
     changedFiles,
@@ -2137,6 +3847,22 @@ export function buildLocalImpactResult(
     incoming,
     outgoing,
     impactedFiles,
+    transitiveFiles,
+    depth,
+    direction,
+    impactChains: traversal.nodes.map((node) => ({
+      target: node.filePath,
+      depth: node.depth,
+      path: node.path,
+      edges: node.edges,
+    })),
+    traversal: {
+      truncated: traversal.truncated,
+      visitedCount: traversal.visitedCount,
+      maxNodes,
+    },
+    semantic,
+    risk: buildLocalRisk(manifest, changedFiles, traversal, depth, semantic),
   };
 }
 
@@ -2619,14 +4345,15 @@ const LOCAL_CODE_MCP_TOOLS: LocalCodeToolDefinition[] = [
   },
   {
     name: "snipara_local_code_callers",
-    description:
-      "List local file-level importers for a symbol or file from the non-canonical overlay.",
+    description: "List local AST callers or importers with bounded transitive traversal.",
     inputSchema: {
       type: "object",
       properties: {
         qualifiedName: { type: "string" },
         symbolKey: { type: "string" },
         filePath: { type: "string" },
+        depth: { type: "integer", minimum: 1, maximum: 12, default: 1 },
+        maxNodes: { type: "integer", minimum: 1, default: 200 },
         cached: { type: "boolean" },
         maxFiles: { type: "integer", minimum: 1 },
       },
@@ -2635,13 +4362,17 @@ const LOCAL_CODE_MCP_TOOLS: LocalCodeToolDefinition[] = [
   },
   {
     name: "snipara_local_code_neighbors",
-    description: "List local incoming and outgoing file-level import neighbors.",
+    description: "Traverse local AST and import graph neighbors.",
     inputSchema: {
       type: "object",
       properties: {
         qualifiedName: { type: "string" },
         symbolKey: { type: "string" },
         filePath: { type: "string" },
+        depth: { type: "integer", minimum: 1, maximum: 12, default: 2 },
+        direction: { type: "string", enum: ["in", "out", "both"], default: "both" },
+        edgeKinds: { type: "array", items: { type: "string" } },
+        maxNodes: { type: "integer", minimum: 1, default: 200 },
         cached: { type: "boolean" },
         maxFiles: { type: "integer", minimum: 1 },
       },
@@ -2650,7 +4381,7 @@ const LOCAL_CODE_MCP_TOOLS: LocalCodeToolDefinition[] = [
   },
   {
     name: "snipara_local_code_shortest_path",
-    description: "Find a local file-level import path between symbols or files.",
+    description: "Find a local AST/import path between symbols or files.",
     inputSchema: {
       type: "object",
       required: ["from", "to"],
@@ -2658,6 +4389,9 @@ const LOCAL_CODE_MCP_TOOLS: LocalCodeToolDefinition[] = [
         from: { type: "string" },
         to: { type: "string" },
         maxHops: { type: "integer", minimum: 1 },
+        direction: { type: "string", enum: ["in", "out", "both"], default: "both" },
+        edgeKinds: { type: "array", items: { type: "string" } },
+        maxNodes: { type: "integer", minimum: 1, default: 500 },
         cached: { type: "boolean" },
         maxFiles: { type: "integer", minimum: 1 },
       },
@@ -2666,7 +4400,7 @@ const LOCAL_CODE_MCP_TOOLS: LocalCodeToolDefinition[] = [
   },
   {
     name: "snipara_local_code_impact",
-    description: "Summarize local file-level import impact for changed files or a selected symbol.",
+    description: "Summarize bounded transitive local impact with explainable risk.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2674,6 +4408,11 @@ const LOCAL_CODE_MCP_TOOLS: LocalCodeToolDefinition[] = [
         qualifiedName: { type: "string" },
         symbolKey: { type: "string" },
         filePath: { type: "string" },
+        depth: { type: "integer", minimum: 1, maximum: 12, default: 3 },
+        transitive: { type: "boolean", default: true },
+        direction: { type: "string", enum: ["in", "out", "both"], default: "both" },
+        edgeKinds: { type: "array", items: { type: "string" } },
+        maxNodes: { type: "integer", minimum: 1, default: 500 },
         cached: { type: "boolean" },
         maxFiles: { type: "integer", minimum: 1 },
       },
@@ -2744,6 +4483,15 @@ function localQueryOptionsFromArgs(
     from: stringFromUnknown(args.from),
     to: stringFromUnknown(args.to),
     maxHops: numberFromUnknown(args.maxHops, undefined),
+    depth: numberFromUnknown(args.depth, undefined),
+    direction:
+      args.direction === "in" || args.direction === "out" || args.direction === "both"
+        ? args.direction
+        : undefined,
+    edgeKinds: stringArrayFromUnknown(args.edgeKinds),
+    maxNodes: numberFromUnknown(args.maxNodes, undefined),
+    transitive:
+      args.transitive === undefined ? undefined : booleanFromUnknown(args.transitive, true),
     json: true,
   };
 }

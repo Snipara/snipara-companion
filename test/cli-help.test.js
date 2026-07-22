@@ -503,10 +503,9 @@ test("intelligence brief combines resume context, memory health, and code impact
   assert.equal(payload.projectPolicyDecision.version, "snipara.project_policy.decision.v0");
   assert.equal(payload.projectPolicyDecision.verdict, "require_review");
   assert.equal(payload.projectPolicyDecision.receipt.overrideRequiresReason, true);
-  assert.equal(payload.codeImpactSourceSelection.selected, "local_overlay");
-  assert.equal(payload.codeImpactSourceSelection.reason, "auto_local_default");
-  assert.equal(payload.codeImpact.title, "Local impact");
-  assert.deepEqual(payload.codeImpact.changedFiles, ["src/auth.ts"]);
+  assert.equal(payload.codeImpactSourceSelection.selected, "hosted_graph");
+  assert.equal(payload.codeImpactSourceSelection.reason, "auto_hosted_clean_checkout");
+  assert.equal(payload.codeImpact.risk.level, "medium");
   assert.equal(payload.localSessionSnapshot.schemaVersion, "snipara.session_snapshot.v0");
   assert.equal(
     payload.localSessionSnapshot.summary.latestActivityTitle,
@@ -2261,7 +2260,7 @@ test("code help frames symbol-card and impact as agent-ready gates", () => {
   assert.equal(result.status, 0);
   assert.match(result.stdout, /agent-ready symbol card/);
   assert.match(result.stdout, /agent-ready code impact gate/);
-  assert.match(result.stdout, /local overlay by default/);
+  assert.match(result.stdout, /automatic source selection/);
 });
 
 test("shared-context help exposes category filter", () => {

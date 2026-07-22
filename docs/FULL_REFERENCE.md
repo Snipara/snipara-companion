@@ -1080,10 +1080,10 @@ snipara-companion doctor
 snipara-companion doctor --json
 snipara-companion code callers --qualified-name src.mcp_transport.handle_call_tool
 snipara-companion code imports --file-path src/mcp_transport.py
-snipara-companion code neighbors --qualified-name src.mcp_transport.handle_call_tool
+snipara-companion code neighbors --qualified-name src.mcp_transport.handle_call_tool --depth 3
 snipara-companion code shortest-path --from src.server.mcp_endpoint --to src.mcp_transport.handle_call_tool
 snipara-companion code symbol-card --qualified-name src.mcp_transport.handle_call_tool
-snipara-companion code impact --changed-files apps/web/src/lib/auth.ts tests/auth.test.ts --diff-summary "auth hardening"
+snipara-companion code impact --changed-files apps/web/src/lib/auth.ts tests/auth.test.ts --diff-summary "auth hardening" --depth 4 --direction in
 snipara-companion plan --query "implement OAuth device flow"
 snipara-companion upload --path docs/spec.md --file ./docs/spec.md
 snipara-companion upload --path clients/acme/current.md --file ./current.md --asset-class BUSINESS_DOCUMENT --usage-mode current_truth --source-kind local_agent --client-id acme
@@ -1248,8 +1248,9 @@ snipara-companion intelligence brief \
 
 The command calls hosted `snipara_resume_context` and `snipara_memory_health`.
 When changed files are provided, code impact uses companion auto-source
-selection, so dirty/ahead worktrees use the local overlay and clean configured
-checkouts use hosted graph impact. It prints continuity signals, memory health,
+selection: configured dirty/ahead worktrees use a hosted-base plus local-delta
+hybrid, unconfigured worktrees stay local, and clean configured checkouts use
+hosted graph impact. It prints continuity signals, memory health,
 risk and verification hints, degraded surfaces, and the Judgment Card's
 weighted readiness, evidence, and required actions.
 
@@ -1545,10 +1546,10 @@ Semantics:
 - `snipara-companion team-sync sweep` = archives stale local work items after an inactivity threshold; default is 14 days and `--dry-run` previews candidates, actual archive count, and remaining stale work
 - `snipara-companion team-sync resume` = reloads local carryover plus the hosted latest handoff and checkpoint-aware resume guidance when available
 - `snipara-companion final-commit` / `workflow final-commit` = final hosted handoff plus a redacted seven-section closeout report in human output and `.snipara/workflow/final-report.json`; stored phase outcomes, pending Why Capture candidates, non-persisted items, evidence statuses, risks, and the next step remain visibly distinct
-- `snipara-companion code callers/imports/neighbors/shortest-path/impact` = primary code graph surface for agents with shell access. These commands use `--source auto` by default; clean configured checkouts use hosted MCP, dirty/ahead worktrees use the local overlay, and every response reports `sourceSelection` plus agent guidance.
+- `snipara-companion code callers/imports/neighbors/shortest-path/impact` = primary code graph surface for agents with shell access. These commands use `--source auto` by default; clean configured checkouts use hosted MCP, dirty/ahead worktrees use a hosted-base plus local-delta hybrid, and unconfigured projects stay local. Every response reports `sourceSelection` and provenance.
 - `snipara-companion code symbol-card` = direct `snipara_code_symbol_card` for an important symbol before editing, with an agent guidance summary before raw JSON
-- `snipara-companion code impact --source hosted|local` = optional source override for debugging; normal agent instructions should leave `--source auto` in place. Hosted `snipara_code_impact` is the fallback when companion is unavailable or the canonical graph check after push/reindex.
-- `snipara-companion code local impact` = explicit repository-local file-level import impact from the local code overlay; keep this for power-user/debug workflows, and use `workflow impact-gate` when the file set should come from unpushed workflow commits
+- `snipara-companion code impact --source hosted|local|hybrid` = optional source override. `--fallback-hosted` augments a local query when hosted auth is available; failures remain explicit degraded-local results.
+- `snipara-companion code local impact` = explicit repository-local bounded transitive impact. TypeScript uses compiler-AST calls/references/imports; Python and Go use import fallback. Use `--depth`, `--direction`, `--edge-kinds`, and `--max-nodes` to control expansion.
 - `snipara-companion doctor` = local readiness check for companion version skew, Snipara auth, deterministic hosted tool catalog access, Snipara Sandbox, Snipara Sandbox MCP wiring, provider keys, and Docker
 - `snipara-companion upload --metadata/--metadata-file` = single-file upload with the same business/client metadata fields supported by bulk sync
 - `snipara-companion business-collections` = manage reusable Team Business Context collections (Business Response Playbook, Business Library, Offer Templates, Company Presentations, Reference Diagrams)

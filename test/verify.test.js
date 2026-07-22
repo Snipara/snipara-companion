@@ -224,15 +224,15 @@ test("verify command returns JSON from mocked code impact", () => {
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.version, "snipara.verification_plan.v1");
   assert.equal(payload.task, "ship auth hardening");
-  assert.equal(payload.codeImpactSourceSelection.selected, "local_overlay");
-  assert.equal(payload.codeImpactSourceSelection.reason, "auto_local_default");
-  assert.equal(payload.risk.level, "unknown");
+  assert.equal(payload.codeImpactSourceSelection.selected, "hosted_graph");
+  assert.equal(payload.codeImpactSourceSelection.reason, "auto_hosted_clean_checkout");
+  assert.equal(payload.risk.level, "medium");
   assert.deepEqual(payload.impactedFiles, ["src/auth.ts"]);
   assert.ok(payload.recommendedChecks.some((check) => check.command === "pnpm test"));
   assert.ok(payload.recommendedChecks.some((check) => check.command === "pnpm type-check"));
 });
 
-test("verify command auto-selects local overlay for dirty worktrees", () => {
+test("verify command auto-selects hybrid graph for configured dirty worktrees", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-verify-dirty-local-"));
   runGit(dir, ["init"]);
   runGit(dir, ["config", "user.email", "agent@example.com"]);
@@ -248,6 +248,7 @@ test("verify command auto-selects local overlay for dirty worktrees", () => {
   runGit(dir, ["add", "."]);
   runGit(dir, ["commit", "-m", "initial"]);
   fs.appendFileSync(path.join(dir, "src", "auth.ts"), "export const dirty = true;\n", "utf8");
+  const preloadPath = writeVerifyPreload(dir);
 
   const result = runCli(
     ["verify", "--task", "ship auth hardening", "--changed-files", "src/auth.ts", "--json"],
@@ -258,15 +259,21 @@ test("verify command auto-selects local overlay for dirty worktrees", () => {
         SNIPARA_PROJECT_ID: "snipara",
         SNIPARA_API_URL: "https://api.snipara.com",
       },
+      nodeArgs: ["--require", preloadPath],
     }
   );
 
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.codeImpactSourceSelection.requested, "auto");
-  assert.equal(payload.codeImpactSourceSelection.selected, "local_overlay");
+  assert.equal(payload.codeImpactSourceSelection.selected, "hybrid_graph");
   assert.equal(payload.codeImpactSourceSelection.reason, "working_tree_dirty");
-  assert.equal(payload.codeImpactSourceSelection.dirtyFileCount, 1);
+  assert.ok(payload.codeImpactSourceSelection.dirtyFileCount >= 1);
+  assert.ok(payload.codeImpactSourceSelection.dirtyFilesSample.includes("src/auth.ts"));
+  assert.equal(payload.codeImpact.mode, "hybrid");
+  assert.equal(payload.codeImpact.provenance.canonicalBase, "hosted_graph");
+  assert.equal(payload.codeImpact.local.title, "Local impact");
+  assert.ok(payload.codeImpact.hosted);
   assert.ok(payload.impactedFiles.includes("src/auth.ts"));
 });
 

@@ -93,7 +93,7 @@ These commands are useful without hosted Snipara:
 | Command                                                                               | What it gives you locally                                                    |
 | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | `source init` / `source sync` / `source status`                                       | Local source snapshot, document preview, and code overlay                    |
-| `impact` / `code impact`                                                              | File-level blast-radius from the local code overlay                          |
+| `impact` / `code impact`                                                              | Bounded transitive blast radius, chains, and explainable local risk          |
 | `reality-check`                                                                       | Intent Ledger, Unknown Registry, auto-linked context, and inspectable proof  |
 | `code callers` / `imports` / `neighbors` / `shortest-path`                            | Structural repo questions from local files                                   |
 | `workflow start` / `phase-start` / `phase-commit` / `resume`                          | Agent continuity that survives compaction                                    |
@@ -393,6 +393,14 @@ npx -y snipara-companion source status --json
 This writes `.snipara/source/latest.json`, builds a local document sync preview,
 and refreshes `.snipara/code-overlay/latest.json`. The hosted code graph remains
 the canonical shared graph after provider sync.
+
+Overlay v2 uses the TypeScript Compiler API to extract stable symbols plus
+`CALLS`, `REFERENCES`, `IMPORTS`, and `CONTAINS` edges. Python and Go retain an
+import-level fallback. Use `--depth`, `--direction`, `--edge-kinds`, and
+`--max-nodes` to bound traversal. `source watch` refreshes the overlay with
+per-file incremental reuse. With hosted configuration, `--source auto` uses the
+hosted graph for a clean checkout and a provenance-preserving hybrid for dirty
+or ahead work; `--source local` remains completely offline.
 
 ## Install
 

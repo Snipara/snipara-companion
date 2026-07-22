@@ -10,8 +10,10 @@ const {
   buildLocalCodeOverlay,
   getLocalCodeOverlayCachePath,
   getLocalCodePromotionStatePath,
+  mergeHybridCodeResults,
   readLocalCodeOverlayCache,
   readLocalCodePromotionState,
+  resolveCodeGraphMode,
   writeLocalCodeOverlayCache,
 } = require("../dist/index.js");
 
@@ -41,6 +43,121 @@ function makeTempRepo() {
   );
   runGit(dir, ["add", "."]);
   runGit(dir, ["commit", "-m", "initial"]);
+  return dir;
+}
+
+function makeDeepTempRepo() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-code-overlay-deep-"));
+  runGit(dir, ["init"]);
+  runGit(dir, ["config", "user.email", "agent@example.com"]);
+  runGit(dir, ["config", "user.name", "Agent"]);
+  fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "src", "helper.ts"),
+    ["export function helper() {", "  return 'ok';", "}", ""].join("\n"),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(dir, "src", "service.ts"),
+    [
+      "import { helper } from './helper';",
+      "export function service() {",
+      "  return helper();",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(dir, "src", "controller.ts"),
+    [
+      "import { service } from './service';",
+      "export function controller() {",
+      "  return service();",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(dir, "src", "route.ts"),
+    [
+      "import { controller } from './controller';",
+      "export function route() {",
+      "  return controller();",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  runGit(dir, ["add", "."]);
+  runGit(dir, ["commit", "-m", "deep graph"]);
+  return dir;
+}
+
+function makeSemanticTempRepo() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-code-overlay-semantic-"));
+  runGit(dir, ["init"]);
+  runGit(dir, ["config", "user.email", "agent@example.com"]);
+  runGit(dir, ["config", "user.name", "Agent"]);
+  fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+  fs.mkdirSync(path.join(dir, "tests"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "src", "contracts.ts"),
+    ["export interface SessionContract {", "  load(): string;", "}", ""].join("\n"),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(dir, "src", "session-repository.ts"),
+    [
+      "import type { SessionContract } from './contracts';",
+      "export class SessionRepository implements SessionContract {",
+      "  load() { return 'session'; }",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(dir, "src", "session-adapter.ts"),
+    [
+      "import { SessionRepository } from './session-repository';",
+      "export function sessionAdapter() {",
+      "  return new SessionRepository().load();",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(dir, "src", "session-facade.ts"),
+    [
+      "import { sessionAdapter } from './session-adapter';",
+      "export function sessionFacade() { return sessionAdapter(); }",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(dir, "src", "route.ts"),
+    [
+      "import { sessionFacade } from './session-facade';",
+      "export function GET() { return sessionFacade(); }",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(dir, "tests", "session-repository.test.ts"),
+    [
+      "import { SessionRepository } from '../src/session-repository';",
+      "export function testRepository() { return new SessionRepository().load(); }",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  runGit(dir, ["add", "."]);
+  runGit(dir, ["commit", "-m", "semantic graph"]);
   return dir;
 }
 
@@ -154,7 +271,7 @@ test("buildLocalCodeOverlay reports local commit metadata and code structure", (
   const repo = makeTempRepo();
   const manifest = buildLocalCodeOverlay({ cwd: repo, mode: "local_commit", commit: "HEAD" });
 
-  assert.equal(manifest.version, "snipara.local_code_overlay.v1");
+  assert.equal(manifest.version, "snipara.local_code_overlay.v2");
   assert.equal(manifest.mode, "local_commit");
   assert.equal(manifest.canonical, false);
   assert.equal(manifest.currentWorkingTreeVisible, false);
@@ -162,6 +279,8 @@ test("buildLocalCodeOverlay reports local commit metadata and code structure", (
   assert.equal(manifest.files.length, 2);
   assert.ok(manifest.symbols.some((symbol) => symbol.name === "run"));
   assert.ok(manifest.imports.some((item) => item.specifier === "./helper"));
+  assert.ok(manifest.edges.some((edge) => edge.kind === "IMPORTS"));
+  assert.ok(manifest.edges.some((edge) => edge.kind === "CALLS"));
 });
 
 test("working tree overlay includes dirty hash and redacts secret-like files without excluding them", () => {
@@ -261,7 +380,7 @@ test("local overlay cache round-trips through .snipara/code-overlay/latest.json"
 
   assert.equal(cachePath, getLocalCodeOverlayCachePath(repo));
   assert.ok(fs.existsSync(cachePath));
-  assert.equal(cached.version, "snipara.local_code_overlay.v1");
+  assert.equal(cached.version, "snipara.local_code_overlay.v2");
   assert.equal(cached.files.length, manifest.files.length);
 });
 
@@ -278,7 +397,7 @@ test("hosted overlay upload payload wraps cached non-canonical manifest", () => 
     sessionId: "session_1",
   });
 
-  assert.equal(payload.request.overlay.version, "snipara.local_code_overlay.v1");
+  assert.equal(payload.request.overlay.version, "snipara.local_code_overlay.v2");
   assert.equal(payload.request.overlay.canonical, false);
   assert.equal(payload.request.source_client, "test-agent");
   assert.equal(payload.request.session_id, "session_1");
@@ -324,7 +443,7 @@ test("code sync and status expose JSON for CLI-only agents", () => {
   const status = runCli(["code", "status", "--json"], { cwd: repo });
   assert.equal(status.status, 0, status.stderr);
   const statusPayload = JSON.parse(status.stdout);
-  assert.equal(statusPayload.current.version, "snipara.local_code_overlay.v1");
+  assert.equal(statusPayload.current.version, "snipara.local_code_overlay.v2");
   assert.equal(statusPayload.cache.overlayKind, "local_commit");
 });
 
@@ -388,6 +507,263 @@ test("code local commands query cached overlay imports and file-level paths", ()
   assert.deepEqual(shortestPathPayload.path, ["src/index.ts", "src/helper.ts"]);
 });
 
+test("TypeScript AST extraction produces stable symbol identities and call edges", () => {
+  const repo = makeDeepTempRepo();
+  const first = buildLocalCodeOverlay({ cwd: repo, mode: "working_tree" });
+  const firstHelper = first.symbols.find((symbol) => symbol.name === "helper");
+  const service = first.symbols.find((symbol) => symbol.name === "service");
+
+  assert.ok(firstHelper);
+  assert.ok(service);
+  assert.ok(
+    first.edges.some(
+      (edge) =>
+        edge.kind === "CALLS" && edge.from === service.localKey && edge.to === firstHelper.localKey
+    )
+  );
+  assert.ok(first.references.some((reference) => reference.name === "helper"));
+
+  fs.writeFileSync(
+    path.join(repo, "src", "helper.ts"),
+    `\n${fs.readFileSync(path.join(repo, "src", "helper.ts"), "utf8")}`,
+    "utf8"
+  );
+  const second = buildLocalCodeOverlay({ cwd: repo, mode: "working_tree" });
+  const secondHelper = second.symbols.find((symbol) => symbol.name === "helper");
+
+  assert.equal(secondHelper.localKey, firstHelper.localKey);
+  assert.notEqual(secondHelper.line, firstHelper.line);
+});
+
+test("semantic overlay explains contracts, architecture roles, and dependency criticality", () => {
+  const repo = makeSemanticTempRepo();
+  const manifest = buildLocalCodeOverlay({ cwd: repo, mode: "working_tree" });
+  const contract = manifest.symbols.find((symbol) => symbol.name === "SessionContract");
+  const repository = manifest.symbols.find((symbol) => symbol.name === "SessionRepository");
+
+  assert.equal(manifest.extractorVersion, 3);
+  assert.equal(contract.exported, true);
+  assert.equal(repository.exported, true);
+  assert.equal(manifest.semantic.version, "snipara.semantic.v1");
+  assert.ok(
+    manifest.semantic.publicContracts.some(
+      (assertion) =>
+        assertion.subject === contract.localKey &&
+        assertion.predicate === "implicit_contract" &&
+        assertion.value === "exported_type_contract"
+    )
+  );
+  assert.ok(
+    manifest.semantic.architectureRoles.some(
+      (assertion) => assertion.subject === repository.localKey && assertion.value === "repository"
+    )
+  );
+  assert.ok(manifest.semantic.architectureRoles.some((assertion) => assertion.value === "adapter"));
+  assert.ok(manifest.semantic.architectureRoles.some((assertion) => assertion.value === "facade"));
+
+  const impact = runCli(
+    [
+      "code",
+      "impact",
+      "--source",
+      "local",
+      "--changed-files",
+      "src/session-repository.ts",
+      "--depth",
+      "4",
+      "--json",
+    ],
+    { cwd: repo }
+  );
+  assert.equal(impact.status, 0, impact.stderr);
+  const payload = JSON.parse(impact.stdout).result;
+  assert.equal(payload.semantic.scope, "impact");
+  assert.equal(payload.semantic.historicalRegression.mode, "shadow");
+  assert.equal(payload.semantic.historicalRegression.riskContributionEnabled, false);
+  assert.ok(payload.semantic.summary.criticalDependencyCount > 0);
+  assert.ok(payload.semantic.summary.incidentalDependencyCount > 0);
+  assert.ok(payload.risk.semanticRiskPoints > 0);
+  assert.ok(payload.risk.reasons.some((reason) => /semantic dependenc/.test(reason)));
+});
+
+test("local callers, neighbors, and impact traverse bounded transitive paths", () => {
+  const repo = makeDeepTempRepo();
+
+  const callers = runCli(
+    ["code", "callers", "--source", "local", "-q", "helper", "--depth", "3", "--json"],
+    { cwd: repo }
+  );
+  assert.equal(callers.status, 0, callers.stderr);
+  const callersPayload = JSON.parse(callers.stdout).result;
+  assert.equal(callersPayload.depth, 3);
+  assert.ok(callersPayload.callers.some((caller) => caller.filePath === "src/service.ts"));
+  assert.ok(callersPayload.callers.some((caller) => caller.filePath === "src/controller.ts"));
+  assert.ok(callersPayload.callers.some((caller) => caller.filePath === "src/route.ts"));
+
+  const neighbors = runCli(
+    ["code", "neighbors", "--source", "local", "-q", "helper", "--depth", "2", "--json"],
+    { cwd: repo }
+  );
+  assert.equal(neighbors.status, 0, neighbors.stderr);
+  const neighborsPayload = JSON.parse(neighbors.stdout).result;
+  assert.ok(neighborsPayload.nodes.some((node) => node.filePath === "src/service.ts"));
+  assert.ok(neighborsPayload.nodes.some((node) => node.filePath === "src/controller.ts"));
+
+  const impact = runCli(
+    [
+      "code",
+      "impact",
+      "--source",
+      "local",
+      "--changed-files",
+      "src/helper.ts",
+      "--depth",
+      "3",
+      "--transitive",
+      "--json",
+    ],
+    { cwd: repo }
+  );
+  assert.equal(impact.status, 0, impact.stderr);
+  const impactPayload = JSON.parse(impact.stdout).result;
+  assert.deepEqual(impactPayload.transitiveFiles, [
+    "src/controller.ts",
+    "src/route.ts",
+    "src/service.ts",
+  ]);
+  assert.equal(impactPayload.risk.depth, 3);
+  assert.ok(impactPayload.risk.score > 0);
+  assert.ok(impactPayload.risk.reasons.length > 0);
+
+  const boundedImpact = runCli(
+    [
+      "code",
+      "impact",
+      "--source",
+      "local",
+      "--changed-files",
+      "src/helper.ts",
+      "--depth",
+      "3",
+      "--max-nodes",
+      "2",
+      "--json",
+    ],
+    { cwd: repo }
+  );
+  assert.equal(boundedImpact.status, 0, boundedImpact.stderr);
+  const boundedImpactPayload = JSON.parse(boundedImpact.stdout).result;
+  assert.equal(boundedImpactPayload.traversal.maxNodes, 2);
+  assert.ok(boundedImpactPayload.traversal.visitedCount <= 2);
+  assert.equal(boundedImpactPayload.traversal.truncated, true);
+});
+
+test("overlay cache reuses unchanged per-file extraction slices", () => {
+  const repo = makeDeepTempRepo();
+  const first = buildLocalCodeOverlay({ cwd: repo, mode: "working_tree" });
+  writeLocalCodeOverlayCache(first);
+  fs.appendFileSync(path.join(repo, "src", "route.ts"), "export const runtime = 'edge';\n", "utf8");
+
+  const second = buildLocalCodeOverlay({ cwd: repo, mode: "working_tree" });
+
+  assert.equal(second.incremental.parsedFiles, 1);
+  assert.equal(second.incremental.reusedFiles, 3);
+  assert.equal(second.incremental.deletedFiles, 0);
+});
+
+test("hybrid merge preserves source provenance and unions affected files", () => {
+  const merged = mergeHybridCodeResults(
+    "impact",
+    {
+      changedFiles: ["src/local.ts"],
+      impactedFiles: ["src/local.ts"],
+      risk: { level: "medium", score: 42 },
+      semantic: {
+        assertions: [{ id: "local-role", predicate: "architecture_role", value: "adapter" }],
+        historicalRegression: { mode: "shadow", riskContributionEnabled: false },
+      },
+    },
+    {
+      affected_files: ["src/hosted.ts", "src/local.ts"],
+      risk: { level: "high", score: 80 },
+      semantic: {
+        assertions: [
+          { id: "hosted-contract", predicate: "implicit_contract", value: "public_surface" },
+        ],
+        historical_regression: { mode: "shadow", risk_contribution_enabled: false },
+      },
+      recommended_tests: [{ command: "pnpm test" }],
+      index_freshness: { stale: false },
+    }
+  );
+
+  assert.equal(merged.mode, "hybrid");
+  assert.equal(merged.provenance.canonicalBase, "hosted_graph");
+  assert.equal(merged.provenance.checkoutDelta, "local_overlay");
+  assert.deepEqual(merged.merged.affectedFiles, ["src/hosted.ts", "src/local.ts"]);
+  assert.equal(merged.merged.affectedFileCount, 2);
+  assert.equal(merged.risk.source, "hosted_graph");
+  assert.equal(merged.risk.score, 80);
+  assert.equal(merged.semantic.version, "snipara.semantic.hybrid.v1");
+  assert.equal(merged.semantic.summary.assertionCount, 2);
+  assert.equal(merged.semantic.historicalRegression.mode, "shadow");
+  assert.deepEqual(merged.recommended_tests, [{ command: "pnpm test" }]);
+});
+
+test("auto source uses hosted for clean checkouts and hybrid for local deltas", () => {
+  assert.deepEqual(
+    resolveCodeGraphMode({
+      requested: "auto",
+      dirtyFiles: [],
+      aheadCount: 0,
+      hostedConfigured: true,
+      fallbackHosted: false,
+    }),
+    { selected: "hosted_graph", reason: "auto_hosted_clean_checkout" }
+  );
+  assert.deepEqual(
+    resolveCodeGraphMode({
+      requested: "auto",
+      dirtyFiles: ["src/local.ts"],
+      aheadCount: 0,
+      hostedConfigured: true,
+      fallbackHosted: false,
+    }),
+    { selected: "hybrid_graph", reason: "working_tree_dirty" }
+  );
+  assert.deepEqual(
+    resolveCodeGraphMode({
+      requested: "local",
+      dirtyFiles: [],
+      aheadCount: 0,
+      hostedConfigured: true,
+      fallbackHosted: true,
+    }),
+    { selected: "hybrid_graph", reason: "fallback_hosted_requested" }
+  );
+});
+
+test("local traversal rejects an invalid direction instead of silently widening it", () => {
+  const repo = makeTempRepo();
+  const result = runCli(
+    [
+      "code",
+      "impact",
+      "--source",
+      "local",
+      "--changed-files",
+      "src/helper.ts",
+      "--direction",
+      "sideways",
+      "--json",
+    ],
+    { cwd: repo }
+  );
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /--direction must be one of: in, out, both/);
+});
+
 test("code unified commands can force local overlay source", () => {
   const repo = makeTempRepo();
 
@@ -402,7 +778,11 @@ test("code unified commands can force local overlay source", () => {
   assert.equal(payload.sourceSelection.reason, "source_forced_local");
   assert.equal(payload.result.target.name, "helper");
   assert.ok(payload.result.callers.some((caller) => caller.filePath === "src/index.ts"));
-  assert.ok(payload.sourceSelection.limitations.includes("local_overlay_file_import_model"));
+  assert.ok(
+    payload.sourceSelection.limitations.some((item) =>
+      item.includes("compiler-AST edges for TypeScript")
+    )
+  );
   assert.ok(
     payload.sourceSelection.guidance.some((item) =>
       item.includes("Use --source hosted after login")

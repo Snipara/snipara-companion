@@ -349,8 +349,10 @@ export {
   buildLocalShortestPathResult,
   getLocalCodeOverlayCachePath,
   getLocalCodePromotionStatePath,
+  mergeHybridCodeResults,
   readLocalCodeOverlayCache,
   readLocalCodePromotionState,
+  resolveCodeGraphMode,
   summarizeLocalCodeOverlay,
   writeLocalCodeOverlayCache,
   writeLocalCodePromotionState,
@@ -4375,7 +4377,7 @@ collaboration
 program
   .command("impact")
   .description(
-    "Run a local code impact check for a file, symbol, or changed files",
+    "Run bounded code impact with automatic local, hosted, or hybrid source selection",
   )
   .argument("[filePath]", "Source file to analyze")
   .option("-q, --qualified-name <qualifiedName>", "Qualified symbol name")
@@ -4386,12 +4388,14 @@ program
     "--diff-summary <diffSummary>",
     "Natural-language summary of the change",
   )
+  .option("-d, --depth <number>", "Transitive traversal depth", "3")
+  .option("--transitive", "Enable transitive traversal (enabled by default)")
+  .option("--direction <direction>", "in|out|both", "both")
+  .option("-e, --edge-kinds <edgeKinds...>", "Edge kinds to traverse")
+  .option("--max-nodes <number>", "Maximum graph nodes to visit", "500")
   .option("-l, --limit <number>", "Maximum impact entries", "50")
-  .option(
-    "--source <source>",
-    "auto|local|hosted (auto defaults to local)",
-    "auto",
-  )
+  .option("--source <source>", "auto|local|hosted|hybrid", "auto")
+  .option("--fallback-hosted", "Augment the local result with hosted graph context")
   .option(
     "--cached",
     "When local is selected, use the cached overlay if present",
@@ -4409,8 +4413,14 @@ program
       filePath: options.filePath ?? filePath,
       changedFiles: options.changedFiles,
       diffSummary: options.diffSummary,
+      depth: parseInt(options.depth, 10),
+      transitive: options.transitive === true ? true : undefined,
+      direction: options.direction,
+      edgeKinds: options.edgeKinds,
+      maxNodes: parseInt(options.maxNodes, 10),
       limit: parseInt(options.limit, 10),
       source: options.source,
+      fallbackHosted: Boolean(options.fallbackHosted),
       cached: Boolean(options.cached),
       maxFiles: parseInt(options.maxFiles, 10),
       json: options.json,
@@ -4712,13 +4722,17 @@ code
       .description("Query the non-canonical local code overlay with CLI JSON")
       .addCommand(
         new Command("callers")
-          .description("List local file-level importers for a symbol or file")
+          .description(
+            "List local AST callers or file importers with bounded transitive depth",
+          )
           .option(
             "-q, --qualified-name <qualifiedName>",
             "Local symbol name or file::symbol",
           )
           .option("--symbol-key <symbolKey>", "Local overlay symbol key")
           .option("-f, --file-path <filePath>", "File path to inspect")
+          .option("-d, --depth <number>", "Traversal depth", "1")
+          .option("--max-nodes <number>", "Maximum graph nodes to visit", "200")
           .option(
             "--cached",
             "Use the cached overlay instead of rebuilding from the working tree",
@@ -4734,6 +4748,8 @@ code
               qualifiedName: options.qualifiedName,
               symbolKey: options.symbolKey,
               filePath: options.filePath,
+              depth: parseInt(options.depth, 10),
+              maxNodes: parseInt(options.maxNodes, 10),
               cached: Boolean(options.cached),
               maxFiles: parseInt(options.maxFiles, 10),
               json: options.json,
@@ -4764,6 +4780,10 @@ code
               qualifiedName: options.qualifiedName,
               symbolKey: options.symbolKey,
               filePath: options.filePath,
+              depth: parseInt(options.depth, 10),
+              direction: options.direction,
+              edgeKinds: options.edgeKinds,
+              maxNodes: parseInt(options.maxNodes, 10),
               cached: Boolean(options.cached),
               maxFiles: parseInt(options.maxFiles, 10),
               json: options.json,
@@ -4773,7 +4793,7 @@ code
       .addCommand(
         new Command("neighbors")
           .description(
-            "List local incoming and outgoing file-level import neighbors",
+            "Traverse the local AST and import graph around a symbol or file",
           )
           .option(
             "-q, --qualified-name <qualifiedName>",
@@ -4781,6 +4801,10 @@ code
           )
           .option("--symbol-key <symbolKey>", "Local overlay symbol key")
           .option("-f, --file-path <filePath>", "File path to inspect")
+          .option("-d, --depth <number>", "Traversal depth", "2")
+          .option("--direction <direction>", "in|out|both", "both")
+          .option("-e, --edge-kinds <edgeKinds...>", "Edge kinds to traverse")
+          .option("--max-nodes <number>", "Maximum graph nodes to visit", "200")
           .option(
             "--cached",
             "Use the cached overlay instead of rebuilding from the working tree",
@@ -4796,6 +4820,11 @@ code
               qualifiedName: options.qualifiedName,
               symbolKey: options.symbolKey,
               filePath: options.filePath,
+              depth: parseInt(options.depth, 10),
+              transitive: options.transitive === true ? true : undefined,
+              direction: options.direction,
+              edgeKinds: options.edgeKinds,
+              maxNodes: parseInt(options.maxNodes, 10),
               cached: Boolean(options.cached),
               maxFiles: parseInt(options.maxFiles, 10),
               json: options.json,
@@ -4805,7 +4834,7 @@ code
       .addCommand(
         new Command("impact")
           .description(
-            "Summarize local file-level import impact for changed files or a selected symbol",
+            "Summarize bounded transitive local impact for changed files or a selected symbol",
           )
           .option(
             "--changed-files <changedFiles...>",
@@ -4817,6 +4846,11 @@ code
           )
           .option("--symbol-key <symbolKey>", "Local overlay symbol key")
           .option("-f, --file-path <filePath>", "File path to inspect")
+          .option("-d, --depth <number>", "Transitive traversal depth", "3")
+          .option("--transitive", "Enable transitive traversal (enabled by default)")
+          .option("--direction <direction>", "in|out|both", "both")
+          .option("-e, --edge-kinds <edgeKinds...>", "Edge kinds to traverse")
+          .option("--max-nodes <number>", "Maximum graph nodes to visit", "500")
           .option(
             "--cached",
             "Use the cached overlay instead of rebuilding from the working tree",
@@ -4842,11 +4876,14 @@ code
       .addCommand(
         new Command("shortest-path")
           .description(
-            "Find a local file-level import path between symbols or files",
+            "Find a local AST/import path between symbols or files",
           )
           .requiredOption("--from <from>", "Source symbol name or file path")
           .requiredOption("--to <to>", "Target symbol name or file path")
           .option("--max-hops <number>", "Maximum file hops", "6")
+          .option("--direction <direction>", "in|out|both", "both")
+          .option("-e, --edge-kinds <edgeKinds...>", "Edge kinds to traverse")
+          .option("--max-nodes <number>", "Maximum graph nodes to visit", "500")
           .option(
             "--cached",
             "Use the cached overlay instead of rebuilding from the working tree",
@@ -4862,6 +4899,9 @@ code
               from: options.from,
               to: options.to,
               maxHops: parseInt(options.maxHops, 10),
+              direction: options.direction,
+              edgeKinds: options.edgeKinds,
+              maxNodes: parseInt(options.maxNodes, 10),
               cached: Boolean(options.cached),
               maxFiles: parseInt(options.maxFiles, 10),
               json: options.json,
@@ -4871,19 +4911,18 @@ code
   )
   .addCommand(
     new Command("callers")
-      .description("Find who calls a symbol from the local overlay by default")
+      .description(
+        "Find who calls a symbol with automatic local, hosted, or hybrid selection",
+      )
       .option("-q, --qualified-name <qualifiedName>", "Qualified symbol name")
       .option(
         "--symbol-key <symbolKey>",
         "Stable graph or local overlay symbol key",
       )
       .option("-d, --depth <number>", "Traversal depth", "1")
+      .option("--max-nodes <number>", "Maximum graph nodes to visit", "200")
       .option("-l, --limit <number>", "Maximum callers", "50")
-      .option(
-        "--source <source>",
-        "auto|local|hosted (auto defaults to local)",
-        "auto",
-      )
+      .option("--source <source>", "auto|local|hosted|hybrid", "auto")
       .option(
         "--cached",
         "When local is selected, use the cached overlay if present",
@@ -4899,6 +4938,7 @@ code
           qualifiedName: options.qualifiedName,
           symbolKey: options.symbolKey,
           depth: parseInt(options.depth, 10),
+          maxNodes: parseInt(options.maxNodes, 10),
           limit: parseInt(options.limit, 10),
           source: options.source,
           cached: Boolean(options.cached),
@@ -4910,7 +4950,7 @@ code
   .addCommand(
     new Command("imports")
       .description(
-        "Find imports/importers for a symbol or file from the local overlay by default",
+        "Find imports/importers with automatic local, hosted, or hybrid selection",
       )
       .option("-q, --qualified-name <qualifiedName>", "Qualified symbol name")
       .option(
@@ -4921,11 +4961,7 @@ code
       .option("-d, --direction <direction>", "in|out", "out")
       .option("--include-file-nodes", "Include all matched file nodes")
       .option("-l, --limit <number>", "Maximum imports", "50")
-      .option(
-        "--source <source>",
-        "auto|local|hosted (auto defaults to local)",
-        "auto",
-      )
+      .option("--source <source>", "auto|local|hosted|hybrid", "auto")
       .option(
         "--cached",
         "When local is selected, use the cached overlay if present",
@@ -4954,7 +4990,7 @@ code
   .addCommand(
     new Command("neighbors")
       .description(
-        "Get a symbol neighborhood from the local overlay by default",
+        "Get a bounded symbol neighborhood with automatic graph-source selection",
       )
       .option("-q, --qualified-name <qualifiedName>", "Qualified symbol name")
       .option(
@@ -4962,13 +4998,11 @@ code
         "Stable graph or local overlay symbol key",
       )
       .option("-d, --depth <number>", "Traversal depth", "2")
+      .option("--direction <direction>", "in|out|both", "both")
       .option("-e, --edge-kinds <edgeKinds...>", "Edge kinds to include")
       .option("-l, --limit <number>", "Maximum nodes", "200")
-      .option(
-        "--source <source>",
-        "auto|local|hosted (auto defaults to local)",
-        "auto",
-      )
+      .option("--max-nodes <number>", "Maximum graph nodes to visit", "200")
+      .option("--source <source>", "auto|local|hosted|hybrid", "auto")
       .option(
         "--cached",
         "When local is selected, use the cached overlay if present",
@@ -4984,7 +5018,9 @@ code
           qualifiedName: options.qualifiedName,
           symbolKey: options.symbolKey,
           depth: parseInt(options.depth, 10),
+          direction: options.direction,
           edgeKinds: options.edgeKinds,
+          maxNodes: parseInt(options.maxNodes, 10),
           limit: parseInt(options.limit, 10),
           source: options.source,
           cached: Boolean(options.cached),
@@ -4996,17 +5032,15 @@ code
   .addCommand(
     new Command("shortest-path")
       .description(
-        "Find how two symbols connect from the local overlay by default",
+        "Find how two symbols connect with automatic graph-source selection",
       )
       .requiredOption("--from <from>", "Source qualified symbol name")
       .requiredOption("--to <to>", "Target qualified symbol name")
       .option("-e, --edge-kinds <edgeKinds...>", "Edge kinds to include")
       .option("--max-hops <number>", "Maximum hops", "6")
-      .option(
-        "--source <source>",
-        "auto|local|hosted (auto defaults to local)",
-        "auto",
-      )
+      .option("--direction <direction>", "in|out|both", "both")
+      .option("--max-nodes <number>", "Maximum graph nodes to visit", "500")
+      .option("--source <source>", "auto|local|hosted|hybrid", "auto")
       .option(
         "--cached",
         "When local is selected, use the cached overlay if present",
@@ -5023,6 +5057,8 @@ code
           to: options.to,
           edgeKinds: options.edgeKinds,
           maxHops: parseInt(options.maxHops, 10),
+          direction: options.direction,
+          maxNodes: parseInt(options.maxNodes, 10),
           source: options.source,
           cached: Boolean(options.cached),
           maxFiles: parseInt(options.maxFiles, 10),
@@ -5051,7 +5087,7 @@ code
   .addCommand(
     new Command("impact")
       .description(
-        "Run the primary agent-ready code impact gate from the local overlay by default",
+        "Run the primary agent-ready code impact gate with automatic source selection",
       )
       .argument("[filePath]", "Source file to analyze")
       .option("-q, --qualified-name <qualifiedName>", "Qualified symbol name")
@@ -5062,12 +5098,14 @@ code
         "--diff-summary <diffSummary>",
         "Natural-language summary of the change",
       )
+      .option("-d, --depth <number>", "Transitive traversal depth", "3")
+      .option("--transitive", "Enable transitive traversal (enabled by default)")
+      .option("--direction <direction>", "in|out|both", "both")
+      .option("-e, --edge-kinds <edgeKinds...>", "Edge kinds to traverse")
+      .option("--max-nodes <number>", "Maximum graph nodes to visit", "500")
       .option("-l, --limit <number>", "Maximum impact entries", "50")
-      .option(
-        "--source <source>",
-        "auto|local|hosted (auto defaults to local)",
-        "auto",
-      )
+      .option("--source <source>", "auto|local|hosted|hybrid", "auto")
+      .option("--fallback-hosted", "Augment the local result with hosted graph context")
       .option(
         "--cached",
         "When local is selected, use the cached overlay if present",
@@ -5085,8 +5123,14 @@ code
           filePath: options.filePath ?? filePath,
           changedFiles: options.changedFiles,
           diffSummary: options.diffSummary,
+          depth: parseInt(options.depth, 10),
+          transitive: options.transitive === true ? true : undefined,
+          direction: options.direction,
+          edgeKinds: options.edgeKinds,
+          maxNodes: parseInt(options.maxNodes, 10),
           limit: parseInt(options.limit, 10),
           source: options.source,
+          fallbackHosted: Boolean(options.fallbackHosted),
           cached: Boolean(options.cached),
           maxFiles: parseInt(options.maxFiles, 10),
           json: options.json,

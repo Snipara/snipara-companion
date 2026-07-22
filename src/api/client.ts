@@ -1825,6 +1825,9 @@ export class RLMClient {
     filePath?: string;
     changedFiles?: string[];
     diffSummary?: string;
+    depth?: number;
+    direction?: "in" | "out" | "both";
+    edgeKinds?: string[];
     limit?: number;
   }): Promise<Record<string, unknown>> {
     return this.mcpCall<Record<string, unknown>>("snipara_code_impact", {
@@ -1833,6 +1836,9 @@ export class RLMClient {
       file_path: options.filePath,
       changed_files: options.changedFiles,
       diff_summary: options.diffSummary,
+      depth: options.depth ?? 3,
+      direction: options.direction ?? "both",
+      edge_kinds: options.edgeKinds,
       limit: options.limit ?? 50,
     });
   }
