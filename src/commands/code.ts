@@ -74,6 +74,8 @@ export interface LocalSemanticAssertion {
   predicate: LocalSemanticPredicate;
   value: string | boolean;
   confidence: number;
+  scoreKind: "heuristic_prior";
+  calibrated: false;
   source:
     | "typescript-compiler-api"
     | "language-parser"
@@ -88,6 +90,29 @@ export interface LocalSemanticModel {
   version: "snipara.semantic.v1";
   extractorVersion: 1;
   source: "deterministic-graph-inference";
+  modelType: "rule-based-heuristic";
+  scoreContract: {
+    kind: "heuristic_prior";
+    calibrated: false;
+    probability: false;
+    comparableAcrossProjects: false;
+    basis: "hand-tuned-v1";
+    rulesetVersion: 1;
+    interpretation: string;
+  };
+  ruleConfig: {
+    version: "snipara.semantic.rules.v1";
+    source: "defaults" | "project-file";
+    path: ".snipara/semantic-rules.json";
+    replaceDefaults: boolean;
+    sensitivePathTermCount: number;
+    contractPathTermCount: number;
+    testPathTermCount: number;
+    architectureRoleTermCount: number;
+    configuredRoles: string[];
+    configHash: string;
+    warnings: string[];
+  };
   scope: "repository" | "impact";
   assertions: LocalSemanticAssertion[];
   publicContracts: LocalSemanticAssertion[];
@@ -1359,7 +1384,10 @@ export function buildLocalCodeOverlay(
   }
 
   const edges = resolveLocalGraphEdges(files, symbols, imports, references, extractedEdges);
-  const semantic = buildLocalSemanticModel({ symbols, edges });
+  const semantic = buildLocalSemanticModel(
+    { symbols, edges },
+    { semanticRules: loadLocalSemanticRuleConfig(repoRoot) }
+  );
   for (const file of files) {
     file.edgeCount = edges.filter((edge) => edge.filePath === file.path).length;
   }
@@ -2025,11 +2053,159 @@ interface LocalRiskConfig {
   edgeWeights: Partial<Record<LocalCodeOverlayEdge["kind"], number>>;
 }
 
+interface LocalSemanticRuleConfig {
+  replaceDefaults: boolean;
+  sensitivePathTerms: string[];
+  contractPathTerms: string[];
+  testPathTerms: string[];
+  architectureRoleTerms: Record<string, string[]>;
+  source: "defaults" | "project-file";
+  warnings: string[];
+}
+
+const LOCAL_SEMANTIC_RULE_CONFIG_PATH = path.join(".snipara", "semantic-rules.json");
+const LOCAL_SEMANTIC_RULE_CONFIG_VERSION = "snipara.semantic.rules.v1";
+const LOCAL_SEMANTIC_MAX_TERMS = 64;
+const LOCAL_SEMANTIC_MAX_TERM_LENGTH = 80;
+const LOCAL_SEMANTIC_MAX_ROLES = 24;
 const LOCAL_SEMANTIC_TEST_PATH = /(^|\/)(tests?|__tests__|fixtures?)(\/|$)|\.(test|spec)\./i;
 const LOCAL_SEMANTIC_SENSITIVE_PATH =
   /(^|\/)(auth|middleware|billing|payments?|stripe|webhooks?|prisma|schema|migrations?|deploy)(\/|\.|$)/i;
 const LOCAL_SEMANTIC_CONTRACT_PATH =
   /(^|\/)(schemas?|contracts?|protocols?|interfaces?|config|tool_defs)(\/|\.|$)|route\.(ts|tsx|py)$/i;
+
+function localSemanticTerms(raw: unknown, label: string, warnings: string[]): string[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    warnings.push(`${label} terms must be an array.`);
+    return [];
+  }
+  const terms: string[] = [];
+  for (const value of raw.slice(0, LOCAL_SEMANTIC_MAX_TERMS)) {
+    const term = String(value).trim().toLowerCase();
+    if (!term) continue;
+    if (term.length > LOCAL_SEMANTIC_MAX_TERM_LENGTH) {
+      warnings.push(
+        `Ignored a ${label} term longer than ${LOCAL_SEMANTIC_MAX_TERM_LENGTH} characters.`
+      );
+      continue;
+    }
+    terms.push(term);
+  }
+  if (raw.length > LOCAL_SEMANTIC_MAX_TERMS) {
+    warnings.push(`Limited ${label} terms to ${LOCAL_SEMANTIC_MAX_TERMS} entries.`);
+  }
+  return [...new Set(terms)];
+}
+
+function loadLocalSemanticRuleConfig(repoRoot: string): LocalSemanticRuleConfig {
+  const defaults: LocalSemanticRuleConfig = {
+    replaceDefaults: false,
+    sensitivePathTerms: [],
+    contractPathTerms: [],
+    testPathTerms: [],
+    architectureRoleTerms: {},
+    source: "defaults",
+    warnings: [],
+  };
+  const configPath = path.join(repoRoot, LOCAL_SEMANTIC_RULE_CONFIG_PATH);
+  if (!fs.existsSync(configPath)) return defaults;
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configPath, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {
+        ...defaults,
+        source: "project-file",
+        warnings: ["Semantic rule config must be a JSON object; defaults were retained."],
+      };
+    }
+    const raw = parsed as Record<string, unknown>;
+    const warnings: string[] = [];
+    const rawRoles = raw.architectureRoleTerms ?? raw.architecture_role_terms ?? {};
+    const architectureRoleTerms: Record<string, string[]> = {};
+    if (rawRoles && typeof rawRoles === "object" && !Array.isArray(rawRoles)) {
+      for (const [rawRole, rawTerms] of Object.entries(rawRoles).slice(
+        0,
+        LOCAL_SEMANTIC_MAX_ROLES
+      )) {
+        const role = rawRole
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9_]+/g, "_")
+          .replace(/^_+|_+$/g, "");
+        if (!role) {
+          warnings.push("Ignored an empty or unsupported architecture role name.");
+          continue;
+        }
+        architectureRoleTerms[role] = localSemanticTerms(
+          rawTerms,
+          `architecture role ${role}`,
+          warnings
+        );
+      }
+    } else if (rawRoles) {
+      warnings.push("architectureRoleTerms must be an object of role-to-term arrays.");
+    }
+    return {
+      replaceDefaults: Boolean(raw.replaceDefaults ?? raw.replace_defaults ?? false),
+      sensitivePathTerms: localSemanticTerms(
+        raw.sensitivePathTerms ?? raw.sensitive_path_terms,
+        "sensitive path",
+        warnings
+      ),
+      contractPathTerms: localSemanticTerms(
+        raw.contractPathTerms ?? raw.contract_path_terms,
+        "contract path",
+        warnings
+      ),
+      testPathTerms: localSemanticTerms(
+        raw.testPathTerms ?? raw.test_path_terms,
+        "test path",
+        warnings
+      ),
+      architectureRoleTerms,
+      source: "project-file",
+      warnings,
+    };
+  } catch (error) {
+    return {
+      ...defaults,
+      source: "project-file",
+      warnings: [
+        `Could not parse ${LOCAL_SEMANTIC_RULE_CONFIG_PATH}: ${
+          error instanceof Error ? error.message : "invalid JSON"
+        }`,
+      ],
+    };
+  }
+}
+
+function localSemanticMatchesTerms(value: string, terms: string[]): boolean {
+  const normalized = value.replace(/\\/g, "/").toLowerCase();
+  return terms.some((term) => normalized.includes(term));
+}
+
+function localSemanticIsTestPath(filePath: string, rules: LocalSemanticRuleConfig): boolean {
+  return (
+    (!rules.replaceDefaults && LOCAL_SEMANTIC_TEST_PATH.test(filePath)) ||
+    localSemanticMatchesTerms(filePath, rules.testPathTerms)
+  );
+}
+
+function localSemanticIsSensitivePath(filePath: string, rules: LocalSemanticRuleConfig): boolean {
+  return (
+    (!rules.replaceDefaults && LOCAL_SEMANTIC_SENSITIVE_PATH.test(filePath)) ||
+    localSemanticMatchesTerms(filePath, rules.sensitivePathTerms)
+  );
+}
+
+function localSemanticIsContractPath(filePath: string, rules: LocalSemanticRuleConfig): boolean {
+  return (
+    (!rules.replaceDefaults && LOCAL_SEMANTIC_CONTRACT_PATH.test(filePath)) ||
+    localSemanticMatchesTerms(filePath, rules.contractPathTerms)
+  );
+}
 
 function localSemanticEvidence(
   kind: string,
@@ -2054,15 +2230,20 @@ function localSemanticAssertion(
     predicate,
     value,
     confidence: Math.round(Math.max(0, Math.min(1, confidence)) * 1000) / 1000,
+    scoreKind: "heuristic_prior",
+    calibrated: false,
     source,
     extractorVersion: 1,
     evidence,
   };
 }
 
-function localArchitectureRoles(symbol: LocalCodeOverlaySymbol): LocalSemanticAssertion[] {
+function localArchitectureRoles(
+  symbol: LocalCodeOverlaySymbol,
+  rules: LocalSemanticRuleConfig
+): LocalSemanticAssertion[] {
   const haystack = `${symbol.filePath} ${symbol.name}`;
-  const candidates: Array<{
+  const defaultCandidates: Array<{
     role: string;
     pattern: RegExp;
     confidence: number;
@@ -2093,7 +2274,7 @@ function localArchitectureRoles(symbol: LocalCodeOverlaySymbol): LocalSemanticAs
       )
     );
   }
-  if (LOCAL_SEMANTIC_TEST_PATH.test(symbol.filePath)) {
+  if (localSemanticIsTestPath(symbol.filePath, rules)) {
     roles.push(
       localSemanticAssertion(
         symbol.localKey,
@@ -2105,7 +2286,7 @@ function localArchitectureRoles(symbol: LocalCodeOverlaySymbol): LocalSemanticAs
       )
     );
   }
-  for (const candidate of candidates) {
+  for (const candidate of rules.replaceDefaults ? [] : defaultCandidates) {
     if (!candidate.pattern.test(haystack)) continue;
     roles.push(
       localSemanticAssertion(
@@ -2124,10 +2305,33 @@ function localArchitectureRoles(symbol: LocalCodeOverlaySymbol): LocalSemanticAs
       )
     );
   }
+  const existingRoles = new Set(roles.map((assertion) => String(assertion.value)));
+  for (const [role, terms] of Object.entries(rules.architectureRoleTerms)) {
+    if (existingRoles.has(role) || !localSemanticMatchesTerms(haystack, terms)) continue;
+    roles.push(
+      localSemanticAssertion(
+        symbol.localKey,
+        "architecture_role",
+        role,
+        0.7,
+        "architecture-pattern-rules",
+        [
+          localSemanticEvidence(
+            "project_role_term",
+            `Name or path matches a configured ${role} project term.`,
+            { filePath: symbol.filePath, line: symbol.line }
+          ),
+        ]
+      )
+    );
+  }
   return roles;
 }
 
-function localSymbolSemanticAssertions(symbol: LocalCodeOverlaySymbol): LocalSemanticAssertion[] {
+function localSymbolSemanticAssertions(
+  symbol: LocalCodeOverlaySymbol,
+  rules: LocalSemanticRuleConfig
+): LocalSemanticAssertion[] {
   const assertions: LocalSemanticAssertion[] = [];
   const routeSurface =
     /\/app\/api\//i.test(symbol.filePath) || /\/route\.(ts|tsx|py)$/i.test(symbol.filePath);
@@ -2185,7 +2389,7 @@ function localSymbolSemanticAssertions(symbol: LocalCodeOverlaySymbol): LocalSem
     contractEvidence.push(
       localSemanticEvidence("symbol_kind", `Exported ${symbol.kind} defines a structural contract.`)
     );
-  } else if (LOCAL_SEMANTIC_CONTRACT_PATH.test(symbol.filePath)) {
+  } else if (localSemanticIsContractPath(symbol.filePath, rules)) {
     contractKind = "repository_boundary_contract";
     contractEvidence.push(
       localSemanticEvidence(
@@ -2210,17 +2414,17 @@ function localSymbolSemanticAssertions(symbol: LocalCodeOverlaySymbol): LocalSem
     );
   }
 
-  assertions.push(...localArchitectureRoles(symbol));
+  assertions.push(...localArchitectureRoles(symbol, rules));
   let criticality = "ordinary";
   let criticalityConfidence = 0.58;
   let criticalityEvidence = [
     localSemanticEvidence("default", "No critical or incidental evidence matched."),
   ];
-  if (LOCAL_SEMANTIC_TEST_PATH.test(symbol.filePath)) {
+  if (localSemanticIsTestPath(symbol.filePath, rules)) {
     criticality = "incidental";
     criticalityConfidence = 0.95;
     criticalityEvidence = [localSemanticEvidence("test_path", "Test-only dependency.")];
-  } else if (LOCAL_SEMANTIC_SENSITIVE_PATH.test(symbol.filePath) || routeSurface || toolSurface) {
+  } else if (localSemanticIsSensitivePath(symbol.filePath, rules) || routeSurface || toolSurface) {
     criticality = "critical";
     criticalityConfidence = 0.92;
     criticalityEvidence = [
@@ -2264,12 +2468,14 @@ function buildLocalSemanticModel(
     scope?: LocalSemanticModel["scope"];
     symbolKeys?: Set<string>;
     edges?: LocalCodeOverlayEdge[];
+    semanticRules?: LocalSemanticRuleConfig;
   } = {}
 ): LocalSemanticModel {
+  const rules = options.semanticRules ?? loadLocalSemanticRuleConfig(process.cwd());
   const symbols = options.symbolKeys
     ? manifest.symbols.filter((symbol) => options.symbolKeys?.has(symbol.localKey))
     : manifest.symbols;
-  const assertions = symbols.flatMap(localSymbolSemanticAssertions);
+  const assertions = symbols.flatMap((symbol) => localSymbolSemanticAssertions(symbol, rules));
   const symbolByKey = new Map(manifest.symbols.map((symbol) => [symbol.localKey, symbol]));
   const criticalityBySymbol = new Map(
     assertions
@@ -2308,7 +2514,7 @@ function buildLocalSemanticModel(
     ];
     let value = "ordinary";
     let confidence = 0.62;
-    if (LOCAL_SEMANTIC_TEST_PATH.test(fromFile) || LOCAL_SEMANTIC_TEST_PATH.test(toFile)) {
+    if (localSemanticIsTestPath(fromFile, rules) || localSemanticIsTestPath(toFile, rules)) {
       value = "incidental";
       confidence = 0.92;
       evidence.push(localSemanticEvidence("test_path", "At least one edge endpoint is test-only."));
@@ -2382,6 +2588,41 @@ function buildLocalSemanticModel(
     version: "snipara.semantic.v1",
     extractorVersion: 1,
     source: "deterministic-graph-inference",
+    modelType: "rule-based-heuristic",
+    scoreContract: {
+      kind: "heuristic_prior",
+      calibrated: false,
+      probability: false,
+      comparableAcrossProjects: false,
+      basis: "hand-tuned-v1",
+      rulesetVersion: 1,
+      interpretation:
+        "Relative rule strength for ranking and explanation; not an observed probability.",
+    },
+    ruleConfig: {
+      version: LOCAL_SEMANTIC_RULE_CONFIG_VERSION,
+      source: rules.source,
+      path: ".snipara/semantic-rules.json",
+      replaceDefaults: rules.replaceDefaults,
+      sensitivePathTermCount: rules.sensitivePathTerms.length,
+      contractPathTermCount: rules.contractPathTerms.length,
+      testPathTermCount: rules.testPathTerms.length,
+      architectureRoleTermCount: Object.values(rules.architectureRoleTerms).reduce(
+        (total, terms) => total + terms.length,
+        0
+      ),
+      configuredRoles: Object.keys(rules.architectureRoleTerms).sort(),
+      configHash: sha256(
+        JSON.stringify({
+          replaceDefaults: rules.replaceDefaults,
+          sensitivePathTerms: rules.sensitivePathTerms,
+          contractPathTerms: rules.contractPathTerms,
+          testPathTerms: rules.testPathTerms,
+          architectureRoleTerms: rules.architectureRoleTerms,
+        })
+      ).slice(0, 16),
+      warnings: rules.warnings,
+    },
     scope: options.scope ?? "repository",
     assertions: returnedAssertions,
     publicContracts,
@@ -2420,7 +2661,9 @@ function buildLocalSemanticModel(
     },
     caveats: [
       "Semantic assertions are deterministic inferences, not declarations of author intent.",
-      "Name-only architecture patterns use lower confidence than explicit export or path evidence.",
+      "Confidence is an uncalibrated rule-based prior, not a probability or measured accuracy.",
+      "Priors are not comparable across projects with different semantic rule configuration.",
+      "Name-only architecture patterns use a lower prior than explicit export or path evidence.",
       "Historical regression learning requires hosted outcome evidence and remains shadow-only.",
     ],
   };
@@ -2513,9 +2756,10 @@ function buildLocalRisk(
       .filter((symbol) => changedFiles.includes(symbol.filePath))
       .map((symbol) => symbol.localKey)
   );
+  const semanticRules = loadLocalSemanticRuleConfig(manifest.repoRoot);
   const changedContracts = manifest.symbols
     .filter((symbol) => changedSymbolKeys.has(symbol.localKey))
-    .flatMap(localSymbolSemanticAssertions)
+    .flatMap((symbol) => localSymbolSemanticAssertions(symbol, semanticRules))
     .filter(
       (assertion) =>
         assertion.predicate === "public_api" || assertion.predicate === "implicit_contract"
@@ -3818,6 +4062,7 @@ export function buildLocalImpactResult(
     scope: "impact",
     symbolKeys: semanticSymbolKeys,
     edges: traversalEdges,
+    semanticRules: loadLocalSemanticRuleConfig(manifest.repoRoot),
   });
   const transitiveFiles = uniqueTraversalFiles(traversal.nodes, selectedFiles);
   const impactedFiles = [...new Set([...directImpactedFiles, ...transitiveFiles])].sort();

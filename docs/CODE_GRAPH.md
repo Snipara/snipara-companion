@@ -14,7 +14,9 @@ contains:
 - `predicate`: `public_api`, `implicit_contract`, `architecture_role`, or
   `dependency_criticality`;
 - `value`: the inferred classification;
-- `confidence`: a bounded score from `0` to `1`;
+- `confidence`: a backward-compatible bounded rule-strength prior from `0` to
+  `1`, explicitly qualified by `scoreKind: "heuristic_prior"` and
+  `calibrated: false`;
 - `source` and `extractorVersion`;
 - `evidence`: the export modifier, symbol kind, file/path pattern, or graph edge
   that produced the assertion.
@@ -22,8 +24,37 @@ contains:
 The extractor recognizes explicit TypeScript and Go exports, route and MCP
 surfaces, exported type contracts, and common Repository, Adapter, Facade,
 Controller, Service, Worker, Factory, schema, route-handler, and test roles.
-Name-only patterns have lower confidence than explicit export, route, or graph
-evidence.
+`confidence` is not a probability, measured accuracy, or cross-project metric.
+It is a deterministic prior used for relative ranking and explanation inside
+one rule configuration. `semantic.scoreContract.basis` is
+`hand-tuned-v1`; the values must be calibrated against measured outcomes before
+that status can change. Name-only patterns have a lower prior than explicit
+export, route, or graph evidence.
+
+### Project naming rules
+
+Projects can extend or replace built-in English naming conventions with
+`.snipara/semantic-rules.json`:
+
+```json
+{
+  "replaceDefaults": false,
+  "sensitivePathTerms": ["securite", "facturation"],
+  "contractPathTerms": ["contrats"],
+  "testPathTerms": ["essais"],
+  "architectureRoleTerms": {
+    "repository": ["depot"],
+    "service": ["metier"]
+  }
+}
+```
+
+Terms are case-insensitive literal strings, not regular expressions. Each group
+is limited to 64 terms of at most 80 characters and role names are normalized.
+Invalid config is reported in `semantic.ruleConfig.warnings`; it never aborts
+overlay construction. Set `replaceDefaults: true` only when the project wants
+configured naming terms to replace built-in naming conventions. Explicit
+exports, route surfaces, and graph evidence continue to apply.
 
 ## Dependency criticality
 
@@ -51,8 +82,9 @@ does not manufacture cross-source edges or assertions.
 ## Historical regression paths
 
 Hosted impact can associate sanitized warning/error execution traces with
-graph paths by their tracked files. Version 1 reports sample count, confidence,
-event IDs, and a suggested risk delta. This surface is intentionally
+graph paths by their tracked files. Version 1 reports sample count, an
+uncalibrated shadow association strength, event IDs, and a suggested risk
+delta. This surface is intentionally
 `mode: shadow` and `riskContributionEnabled: false`: temporal association is
 not causal proof, and it cannot affect risk until separately calibrated and
 promoted.

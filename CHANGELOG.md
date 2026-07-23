@@ -2,6 +2,17 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 3.6.3
+
+- Labels every semantic `confidence` value as an uncalibrated
+  `heuristic_prior`, preserving the numeric compatibility field without
+  presenting it as a measured probability.
+- Loads bounded, literal project naming terms from
+  `.snipara/semantic-rules.json`; teams can extend or replace English defaults
+  without enabling arbitrary regular expressions.
+- Keeps historical regression associations strictly shadow-only and marks
+  their association strength as uncalibrated.
+
 ## New In 3.6.2
 
 - Adds `snipara.semantic.v1` to local code overlays and impact results with

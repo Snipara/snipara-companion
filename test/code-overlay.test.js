@@ -545,6 +545,16 @@ test("semantic overlay explains contracts, architecture roles, and dependency cr
   assert.equal(contract.exported, true);
   assert.equal(repository.exported, true);
   assert.equal(manifest.semantic.version, "snipara.semantic.v1");
+  assert.equal(manifest.semantic.modelType, "rule-based-heuristic");
+  assert.equal(manifest.semantic.scoreContract.kind, "heuristic_prior");
+  assert.equal(manifest.semantic.scoreContract.calibrated, false);
+  assert.equal(manifest.semantic.scoreContract.probability, false);
+  assert.equal(manifest.semantic.scoreContract.basis, "hand-tuned-v1");
+  assert.ok(
+    manifest.semantic.assertions.every(
+      (assertion) => assertion.scoreKind === "heuristic_prior" && assertion.calibrated === false
+    )
+  );
   assert.ok(
     manifest.semantic.publicContracts.some(
       (assertion) =>
@@ -584,6 +594,44 @@ test("semantic overlay explains contracts, architecture roles, and dependency cr
   assert.ok(payload.semantic.summary.incidentalDependencyCount > 0);
   assert.ok(payload.risk.semanticRiskPoints > 0);
   assert.ok(payload.risk.reasons.some((reason) => /semantic dependenc/.test(reason)));
+});
+
+test("semantic overlay loads bounded project naming terms without custom regex", () => {
+  const repo = makeSemanticTempRepo();
+  fs.mkdirSync(path.join(repo, ".snipara"), { recursive: true });
+  fs.mkdirSync(path.join(repo, "src", "securite"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, ".snipara", "semantic-rules.json"),
+    JSON.stringify({
+      replaceDefaults: true,
+      sensitivePathTerms: ["securite"],
+      architectureRoleTerms: { repository: ["depot"] },
+    }),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(repo, "src", "securite", "depot-session.ts"),
+    "export class DepotSession { load() { return 'ok'; } }\n",
+    "utf8"
+  );
+
+  const manifest = buildLocalCodeOverlay({ cwd: repo, mode: "working_tree" });
+  const depot = manifest.symbols.find((symbol) => symbol.name === "DepotSession");
+
+  assert.ok(depot);
+  assert.equal(manifest.semantic.ruleConfig.source, "project-file");
+  assert.equal(manifest.semantic.ruleConfig.replaceDefaults, true);
+  assert.deepEqual(manifest.semantic.ruleConfig.configuredRoles, ["repository"]);
+  assert.ok(
+    manifest.semantic.architectureRoles.some(
+      (assertion) => assertion.subject === depot.localKey && assertion.value === "repository"
+    )
+  );
+  assert.ok(
+    manifest.semantic.dependencyCriticality.some(
+      (assertion) => assertion.subject === depot.localKey && assertion.value === "critical"
+    )
+  );
 });
 
 test("local callers, neighbors, and impact traverse bounded transitive paths", () => {
