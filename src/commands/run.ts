@@ -159,6 +159,8 @@ export interface ProjectRunHostedJudgmentLink {
   status: "linked" | "unlinked" | "unavailable";
   timeoutMs: number;
   servedJudgmentId?: string;
+  judgmentSnapshotId?: string;
+  judgmentExposureId?: string;
   error?: string;
 }
 
@@ -241,6 +243,35 @@ interface AdvisorRecommendationPlanScope {
 
 function normalizeStringList(values: string[] | undefined): string[] {
   return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))];
+}
+
+function localCodeContext(branch?: string): {
+  localHeadSha?: string;
+  branch?: string;
+  workingTreeDirty?: boolean;
+} {
+  const context: {
+    localHeadSha?: string;
+    branch?: string;
+    workingTreeDirty?: boolean;
+  } = {};
+  if (branch?.trim()) context.branch = branch.trim();
+  try {
+    const localHeadSha = execFileSync("git", ["rev-parse", "--verify", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (localHeadSha) context.localHeadSha = localHeadSha;
+    const status = execFileSync("git", ["status", "--porcelain"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    context.workingTreeDirty = status.length > 0;
+  } catch {
+    // The run command also supports non-git workspaces. Missing local identity
+    // remains explicit because the hosted impact response carries no match.
+  }
+  return context;
 }
 
 function uniqueStrings(values: string[]): string[] {
@@ -550,6 +581,7 @@ function advisorReceiptMetadata(args: {
   planScope: AdvisorRecommendationPlanScope;
   measurementState: ProjectRunAdvisorMeasurementState;
   runEnvelope: ProjectIntelligenceRunEnvelope;
+  hostedJudgment?: ProjectRunHostedJudgmentLink;
 }): Record<string, unknown> {
   const toolActions = normalizeStringList([
     ...args.recommendation.recommendedVerification,
@@ -564,6 +596,9 @@ function advisorReceiptMetadata(args: {
     firstParty: true,
     runVersion: "project-intelligence.production-run.v1",
     runId: args.runEnvelope.runId,
+    servedJudgmentId: args.hostedJudgment?.servedJudgmentId ?? null,
+    judgmentSnapshotId: args.hostedJudgment?.judgmentSnapshotId ?? null,
+    judgmentExposureId: args.hostedJudgment?.judgmentExposureId ?? null,
     runEnvelope: args.runEnvelope,
     generatedAt: args.judgmentCard.generatedAt,
     release: Boolean(args.options.release),
@@ -783,6 +818,7 @@ export async function recordFirstPartyAdvisorReceipts(args: {
   verificationEvidence?: ProjectRunVerificationEvidence[];
   outcomeReceipts?: OutcomeIntelligenceReceipt[];
   runEnvelope: ProjectIntelligenceRunEnvelope;
+  hostedJudgment?: ProjectRunHostedJudgmentLink;
 }): Promise<ProjectRunAdvisorReceiptCapture | undefined> {
   const cardRecommendations = args.judgmentCard.advisorRecommendations;
   const allRecommendations =
@@ -898,6 +934,15 @@ export async function recordFirstPartyAdvisorReceipts(args: {
             });
             const result = await client.recordAdvisorInfluenceReceipt({
               servedJudgmentId,
+              ...(args.hostedJudgment?.judgmentSnapshotId
+                ? { judgmentSnapshotId: args.hostedJudgment.judgmentSnapshotId }
+                : {}),
+              ...(args.hostedJudgment?.judgmentExposureId
+                ? { judgmentExposureId: args.hostedJudgment.judgmentExposureId }
+                : {}),
+              ...(args.hostedJudgment?.status === "linked"
+                ? { runId: args.runEnvelope.runId }
+                : {}),
               recommendation: advisorReceiptRecommendation(recommendation),
               agentDecision,
               behaviorChange,
@@ -917,6 +962,7 @@ export async function recordFirstPartyAdvisorReceipts(args: {
                 planScope,
                 measurementState,
                 runEnvelope: args.runEnvelope,
+                hostedJudgment: args.hostedJudgment,
               }),
             });
             return {
@@ -1083,6 +1129,11 @@ export async function buildProjectIntelligenceRun(
       ...(options.task ? { task: options.task } : {}),
       ...(options.diffSummary ? { diffSummary: options.diffSummary } : {}),
       ...(changedFiles.length > 0 ? { changedFiles: changedFiles.slice(0, 120) } : {}),
+      codeContext: localCodeContext(options.branch),
+      correlation: {
+        surface: "companion",
+        runId: runEnvelope.runId,
+      },
     });
     if (hostedProjectIntelligenceBrief.servedJudgmentId) {
       brief.servedJudgmentId = hostedProjectIntelligenceBrief.servedJudgmentId;
@@ -1091,6 +1142,12 @@ export async function buildProjectIntelligenceRun(
         status: "linked",
         timeoutMs: HOSTED_PROJECT_INTELLIGENCE_BRIEF_TIMEOUT_MS,
         servedJudgmentId: hostedProjectIntelligenceBrief.servedJudgmentId,
+        ...(hostedProjectIntelligenceBrief.judgmentSnapshotId
+          ? { judgmentSnapshotId: hostedProjectIntelligenceBrief.judgmentSnapshotId }
+          : {}),
+        ...(hostedProjectIntelligenceBrief.judgmentExposureId
+          ? { judgmentExposureId: hostedProjectIntelligenceBrief.judgmentExposureId }
+          : {}),
       };
     } else {
       hostedJudgment = {
@@ -1198,6 +1255,7 @@ export async function buildProjectIntelligenceRun(
     verificationEvidence,
     outcomeReceipts,
     runEnvelope,
+    hostedJudgment,
   });
 
   const suggestedCommands = [

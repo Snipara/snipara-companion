@@ -2,6 +2,15 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 3.6.4
+
+- Correlates hosted Judgment responses with their immutable snapshot, append-only
+  exposure, run, and served-Judgment identities.
+- Sends those canonical identities back with advisor influence receipts so the
+  backend can reject mismatched client correlation data.
+- Keeps hosted Judgment failures best-effort for local runs while reporting the
+  failure boundary explicitly.
+
 ## New In 3.6.3
 
 - Labels every semantic `confidence` value as an uncalibrated

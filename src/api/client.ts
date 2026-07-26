@@ -549,6 +549,9 @@ export interface AdvisorInfluenceRecommendationInput {
 
 export interface RecordAdvisorInfluenceReceiptInput {
   servedJudgmentId: string;
+  judgmentSnapshotId?: string;
+  judgmentExposureId?: string;
+  runId?: string;
   recommendation: AdvisorInfluenceRecommendationInput;
   agentDecision: AdvisorInfluenceAgentDecision;
   behaviorChange: string;
@@ -592,6 +595,16 @@ export interface ProjectIntelligenceBriefRequest {
   changedFiles?: string[];
   symbols?: string[];
   routes?: string[];
+  codeContext?: {
+    localHeadSha?: string;
+    branch?: string;
+    workingTreeDirty?: boolean;
+  };
+  correlation?: {
+    surface?: "companion";
+    runId?: string;
+    sessionId?: string;
+  };
 }
 
 export interface HostedProjectIntelligenceBriefResult {
@@ -601,6 +614,8 @@ export interface HostedProjectIntelligenceBriefResult {
     slug: string;
   };
   servedJudgmentId: string | null;
+  judgmentSnapshotId: string | null;
+  judgmentExposureId: string | null;
   persistedShadowSignalCount: number;
   brief: {
     version: string;

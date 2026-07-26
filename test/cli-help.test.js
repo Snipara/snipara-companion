@@ -187,6 +187,12 @@ function writeAdvisorReceiptPreload(
       "        data: {",
       "          project: { id: 'project_1', name: 'Snipara', slug: 'snipara' },",
       `          servedJudgmentId: ${JSON.stringify(servedJudgmentId ?? null)},`,
+      `          judgmentSnapshotId: ${JSON.stringify(
+        servedJudgmentId ? "judgment-snapshot:test" : null
+      )},`,
+      `          judgmentExposureId: ${JSON.stringify(
+        servedJudgmentId ? "judgment-exposure:test" : null
+      )},`,
       "          persistedShadowSignalCount: 0,",
       `          brief: { version: 'project-intelligence-brief-v2', judgment: { advisorRecommendations: ${JSON.stringify(advisorRecommendations)} } }`,
       "        }",
@@ -1159,11 +1165,16 @@ test("run command promotes hosted served judgment identity into the first-class 
     status: "linked",
     timeoutMs: 8000,
     servedJudgmentId: "served_from_resume",
+    judgmentSnapshotId: "judgment-snapshot:test",
+    judgmentExposureId: "judgment-exposure:test",
   });
   assert.equal(payload.advisorReceiptCapture.servedJudgmentId, "served_from_resume");
   assert.equal(payload.advisorReceiptCapture.measurement.identityStatus, "linked");
   const calls = fs.readFileSync(callsPath, "utf8").trim().split("\n").map(JSON.parse);
   assert.equal(calls[0].body.servedJudgmentId, "served_from_resume");
+  assert.equal(calls[0].body.judgmentSnapshotId, "judgment-snapshot:test");
+  assert.equal(calls[0].body.judgmentExposureId, "judgment-exposure:test");
+  assert.equal(calls[0].body.runId, payload.runEnvelope.runId);
 });
 
 test("memory audit combines health, candidates, and compact dry-run", () => {
