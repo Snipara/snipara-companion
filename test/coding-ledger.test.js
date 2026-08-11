@@ -30,14 +30,13 @@ function runCli(args, options = {}) {
 
 test("buildCodingIntelligenceLedger emits structured redacted portable JSON", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-coding-ledger-"));
-  const fakeApiKey = ["abc", "1234567890"].join("");
   const ledger = buildCodingIntelligenceLedger({
     dir,
     now: new Date("2026-06-30T16:30:00.000Z"),
     input: {
       prompt: {
         task: "Ship Coding Intelligence Ledger Export V0",
-        prompt: `Export a ledger without leaking API_KEY=${fakeApiKey}`,
+        prompt: "Export a ledger without leaking API_KEY=abc1234567890", // gitleaks:allow
         sourceRef: "phase-8-coding-intelligence-ledger-export",
       },
       repoState: {

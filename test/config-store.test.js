@@ -304,5 +304,33 @@ test("workspace saves keep auth and project in one companion config", () => {
       projectId: "proj_snipara_001",
       sessionId: "sess_existing",
     });
+    if (process.platform !== "win32") {
+      assert.equal(fs.statSync(path.dirname(workspaceConfigPath)).mode & 0o777, 0o700);
+      assert.equal(fs.statSync(workspaceConfigPath).mode & 0o777, 0o600);
+    }
+  });
+});
+
+test("loading an existing companion config repairs permissive secret permissions", () => {
+  if (process.platform === "win32") {
+    return;
+  }
+
+  withTempHome(({ tmpDir }) => {
+    const repoDir = path.join(tmpDir, "repo");
+    const workspaceConfigPath = path.join(repoDir, ".snipara", "companion", "config.json");
+    fs.mkdirSync(path.dirname(workspaceConfigPath), { recursive: true, mode: 0o755 });
+    fs.writeFileSync(
+      workspaceConfigPath,
+      JSON.stringify({ apiKey: "workspace-key", projectId: "workspace-project" }),
+      { encoding: "utf8", mode: 0o644 }
+    );
+    fs.chmodSync(path.dirname(workspaceConfigPath), 0o755);
+    fs.chmodSync(workspaceConfigPath, 0o644);
+
+    loadConfig({ cwd: repoDir, scope: "workspace" });
+
+    assert.equal(fs.statSync(path.dirname(workspaceConfigPath)).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(workspaceConfigPath).mode & 0o777, 0o600);
   });
 });

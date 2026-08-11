@@ -7,9 +7,7 @@ const test = require("node:test");
 const { createClient, listProjectsForApiKey } = require("../dist/index.js");
 
 async function withTempHome(fn) {
-  const tmpDir = fs.mkdtempSync(
-    path.join(os.tmpdir(), "snipara-companion-auth-"),
-  );
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-auth-"));
   const homeDir = path.join(tmpDir, "home");
   const cwdDir = path.join(tmpDir, "cwd");
   fs.mkdirSync(homeDir, { recursive: true });
@@ -101,9 +99,9 @@ test("client retries with project token api key when env key gets 401", async ()
           },
         },
         null,
-        2,
+        2
       ),
-      "utf8",
+      "utf8"
     );
 
     const seenKeys = [];
@@ -146,7 +144,7 @@ test("client retries with project token api key when env key gets 401", async ()
 
     const client = createClient();
     const result = await client.codeCallers(
-      "src.snipara_engine.SniparaEngine._handle_context_query",
+      "src.snipara_engine.SniparaEngine._handle_context_query"
     );
 
     assert.deepEqual(result.callers, []);
@@ -194,15 +192,9 @@ test("client propagates its session id and labels correlated retrieval traffic",
 
     assert.equal(requests.length, 2);
     assert.equal(requests[0].sessionId, "sess_outcome_contract_v1");
-    assert.equal(
-      requests[0].payload.params.arguments.client,
-      "snipara-companion",
-    );
+    assert.equal(requests[0].payload.params.arguments.client, "snipara-companion");
     assert.equal(requests[1].sessionId, "sess_outcome_contract_v1");
-    assert.equal(
-      requests[1].payload.params.arguments.client,
-      "custom-retrieval-client",
-    );
+    assert.equal(requests[1].payload.params.arguments.client, "custom-retrieval-client");
   });
 });
 
@@ -225,11 +217,8 @@ test("client surfaces 401 when no project token fallback exists", async () => {
     const client = createClient();
 
     await assert.rejects(
-      () =>
-        client.codeCallers(
-          "src.snipara_engine.SniparaEngine._handle_context_query",
-        ),
-      /HTTP 401: Unauthorized/,
+      () => client.codeCallers("src.snipara_engine.SniparaEngine._handle_context_query"),
+      /HTTP 401: Unauthorized/
     );
     assert.equal(calls, 1);
   });
@@ -283,11 +272,7 @@ test("client sends hosted Context Control diff and apply through the scoped dash
     const requests = [];
     global.fetch = async (url, init) => {
       const payload = JSON.parse(init.body);
-      requests.push({
-        url: String(url),
-        apiKey: init.headers["X-API-Key"],
-        payload,
-      });
+      requests.push({ url: String(url), apiKey: init.headers["X-API-Key"], payload });
       return {
         ok: true,
         status: 200,
@@ -297,11 +282,7 @@ test("client sends hosted Context Control diff and apply through the scoped dash
           data:
             payload.action === "diff"
               ? {
-                  project: {
-                    id: "project_1",
-                    name: "Project",
-                    slug: "project-slug",
-                  },
+                  project: { id: "project_1", name: "Project", slug: "project-slug" },
                   plan: {
                     schemaVersion: "snipara.hosted_context_control_plan.v1",
                     planId: "hosted-ctxplan-1",
@@ -309,14 +290,9 @@ test("client sends hosted Context Control diff and apply through the scoped dash
                   },
                 }
               : {
-                  project: {
-                    id: "project_1",
-                    name: "Project",
-                    slug: "project-slug",
-                  },
+                  project: { id: "project_1", name: "Project", slug: "project-slug" },
                   receipt: {
-                    schemaVersion:
-                      "snipara.hosted_context_control_apply_receipt.v1",
+                    schemaVersion: "snipara.hosted_context_control_apply_receipt.v1",
                     receiptId: "hosted-ctxapply-1",
                   },
                 },
@@ -344,7 +320,7 @@ test("client sends hosted Context Control diff and apply through the scoped dash
     assert.equal(requests.length, 2);
     assert.equal(
       requests[0].url,
-      "https://dashboard.test/api/projects/project-slug/context-control",
+      "https://dashboard.test/api/projects/project-slug/context-control"
     );
     assert.equal(requests[0].apiKey, "editor-key");
     assert.deepEqual(requests[0].payload, {
@@ -374,11 +350,7 @@ test("client evaluates Stuck Guard through automation API", async () => {
         json: async () => ({
           success: true,
           data: {
-            project: {
-              id: "proj_1",
-              slug: "test-project",
-              name: "Test Project",
-            },
+            project: { id: "proj_1", slug: "test-project", name: "Test Project" },
             decision: {
               enabled: true,
               triggered: false,
@@ -415,10 +387,7 @@ test("client evaluates Stuck Guard through automation API", async () => {
       ],
     });
 
-    assert.equal(
-      url,
-      "https://www.snipara.com/api/projects/test-project/automation/stuck-guard",
-    );
+    assert.equal(url, "https://www.snipara.com/api/projects/test-project/automation/stuck-guard");
     assert.equal(payload.includeRecent, false);
     assert.equal(payload.events[0].payload.tool, "Grep");
     assert.equal(result.decision.action, "none");
@@ -452,7 +421,7 @@ test("automation config bundle uses dashboard API URL", async () => {
 
     assert.equal(
       url,
-      "https://www.snipara.com/api/projects/test-project/automation/config?format=files&client=claude-code",
+      "https://www.snipara.com/api/projects/test-project/automation/config?format=files&client=claude-code"
     );
     assert.equal(result.files[0].path, ".claude/settings.json");
   });
@@ -462,9 +431,7 @@ test("automation config bundle prefers workspace auth over stale env key", async
   await withTempHome(async ({ tmpDir }) => {
     const repoDir = path.join(tmpDir, "repo");
     fs.mkdirSync(path.join(repoDir, ".git"), { recursive: true });
-    fs.mkdirSync(path.join(repoDir, ".snipara", "companion"), {
-      recursive: true,
-    });
+    fs.mkdirSync(path.join(repoDir, ".snipara", "companion"), { recursive: true });
     fs.writeFileSync(
       path.join(repoDir, ".snipara", "companion", "config.json"),
       JSON.stringify({
@@ -472,7 +439,7 @@ test("automation config bundle prefers workspace auth over stale env key", async
         projectId: "workspace-project",
         apiUrl: "https://api.snipara.com",
       }),
-      "utf8",
+      "utf8"
     );
     process.env.SNIPARA_API_KEY = "stale-env-key";
     process.env.SNIPARA_PROJECT_ID = "stale-env-project";
@@ -501,7 +468,7 @@ test("automation config bundle prefers workspace auth over stale env key", async
 
     assert.equal(
       url,
-      "https://www.snipara.com/api/projects/workspace-project/automation/config?format=files&client=claude-code",
+      "https://www.snipara.com/api/projects/workspace-project/automation/config?format=files&client=claude-code"
     );
     assert.equal(apiKey, "workspace-project-key");
   });
@@ -523,10 +490,7 @@ test("listProjectsForApiKey uses dashboard API URL", async () => {
       };
     };
 
-    const result = await listProjectsForApiKey(
-      "test-key",
-      "https://api.snipara.com",
-    );
+    const result = await listProjectsForApiKey("test-key", "https://api.snipara.com");
 
     assert.equal(url, "https://www.snipara.com/api/cli/projects");
     assert.equal(result[0].slug, "test-project");
@@ -575,6 +539,13 @@ test("queryContext requests answer packs and maps quality metadata", async () =>
                   search_mode: "hybrid",
                   timing: { total_ms: 1234 },
                   retrieval_diagnostics: { cache: { status: "miss" } },
+                  index_state: {
+                    status: "empty",
+                    indexed_documents: 0,
+                    files_loaded: 0,
+                    recommended_command:
+                      "snipara-companion sync-documents --dir ./docs --recursive --reindex",
+                  },
                 }),
               },
             ],
@@ -592,15 +563,14 @@ test("queryContext requests answer packs and maps quality metadata", async () =>
     assert.equal(payload.params.arguments.search_mode, "hybrid");
     assert.equal(result.answer_pack_included, true);
     assert.equal(result.answer_pack_tokens, 55);
-    assert.equal(
-      result.answer_pack.source_facts[0].claim,
-      "Use answer_pack first.",
-    );
+    assert.equal(result.answer_pack.source_facts[0].claim, "Use answer_pack first.");
     assert.equal(result.sections[0].quality_score, 0.87);
     assert.deepEqual(result.sections[0].quality_flags, ["is_truncated"]);
     assert.equal(result.search_mode, "hybrid");
     assert.equal(result.timing.total_ms, 1234);
     assert.equal(result.retrieval_diagnostics.cache.status, "miss");
+    assert.equal(result.index_state.status, "empty");
+    assert.equal(result.index_state.indexed_documents, 0);
   });
 });
 
@@ -623,11 +593,7 @@ test("queryContext forwards bounded retrieval options", async () => {
             content: [
               {
                 type: "text",
-                text: JSON.stringify({
-                  sections: [],
-                  total_tokens: 0,
-                  search_mode: "keyword",
-                }),
+                text: JSON.stringify({ sections: [], total_tokens: 0, search_mode: "keyword" }),
               },
             ],
           },

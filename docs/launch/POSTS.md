@@ -33,18 +33,18 @@ The first command is:
 
   npx -y snipara-companion impact src/auth/session.ts --source local
 
-It builds a local file-level code overlay from the current checkout and prints
-Incoming and Outgoing files, so an agent or developer can see the local blast
-radius before editing. No account, init, or hosted graph is required for that
-path.
+It builds a local code overlay from the current checkout and prints bounded
+transitive impact chains and explainable risk. TypeScript gets compiler-AST
+calls/references/imports; Python and Go use import fallback. No account, init,
+or hosted graph is required for that path.
 
 The second use case is agent continuity: phase state, handoffs, context packs,
 and verification breadcrumbs are written under .snipara/ so a later agent can
 resume without relying on chat history.
 
-It is not a perfect call-site analyzer. The local graph is import/file-level by
-design. Hosted Snipara is optional for team memory, semantic retrieval, and
-cross-project context.
+It is not a perfect runtime call-site analyzer: dynamic dispatch and reflection
+remain outside deterministic local analysis. Hosted Snipara is optional for
+team memory, semantic retrieval, and cross-project context.
 
 GitHub: https://github.com/Snipara/snipara-companion
 npm: https://www.npmjs.com/package/snipara-companion
@@ -60,9 +60,9 @@ I built a local CLI for the first minute of an AI coding session:
 
   npx -y snipara-companion impact src/auth/session.ts --source local
 
-It prints the files that depend on the target and the files it imports, using a
-local file-level overlay from the current checkout. No account or hosted graph
-is required for that path.
+It prints bounded transitive paths and risk from a local overlay. TypeScript
+uses compiler-AST call/reference/import edges; Python and Go use import
+fallback. No account or hosted graph is required for that path.
 
 The other half is agent continuity: local .snipara/ workflow state, handoffs,
 context packs, and verification notes so work can survive compaction or handoff.
@@ -85,7 +85,7 @@ Description:
 
 ```text
 snipara-companion is a local-first CLI for AI coding sessions. Run one npx
-command to see file-level impact from your current checkout, then keep longer
+command to see bounded transitive impact from your current checkout, then keep longer
 agent work resumable with local workflow state, handoffs, and context packs.
 No account is needed for the local path.
 ```
@@ -100,7 +100,7 @@ We made the first command in snipara-companion:
 
   npx -y snipara-companion impact src/auth/session.ts --source local
 
-It builds a local file-level overlay from the current checkout and shows:
+It builds a local compiler-AST/import overlay from the current checkout and shows:
 
 - Incoming files that depend on the target
 - Outgoing files the target depends on
@@ -125,9 +125,9 @@ features.
 When someone expects call-site precision:
 
 ```text
-The local overlay is intentionally file-level import impact, not a full
-call-site AST graph. That keeps the first run fast and account-free. Please
-open an issue if the file-level result is wrong or misleading for your repo.
+The local overlay uses compiler-AST calls/references/imports for TypeScript and
+import fallback for Python and Go. It cannot prove runtime reflection or every
+dynamic dispatch target. Please open an issue if a path is wrong or misleading.
 ```
 
 When someone gets empty impact output:

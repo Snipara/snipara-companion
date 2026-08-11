@@ -1,0 +1,67 @@
+{
+  "version": "why-capture-confidence-v1",
+  "base": 0.72,
+  "decisionRationaleBonus": 0.1,
+  "nonManualSourceBonus": 0.04,
+  "maximum": 0.9,
+  "decimalPlaces": 2,
+  "validatedExecutionOutcomes": ["completed"],
+  "vectors": [
+    {
+      "candidateType": "CONTEXT",
+      "hasDecision": false,
+      "hasRationale": false,
+      "sourceKind": "manual",
+      "executionOutcome": "completed",
+      "expected": 0.72
+    },
+    {
+      "candidateType": "DECISION",
+      "hasDecision": true,
+      "hasRationale": true,
+      "sourceKind": "manual",
+      "executionOutcome": "completed",
+      "expected": 0.82
+    },
+    {
+      "candidateType": "DECISION",
+      "hasDecision": true,
+      "hasRationale": true,
+      "sourceKind": "phase_commit",
+      "executionOutcome": "completed",
+      "expected": 0.86
+    },
+    {
+      "candidateType": "DECISION",
+      "hasDecision": true,
+      "hasRationale": true,
+      "sourceKind": "phase_commit",
+      "executionOutcome": "partial",
+      "expected": 0.76
+    },
+    {
+      "candidateType": "DECISION",
+      "hasDecision": true,
+      "hasRationale": true,
+      "sourceKind": "phase_commit",
+      "executionOutcome": "blocked",
+      "expected": 0.76
+    },
+    {
+      "candidateType": "DECISION",
+      "hasDecision": true,
+      "hasRationale": true,
+      "sourceKind": "phase_commit",
+      "executionOutcome": "abandoned",
+      "expected": 0.76
+    },
+    {
+      "candidateType": "DECISION",
+      "hasDecision": true,
+      "hasRationale": false,
+      "sourceKind": "final_commit",
+      "executionOutcome": "completed",
+      "expected": 0.76
+    }
+  ]
+}

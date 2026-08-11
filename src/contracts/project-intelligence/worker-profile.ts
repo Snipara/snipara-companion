@@ -1,23 +1,15 @@
 import { createHash } from "node:crypto";
 
-export const WORKER_PROFILE_SCHEMA_VERSION =
-  "snipara.worker_profile.v0" as const;
+export const WORKER_PROFILE_SCHEMA_VERSION = "snipara.worker_profile.v0" as const;
 
 export const WORKER_PROFILE_V0_VERSION = WORKER_PROFILE_SCHEMA_VERSION;
 
-export const WORKER_PROFILE_RISK_CEILINGS = [
-  "low",
-  "medium",
-  "high",
-  "critical",
-] as const;
+export const WORKER_PROFILE_RISK_CEILINGS = ["low", "medium", "high", "critical"] as const;
 export const WORKER_PROFILE_PRIVACY_CLASSES = ["local", "cloud"] as const;
 export const WORKER_PROFILE_KINDS = ["openai_http", "cli"] as const;
 
-export type WorkerProfileRiskCeiling =
-  (typeof WORKER_PROFILE_RISK_CEILINGS)[number];
-export type WorkerProfilePrivacyClass =
-  (typeof WORKER_PROFILE_PRIVACY_CLASSES)[number];
+export type WorkerProfileRiskCeiling = (typeof WORKER_PROFILE_RISK_CEILINGS)[number];
+export type WorkerProfilePrivacyClass = (typeof WORKER_PROFILE_PRIVACY_CLASSES)[number];
 export type WorkerProfileTransportKind = (typeof WORKER_PROFILE_KINDS)[number];
 
 export interface WorkerProfileOpenAITransport {
@@ -37,9 +29,7 @@ export interface WorkerProfileCliTransport {
   args?: string[];
 }
 
-export type WorkerProfileTransport =
-  | WorkerProfileOpenAITransport
-  | WorkerProfileCliTransport;
+export type WorkerProfileTransport = WorkerProfileOpenAITransport | WorkerProfileCliTransport;
 
 export interface WorkerProfileCapabilities {
   roles: string[];
@@ -138,14 +128,10 @@ export function normalizeWorkerProfile(value: unknown): WorkerProfile | null {
   };
 }
 
-export function buildWorkerProfile(
-  input: BuildWorkerProfileInput,
-): WorkerProfile {
+export function buildWorkerProfile(input: BuildWorkerProfileInput): WorkerProfile {
   const now = new Date().toISOString();
   const workerId = normalizeWorkerId(stringValue(input.workerId) ?? "worker");
-  const capabilities = normalizeWorkerProfileCapabilities(
-    input.capabilities,
-  ) ?? {
+  const capabilities = normalizeWorkerProfileCapabilities(input.capabilities) ?? {
     roles: ["coding"],
     languages: ["typescript"],
     contextWindow: DEFAULT_WORKER_CONTEXT_WINDOW,
@@ -179,18 +165,14 @@ export function buildWorkerProfile(
 }
 
 export function inferWorkerReasoningFromModel(
-  model: string | null | undefined,
+  model: string | null | undefined
 ): "low" | "medium" | "high" {
   const normalized = String(model ?? "").toLowerCase();
   if (!normalized) {
     return "medium";
   }
 
-  if (
-    normalized.includes("r1") ||
-    normalized.includes("deepseek") ||
-    normalized.includes("o3")
-  ) {
+  if (normalized.includes("r1") || normalized.includes("deepseek") || normalized.includes("o3")) {
     return "high";
   }
 
@@ -213,9 +195,7 @@ export function hashWorkerProfileContent(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
-function normalizeWorkerProfileTransport(
-  value: unknown,
-): WorkerProfileTransport | null {
+function normalizeWorkerProfileTransport(value: unknown): WorkerProfileTransport | null {
   if (!isRecord(value)) {
     return null;
   }
@@ -229,17 +209,12 @@ function normalizeWorkerProfileTransport(
       kind: "openai_http",
       baseUrl,
       ...(stringValue(value.model) ? { model: stringValue(value.model) } : {}),
-      ...(stringValue(value.preferModel)
-        ? { preferModel: stringValue(value.preferModel) }
-        : {}),
-      ...(stringValue(value.provider)
-        ? { provider: stringValue(value.provider) }
-        : {}),
+      ...(stringValue(value.preferModel) ? { preferModel: stringValue(value.preferModel) } : {}),
+      ...(stringValue(value.provider) ? { provider: stringValue(value.provider) } : {}),
       ...(safeEnvironmentVariableName(value.apiKeyEnv)
         ? { apiKeyEnv: safeEnvironmentVariableName(value.apiKeyEnv) }
         : {}),
-      ...(value.apiKeyHeader === "authorization" ||
-      value.apiKeyHeader === "x-api-key"
+      ...(value.apiKeyHeader === "authorization" || value.apiKeyHeader === "x-api-key"
         ? { apiKeyHeader: value.apiKeyHeader }
         : {}),
     };
@@ -265,25 +240,18 @@ function normalizeWorkerProfileTransport(
   return null;
 }
 
-function normalizeWorkerProfileCapabilities(
-  value: unknown,
-): WorkerProfileCapabilities | null {
+function normalizeWorkerProfileCapabilities(value: unknown): WorkerProfileCapabilities | null {
   const normalized = {
-    roles: normalizeStringList((value as { roles?: unknown })?.roles).map(
-      (item) => item.trim(),
+    roles: normalizeStringList((value as { roles?: unknown })?.roles).map((item) => item.trim()),
+    languages: normalizeStringList((value as { languages?: unknown })?.languages).map((item) =>
+      item.trim()
     ),
-    languages: normalizeStringList(
-      (value as { languages?: unknown })?.languages,
-    ).map((item) => item.trim()),
-    contextWindow: numberValue(
-      (value as { contextWindow?: unknown })?.contextWindow,
-    ),
+    contextWindow: numberValue((value as { contextWindow?: unknown })?.contextWindow),
     toolUse: booleanValue((value as { toolUse?: unknown })?.toolUse),
   };
 
   const roles = normalized.roles.length > 0 ? normalized.roles : ["coding"];
-  const languages =
-    normalized.languages.length > 0 ? normalized.languages : ["typescript"];
+  const languages = normalized.languages.length > 0 ? normalized.languages : ["typescript"];
   const contextWindow =
     normalized.contextWindow && Number.isFinite(normalized.contextWindow)
       ? Math.max(128, normalized.contextWindow)
@@ -297,9 +265,7 @@ function normalizeWorkerProfileCapabilities(
   };
 }
 
-function normalizeWorkerProfileCeilings(
-  value: unknown,
-): WorkerProfileCeilings | null {
+function normalizeWorkerProfileCeilings(value: unknown): WorkerProfileCeilings | null {
   if (!isRecord(value)) {
     return {
       writeScope: [],
@@ -322,9 +288,7 @@ function normalizeWorkerProfileCeilings(
   };
 }
 
-function normalizeWorkerProfileHints(
-  value: unknown,
-): WorkerProfileHints | null {
+function normalizeWorkerProfileHints(value: unknown): WorkerProfileHints | null {
   if (!isRecord(value)) {
     return null;
   }
@@ -334,30 +298,22 @@ function normalizeWorkerProfileHints(
     ...(costTier === "free" || costTier === "metered" || costTier === "premium"
       ? { costTier }
       : {}),
-    ...(latencyTier === "fast" ||
-    latencyTier === "balanced" ||
-    latencyTier === "batch"
+    ...(latencyTier === "fast" || latencyTier === "balanced" || latencyTier === "batch"
       ? { latencyTier }
       : {}),
   };
 }
 
-function normalizeWorkerProfileReasoning(
-  value: unknown,
-): "low" | "medium" | "high" | null {
+function normalizeWorkerProfileReasoning(value: unknown): "low" | "medium" | "high" | null {
   const raw = stringValue(value);
   if (!raw) {
     return null;
   }
   const lowered = raw.toLowerCase();
-  return lowered === "low" || lowered === "medium" || lowered === "high"
-    ? lowered
-    : null;
+  return lowered === "low" || lowered === "medium" || lowered === "high" ? lowered : null;
 }
 
-function normalizeWorkerProfileProbe(
-  value: unknown,
-): WorkerProfileProbe | null {
+function normalizeWorkerProfileProbe(value: unknown): WorkerProfileProbe | null {
   if (!isRecord(value)) {
     return null;
   }
@@ -374,9 +330,7 @@ function normalizeWorkerProfileProbe(
   };
 }
 
-function normalizeWorkerProfileRiskCeiling(
-  value: unknown,
-): WorkerProfileRiskCeiling | undefined {
+function normalizeWorkerProfileRiskCeiling(value: unknown): WorkerProfileRiskCeiling | undefined {
   const raw = stringValue(value);
   if (!raw) return undefined;
   return WORKER_PROFILE_RISK_CEILINGS.includes(raw as WorkerProfileRiskCeiling)
@@ -384,14 +338,10 @@ function normalizeWorkerProfileRiskCeiling(
     : undefined;
 }
 
-function normalizeWorkerProfilePrivacyClass(
-  value: unknown,
-): WorkerProfilePrivacyClass | undefined {
+function normalizeWorkerProfilePrivacyClass(value: unknown): WorkerProfilePrivacyClass | undefined {
   const raw = stringValue(value);
   if (!raw) return undefined;
-  return WORKER_PROFILE_PRIVACY_CLASSES.includes(
-    raw as WorkerProfilePrivacyClass,
-  )
+  return WORKER_PROFILE_PRIVACY_CLASSES.includes(raw as WorkerProfilePrivacyClass)
     ? (raw as WorkerProfilePrivacyClass)
     : undefined;
 }
@@ -426,9 +376,7 @@ function normalizeWorkerId(value: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return normalized.startsWith("local-")
-    ? normalized
-    : `local-${normalized || "worker"}`;
+  return normalized.startsWith("local-") ? normalized : `local-${normalized || "worker"}`;
 }
 
 function uniqueStrings(values: string[]): string[] {
@@ -436,20 +384,12 @@ function uniqueStrings(values: string[]): string[] {
 }
 
 function normalizeStringList(value: unknown): string[] {
-  const values = Array.isArray(value)
-    ? value
-    : value === undefined
-      ? []
-      : [value];
-  return uniqueStrings(
-    values.map(stringValue).filter((item): item is string => Boolean(item)),
-  );
+  const values = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  return uniqueStrings(values.map(stringValue).filter((item): item is string => Boolean(item)));
 }
 
 function numberValue(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value)
-    ? value
-    : undefined;
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function booleanValue(value: unknown): boolean {
@@ -458,9 +398,7 @@ function booleanValue(value: unknown): boolean {
 
 function safeEnvironmentVariableName(value: unknown): string | undefined {
   const normalized = stringValue(value);
-  return normalized && /^[A-Za-z_][A-Za-z0-9_]*$/.test(normalized)
-    ? normalized
-    : undefined;
+  return normalized && /^[A-Za-z_][A-Za-z0-9_]*$/.test(normalized) ? normalized : undefined;
 }
 
 function stringValue(value: unknown): string | undefined {
@@ -483,7 +421,7 @@ function sortJsonValue(value: unknown): unknown {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
         .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, child]) => [key, sortJsonValue(child)]),
+        .map(([key, child]) => [key, sortJsonValue(child)])
     );
   }
   return value;

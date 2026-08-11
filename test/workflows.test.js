@@ -1552,7 +1552,7 @@ test("workflow phase-commit appends a journal checkpoint alongside durable memor
   assert.equal(phaseCommitCalls.length, 1);
   assert.equal(
     phaseCommitCalls[0].task,
-    "Write journal checkpoints / Companion Journal Checkpoints",
+    "Write journal checkpoints / Companion Journal Checkpoints"
   );
   assert.deepEqual(phaseCommitCalls[0].why, {
     decision: "Store workflow checkpoints atomically",
@@ -2473,11 +2473,7 @@ test("final-commit surfaces the backend Team Sync handoff invariant", () => {
   assert.equal(logged[0].category, "final-commit");
   assert.equal(logged[0].handoff_only, false);
   assert.equal(logged[0].task, "Ship companion continuity commands");
-  assert.deepEqual(logged[0].persist_types, [
-    "decision",
-    "learning",
-    "workflow",
-  ]);
+  assert.deepEqual(logged[0].persist_types, ["decision", "learning", "workflow"]);
   assert.deepEqual(logged[0].why, {
     decision: "Keep final rationale on the handoff commit",
     rationale: "Make closeout memory status explicit without auto-approving rationale",
@@ -2932,6 +2928,39 @@ test("adaptive work routing handoff remains recommendation-only and local-capabl
     /runtime catalog resolution remains delegated to snipara-orchestrator/
   );
   assert.doesNotMatch(JSON.stringify(artifact.routing), /api[_-]?key|secret value/i);
+});
+
+test("adaptive routing advertises a bounded strong-repair contract without spawning a worker", () => {
+  const recommendation = getOrchestratorRecommendation("Coordinate local worker coding", "full", {
+    changedFilesCount: 1,
+  });
+  const adaptiveRouting = buildAdaptiveWorkRoutingRecommendation({
+    query: "Use a local worker for a bounded docs change and repair only failed proof",
+    mode: "full",
+    changedFiles: ["docs/roadmap.md"],
+    preferredEndpointTypes: ["local"],
+    workerRole: "coding",
+    strongRepair: true,
+  });
+
+  const artifact = buildOrchestratorHandoff({
+    sourceCommand: "workflow run",
+    recommendation,
+    query: "Coordinate local worker coding",
+    summary: "Prepare local worker handoff with strong repair",
+    adaptiveRouting,
+  });
+
+  assert.deepEqual(artifact.routing.strongRepair, {
+    enabled: true,
+    maxAttempts: 1,
+    finalAuthority: "strong_adapter",
+    proofRequired: true,
+    scopePreserved: true,
+    fallback: "main_agent",
+  });
+  assert.match(JSON.stringify(artifact), /strong_adapter/);
+  assert.match(JSON.stringify(artifact), /fallback/);
 });
 
 test("adaptive routing infers profile strengths and structured output for local coding work", () => {

@@ -161,6 +161,48 @@ backend is configured.
 | GitHub checks and dashboard live views       | No                                 | Yes                                         |
 | Code graph impact and symbol cards           | Local overlay only where available | Cloud code graph                            |
 
+## Agent Context AC-1 Evidence
+
+Agent Context first compiles organization, project, and role-specific sources
+and memory policy from `snipara.agent-context.json`:
+
+```bash
+snipara-companion agent-context validate
+snipara-companion agent-context resolve \
+  --agent snipara-code \
+  --task "implement a bounded product change"
+```
+
+The AC-1 evidence workflow turns a completed representative task into a bounded,
+tamper-evident local receipt:
+
+```bash
+snipara-companion agent-context evidence template \
+  --agent snipara-code \
+  --task "implement a bounded product change" \
+  --output .snipara/agent-context/task-code-1.json
+
+# Edit the template with actual source use, recall keys, token count, findings,
+# capability assessment, and outcome proof before recording it.
+snipara-companion agent-context evidence record \
+  --from .snipara/agent-context/task-code-1.json
+
+snipara-companion agent-context evidence status --json
+snipara-companion agent-context evidence status --enforce
+```
+
+The default ledger is `.snipara/agent-context/evidence.jsonl`. Recording fails
+closed for duplicate task ids, modified receipt hashes, sources or recalls that
+were not in the resolved plan, and promotion targets outside the reviewed
+policy. Secret-like fragments and local home paths are redacted before append.
+
+`status --enforce` exits non-zero until at least 20 representative tasks cover
+every configured role, no high-severity leak remains unresolved, every observed
+leak points to a regression test, repeated benefits are documented, and every
+task includes an explicit missing-capability assessment. A repeated
+cross-machine or multi-runtime signal is reported only as AC-2 evidence; it does
+not replace the separate external design-partner gate.
+
 ## When To Use It
 
 | If you need...                                            | Install...               |

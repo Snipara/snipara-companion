@@ -771,6 +771,11 @@ function printSyncResult(result: LocalSourceSyncResult): void {
   console.log(`Files: ${result.codeOverlay.summary.counts.files}`);
   console.log(`Symbols: ${result.codeOverlay.summary.counts.symbols}`);
   console.log(`Imports: ${result.codeOverlay.summary.counts.imports}`);
+  console.log(`References: ${result.codeOverlay.summary.counts.references}`);
+  console.log(`Edges: ${result.codeOverlay.summary.counts.edges}`);
+  console.log(
+    `Incremental: ${result.codeOverlay.summary.incremental.reusedFiles} reused, ${result.codeOverlay.summary.incremental.parsedFiles} parsed, ${result.codeOverlay.summary.incremental.deletedFiles} deleted`
+  );
   console.log(`Overlay: ${result.codeOverlay.summary.overlayKind}`);
   console.log(`Cache: ${result.codeOverlay.cachePath}`);
   if (result.apply) {

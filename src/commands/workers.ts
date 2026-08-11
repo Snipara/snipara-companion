@@ -14,25 +14,18 @@ import {
 } from "../contracts/project-intelligence";
 import { findWorkspaceRoot } from "../config/store";
 
-export const WORKER_REGISTRY_DIR_RELATIVE_PATH = path.join(
-  ".snipara",
-  "workers",
-);
+export const WORKER_REGISTRY_DIR_RELATIVE_PATH = path.join(".snipara", "workers");
 export const LOCAL_WORKERS_RELATIVE_PATH = path.join(
   WORKER_REGISTRY_DIR_RELATIVE_PATH,
-  "local.json",
+  "local.json"
 );
 export const WORKER_REGISTRY_INDEX_RELATIVE_PATH = path.join(
   WORKER_REGISTRY_DIR_RELATIVE_PATH,
-  "index.json",
+  "index.json"
 );
-const ADAPTIVE_ROUTING_POLICY_RELATIVE_PATH = path.join(
-  ".snipara",
-  "adaptive-routing.json",
-);
+const ADAPTIVE_ROUTING_POLICY_RELATIVE_PATH = path.join(".snipara", "adaptive-routing.json");
 
-export const WORKER_REGISTRY_INDEX_VERSION =
-  "snipara.worker_registry_index.v1" as const;
+export const WORKER_REGISTRY_INDEX_VERSION = "snipara.worker_registry_index.v1" as const;
 
 interface LegacyWorkersConfig {
   schemaVersion: "snipara.local_workers.v1";
@@ -183,9 +176,7 @@ export function workersLocalAddCommand(options: LocalWorkerAddOptions): void {
   printKeyValue("Routing policy:", result.policyPath);
 }
 
-export function workersLocalStatusCommand(
-  options: LocalWorkerStatusOptions = {},
-): void {
+export function workersLocalStatusCommand(options: LocalWorkerStatusOptions = {}): void {
   const config = readLocalWorkersConfig();
   const result = {
     configured: Boolean(config),
@@ -200,16 +191,13 @@ export function workersLocalStatusCommand(
   }
 
   if (!config || config.workers.length === 0) {
-    console.log(
-      "No local workers declared. Run 'snipara-companion workers local add'.",
-    );
+    console.log("No local workers declared. Run 'snipara-companion workers local add'.");
     return;
   }
 
   console.log(chalk.bold("Local workers"));
   for (const worker of config.workers) {
-    const defaultMarker =
-      worker.id === config.defaultWorkerId ? " (default)" : "";
+    const defaultMarker = worker.id === config.defaultWorkerId ? " (default)" : "";
     const model = worker.model
       ? ` model=${worker.model}`
       : worker.preferModel
@@ -219,14 +207,12 @@ export function workersLocalStatusCommand(
           : "";
     const transportLabel = worker.command ? "cli" : "openai_http";
     console.log(
-      `- ${worker.id}${defaultMarker}: ${worker.workerRole} ${transportLabel} ${worker.baseUrl}${model}`,
+      `- ${worker.id}${defaultMarker}: ${worker.workerRole} ${transportLabel} ${worker.baseUrl}${model}`
     );
   }
 }
 
-export function workersLocalListCommand(
-  options: LocalWorkerListOptions = {},
-): void {
+export function workersLocalListCommand(options: LocalWorkerListOptions = {}): void {
   const config = readLocalWorkersConfig();
   const result = {
     configured: Boolean(config && config.workers.length > 0),
@@ -241,16 +227,13 @@ export function workersLocalListCommand(
   }
 
   if (!result.configured) {
-    console.log(
-      "No local workers declared. Run 'snipara-companion workers local add'.",
-    );
+    console.log("No local workers declared. Run 'snipara-companion workers local add'.");
     return;
   }
 
   console.log(chalk.bold("Declared local workers"));
   for (const worker of result.workers) {
-    const defaultMarker =
-      worker.id === config?.defaultWorkerId ? " (default)" : "";
+    const defaultMarker = worker.id === config?.defaultWorkerId ? " (default)" : "";
     const model = worker.model
       ? ` model=${worker.model}`
       : worker.preferModel
@@ -258,14 +241,12 @@ export function workersLocalListCommand(
         : "";
     const command = worker.command ? ` command=${worker.command}` : "";
     console.log(
-      `- ${worker.id}${defaultMarker}: ${worker.workerRole} at ${worker.baseUrl}${model}${command}`,
+      `- ${worker.id}${defaultMarker}: ${worker.workerRole} at ${worker.baseUrl}${model}${command}`
     );
   }
 }
 
-export function workersLocalRemoveCommand(
-  options: LocalWorkerRemoveOptions,
-): void {
+export function workersLocalRemoveCommand(options: LocalWorkerRemoveOptions): void {
   const result = removeLocalWorker(options.id);
   if (options.json) {
     printJson(result);
@@ -283,14 +264,10 @@ export function workersLocalRemoveCommand(
   }
 }
 
-export function workersLocalProbeCommand(
-  options: LocalWorkerProbeOptions,
-): LocalWorkerProbeResult {
+export function workersLocalProbeCommand(options: LocalWorkerProbeOptions): LocalWorkerProbeResult {
   const role = normalizeWorkerRole(options.role);
   const baseUrl = normalizeBaseUrl(options.baseUrl ?? "http://127.0.0.1:1234");
-  const provider = normalizeProvider(
-    stringValue(options.provider) ?? "lm-studio",
-  );
+  const provider = normalizeProvider(stringValue(options.provider) ?? "lm-studio");
   const model = stringValue(options.model);
   const preferModel = stringValue(options.preferModel);
   const declaredReasoning = options.reasoning;
@@ -306,25 +283,14 @@ export function workersLocalProbeCommand(
     apiKeyEnv: options.apiKeyEnv,
     apiKeyHeader: options.apiKeyHeader,
   });
-  const catalogContextWindow = resolveContextWindowFromCatalog(
-    catalog,
-    model,
-    preferModel,
-  );
+  const catalogContextWindow = resolveContextWindowFromCatalog(catalog, model, preferModel);
   const contextWindow = normalizeContextWindow(
-    options.contextWindow ??
-      catalogContextWindow ??
-      DEFAULT_WORKER_CONTEXT_WINDOW,
+    options.contextWindow ?? catalogContextWindow ?? DEFAULT_WORKER_CONTEXT_WINDOW
   );
 
-  const modelsSeen = normalizeStringList(
-    (catalog as { models?: unknown }).models,
-  );
+  const modelsSeen = normalizeStringList((catalog as { models?: unknown }).models);
   const workerId = normalizeWorkerId(
-    stringValue(options.workerId) ??
-      model ??
-      preferModel ??
-      `${provider}-${role}`,
+    stringValue(options.workerId) ?? model ?? preferModel ?? `${provider}-${role}`
   );
   const suggestion =
     modelsSeen.length > 0
@@ -339,9 +305,7 @@ export function workersLocalProbeCommand(
               ...(preferModel ? { preferModel } : {}),
               provider,
               ...(options.apiKeyEnv ? { apiKeyEnv: options.apiKeyEnv } : {}),
-              ...(options.apiKeyHeader
-                ? { apiKeyHeader: options.apiKeyHeader }
-                : {}),
+              ...(options.apiKeyHeader ? { apiKeyHeader: options.apiKeyHeader } : {}),
             },
             capabilities: {
               roles: [role],
@@ -363,7 +327,7 @@ export function workersLocalProbeCommand(
               source: "workers probe",
               modelsSeen,
             },
-          }),
+          })
         )
       : undefined;
 
@@ -373,9 +337,7 @@ export function workersLocalProbeCommand(
   };
 }
 
-export function workersLocalProbePrintCommand(
-  options: LocalWorkerProbeOptions,
-): void {
+export function workersLocalProbePrintCommand(options: LocalWorkerProbeOptions): void {
   const payload = workersLocalProbeCommand(options);
   printJson(payload);
 }
@@ -389,18 +351,12 @@ export function addLocalWorker(options: LocalWorkerAddOptions): {
   const now = new Date().toISOString();
   const transport = normalizeWorkerTransport(options);
   const workerRole = normalizeWorkerRole(options.role);
-  const workerId = normalizeWorkerId(
-    options.id ?? transportIdentifierSeed(options, workerRole),
-  );
+  const workerId = normalizeWorkerId(options.id ?? transportIdentifierSeed(options, workerRole));
   const existing = readLocalWorkersConfig();
-  const existingWorker = existing?.workers.find(
-    (worker) => worker.id === workerId,
-  );
+  const existingWorker = existing?.workers.find((worker) => worker.id === workerId);
   const explicitReasoning = options.reasoning;
   const derivedReasoning = inferWorkerReasoningFromModel(
-    transport.kind === "openai_http"
-      ? (transport.model ?? transport.preferModel)
-      : undefined,
+    transport.kind === "openai_http" ? (transport.model ?? transport.preferModel) : undefined
   );
   const candidateReasoning = explicitReasoning ?? derivedReasoning;
   const contextWindow = normalizeContextWindow(options.contextWindow);
@@ -487,9 +443,7 @@ export function removeLocalWorker(workerId: string): {
   }
 
   const nextDefaultWorkerId =
-    id === config.defaultWorkerId
-      ? (normalized[0]?.id ?? "")
-      : config.defaultWorkerId;
+    id === config.defaultWorkerId ? (normalized[0]?.id ?? "") : config.defaultWorkerId;
 
   if (normalized.length === 0) {
     clearWorkerRegistryIndex();
@@ -524,7 +478,7 @@ export function resolveLocalWorkerRoutingDefaults(
   options: {
     workerId?: string;
     workerRole?: string;
-  } = {},
+  } = {}
 ): LocalWorkerRoutingDefaults | null {
   const registry = readWorkerProfileDeclarations();
   const config = readLocalWorkersConfig();
@@ -541,9 +495,7 @@ export function resolveLocalWorkerRoutingDefaults(
   const requestedRole = normalizeWorkerRole(options.workerRole);
 
   const worker =
-    (requestedId
-      ? registry.find((candidate) => candidate.id === requestedId)
-      : undefined) ??
+    (requestedId ? registry.find((candidate) => candidate.id === requestedId) : undefined) ??
     (requestedRole
       ? registry.find((candidate) => candidate.workerRole === requestedRole)
       : undefined) ??
@@ -568,7 +520,7 @@ export function resolveLocalWorkerRoutingDefaults(
         : undefined;
     if (!adapter) {
       throw new Error(
-        `CLI worker ${worker.id} is not mapped to a supported native adapter; use a Codex or Claude command.`,
+        `CLI worker ${worker.id} is not mapped to a supported native adapter; use a Codex or Claude command.`
       );
     }
     return {
@@ -598,14 +550,10 @@ export function resolveLocalWorkerRoutingDefaults(
     routingWorkerRole: worker.workerRole,
     routingLocalBaseUrl: worker.baseUrl,
     ...(worker.model ? { routingLocalModel: worker.model } : {}),
-    ...(worker.preferModel
-      ? { routingLocalPreferModel: worker.preferModel }
-      : {}),
+    ...(worker.preferModel ? { routingLocalPreferModel: worker.preferModel } : {}),
     routingLocalProvider: worker.provider,
     ...(worker.apiKeyEnv ? { routingLocalApiKeyEnv: worker.apiKeyEnv } : {}),
-    ...(worker.apiKeyHeader
-      ? { routingLocalApiKeyHeader: worker.apiKeyHeader }
-      : {}),
+    ...(worker.apiKeyHeader ? { routingLocalApiKeyHeader: worker.apiKeyHeader } : {}),
     routingPreferredEndpoints: ["local"],
     routingAllowedEndpoints: ["local"],
     plannerRetainsReasoning: true,
@@ -672,7 +620,7 @@ function migrateLegacyWorkersIfNeeded(): void {
         entry.isFile() &&
         entry.name.endsWith(".json") &&
         entry.name !== "index.json" &&
-        entry.name !== "local.json",
+        entry.name !== "local.json"
     );
   if (hasWorkerProfiles) {
     return;
@@ -703,9 +651,7 @@ function readLegacyLocalWorkersConfig(): LegacyWorkersConfig | null {
   const workers = Array.isArray(parsed.workers)
     ? parsed.workers
         .map(normalizeLegacyWorkerDeclaration)
-        .filter((worker): worker is LegacyLocalWorkerDeclaration =>
-          Boolean(worker),
-        )
+        .filter((worker): worker is LegacyLocalWorkerDeclaration => Boolean(worker))
     : [];
   const defaultWorkerId = stringValue(parsed.defaultWorkerId) ?? workers[0]?.id;
   if (!defaultWorkerId) {
@@ -720,9 +666,7 @@ function readLegacyLocalWorkersConfig(): LegacyWorkersConfig | null {
   };
 }
 
-function normalizeWorkerProfileRecord(
-  value: Record<string, unknown>,
-): WorkerProfile | null {
+function normalizeWorkerProfileRecord(value: Record<string, unknown>): WorkerProfile | null {
   const candidate = normalizeWorkerProfile(value);
   if (!candidate) {
     return null;
@@ -746,17 +690,13 @@ function normalizeWorkerProfileRecord(
         baseUrl,
         provider: normalizeProvider(transport.provider ?? "lm-studio"),
         ...(transport.apiKeyEnv ? { apiKeyEnv: transport.apiKeyEnv } : {}),
-        ...(transport.apiKeyHeader
-          ? { apiKeyHeader: transport.apiKeyHeader }
-          : {}),
+        ...(transport.apiKeyHeader ? { apiKeyHeader: transport.apiKeyHeader } : {}),
       },
     } as WorkerProfile;
   }
 
   if (transport.kind === "cli") {
-    const command = stringValue(
-      (transport as WorkerProfileCliTransport).command,
-    );
+    const command = stringValue((transport as WorkerProfileCliTransport).command);
     if (!command) {
       return null;
     }
@@ -767,9 +707,7 @@ function normalizeWorkerProfileRecord(
       transport: {
         kind: "cli",
         command,
-        ...(stringValue(cliTransport.shell)
-          ? { shell: stringValue(cliTransport.shell) }
-          : {}),
+        ...(stringValue(cliTransport.shell) ? { shell: stringValue(cliTransport.shell) } : {}),
         ...(Array.isArray(cliTransport.args)
           ? {
               args: cliTransport.args
@@ -784,9 +722,7 @@ function normalizeWorkerProfileRecord(
   return null;
 }
 
-function toProfileFromLegacyWorker(
-  worker: LegacyLocalWorkerDeclaration,
-): WorkerProfile {
+function toProfileFromLegacyWorker(worker: LegacyLocalWorkerDeclaration): WorkerProfile {
   const modelHint = worker.model || worker.preferModel;
   return buildWorkerProfile({
     workerId: worker.id,
@@ -818,9 +754,7 @@ function toProfileFromLegacyWorker(
   });
 }
 
-function toLocalWorkerDeclaration(
-  profile: WorkerProfile,
-): LocalWorkerDeclaration {
+function toLocalWorkerDeclaration(profile: WorkerProfile): LocalWorkerDeclaration {
   if (profile.transport.kind !== "openai_http") {
     const transport = profile.transport as WorkerProfileCliTransport;
     const command = stringValue(transport.command);
@@ -845,12 +779,8 @@ function toLocalWorkerDeclaration(
     endpointType: "local",
     provider: normalizeProvider(profile.transport.provider ?? "lm-studio"),
     baseUrl: profile.transport.baseUrl,
-    ...(profile.transport.apiKeyEnv
-      ? { apiKeyEnv: profile.transport.apiKeyEnv }
-      : {}),
-    ...(profile.transport.apiKeyHeader
-      ? { apiKeyHeader: profile.transport.apiKeyHeader }
-      : {}),
+    ...(profile.transport.apiKeyEnv ? { apiKeyEnv: profile.transport.apiKeyEnv } : {}),
+    ...(profile.transport.apiKeyHeader ? { apiKeyHeader: profile.transport.apiKeyHeader } : {}),
     ...(stringValue(profile.transport.model)
       ? { model: stringValue(profile.transport.model) }
       : {}),
@@ -873,16 +803,10 @@ function resolveDefaultWorkerIdForWrite(input: {
 }): string {
   if (input.optionsDefault === false) {
     return (
-      input.existing?.defaultWorkerId ||
-      input.updatedWorkers[0]?.id ||
-      input.requestedWorkerId
+      input.existing?.defaultWorkerId || input.updatedWorkers[0]?.id || input.requestedWorkerId
     );
   }
-  if (
-    input.existing?.workers.some(
-      (worker) => worker.id === input.requestedWorkerId,
-    )
-  ) {
+  if (input.existing?.workers.some((worker) => worker.id === input.requestedWorkerId)) {
     return input.requestedWorkerId;
   }
   return input.updatedWorkers[0]?.id || input.requestedWorkerId;
@@ -958,8 +882,7 @@ function upsertLocalAdaptiveRoutingPolicy(workerRole: string): string {
       "tests",
       "review",
     ]),
-    catalogLimit:
-      typeof existing.catalogLimit === "number" ? existing.catalogLimit : 8,
+    catalogLimit: typeof existing.catalogLimit === "number" ? existing.catalogLimit : 8,
   };
   writeJsonFile(policyPath, next);
   return policyPath;
@@ -975,12 +898,7 @@ function runOrchestratorLocalCatalog(options: {
   apiKeyEnv?: string;
   apiKeyHeader?: "authorization" | "x-api-key";
 }): unknown {
-  const args = [
-    "local-model-catalog",
-    "--json",
-    "--worker-role",
-    options.workerRole,
-  ];
+  const args = ["local-model-catalog", "--json", "--worker-role", options.workerRole];
   if (options.baseUrl) {
     args.push("--base-url", options.baseUrl);
   }
@@ -1018,18 +936,12 @@ function runOrchestratorLocalCatalog(options: {
 
 function resolveWorkerRegistryRoot(): string {
   return (
-    findWorkspaceRoot(
-      process.env.SNIPARA_WORKSPACE_DIR || process.cwd(),
-      true,
-    ) || process.cwd()
+    findWorkspaceRoot(process.env.SNIPARA_WORKSPACE_DIR || process.cwd(), true) || process.cwd()
   );
 }
 
 function pathForWorkerRegistryDir(): string {
-  return path.resolve(
-    resolveWorkerRegistryRoot(),
-    WORKER_REGISTRY_DIR_RELATIVE_PATH,
-  );
+  return path.resolve(resolveWorkerRegistryRoot(), WORKER_REGISTRY_DIR_RELATIVE_PATH);
 }
 
 function pathForLegacyLocalWorkersConfig(): string {
@@ -1037,49 +949,39 @@ function pathForLegacyLocalWorkersConfig(): string {
 }
 
 function pathForWorkerRegistryIndex(): string {
-  return path.resolve(
-    resolveWorkerRegistryRoot(),
-    WORKER_REGISTRY_INDEX_RELATIVE_PATH,
-  );
+  return path.resolve(resolveWorkerRegistryRoot(), WORKER_REGISTRY_INDEX_RELATIVE_PATH);
 }
 
 function pathForAdaptiveRoutingPolicy(): string {
-  return path.resolve(
-    resolveWorkerRegistryRoot(),
-    ADAPTIVE_ROUTING_POLICY_RELATIVE_PATH,
-  );
+  return path.resolve(resolveWorkerRegistryRoot(), ADAPTIVE_ROUTING_POLICY_RELATIVE_PATH);
 }
 
 function resolveContextWindowFromCatalog(
   catalog: unknown,
   explicitModel: string | undefined,
-  preferredModel: string | undefined,
+  preferredModel: string | undefined
 ): number | undefined {
   const payload = isRecord(catalog) ? catalog : {};
   const explicitModelLower = explicitModel?.toLowerCase();
   const preferredModelLower = preferredModel?.toLowerCase();
-  const workerEndpoints = isRecord(payload["workerEndpoints"])
-    ? payload["workerEndpoints"]
-    : {};
+  const workerEndpoints = isRecord(payload["workerEndpoints"]) ? payload["workerEndpoints"] : {};
   const modelEntries = Array.isArray(payload.models) ? payload.models : [];
 
   const parsedEntries = Object.values(workerEndpoints)
-    .map(
-      (entry): { model?: string; contextWindow: number | undefined } | null => {
-        if (!isRecord(entry)) {
-          return null;
-        }
-        const model = stringValue(entry.model);
-        const contextWindow = coerceContextWindow(entry.contextWindow);
-        if (contextWindow === undefined) {
-          return null;
-        }
-        return {
-          ...(model ? { model } : {}),
-          contextWindow,
-        };
-      },
-    )
+    .map((entry): { model?: string; contextWindow: number | undefined } | null => {
+      if (!isRecord(entry)) {
+        return null;
+      }
+      const model = stringValue(entry.model);
+      const contextWindow = coerceContextWindow(entry.contextWindow);
+      if (contextWindow === undefined) {
+        return null;
+      }
+      return {
+        ...(model ? { model } : {}),
+        contextWindow,
+      };
+    })
     .filter((entry): entry is { model?: string; contextWindow: number } => {
       if (entry === null) {
         return false;
@@ -1098,10 +1000,7 @@ function resolveContextWindowFromCatalog(
     }
     if (explicitModelLower && entry.model) {
       const loweredModel = entry.model.toLowerCase();
-      if (
-        loweredModel === explicitModelLower ||
-        loweredModel.includes(explicitModelLower)
-      ) {
+      if (loweredModel === explicitModelLower || loweredModel.includes(explicitModelLower)) {
         return entry.contextWindow;
       }
     }
@@ -1126,7 +1025,7 @@ function resolveContextWindowFromCatalog(
             item.maxContext ??
             item.max_context ??
             item.max_tokens ??
-            item.maxModelLen,
+            item.maxModelLen
         )
       : undefined;
     if (!modelWindow) {
@@ -1134,10 +1033,7 @@ function resolveContextWindowFromCatalog(
     }
     if (explicitModelLower && model) {
       const loweredModel = model.toLowerCase();
-      if (
-        loweredModel === explicitModelLower ||
-        loweredModel.includes(explicitModelLower)
-      ) {
+      if (loweredModel === explicitModelLower || loweredModel.includes(explicitModelLower)) {
         return modelWindow;
       }
     }
@@ -1170,22 +1066,17 @@ function coerceContextWindow(value: unknown): number | undefined {
   return undefined;
 }
 
-function transportIdentifierSeed(
-  options: LocalWorkerAddOptions,
-  role: string,
-): string {
+function transportIdentifierSeed(options: LocalWorkerAddOptions, role: string): string {
   if (options.transport === "cli" && stringValue(options.command)) {
     return stringValue(options.command) ?? "local-cli";
   }
   return (
-    stringValue(options.model) ??
-    stringValue(options.preferModel) ??
-    `${options.provider}-${role}`
+    stringValue(options.model) ?? stringValue(options.preferModel) ?? `${options.provider}-${role}`
   );
 }
 
 function normalizeWorkerTransport(
-  options: LocalWorkerAddOptions,
+  options: LocalWorkerAddOptions
 ): WorkerProfileOpenAITransport | WorkerProfileCliTransport {
   const transport = stringValue(options.transport) ?? "openai_http";
   if (transport === "cli") {
@@ -1216,14 +1107,10 @@ function normalizeWorkerTransport(
 
 function normalizeProvider(value: string): string {
   const normalized = stringValue(value) ?? "lm-studio";
-  return normalized.includes(" ")
-    ? normalized.replace(/\s+/g, "-").toLowerCase()
-    : normalized;
+  return normalized.includes(" ") ? normalized.replace(/\s+/g, "-").toLowerCase() : normalized;
 }
 
-function normalizeLegacyWorkerDeclaration(
-  value: unknown,
-): LegacyLocalWorkerDeclaration | null {
+function normalizeLegacyWorkerDeclaration(value: unknown): LegacyLocalWorkerDeclaration | null {
   if (!isRecord(value)) {
     return null;
   }
@@ -1240,25 +1127,18 @@ function normalizeLegacyWorkerDeclaration(
     endpointType: "local",
     provider: normalizeProvider(stringValue(value.provider) ?? "lm-studio"),
     baseUrl,
-    ...(stringValue(value.apiKeyEnv)
-      ? { apiKeyEnv: stringValue(value.apiKeyEnv) }
-      : {}),
-    ...(value.apiKeyHeader === "authorization" ||
-    value.apiKeyHeader === "x-api-key"
+    ...(stringValue(value.apiKeyEnv) ? { apiKeyEnv: stringValue(value.apiKeyEnv) } : {}),
+    ...(value.apiKeyHeader === "authorization" || value.apiKeyHeader === "x-api-key"
       ? { apiKeyHeader: value.apiKeyHeader }
       : {}),
     ...(stringValue(value.model) ? { model: stringValue(value.model) } : {}),
-    ...(stringValue(value.preferModel)
-      ? { preferModel: stringValue(value.preferModel) }
-      : {}),
+    ...(stringValue(value.preferModel) ? { preferModel: stringValue(value.preferModel) } : {}),
     capabilities:
       normalizeStringList(value.capabilities).length > 0
         ? normalizeStringList(value.capabilities)
         : defaultCapabilitiesForWorker(normalizeWorkerRole(value.workerRole)),
     writeScope:
-      normalizeStringList(value.writeScope).length > 0
-        ? normalizeStringList(value.writeScope)
-        : [],
+      normalizeStringList(value.writeScope).length > 0 ? normalizeStringList(value.writeScope) : [],
     createdAt: stringValue(value.createdAt) ?? new Date(0).toISOString(),
     updatedAt: stringValue(value.updatedAt) ?? new Date(0).toISOString(),
   };
@@ -1290,9 +1170,7 @@ function normalizeWorkerId(value: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return normalized.startsWith("local-")
-    ? normalized
-    : `local-${normalized || "worker"}`;
+  return normalized.startsWith("local-") ? normalized : `local-${normalized || "worker"}`;
 }
 
 function normalizeWorkerRole(value: unknown): string {
@@ -1336,14 +1214,8 @@ function defaultCapabilitiesForWorker(workerRole: string): string[] {
 }
 
 function normalizeStringList(value: unknown): string[] {
-  const values = Array.isArray(value)
-    ? value
-    : value === undefined
-      ? []
-      : [value];
-  return uniqueStrings(
-    values.map(stringValue).filter((item): item is string => Boolean(item)),
-  );
+  const values = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  return uniqueStrings(values.map(stringValue).filter((item): item is string => Boolean(item)));
 }
 
 function uniqueStrings(values: string[]): string[] {
@@ -1364,9 +1236,7 @@ function normalizeApiKeyEnvironmentName(value: unknown): string | undefined {
     return undefined;
   }
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(normalized)) {
-    throw new Error(
-      "API key env must be a shell-safe environment variable name.",
-    );
+    throw new Error("API key env must be a shell-safe environment variable name.");
   }
   return normalized;
 }

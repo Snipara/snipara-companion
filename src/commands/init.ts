@@ -90,6 +90,19 @@ function getNativeHookBlockReason(client: SetupClient): string | null {
   return reasons[client] ?? "This client is MCP-first; no native hook files are installed.";
 }
 
+function ensureCompanionConfigIsGitIgnored(projectDir: string): void {
+  const gitignorePath = path.join(projectDir, ".gitignore");
+  const ignoreEntry = "/.snipara/companion/";
+  const current = fs.existsSync(gitignorePath) ? fs.readFileSync(gitignorePath, "utf8") : "";
+  const entries = current.split(/\r?\n/).map((entry) => entry.trim());
+  if (entries.includes(ignoreEntry)) {
+    return;
+  }
+
+  const separator = current.length === 0 || current.endsWith("\n") ? "" : "\n";
+  fs.writeFileSync(gitignorePath, `${current}${separator}${ignoreEntry}\n`, "utf8");
+}
+
 function formatClientName(client: SetupClient): string {
   const names: Record<SetupClient, string> = {
     "claude-code": "Claude Code",
@@ -1242,6 +1255,7 @@ export async function initCommand(options: {
     { cwd: projectDir, scope: "workspace" }
   );
   writeProjectBinding(projectDir, selectedProject.slug);
+  ensureCompanionConfigIsGitIgnored(projectDir);
 
   const workflowInstructionResults = ensureWorkflowInstructions(
     projectDir,
@@ -1383,6 +1397,10 @@ export async function initCommand(options: {
   console.log(
     "Export SNIPARA_SESSION_ID with this value before starting the MCP client so served context and execution outcomes share one bounded session."
   );
+  console.log("\nIndex your documentation before the first query:");
+  console.log("  snipara-companion sync-documents --dir ./docs --recursive --reindex");
+  console.log("Then verify setup and discover recovery actions:");
+  console.log("  snipara-companion doctor");
 
   if (options.withHooks) {
     console.log("\nNext steps:");

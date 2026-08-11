@@ -11,10 +11,7 @@
  */
 import * as fs from "fs";
 import * as path from "path";
-import {
-  execFileSync,
-  type ExecFileSyncOptionsWithStringEncoding,
-} from "node:child_process";
+import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
 import { createHash } from "node:crypto";
 import chalk from "chalk";
 import {
@@ -69,10 +66,7 @@ import {
   type SessionSnapshot,
 } from "./activity";
 import { appendJournalCheckpoint, type JournalWriteResult } from "./journal";
-import {
-  buildCodingIntelligenceLedger,
-  type CodingIntelligenceLedger,
-} from "./coding-ledger";
+import { buildCodingIntelligenceLedger, type CodingIntelligenceLedger } from "./coding-ledger";
 import { buildLocalImpactResult } from "./code";
 import {
   buildOutcomeIntelligenceReceipt,
@@ -90,10 +84,7 @@ import {
   resolveDecisionRequest,
   writeDecisionRequest,
 } from "./decision-requests";
-import {
-  buildDecisionApplyReport,
-  type DecisionApplyItem,
-} from "./decision-apply";
+import { buildDecisionApplyReport, type DecisionApplyItem } from "./decision-apply";
 import { memoryGuardCheckCommand } from "./memory-guard";
 import {
   workflowCollaborationRelease,
@@ -119,14 +110,8 @@ import {
   type TeamSyncStaleWorkExplanation,
   type TeamSyncWorkRecord,
 } from "./team-sync";
-import {
-  resolveLocalWorkerRoutingDefaults,
-  type LocalWorkerRoutingDefaults,
-} from "./workers";
-import {
-  taskCommitWhyCaptureReceipt,
-  type CompanionWhyCaptureReceipt,
-} from "./why-capture";
+import { resolveLocalWorkerRoutingDefaults, type LocalWorkerRoutingDefaults } from "./workers";
+import { taskCommitWhyCaptureReceipt, type CompanionWhyCaptureReceipt } from "./why-capture";
 import {
   buildFinalCommitReport,
   buildWorkflowPhaseCommitReceipt,
@@ -141,10 +126,7 @@ import {
   type ProjectIntelligenceRunEnvelope,
   type ProjectRunAdvisorReceiptCapture,
 } from "./run";
-import type {
-  AdvisorInfluenceAgentDecision,
-  EndOfTaskCommitWhyInput,
-} from "../api/client";
+import type { AdvisorInfluenceAgentDecision, EndOfTaskCommitWhyInput } from "../api/client";
 import type { ProjectIntelligenceBrief } from "./intelligence";
 import { formatProjectJudgmentCard, type ProjectIntelligenceJudgmentCard } from "./judgment-card";
 
@@ -164,10 +146,7 @@ const FINAL_COMMIT_SUMMARY_MAX_CHARS = 1_200;
 const FINAL_COMMIT_RETRY_SUMMARY_MAX_CHARS = 600;
 const DEFAULT_ADAPTIVE_ROUTING_CATALOG_LIMIT = 20;
 const DEFAULT_LOCAL_ORCHESTRATOR_TIMEOUT_MS = 8_000;
-const ADAPTIVE_ROUTING_POLICY_RELATIVE_PATH = path.join(
-  ".snipara",
-  "adaptive-routing.json",
-);
+const ADAPTIVE_ROUTING_POLICY_RELATIVE_PATH = path.join(".snipara", "adaptive-routing.json");
 const MEMORY_DECISION_PRODUCER_ACTIONS = new Set([
   "accept",
   "reject",
@@ -181,10 +160,7 @@ const SHARED_CONTEXT_INTENT_PATTERN =
   /\b(standard|standards|convention|conventions|guideline|guidelines|best practice|best practices|policy|policies|compliance|compliant|security rules|team rules|style guide|playbook|checklist)\b/i;
 type SyncDocumentKind = "DOC" | "BINARY";
 
-const DOCUMENT_SYNC_FORMATS: Record<
-  string,
-  { kind: SyncDocumentKind; format: string }
-> = {
+const DOCUMENT_SYNC_FORMATS: Record<string, { kind: SyncDocumentKind; format: string }> = {
   ".adoc": { kind: "DOC", format: "adoc" },
   ".markdown": { kind: "DOC", format: "markdown" },
   ".md": { kind: "DOC", format: "md" },
@@ -198,11 +174,7 @@ const DOCUMENT_SYNC_FORMATS: Record<
   ".vsdx": { kind: "BINARY", format: "vsdx" },
 };
 const DEFAULT_SYNC_EXTENSIONS = new Set(Object.keys(DOCUMENT_SYNC_FORMATS));
-const BUSINESS_ASSET_CLASSES = new Set([
-  "BUSINESS_DOCUMENT",
-  "PRESENTATION",
-  "DIAGRAM",
-]);
+const BUSINESS_ASSET_CLASSES = new Set(["BUSINESS_DOCUMENT", "PRESENTATION", "DIAGRAM"]);
 const BUSINESS_COLLECTION_PRESETS = new Set([
   "business_response_playbook",
   "business_library",
@@ -249,22 +221,9 @@ const REUPLOAD_REASONS = new Set([
   "source_hash_changed",
 ]);
 
-export type WorkflowMode =
-  | "lite"
-  | "standard"
-  | "auto"
-  | "full"
-  | "orchestrate";
-export type OnboardFolderMode =
-  | "auto"
-  | "business_context"
-  | "code_project"
-  | "mixed";
-export type DetectedOnboardFolderMode =
-  | "business_context"
-  | "code_project"
-  | "mixed"
-  | "unknown";
+export type WorkflowMode = "lite" | "standard" | "auto" | "full" | "orchestrate";
+export type OnboardFolderMode = "auto" | "business_context" | "code_project" | "mixed";
+export type DetectedOnboardFolderMode = "business_context" | "code_project" | "mixed" | "unknown";
 export type ManagedWorkflowStatus = "active" | "completed" | "blocked";
 export type ManagedWorkflowPhaseStatus =
   | "pending"
@@ -277,9 +236,7 @@ type ReindexKind = "doc" | "code";
 type ReindexMode = "incremental" | "full";
 type ManagedWorkflowPlanSource = "file" | "inline";
 type TaskCommitOutcome = "completed" | "partial" | "blocked" | "abandoned";
-type ManagedWorkflowSchemaVersion =
-  | "snipara.workflow.v1"
-  | "snipara.workflow.v2";
+type ManagedWorkflowSchemaVersion = "snipara.workflow.v1" | "snipara.workflow.v2";
 type AdaptiveRoutingMode = "off" | "recommend" | "catalog";
 
 interface AdaptiveRoutingProjectPolicy {
@@ -307,24 +264,11 @@ interface AdaptiveRoutingIntent {
   warnings: string[];
 }
 
-export const WORKFLOW_STATE_RELATIVE_PATH = path.join(
-  ".snipara",
-  "workflow",
-  "current.json",
-);
-export const WORKFLOW_PLANS_RELATIVE_DIR = path.join(
-  ".snipara",
-  "workflow",
-  "plans",
-);
-export const PRODUCER_LOOP_ARTIFACT_VERSION =
-  "snipara.producer_loop_artifact.v0" as const;
-export const PRODUCER_LOOP_REPORT_VERSION =
-  "snipara.producer_loop_report.v0" as const;
-export const PRODUCER_LOOP_RELATIVE_DIR = path.join(
-  ".snipara",
-  "producer-loop",
-);
+export const WORKFLOW_STATE_RELATIVE_PATH = path.join(".snipara", "workflow", "current.json");
+export const WORKFLOW_PLANS_RELATIVE_DIR = path.join(".snipara", "workflow", "plans");
+export const PRODUCER_LOOP_ARTIFACT_VERSION = "snipara.producer_loop_artifact.v0" as const;
+export const PRODUCER_LOOP_REPORT_VERSION = "snipara.producer_loop_report.v0" as const;
+export const PRODUCER_LOOP_RELATIVE_DIR = path.join(".snipara", "producer-loop");
 const PRODUCER_LOOP_MIN_REVIEW_SAMPLE_SIZE = 5;
 
 export type ProducerLoopProducerKind =
@@ -596,10 +540,7 @@ export interface ManagedWorkflowRuntimeState {
   };
 }
 
-export type ManagedWorkflowCoordinationMode =
-  | "standard"
-  | "full"
-  | "orchestrate";
+export type ManagedWorkflowCoordinationMode = "standard" | "full" | "orchestrate";
 
 export interface ManagedWorkflowCoordinationState {
   mode: ManagedWorkflowCoordinationMode;
@@ -829,8 +770,8 @@ function parseWorkflowPlanPreset(value: string): WorkflowPlanPreset {
   }
   throw new Error(
     `Unknown workflow scaffold preset '${value}'. Supported presets: ${WORKFLOW_PLAN_PRESET_IDS.join(
-      ", ",
-    )}.`,
+      ", "
+    )}.`
   );
 }
 
@@ -936,9 +877,7 @@ export interface OnboardFolderManifest {
 
 function ensureConfigured(): void {
   if (!isConfigured()) {
-    console.log(
-      "Not configured. Run 'npx -y snipara-companion@latest init' first.",
-    );
+    console.log("Not configured. Run 'npx -y snipara-companion@latest init' first.");
     process.exit(1);
   }
 }
@@ -1000,10 +939,7 @@ function mergeRecords(
     if (!record) continue;
     for (const [key, value] of Object.entries(record)) {
       if (isRecord(value) && isRecord(merged[key])) {
-        merged[key] = mergeRecords(
-          merged[key] as Record<string, unknown>,
-          value,
-        );
+        merged[key] = mergeRecords(merged[key] as Record<string, unknown>, value);
       } else {
         merged[key] = value;
       }
@@ -1012,16 +948,13 @@ function mergeRecords(
   return merged;
 }
 
-function parseJsonRecord(
-  value: string,
-  label: string,
-): Record<string, unknown> {
+function parseJsonRecord(value: string, label: string): Record<string, unknown> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
   } catch (error) {
     throw new Error(
-      `${label} must be valid JSON: ${error instanceof Error ? error.message : error}`,
+      `${label} must be valid JSON: ${error instanceof Error ? error.message : error}`
     );
   }
   if (!isRecord(parsed)) {
@@ -1046,7 +979,7 @@ function parseCsv(value: string | undefined): string[] | undefined {
 }
 
 function normalizeBusinessCollectionPreset(
-  value: string | undefined,
+  value: string | undefined
 ): BusinessCollectionPreset | undefined {
   const normalized = value?.trim().replace(/[-\s]/g, "_").toLowerCase();
   if (!normalized) {
@@ -1054,7 +987,7 @@ function normalizeBusinessCollectionPreset(
   }
   if (!BUSINESS_COLLECTION_PRESETS.has(normalized)) {
     throw new Error(
-      "Business collection preset must be one of: business_response_playbook, business_library, offer_templates, company_presentations, reference_diagrams",
+      "Business collection preset must be one of: business_response_playbook, business_library, offer_templates, company_presentations, reference_diagrams"
     );
   }
   return normalized as BusinessCollectionPreset;
@@ -1071,24 +1004,14 @@ function collectUploadMetadata(options: {
   sourceSnapshotAt?: string;
 }): Record<string, unknown> | undefined {
   const metadata = mergeRecords(
-    options.metadataFile
-      ? readJsonRecord(options.metadataFile, "--metadata-file")
-      : undefined,
-    options.metadata
-      ? parseJsonRecord(options.metadata, "--metadata")
-      : undefined,
-    options.assetClass
-      ? { assetClass: normalizeEnum(options.assetClass) }
-      : undefined,
+    options.metadataFile ? readJsonRecord(options.metadataFile, "--metadata-file") : undefined,
+    options.metadata ? parseJsonRecord(options.metadata, "--metadata") : undefined,
+    options.assetClass ? { assetClass: normalizeEnum(options.assetClass) } : undefined,
     options.usageMode ? { usageMode: options.usageMode } : undefined,
     options.sourceKind ? { sourceKind: options.sourceKind } : undefined,
     options.clientId ? { clientId: options.clientId } : undefined,
-    options.sourceModifiedAt
-      ? { sourceModifiedAt: options.sourceModifiedAt }
-      : undefined,
-    options.sourceSnapshotAt
-      ? { sourceSnapshotAt: options.sourceSnapshotAt }
-      : undefined,
+    options.sourceModifiedAt ? { sourceModifiedAt: options.sourceModifiedAt } : undefined,
+    options.sourceSnapshotAt ? { sourceSnapshotAt: options.sourceSnapshotAt } : undefined
   );
   return Object.keys(metadata).length > 0 ? metadata : undefined;
 }
@@ -1106,7 +1029,7 @@ function optionalReindexMode(value: unknown): ReindexMode | undefined {
 }
 
 function inferDocumentFormat(
-  filePath: string,
+  filePath: string
 ): { kind: SyncDocumentKind; format: string } | undefined {
   return DOCUMENT_SYNC_FORMATS[path.extname(filePath).toLowerCase()];
 }
@@ -1125,20 +1048,19 @@ function normalizeDocumentFormat(value: unknown): string | undefined {
 
 function isSupportedDocumentFormat(
   kind: SyncDocumentKind | undefined,
-  format: string | undefined,
+  format: string | undefined
 ): boolean {
   if (!kind || !format) {
     return false;
   }
   return Object.values(DOCUMENT_SYNC_FORMATS).some(
-    (candidate) => candidate.kind === kind && candidate.format === format,
+    (candidate) => candidate.kind === kind && candidate.format === format
   );
 }
 
 function isBinaryPayload(content: string): boolean {
   return (
-    content.startsWith("base64:") ||
-    (content.startsWith("data:") && content.includes(";base64,"))
+    content.startsWith("base64:") || (content.startsWith("data:") && content.includes(";base64,"))
   );
 }
 
@@ -1153,17 +1075,13 @@ function contentBufferForHash(content: string): Buffer {
 }
 
 function hashContent(content: string): string {
-  return createHash("sha256")
-    .update(contentBufferForHash(content))
-    .digest("hex");
+  return createHash("sha256").update(contentBufferForHash(content)).digest("hex");
 }
 
 function toPreview(value: unknown, maxLength: number = 160): string {
   if (typeof value === "string") {
     const compact = value.replace(/\s+/g, " ").trim();
-    return compact.length > maxLength
-      ? `${compact.slice(0, maxLength - 3)}...`
-      : compact;
+    return compact.length > maxLength ? `${compact.slice(0, maxLength - 3)}...` : compact;
   }
 
   if (typeof value === "number" || typeof value === "boolean") {
@@ -1209,9 +1127,7 @@ function buildHostedFinalCommitSummary(args: {
   summary: string;
   maxLength: number;
 }): string {
-  const prefix = args.workflowId
-    ? `Workflow ${args.workflowId}\nFinal commit\n`
-    : "";
+  const prefix = args.workflowId ? `Workflow ${args.workflowId}\nFinal commit\n` : "";
   const budget = Math.max(80, args.maxLength - prefix.length);
   return `${prefix}${truncateText(args.summary, budget)}`;
 }
@@ -1225,9 +1141,7 @@ function isRetryableHostedCommitError(error: unknown): boolean {
   if (error instanceof Error && error.name === "AbortError") {
     return true;
   }
-  return /abort|timeout|timed out|network|fetch|econn|etimedout|http 5\d\d/.test(
-    message,
-  );
+  return /abort|timeout|timed out|network|fetch|econn|etimedout|http 5\d\d/.test(message);
 }
 
 function shouldRetryHostedFinalCommit(error: unknown): boolean {
@@ -1243,15 +1157,10 @@ function normalizeFinalCommitCategory(category?: string): string {
   if (!normalized) {
     return "final-commit";
   }
-  return isFinalCommitCategory(normalized)
-    ? normalized
-    : `final-commit:${normalized}`;
+  return isFinalCommitCategory(normalized) ? normalized : `final-commit:${normalized}`;
 }
 
-export function getPlanStepDisplayTitle(
-  step: unknown,
-  index: number = 0,
-): string {
+export function getPlanStepDisplayTitle(step: unknown, index: number = 0): string {
   if (typeof step === "string") {
     return toPreview(step);
   }
@@ -1260,9 +1169,7 @@ export function getPlanStepDisplayTitle(
     return `Step ${index + 1}`;
   }
 
-  return toPreview(
-    step.title ?? step.name ?? step.action ?? step.goal ?? `Step ${index + 1}`,
-  );
+  return toPreview(step.title ?? step.name ?? step.action ?? step.goal ?? `Step ${index + 1}`);
 }
 
 export interface PlanQualityReport {
@@ -1346,7 +1253,7 @@ function isPlaceholderPlanLabel(value: string, index: number): boolean {
 function normalizePositiveTokenBudget(
   value: number | undefined,
   fallback: number,
-  allowZero: boolean = false,
+  allowZero: boolean = false
 ): number {
   if (
     typeof value !== "number" ||
@@ -1368,7 +1275,7 @@ export function resolveFullWorkflowTokenBudget(options: {
 }): WorkflowTokenBudgetReport {
   const requestedMaxTokens = normalizePositiveTokenBudget(
     options.maxTokens,
-    DEFAULT_WORKFLOW_RUN_TOKENS,
+    DEFAULT_WORKFLOW_RUN_TOKENS
   );
   const explicitCritical = options.maxCriticalTokens !== undefined;
   const explicitContext = options.maxContextTokens !== undefined;
@@ -1376,15 +1283,11 @@ export function resolveFullWorkflowTokenBudget(options: {
     ? normalizePositiveTokenBudget(options.maxCriticalTokens, 0, true)
     : Math.min(
         DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS,
-        Math.max(
-          MIN_WORKFLOW_SURFACE_TOKENS,
-          Math.floor(requestedMaxTokens * 0.2),
-        ),
+        Math.max(MIN_WORKFLOW_SURFACE_TOKENS, Math.floor(requestedMaxTokens * 0.2))
       );
   const includeSessionContext = Boolean(
     options.includeSessionContext ||
-    (explicitContext &&
-      normalizePositiveTokenBudget(options.maxContextTokens, 0, true) > 0),
+    (explicitContext && normalizePositiveTokenBudget(options.maxContextTokens, 0, true) > 0)
   );
   const sessionContextTokens = explicitContext
     ? normalizePositiveTokenBudget(options.maxContextTokens, 0, true)
@@ -1393,35 +1296,31 @@ export function resolveFullWorkflowTokenBudget(options: {
           DEFAULT_SESSION_CONTEXT_TOKENS,
           Math.max(
             Math.floor(MIN_WORKFLOW_SURFACE_TOKENS / 2),
-            Math.floor(requestedMaxTokens * 0.1),
-          ),
+            Math.floor(requestedMaxTokens * 0.1)
+          )
         )
       : 0;
   const warnings: string[] = [];
   const bootstrapTokens = criticalMemoryTokens + sessionContextTokens;
-  const minimumRuntimeTokens =
-    MIN_WORKFLOW_SURFACE_TOKENS * (options.includeSharedContext ? 3 : 2);
-  const runtimeBudget = Math.max(
-    requestedMaxTokens - bootstrapTokens,
-    minimumRuntimeTokens,
-  );
+  const minimumRuntimeTokens = MIN_WORKFLOW_SURFACE_TOKENS * (options.includeSharedContext ? 3 : 2);
+  const runtimeBudget = Math.max(requestedMaxTokens - bootstrapTokens, minimumRuntimeTokens);
   const sharedContextTokens = options.includeSharedContext
     ? Math.min(
         DEFAULT_SHARED_CONTEXT_TOKENS,
-        Math.max(MIN_WORKFLOW_SURFACE_TOKENS, Math.floor(runtimeBudget * 0.15)),
+        Math.max(MIN_WORKFLOW_SURFACE_TOKENS, Math.floor(runtimeBudget * 0.15))
       )
     : 0;
   const remainingRuntimeBudget = Math.max(
     runtimeBudget - sharedContextTokens,
-    MIN_WORKFLOW_SURFACE_TOKENS * 2,
+    MIN_WORKFLOW_SURFACE_TOKENS * 2
   );
   const contextQueryTokens = Math.max(
     MIN_WORKFLOW_SURFACE_TOKENS,
-    Math.floor(remainingRuntimeBudget * 0.7),
+    Math.floor(remainingRuntimeBudget * 0.7)
   );
   const planTokens = Math.max(
     MIN_WORKFLOW_SURFACE_TOKENS,
-    remainingRuntimeBudget - contextQueryTokens,
+    remainingRuntimeBudget - contextQueryTokens
   );
   const estimatedMaxTokens =
     criticalMemoryTokens +
@@ -1432,21 +1331,17 @@ export function resolveFullWorkflowTokenBudget(options: {
 
   if (estimatedMaxTokens > requestedMaxTokens) {
     warnings.push(
-      `Minimum viable FULL workflow surfaces require ${estimatedMaxTokens} tokens, above requested max_tokens ${requestedMaxTokens}.`,
+      `Minimum viable FULL workflow surfaces require ${estimatedMaxTokens} tokens, above requested max_tokens ${requestedMaxTokens}.`
     );
   }
   if (explicitCritical && criticalMemoryTokens > requestedMaxTokens * 0.5) {
     warnings.push(
-      "Explicit max_critical_tokens consumes more than half of the workflow budget; context and plan quality may degrade.",
+      "Explicit max_critical_tokens consumes more than half of the workflow budget; context and plan quality may degrade."
     );
   }
-  if (
-    explicitContext &&
-    sessionContextTokens > 0 &&
-    !options.includeSessionContext
-  ) {
+  if (explicitContext && sessionContextTokens > 0 && !options.includeSessionContext) {
     warnings.push(
-      "max_context_tokens was provided, so short-lived session context is included even without --include-session-context.",
+      "max_context_tokens was provided, so short-lived session context is included even without --include-session-context."
     );
   }
 
@@ -1536,13 +1431,11 @@ function collectPlanFileHints(plan: Record<string, unknown>): string[] {
 
 function buildPlanRelevanceWarnings(
   plan: Record<string, unknown>,
-  options: { query?: string; cwd?: string },
+  options: { query?: string; cwd?: string }
 ): string[] {
   const warnings: string[] = [];
   const fileHints = collectPlanFileHints(plan);
-  const query = compactWhitespace(
-    options.query ?? stringValue(plan.query) ?? "",
-  );
+  const query = compactWhitespace(options.query ?? stringValue(plan.query) ?? "");
   if (fileHints.length === 0 || query.length === 0) {
     return warnings;
   }
@@ -1556,13 +1449,13 @@ function buildPlanRelevanceWarnings(
     warnings.push(
       `Plan file hints have no obvious lexical overlap with the request; verify likely_files before starting implementation (${weakFileHints
         .slice(0, 4)
-        .join(", ")}).`,
+        .join(", ")}).`
     );
   } else if (weakFileHints.length > 0) {
     warnings.push(
       `Some plan file hints look weakly related to the request: ${weakFileHints
         .slice(0, 4)
-        .join(", ")}.`,
+        .join(", ")}.`
     );
   }
 
@@ -1577,7 +1470,7 @@ function buildPlanRelevanceWarnings(
       warnings.push(
         `Plan references files not found in the local workspace: ${missingHints
           .slice(0, 4)
-          .join(", ")}.`,
+          .join(", ")}.`
       );
     }
   }
@@ -1587,7 +1480,7 @@ function buildPlanRelevanceWarnings(
 
 export function validatePlanResult(
   plan: unknown,
-  options: { query?: string; cwd?: string } = {},
+  options: { query?: string; cwd?: string } = {}
 ): PlanQualityReport {
   const issues: string[] = [];
   const warnings: string[] = [];
@@ -1645,14 +1538,8 @@ export function validatePlanResult(
     }
 
     const expectedOutput = stringValue(step.expected_output);
-    if (
-      !expectedOutput &&
-      !stringValue(step.acceptance) &&
-      !stringValue(step.verify)
-    ) {
-      issues.push(
-        `Step ${index + 1} is missing expected output or acceptance criteria.`,
-      );
+    if (!expectedOutput && !stringValue(step.acceptance) && !stringValue(step.verify)) {
+      issues.push(`Step ${index + 1} is missing expected output or acceptance criteria.`);
     }
 
     const params = isRecord(step.params) ? step.params : undefined;
@@ -1685,38 +1572,25 @@ export function validatePlanResult(
 function readBootstrapEntryText(entry: SessionMemoryEntry): string {
   return compactWhitespace(
     [entry.text, entry.content, entry.summary, entry.title]
-      .filter(
-        (value): value is string =>
-          typeof value === "string" && value.length > 0,
-      )
-      .join(" "),
+      .filter((value): value is string => typeof value === "string" && value.length > 0)
+      .join(" ")
   );
 }
 
-function entryAgeDays(
-  entry: SessionMemoryEntry,
-  now: Date,
-): number | undefined {
-  if (
-    typeof entry.created_at !== "string" ||
-    entry.created_at.trim().length === 0
-  ) {
+function entryAgeDays(entry: SessionMemoryEntry, now: Date): number | undefined {
+  if (typeof entry.created_at !== "string" || entry.created_at.trim().length === 0) {
     return undefined;
   }
   const createdAt = new Date(entry.created_at);
   if (Number.isNaN(createdAt.getTime())) {
     return undefined;
   }
-  return Math.max(
-    0,
-    Math.floor((now.getTime() - createdAt.getTime()) / 86_400_000),
-  );
+  return Math.max(0, Math.floor((now.getTime() - createdAt.getTime()) / 86_400_000));
 }
 
 function isLikelyTestMemory(entry: SessionMemoryEntry): boolean {
   const type = typeof entry.type === "string" ? entry.type.toLowerCase() : "";
-  const category =
-    typeof entry.category === "string" ? entry.category.toLowerCase() : "";
+  const category = typeof entry.category === "string" ? entry.category.toLowerCase() : "";
   const text = readBootstrapEntryText(entry).toLowerCase();
   return type === "test" || category === "test" || /^test memory\b/.test(text);
 }
@@ -1730,8 +1604,7 @@ function readBootstrapEntryId(entry: SessionMemoryEntry): string {
 }
 
 function isSessionCarryoverEntry(entry: SessionMemoryEntry): boolean {
-  const category =
-    typeof entry.category === "string" ? entry.category.toLowerCase() : "";
+  const category = typeof entry.category === "string" ? entry.category.toLowerCase() : "";
   const text = readBootstrapEntryText(entry).toLowerCase();
   return (
     category.includes("team_sync_handoff") ||
@@ -1753,8 +1626,7 @@ function isOwnerOperatingProfileEntry(entry: SessionMemoryEntry): boolean {
 
 function isProjectProfileEntry(entry: SessionMemoryEntry): boolean {
   return (
-    typeof entry.category === "string" &&
-    entry.category.toLowerCase() === PROJECT_PROFILE_CATEGORY
+    typeof entry.category === "string" && entry.category.toLowerCase() === PROJECT_PROFILE_CATEGORY
   );
 }
 
@@ -1762,10 +1634,7 @@ function isPinnedBootstrapProfileEntry(entry: SessionMemoryEntry): boolean {
   return isProjectProfileEntry(entry) || isOwnerOperatingProfileEntry(entry);
 }
 
-function isLikelyStaleBootstrapEntry(
-  entry: SessionMemoryEntry,
-  now: Date,
-): boolean {
+function isLikelyStaleBootstrapEntry(entry: SessionMemoryEntry, now: Date): boolean {
   const age = entryAgeDays(entry, now);
   const text = readBootstrapEntryText(entry).toLowerCase();
   return (
@@ -1787,13 +1656,12 @@ function isLikelyStaleBootstrapEntry(
 function scoreBootstrapBriefEntry(
   entry: SessionMemoryEntry,
   source: "critical" | "daily",
-  now: Date,
+  now: Date
 ): number {
   let score = source === "daily" ? 100 : 0;
   const age = entryAgeDays(entry, now);
   const type = typeof entry.type === "string" ? entry.type.toLowerCase() : "";
-  const category =
-    typeof entry.category === "string" ? entry.category.toLowerCase() : "";
+  const category = typeof entry.category === "string" ? entry.category.toLowerCase() : "";
   const text = readBootstrapEntryText(entry).toLowerCase();
 
   if (isSessionCarryoverEntry(entry)) {
@@ -1804,10 +1672,7 @@ function scoreBootstrapBriefEntry(
     const authorityStatus = bootstrapAuthorityStatus(entry);
     if (authorityStatus === "canonical") {
       score += 55;
-    } else if (
-      authorityStatus === "approved" ||
-      authorityStatus === "authoritative"
-    ) {
+    } else if (authorityStatus === "approved" || authorityStatus === "authoritative") {
       score += 20;
     }
   } else if (type === "context") {
@@ -1821,18 +1686,10 @@ function scoreBootstrapBriefEntry(
   if (category.includes("team_sync_handoff")) {
     score += 55;
   }
-  if (
-    text.includes("control plane") ||
-    text.includes("control-plane") ||
-    text.includes("lite")
-  ) {
+  if (text.includes("control plane") || text.includes("control-plane") || text.includes("lite")) {
     score += 35;
   }
-  if (
-    text.includes("published") ||
-    text.includes("deployed") ||
-    text.includes("data-dpl-id")
-  ) {
+  if (text.includes("published") || text.includes("deployed") || text.includes("data-dpl-id")) {
     score += 25;
   }
   if (typeof entry.confidence === "number") {
@@ -1902,19 +1759,11 @@ function bootstrapSimilarityTokens(entry: SessionMemoryEntry): Set<string> {
     .toLowerCase()
     .replace(/snipara-companion@\d+\.\d+\.\d+/g, "snipara-companion")
     .replace(/[^a-z0-9]+/g, " ");
-  return new Set(
-    text
-      .split(/\s+/)
-      .filter((token) => token.length >= 4 && !stopWords.has(token)),
-  );
+  return new Set(text.split(/\s+/).filter((token) => token.length >= 4 && !stopWords.has(token)));
 }
 
 function buildBootstrapTopicTokens(
-  ranked: Array<{
-    entry: SessionMemoryEntry;
-    source: "critical" | "daily";
-    score: number;
-  }>,
+  ranked: Array<{ entry: SessionMemoryEntry; source: "critical" | "daily"; score: number }>
 ): Set<string> {
   const tokens = new Set<string>();
   for (const candidate of ranked) {
@@ -1934,7 +1783,7 @@ function buildBootstrapTopicTokens(
 function isDecisionRelevantToBootstrap(
   entry: SessionMemoryEntry,
   topicTokens: Set<string>,
-  hasCarryoverCandidate: boolean,
+  hasCarryoverCandidate: boolean
 ): boolean {
   if (!isBootstrapDecisionEntry(entry)) {
     return false;
@@ -1952,8 +1801,7 @@ function isDecisionRelevantToBootstrap(
   if (hasExplicitTopic) {
     return true;
   }
-  const category =
-    typeof entry.category === "string" ? entry.category.toLowerCase() : "";
+  const category = typeof entry.category === "string" ? entry.category.toLowerCase() : "";
   if (
     category.includes("workflow-phase") ||
     category.includes("final-commit") ||
@@ -1971,10 +1819,7 @@ function isDecisionRelevantToBootstrap(
   return overlap >= 3;
 }
 
-function areBootstrapEntriesSimilar(
-  a: SessionMemoryEntry,
-  b: SessionMemoryEntry,
-): boolean {
+function areBootstrapEntriesSimilar(a: SessionMemoryEntry, b: SessionMemoryEntry): boolean {
   const aTokens = bootstrapSimilarityTokens(a);
   const bTokens = bootstrapSimilarityTokens(b);
   if (aTokens.size === 0 || bTokens.size === 0) {
@@ -1998,44 +1843,32 @@ export function buildSessionBootstrapBrief(
     maxTokens?: number;
     maxEntries?: number;
     now?: Date;
-  },
+  }
 ): SessionBootstrapBrief {
   const normalized = normalizeSessionMemoriesResult(result);
   const now = options.now ?? new Date();
   const maxEntries = Math.max(1, Math.min(options.maxEntries ?? 4, 5));
-  const budgetTokens = normalizePositiveTokenBudget(
-    options.maxTokens,
-    600,
-    true,
-  );
+  const budgetTokens = normalizePositiveTokenBudget(options.maxTokens, 600, true);
   const candidates = [
-    ...normalized.critical.memories.map((entry) => ({
-      entry,
-      source: "critical" as const,
-    })),
+    ...normalized.critical.memories.map((entry) => ({ entry, source: "critical" as const })),
     ...(options.includeSessionContext
-      ? normalized.daily.memories.map((entry) => ({
-          entry,
-          source: "daily" as const,
-        }))
+      ? normalized.daily.memories.map((entry) => ({ entry, source: "daily" as const }))
       : []),
   ];
   const projectProfile = candidates.find(
     (candidate) =>
       (normalized.profiles?.project_memory_id &&
-        readBootstrapEntryId(candidate.entry) ===
-          normalized.profiles.project_memory_id) ||
-      isProjectProfileEntry(candidate.entry),
+        readBootstrapEntryId(candidate.entry) === normalized.profiles.project_memory_id) ||
+      isProjectProfileEntry(candidate.entry)
   )?.entry;
   const ownerProfile = candidates.find(
     (candidate) =>
       (normalized.profiles?.owner_memory_id &&
-        readBootstrapEntryId(candidate.entry) ===
-          normalized.profiles.owner_memory_id) ||
-      isOwnerOperatingProfileEntry(candidate.entry),
+        readBootstrapEntryId(candidate.entry) === normalized.profiles.owner_memory_id) ||
+      isOwnerOperatingProfileEntry(candidate.entry)
   )?.entry;
   const pinnedProfiles = [projectProfile, ownerProfile].filter(
-    (entry): entry is SessionMemoryEntry => Boolean(entry),
+    (entry): entry is SessionMemoryEntry => Boolean(entry)
   );
   const seen = new Set<string>();
   const entries: SessionMemoryEntry[] = [];
@@ -2043,9 +1876,7 @@ export function buildSessionBootstrapBrief(
   for (const profile of pinnedProfiles) {
     const profileTokens = estimateBootstrapEntryTokens(profile);
     const profileId = readBootstrapEntryId(profile);
-    const profileText = readBootstrapEntryText(profile)
-      .slice(0, 140)
-      .toLowerCase();
+    const profileText = readBootstrapEntryText(profile).slice(0, 140).toLowerCase();
     const key = profileId || profileText;
     if (
       entries.length < maxEntries &&
@@ -2070,7 +1901,7 @@ export function buildSessionBootstrapBrief(
         !(
           selectedProjectProfileId &&
           readBootstrapEntryId(candidate.entry) === selectedProjectProfileId
-        ),
+        )
     )
     .map((candidate, index) => ({
       ...candidate,
@@ -2083,7 +1914,7 @@ export function buildSessionBootstrapBrief(
       (candidate) =>
         candidate.score > 0 &&
         !isLikelyStaleBootstrapEntry(candidate.entry, now) &&
-        !isLikelyTestMemory(candidate.entry),
+        !isLikelyTestMemory(candidate.entry)
     ) || reservedEntryCount > 0;
   const topicTokens = buildBootstrapTopicTokens(ranked);
   const hasCarryoverCandidate = ranked.some(
@@ -2091,7 +1922,7 @@ export function buildSessionBootstrapBrief(
       candidate.score > 0 &&
       isSessionCarryoverEntry(candidate.entry) &&
       !isLikelyStaleBootstrapEntry(candidate.entry, now) &&
-      !isLikelyTestMemory(candidate.entry),
+      !isLikelyTestMemory(candidate.entry)
   );
   const hasFreshDecisionCandidate =
     maxEntries >= 4 &&
@@ -2099,13 +1930,9 @@ export function buildSessionBootstrapBrief(
     ranked.some(
       (candidate) =>
         candidate.score > 0 &&
-        isDecisionRelevantToBootstrap(
-          candidate.entry,
-          topicTokens,
-          hasCarryoverCandidate,
-        ) &&
+        isDecisionRelevantToBootstrap(candidate.entry, topicTokens, hasCarryoverCandidate) &&
         !isLikelyStaleBootstrapEntry(candidate.entry, now) &&
-        !isLikelyTestMemory(candidate.entry),
+        !isLikelyTestMemory(candidate.entry)
     );
   let selectedCarryoverCount = 0;
   let selectedDecisionCount = 0;
@@ -2116,35 +1943,24 @@ export function buildSessionBootstrapBrief(
     }
     if (
       hasFreshCandidate &&
-      (isLikelyStaleBootstrapEntry(candidate.entry, now) ||
-        isLikelyTestMemory(candidate.entry))
+      (isLikelyStaleBootstrapEntry(candidate.entry, now) || isLikelyTestMemory(candidate.entry))
     ) {
       continue;
     }
     const id = readBootstrapEntryId(candidate.entry);
-    const textKey = readBootstrapEntryText(candidate.entry)
-      .slice(0, 140)
-      .toLowerCase();
+    const textKey = readBootstrapEntryText(candidate.entry).slice(0, 140).toLowerCase();
     const key = id || textKey;
     if (seen.has(key)) {
       continue;
     }
-    if (
-      entries.some((entry) =>
-        areBootstrapEntriesSimilar(entry, candidate.entry),
-      )
-    ) {
+    if (entries.some((entry) => areBootstrapEntriesSimilar(entry, candidate.entry))) {
       continue;
     }
     const isCarryover = isSessionCarryoverEntry(candidate.entry);
     const isDecision = isBootstrapDecisionEntry(candidate.entry);
     if (
       isDecision &&
-      !isDecisionRelevantToBootstrap(
-        candidate.entry,
-        topicTokens,
-        hasCarryoverCandidate,
-      )
+      !isDecisionRelevantToBootstrap(candidate.entry, topicTokens, hasCarryoverCandidate)
     ) {
       continue;
     }
@@ -2185,26 +2001,19 @@ export function buildSessionBootstrapBrief(
 
 export function buildSessionBootstrapQuality(
   result: SessionMemoriesResult,
-  options: { expectedMaxTokens?: number; now?: Date } = {},
+  options: { expectedMaxTokens?: number; now?: Date } = {}
 ): SessionBootstrapQualityReport {
   const normalized = normalizeSessionMemoriesResult(result);
   const now = options.now ?? new Date();
-  const memories = [
-    ...normalized.critical.memories,
-    ...normalized.daily.memories,
-  ];
+  const memories = [...normalized.critical.memories, ...normalized.daily.memories];
   const ages = memories
     .map((entry) => entryAgeDays(entry, now))
     .filter((age): age is number => typeof age === "number");
   const lowConfidenceCount = memories.filter(
-    (entry) => typeof entry.confidence === "number" && entry.confidence < 0.5,
+    (entry) => typeof entry.confidence === "number" && entry.confidence < 0.5
   ).length;
-  const staleCount = ages.filter(
-    (age) => age > STALE_BOOTSTRAP_MEMORY_DAYS,
-  ).length;
-  const testCount = memories.filter((entry) =>
-    isLikelyTestMemory(entry),
-  ).length;
+  const staleCount = ages.filter((age) => age > STALE_BOOTSTRAP_MEMORY_DAYS).length;
+  const testCount = memories.filter((entry) => isLikelyTestMemory(entry)).length;
   const warnings: string[] = [];
 
   if (
@@ -2213,23 +2022,19 @@ export function buildSessionBootstrapQuality(
     normalized.total_tokens > options.expectedMaxTokens
   ) {
     warnings.push(
-      `Bootstrap returned ${normalized.total_tokens} tokens, above requested bootstrap budget ${options.expectedMaxTokens}.`,
+      `Bootstrap returned ${normalized.total_tokens} tokens, above requested bootstrap budget ${options.expectedMaxTokens}.`
     );
   }
   if (lowConfidenceCount > 0) {
-    warnings.push(
-      `${lowConfidenceCount} bootstrap memories have confidence below 0.5.`,
-    );
+    warnings.push(`${lowConfidenceCount} bootstrap memories have confidence below 0.5.`);
   }
   if (staleCount > 0) {
     warnings.push(
-      `${staleCount} bootstrap memories are older than ${STALE_BOOTSTRAP_MEMORY_DAYS} days; verify before relying on them.`,
+      `${staleCount} bootstrap memories are older than ${STALE_BOOTSTRAP_MEMORY_DAYS} days; verify before relying on them.`
     );
   }
   if (testCount > 0) {
-    warnings.push(
-      `${testCount} bootstrap memories look like test fixtures and should be ignored.`,
-    );
+    warnings.push(`${testCount} bootstrap memories look like test fixtures and should be ignored.`);
   }
 
   return {
@@ -2275,7 +2080,7 @@ function isUsableGeneratedStepQuery(value: unknown): value is string {
 function planStepToWorkflowStep(
   step: unknown,
   index: number,
-  fallbackGoal: string,
+  fallbackGoal: string
 ): GeneratedWorkflowPlanDocument["steps"][number] {
   const title = getPlanStepDisplayTitle(step, index);
   const fallbackQuery = `${fallbackGoal}: ${title}`;
@@ -2309,42 +2114,33 @@ function planStepToWorkflowStep(
 
   return {
     id: sanitizeWorkflowId(
-      stringValue(step.id) ??
-        stringValue(step.phase_id) ??
-        stringValue(step.key) ??
-        title,
-      `phase-${index + 1}`,
+      stringValue(step.id) ?? stringValue(step.phase_id) ?? stringValue(step.key) ?? title,
+      `phase-${index + 1}`
     ),
     title,
     query,
     ...(acceptance ? { acceptance } : {}),
     ...(likelyFiles ? { files: likelyFiles } : {}),
     ...(booleanValue(step.needs_runtime ?? step.runtime) !== undefined
-      ? {
-          needs_runtime: Boolean(
-            booleanValue(step.needs_runtime ?? step.runtime),
-          ),
-        }
+      ? { needs_runtime: Boolean(booleanValue(step.needs_runtime ?? step.runtime)) }
       : {}),
   };
 }
 
 export function buildGeneratedWorkflowPlanDocument(
   plan: Record<string, unknown>,
-  fallbackGoal: string,
+  fallbackGoal: string
 ): GeneratedWorkflowPlanDocument {
   const goal = stringValue(plan.query) ?? fallbackGoal;
   const steps = findWorkflowSteps(plan).map((step, index) =>
-    planStepToWorkflowStep(step, index, goal),
+    planStepToWorkflowStep(step, index, goal)
   );
 
   return {
     mode: "full",
     goal,
     source: "snipara_plan",
-    ...(stringValue(plan.plan_id)
-      ? { plan_id: stringValue(plan.plan_id) }
-      : {}),
+    ...(stringValue(plan.plan_id) ? { plan_id: stringValue(plan.plan_id) } : {}),
     generatedAt: new Date().toISOString(),
     steps,
   };
@@ -2358,21 +2154,18 @@ function defaultGeneratedPlanFilePath(query: string): string {
 function writeGeneratedWorkflowPlanFile(
   plan: Record<string, unknown>,
   fallbackGoal: string,
-  outputFile?: string,
+  outputFile?: string
 ): WrittenGeneratedPlanFile {
-  const outputPath = path.resolve(
-    outputFile ?? defaultGeneratedPlanFilePath(fallbackGoal),
-  );
+  const outputPath = path.resolve(outputFile ?? defaultGeneratedPlanFilePath(fallbackGoal));
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(
     outputPath,
     `${JSON.stringify(buildGeneratedWorkflowPlanDocument(plan, fallbackGoal), null, 2)}\n`,
-    "utf8",
+    "utf8"
   );
   return {
     path: outputPath,
-    relativePath:
-      path.relative(process.cwd(), outputPath) || path.basename(outputPath),
+    relativePath: path.relative(process.cwd(), outputPath) || path.basename(outputPath),
   };
 }
 
@@ -2393,18 +2186,14 @@ function booleanValue(value: unknown): boolean | undefined {
   return undefined;
 }
 
-function uniqueStringList(
-  values: Array<string | undefined> | undefined,
-): string[] | undefined {
+function uniqueStringList(values: Array<string | undefined> | undefined): string[] | undefined {
   if (!values) {
     return undefined;
   }
   const unique = Array.from(
     new Set(
-      values
-        .map((value) => stringValue(value))
-        .filter((value): value is string => Boolean(value)),
-    ),
+      values.map((value) => stringValue(value)).filter((value): value is string => Boolean(value))
+    )
   );
   return unique.length > 0 ? unique : undefined;
 }
@@ -2418,11 +2207,7 @@ function sanitizeWorkflowId(value: string, fallback: string): string {
   return normalized || fallback;
 }
 
-function uniquePhaseId(
-  candidate: string,
-  index: number,
-  used: Set<string>,
-): string {
+function uniquePhaseId(candidate: string, index: number, used: Set<string>): string {
   const base = sanitizeWorkflowId(candidate, `phase-${index + 1}`);
   let id = base;
   let suffix = 2;
@@ -2463,7 +2248,7 @@ function normalizeWorkflowPhase(
   step: unknown,
   index: number,
   usedIds: Set<string>,
-  fallbackGoal: string,
+  fallbackGoal: string
 ): ManagedWorkflowPhase {
   if (typeof step === "string") {
     const title = toPreview(step, 120);
@@ -2498,12 +2283,9 @@ function normalizeWorkflowPhase(
     stringValue(step.action) ??
     `${fallbackGoal}: ${title}`;
   const id = uniquePhaseId(
-    stringValue(step.id) ??
-      stringValue(step.phase_id) ??
-      stringValue(step.key) ??
-      title,
+    stringValue(step.id) ?? stringValue(step.phase_id) ?? stringValue(step.key) ?? title,
     index,
-    usedIds,
+    usedIds
   );
   const files =
     normalizeStringArray(step.files) ??
@@ -2522,15 +2304,9 @@ function normalizeWorkflowPhase(
     status: "pending",
     ...(acceptance ? { acceptance } : {}),
     ...(files ? { files } : {}),
-    ...(normalizeStringArray(step.gates)
-      ? { gates: normalizeStringArray(step.gates) }
-      : {}),
+    ...(normalizeStringArray(step.gates) ? { gates: normalizeStringArray(step.gates) } : {}),
     ...(booleanValue(step.needs_runtime ?? step.runtime) !== undefined
-      ? {
-          needsRuntime: Boolean(
-            booleanValue(step.needs_runtime ?? step.runtime),
-          ),
-        }
+      ? { needsRuntime: Boolean(booleanValue(step.needs_runtime ?? step.runtime)) }
       : {}),
   };
 }
@@ -2545,20 +2321,14 @@ function stripWorkflowMarkdownLine(line: string): string {
 }
 
 function isWorkflowSectionMarker(line: string): boolean {
-  return /^(phases|steps|tasks|items)\s*:?\s*$/i.test(
-    stripWorkflowMarkdownLine(line),
-  );
+  return /^(phases|steps|tasks|items)\s*:?\s*$/i.test(stripWorkflowMarkdownLine(line));
 }
 
 function isWorkflowMetaLine(line: string): boolean {
-  return /^(goal|status|mode|date|audience)\s*:/i.test(
-    stripWorkflowMarkdownLine(line),
-  );
+  return /^(goal|status|mode|date|audience)\s*:/i.test(stripWorkflowMarkdownLine(line));
 }
 
-function matchWorkflowListItem(
-  line: string,
-): { indent: number; text: string } | undefined {
+function matchWorkflowListItem(line: string): { indent: number; text: string } | undefined {
   const match = line.match(/^(\s*)(?:\d+[.)]|[-*])\s+(\S.*)$/);
   if (!match) {
     return undefined;
@@ -2573,10 +2343,7 @@ function isIndentedWorkflowDetail(line: string): boolean {
   return /^\s{2,}(?:[-*]|\d+[.)])\s+\S/.test(line);
 }
 
-function parseWorkflowPlanText(
-  content: string,
-  fallbackGoal: string,
-): unknown[] {
+function parseWorkflowPlanText(content: string, fallbackGoal: string): unknown[] {
   const rawLines = content.split(/\r?\n/);
   const lines: string[] = [];
   let inFence = false;
@@ -2591,20 +2358,11 @@ function parseWorkflowPlanText(
     }
   }
 
-  const explicitSectionIndex = lines.findIndex((line) =>
-    isWorkflowSectionMarker(line),
-  );
-  const phaseStartIndex =
-    explicitSectionIndex >= 0 ? explicitSectionIndex + 1 : 0;
-  const hasTopLevelList = lines.some((line) =>
-    Boolean(matchWorkflowListItem(line)),
-  );
+  const explicitSectionIndex = lines.findIndex((line) => isWorkflowSectionMarker(line));
+  const phaseStartIndex = explicitSectionIndex >= 0 ? explicitSectionIndex + 1 : 0;
+  const hasTopLevelList = lines.some((line) => Boolean(matchWorkflowListItem(line)));
 
-  const parsedPhases: Array<{
-    title: string;
-    query: string;
-    acceptance?: string;
-  }> = [];
+  const parsedPhases: Array<{ title: string; query: string; acceptance?: string }> = [];
   let currentPhase:
     | {
         title: string;
@@ -2621,10 +2379,7 @@ function parseWorkflowPlanText(
     const details = currentPhase.details.filter(Boolean);
     parsedPhases.push({
       title: currentPhase.title,
-      query: [
-        currentPhase.title,
-        ...details.map((detail) => `- ${detail}`),
-      ].join("\n"),
+      query: [currentPhase.title, ...details.map((detail) => `- ${detail}`)].join("\n"),
       ...(details.length > 0 ? { acceptance: details.join("; ") } : {}),
     });
     currentPhase = undefined;
@@ -2681,11 +2436,7 @@ function parseWorkflowPlanText(
     }
   }
 
-  const headingPhases: Array<{
-    title: string;
-    query: string;
-    acceptance?: string;
-  }> = [];
+  const headingPhases: Array<{ title: string; query: string; acceptance?: string }> = [];
   let currentHeading:
     | {
         title: string;
@@ -2730,7 +2481,7 @@ function parseWorkflowPlanText(
 
 export function normalizeWorkflowPlanInput(
   input: unknown,
-  fallbackGoal: string,
+  fallbackGoal: string
 ): ManagedWorkflowPhase[] {
   const usedIds = new Set<string>();
   const steps =
@@ -2739,7 +2490,7 @@ export function normalizeWorkflowPlanInput(
       : findWorkflowSteps(input);
   const sourceSteps = steps.length > 0 ? steps : [fallbackGoal];
   return sourceSteps.map((step, index) =>
-    normalizeWorkflowPhase(step, index, usedIds, fallbackGoal),
+    normalizeWorkflowPhase(step, index, usedIds, fallbackGoal)
   );
 }
 
@@ -2754,7 +2505,7 @@ function defaultWorkflowPlanGoal(preset: WorkflowPlanPreset): string {
 
 function buildWorkflowPlanPresetDocument(
   preset: WorkflowPlanPreset,
-  goal?: string,
+  goal?: string
 ): WorkflowPlanScaffoldDocument {
   const resolvedGoal = goal ?? defaultWorkflowPlanGoal(preset);
 
@@ -2793,10 +2544,7 @@ function buildWorkflowPlanPresetDocument(
               "apps/mcp-server/tests",
               "apps/web/src/lib/services/github-pr-answer-pack-generator.ts",
             ],
-            gates: [
-              "snipara-companion code impact",
-              "targeted regression tests",
-            ],
+            gates: ["snipara-companion code impact", "targeted regression tests"],
           },
           {
             id: "continuity-brief-and-graph-summary",
@@ -2811,10 +2559,7 @@ function buildWorkflowPlanPresetDocument(
               "apps/web/src/lib/db/queries/what-changed.ts",
               "packages/cli/src/commands/team-sync.ts",
             ],
-            gates: [
-              "team-sync what-changed",
-              "resume context regression tests",
-            ],
+            gates: ["team-sync what-changed", "resume context regression tests"],
           },
           {
             id: "release-docs-and-companion-surface",
@@ -2909,15 +2654,12 @@ function buildWorkflowPlanPresetDocument(
 
 function defaultWorkflowPlanOutputPath(
   preset: WorkflowPlanPreset,
-  cwd: string = process.cwd(),
+  cwd: string = process.cwd()
 ): string {
   return path.resolve(cwd, WORKFLOW_PLANS_RELATIVE_DIR, `${preset}-plan.json`);
 }
 
-function toProjectRelativePath(
-  absolutePath: string,
-  cwd: string = process.cwd(),
-): string {
+function toProjectRelativePath(absolutePath: string, cwd: string = process.cwd()): string {
   const relative = path.relative(cwd, absolutePath);
   return relative && !relative.startsWith("..") ? relative : absolutePath;
 }
@@ -2928,12 +2670,10 @@ export function buildWorkflowPlanScaffold(
     goal?: string;
     outputPath?: string;
     cwd?: string;
-  } = {},
+  } = {}
 ): WorkflowPlanScaffoldResult {
   const cwd = path.resolve(options.cwd ?? process.cwd());
-  const outputPath = path.resolve(
-    options.outputPath ?? defaultWorkflowPlanOutputPath(preset, cwd),
-  );
+  const outputPath = path.resolve(options.outputPath ?? defaultWorkflowPlanOutputPath(preset, cwd));
   const plan = buildWorkflowPlanPresetDocument(preset, options.goal);
   return {
     preset,
@@ -2944,10 +2684,7 @@ export function buildWorkflowPlanScaffold(
   };
 }
 
-function readWorkflowPlanFile(
-  planFile: string,
-  fallbackGoal: string,
-): ManagedWorkflowPhase[] {
+function readWorkflowPlanFile(planFile: string, fallbackGoal: string): ManagedWorkflowPhase[] {
   const content = fs.readFileSync(planFile, "utf-8");
   if (planFile.toLowerCase().endsWith(".json")) {
     return normalizeWorkflowPlanInput(JSON.parse(content), fallbackGoal);
@@ -2955,20 +2692,12 @@ function readWorkflowPlanFile(
   return normalizeWorkflowPlanInput(content, fallbackGoal);
 }
 
-function readWorkflowPlanMode(
-  planFile?: string,
-): ManagedWorkflowCoordinationMode | undefined {
-  if (
-    !planFile ||
-    !planFile.toLowerCase().endsWith(".json") ||
-    !fs.existsSync(planFile)
-  ) {
+function readWorkflowPlanMode(planFile?: string): ManagedWorkflowCoordinationMode | undefined {
+  if (!planFile || !planFile.toLowerCase().endsWith(".json") || !fs.existsSync(planFile)) {
     return undefined;
   }
   try {
-    const parsed = JSON.parse(fs.readFileSync(planFile, "utf-8")) as {
-      mode?: unknown;
-    };
+    const parsed = JSON.parse(fs.readFileSync(planFile, "utf-8")) as { mode?: unknown };
     return normalizeWorkflowCoordinationMode(parsed.mode);
   } catch {
     return undefined;
@@ -2976,15 +2705,10 @@ function readWorkflowPlanMode(
 }
 
 function normalizeWorkflowCoordinationMode(
-  value: unknown,
+  value: unknown
 ): ManagedWorkflowCoordinationMode | undefined {
-  const normalized =
-    typeof value === "string" ? value.toLowerCase().trim() : "";
-  if (
-    normalized === "standard" ||
-    normalized === "full" ||
-    normalized === "orchestrate"
-  ) {
+  const normalized = typeof value === "string" ? value.toLowerCase().trim() : "";
+  if (normalized === "standard" || normalized === "full" || normalized === "orchestrate") {
     return normalized;
   }
   return undefined;
@@ -2993,26 +2717,19 @@ function normalizeWorkflowCoordinationMode(
 function inferWorkflowCoordinationMode(options: {
   planFile?: string;
 }): ManagedWorkflowCoordinationMode {
-  return (
-    readWorkflowPlanMode(options.planFile) ??
-    (options.planFile ? "full" : "standard")
-  );
+  return readWorkflowPlanMode(options.planFile) ?? (options.planFile ? "full" : "standard");
 }
 
 function getWorkflowStatePath(cwd: string = process.cwd()): string {
   return path.join(cwd, WORKFLOW_STATE_RELATIVE_PATH);
 }
 
-function normalizeManagedWorkflowState(
-  state: ManagedWorkflowState,
-): ManagedWorkflowState {
+function normalizeManagedWorkflowState(state: ManagedWorkflowState): ManagedWorkflowState {
   if (
     state.schemaVersion !== "snipara.workflow.v1" &&
     state.schemaVersion !== "snipara.workflow.v2"
   ) {
-    throw new Error(
-      `${WORKFLOW_STATE_RELATIVE_PATH} is not a valid Snipara workflow state file`,
-    );
+    throw new Error(`${WORKFLOW_STATE_RELATIVE_PATH} is not a valid Snipara workflow state file`);
   }
 
   return {
@@ -3024,14 +2741,12 @@ function normalizeManagedWorkflowState(
           responses: Array.isArray(state.judgment.responses) ? state.judgment.responses : [],
         }
       : undefined,
-    phaseCommitReceipts: Array.isArray(state.phaseCommitReceipts)
-      ? state.phaseCommitReceipts
-      : [],
+    phaseCommitReceipts: Array.isArray(state.phaseCommitReceipts) ? state.phaseCommitReceipts : [],
   };
 }
 
 function normalizeManagedWorkflowRuntimeState(
-  runtime: ManagedWorkflowRuntimeState | undefined,
+  runtime: ManagedWorkflowRuntimeState | undefined
 ): ManagedWorkflowRuntimeState | undefined {
   if (!runtime?.sandbox) {
     return runtime;
@@ -3047,10 +2762,8 @@ function normalizeManagedWorkflowRuntimeState(
             ? {
                 ...binding.lastCheckpoint,
                 files: uniqueStringList(binding.lastCheckpoint.files) ?? [],
-                commands:
-                  uniqueStringList(binding.lastCheckpoint.commands) ?? [],
-                artifacts:
-                  uniqueStringList(binding.lastCheckpoint.artifacts) ?? [],
+                commands: uniqueStringList(binding.lastCheckpoint.commands) ?? [],
+                artifacts: uniqueStringList(binding.lastCheckpoint.artifacts) ?? [],
               }
             : undefined,
         }))
@@ -3064,20 +2777,14 @@ function normalizeManagedWorkflowRuntimeState(
   };
 }
 
-function readWorkflowState(
-  cwd: string = process.cwd(),
-): ManagedWorkflowState | undefined {
+function readWorkflowState(cwd: string = process.cwd()): ManagedWorkflowState | undefined {
   const statePath = getWorkflowStatePath(cwd);
   if (!fs.existsSync(statePath)) {
     return undefined;
   }
-  const parsed = JSON.parse(
-    fs.readFileSync(statePath, "utf-8"),
-  ) as ManagedWorkflowState;
+  const parsed = JSON.parse(fs.readFileSync(statePath, "utf-8")) as ManagedWorkflowState;
   if (!Array.isArray(parsed.phases)) {
-    throw new Error(
-      `${WORKFLOW_STATE_RELATIVE_PATH} is not a valid Snipara workflow state file`,
-    );
+    throw new Error(`${WORKFLOW_STATE_RELATIVE_PATH} is not a valid Snipara workflow state file`);
   }
   return normalizeManagedWorkflowState(parsed);
 }
@@ -3086,7 +2793,7 @@ function readRequiredWorkflowState(): ManagedWorkflowState {
   const state = readWorkflowState();
   if (!state) {
     throw new Error(
-      `No managed workflow found at ${WORKFLOW_STATE_RELATIVE_PATH}. Run 'snipara-companion workflow start' first.`,
+      `No managed workflow found at ${WORKFLOW_STATE_RELATIVE_PATH}. Run 'snipara-companion workflow start' first.`
     );
   }
   return state;
@@ -3100,11 +2807,7 @@ function writeWorkflowState(state: ManagedWorkflowState): void {
     schemaVersion: "snipara.workflow.v2",
     runtime: normalizeManagedWorkflowRuntimeState(state.runtime),
   };
-  fs.writeFileSync(
-    statePath,
-    `${JSON.stringify(normalized, null, 2)}\n`,
-    "utf-8",
-  );
+  fs.writeFileSync(statePath, `${JSON.stringify(normalized, null, 2)}\n`, "utf-8");
 }
 
 function sortJsonValue(value: unknown): unknown {
@@ -3167,9 +2870,8 @@ function buildProducerLoopArtifact(options: {
 }): ProducerLoopArtifact {
   const generatedAt = (options.now ?? new Date()).toISOString();
   const files =
-    uniqueStringList(
-      (options.files ?? options.phase?.files ?? []).map(normalizeRepoFilePath),
-    ) ?? [];
+    uniqueStringList((options.files ?? options.phase?.files ?? []).map(normalizeRepoFilePath)) ??
+    [];
   const workflowId = options.state?.workflowId;
   const sourceRef = [
     "workflow",
@@ -3185,12 +2887,8 @@ function buildProducerLoopArtifact(options: {
   ]);
   const planItems = [
     options.state?.goal ? `Workflow goal: ${options.state.goal}` : undefined,
-    options.phase
-      ? `Phase ${options.phase.id}: ${options.phase.title}`
-      : undefined,
-    options.phase?.acceptance
-      ? `Acceptance: ${options.phase.acceptance}`
-      : undefined,
+    options.phase ? `Phase ${options.phase.id}: ${options.phase.title}` : undefined,
+    options.phase?.acceptance ? `Acceptance: ${options.phase.acceptance}` : undefined,
   ].filter((item): item is string => Boolean(item));
   const outcomeItems = [
     options.summary,
@@ -3317,9 +3015,7 @@ function countStringOccurrences(values: string[]): Record<string, number> {
   }, {});
 }
 
-function isProducerLoopProducerKind(
-  value: string | undefined,
-): value is ProducerLoopProducerKind {
+function isProducerLoopProducerKind(value: string | undefined): value is ProducerLoopProducerKind {
   return (
     value === "workflow_phase_commit" ||
     value === "workflow_final_commit" ||
@@ -3328,26 +3024,20 @@ function isProducerLoopProducerKind(
 }
 
 function isProducerLoopSampleReviewStatus(
-  value: string | undefined,
+  value: string | undefined
 ): value is ProducerLoopSampleReviewStatus {
   return (
-    value === "sample_unreviewed" ||
-    value === "sample_reviewed" ||
-    value === "sample_rejected"
+    value === "sample_unreviewed" || value === "sample_reviewed" || value === "sample_rejected"
   );
 }
 
-function normalizeProducerLoopSampleReviewStatus(
-  value: unknown,
-): ProducerLoopSampleReviewStatus {
+function normalizeProducerLoopSampleReviewStatus(value: unknown): ProducerLoopSampleReviewStatus {
   const status = stringValue(value);
-  return isProducerLoopSampleReviewStatus(status)
-    ? status
-    : "sample_unreviewed";
+  return isProducerLoopSampleReviewStatus(status) ? status : "sample_unreviewed";
 }
 
 function isProducerLoopReviewOutcome(
-  value: string | undefined,
+  value: string | undefined
 ): value is ProducerLoopReviewOutcome {
   return (
     value === "useful" ||
@@ -3359,9 +3049,7 @@ function isProducerLoopReviewOutcome(
   );
 }
 
-function isTaskCommitOutcome(
-  value: string | undefined,
-): value is TaskCommitOutcome {
+function isTaskCommitOutcome(value: string | undefined): value is TaskCommitOutcome {
   return ["completed", "partial", "blocked", "abandoned"].includes(value ?? "");
 }
 
@@ -3369,20 +3057,15 @@ function stringArrayValue(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [];
   }
-  return value
-    .map((item) => stringValue(item))
-    .filter((item): item is string => Boolean(item));
+  return value.map((item) => stringValue(item)).filter((item): item is string => Boolean(item));
 }
 
 function summarizeProducerLoopArtifactFile(
   filePath: string,
-  cwd: string,
+  cwd: string
 ):
   | { artifact: ProducerLoopArtifactReportSummary; invalid?: undefined }
-  | {
-      artifact?: undefined;
-      invalid: ProducerLoopReport["invalidArtifacts"][number];
-    } {
+  | { artifact?: undefined; invalid: ProducerLoopReport["invalidArtifacts"][number] } {
   const relativePath = toProjectRelativePath(filePath, cwd);
   try {
     const content = fs.readFileSync(filePath, "utf-8");
@@ -3392,24 +3075,20 @@ function summarizeProducerLoopArtifactFile(
     }
     if (parsed.schemaVersion !== PRODUCER_LOOP_ARTIFACT_VERSION) {
       throw new Error(
-        `unsupported schemaVersion '${stringValue(parsed.schemaVersion) ?? "unknown"}'`,
+        `unsupported schemaVersion '${stringValue(parsed.schemaVersion) ?? "unknown"}'`
       );
     }
     const producer = isRecord(parsed.producer) ? parsed.producer : undefined;
     const source = isRecord(parsed.source) ? parsed.source : undefined;
     const ledger = isRecord(parsed.ledger) ? parsed.ledger : undefined;
-    const calibration = isRecord(parsed.calibration)
-      ? parsed.calibration
-      : undefined;
+    const calibration = isRecord(parsed.calibration) ? parsed.calibration : undefined;
     const review = isRecord(parsed.review) ? parsed.review : undefined;
     if (!producer) {
       throw new Error("artifact is missing producer metadata");
     }
     const producerKind = stringValue(producer.kind);
     if (!isProducerLoopProducerKind(producerKind)) {
-      throw new Error(
-        `unsupported producer kind '${producerKind ?? "unknown"}'`,
-      );
+      throw new Error(`unsupported producer kind '${producerKind ?? "unknown"}'`);
     }
     const artifactId = stringValue(parsed.artifactId);
     const generatedAt = stringValue(parsed.generatedAt);
@@ -3418,7 +3097,7 @@ function summarizeProducerLoopArtifactFile(
     }
     const outcome = stringValue(producer.outcome);
     const reviewStatus = normalizeProducerLoopSampleReviewStatus(
-      stringValue(review?.status) ?? stringValue(calibration?.status),
+      stringValue(review?.status) ?? stringValue(calibration?.status)
     );
 
     return {
@@ -3470,7 +3149,7 @@ function listProducerLoopArtifactFiles(cwd: string): string[] {
 function producerLoopCalibrationStatus(
   sampleSize: number,
   reviewedSampleSize: number,
-  minReviewSampleSize: number,
+  minReviewSampleSize: number
 ) {
   if (sampleSize === 0) {
     return "no_samples" as const;
@@ -3481,16 +3160,8 @@ function producerLoopCalibrationStatus(
   return "reviewable_sample_set" as const;
 }
 
-const WORKER_RECEIPT_RELATIVE_DIR = path.join(
-  ".snipara",
-  "orchestrator",
-  "executions",
-);
-const WORKER_REVIEW_RELATIVE_DIR = path.join(
-  ".snipara",
-  "orchestrator",
-  "reviews",
-);
+const WORKER_RECEIPT_RELATIVE_DIR = path.join(".snipara", "orchestrator", "executions");
+const WORKER_REVIEW_RELATIVE_DIR = path.join(".snipara", "orchestrator", "reviews");
 const REQUIRED_WORKER_RECEIPT_FAMILIES = [
   "handoffReceiptId",
   "claimId",
@@ -3515,10 +3186,7 @@ function readWorkerReviewFiles(cwd: string): {
   reviews: Map<string, { value: Record<string, unknown>; path: string }>;
   invalid: ProducerLoopReport["workerReceipts"]["invalidArtifacts"];
 } {
-  const reviews = new Map<
-    string,
-    { value: Record<string, unknown>; path: string }
-  >();
+  const reviews = new Map<string, { value: Record<string, unknown>; path: string }>();
   const invalid: ProducerLoopReport["workerReceipts"]["invalidArtifacts"] = [];
   for (const filePath of listJsonFiles(WORKER_REVIEW_RELATIVE_DIR, cwd)) {
     try {
@@ -3542,9 +3210,7 @@ function readWorkerReviewFiles(cwd: string): {
   return { reviews, invalid };
 }
 
-function missingWorkerReceiptFamilies(
-  receipt: Record<string, unknown>,
-): string[] {
+function missingWorkerReceiptFamilies(receipt: Record<string, unknown>): string[] {
   const refs = isRecord(receipt.receiptRefs)
     ? receipt.receiptRefs
     : isRecord(receipt.receipt)
@@ -3553,8 +3219,7 @@ function missingWorkerReceiptFamilies(
   return REQUIRED_WORKER_RECEIPT_FAMILIES.filter((family) => {
     const value = refs[family];
     return family === "proofReceiptIds"
-      ? !Array.isArray(value) ||
-          value.filter((item) => Boolean(stringValue(item))).length === 0
+      ? !Array.isArray(value) || value.filter((item) => Boolean(stringValue(item))).length === 0
       : !stringValue(value);
   });
 }
@@ -3577,9 +3242,7 @@ function summarizeWorkerExecutionReceipts(cwd: string): {
       if (!receiptId || !schemaVersion) {
         throw new Error("receipt is missing receiptId or schemaVersion");
       }
-      const attribution = isRecord(parsed.workerAttribution)
-        ? parsed.workerAttribution
-        : {};
+      const attribution = isRecord(parsed.workerAttribution) ? parsed.workerAttribution : {};
       const gate = isRecord(parsed.gate) ? parsed.gate : {};
       const review = reviewFiles.reviews.get(receiptId);
       const reviewStatusValue = stringValue(review?.value.reviewStatus);
@@ -3596,9 +3259,7 @@ function summarizeWorkerExecutionReceipts(cwd: string): {
         stringValue(gate.selectedWorkerCandidateId) ??
         "main_agent";
       const workCategory =
-        stringValue(parsed.workCategory) ??
-        stringValue(attribution.workCategory) ??
-        "unknown";
+        stringValue(parsed.workCategory) ?? stringValue(attribution.workCategory) ?? "unknown";
       const executionActor =
         stringValue(parsed.executionActor) ??
         stringValue(attribution.executionActor) ??
@@ -3611,16 +3272,13 @@ function summarizeWorkerExecutionReceipts(cwd: string): {
         workerId,
         workCategory,
         routingCardRef:
-          stringValue(parsed.routingCardRef) ??
-          stringValue(attribution.routingCardRef),
+          stringValue(parsed.routingCardRef) ?? stringValue(attribution.routingCardRef),
         workflowFingerprint:
-          stringValue(parsed.workflowFingerprint) ??
-          stringValue(attribution.workflowFingerprint),
+          stringValue(parsed.workflowFingerprint) ?? stringValue(attribution.workflowFingerprint),
         executionActor,
         status: stringValue(parsed.status),
         reviewStatus,
-        executed:
-          executionActor === "worker" || Number(parsed.workersSpawned ?? 0) > 0,
+        executed: executionActor === "worker" || Number(parsed.workersSpawned ?? 0) > 0,
         receiptFamilyComplete: missingReceiptFamilies.length === 0,
         missingReceiptFamilies,
         path: filePath,
@@ -3641,16 +3299,14 @@ function summarizeWorkerExecutionReceipts(cwd: string): {
     }
   }
   samples.sort((left, right) =>
-    (left.recordedAt ?? left.receiptId).localeCompare(
-      right.recordedAt ?? right.receiptId,
-    ),
+    (left.recordedAt ?? left.receiptId).localeCompare(right.recordedAt ?? right.receiptId)
   );
   return { samples, invalid };
 }
 
 function buildWorkerTrustRows(
   samples: WorkerExecutionReceiptReportSummary[],
-  minReviewSampleSize: number,
+  minReviewSampleSize: number
 ): WorkerTrustReportRow[] {
   const grouped = new Map<string, WorkerExecutionReceiptReportSummary[]>();
   for (const sample of samples) {
@@ -3660,13 +3316,13 @@ function buildWorkerTrustRows(
   return [...grouped.values()]
     .map((group): WorkerTrustReportRow => {
       const reviewedSampleSize = group.filter(
-        (sample) => sample.reviewStatus !== "review_pending",
+        (sample) => sample.reviewStatus !== "review_pending"
       ).length;
       const verifiedSampleSize = group.filter(
-        (sample) => sample.reviewStatus === "accepted",
+        (sample) => sample.reviewStatus === "accepted"
       ).length;
       const incompleteReceiptSampleSize = group.filter(
-        (sample) => !sample.receiptFamilyComplete,
+        (sample) => !sample.receiptFamilyComplete
       ).length;
       const nextRequired = [
         reviewedSampleSize < minReviewSampleSize
@@ -3691,14 +3347,12 @@ function buildWorkerTrustRows(
         executedSampleSize: group.filter((sample) => sample.executed).length,
         reviewedSampleSize,
         verifiedSampleSize,
-        blockedSampleSize: group.filter(
-          (sample) => sample.reviewStatus === "blocked",
-        ).length,
+        blockedSampleSize: group.filter((sample) => sample.reviewStatus === "blocked").length,
         incompleteReceiptSampleSize,
         workflowFingerprints: uniqueStrings(
           group
             .map((sample) => sample.workflowFingerprint)
-            .filter((value): value is string => Boolean(value)),
+            .filter((value): value is string => Boolean(value))
         ),
         hardGateReady: false,
         nextRequired,
@@ -3707,7 +3361,7 @@ function buildWorkerTrustRows(
     .sort((left, right) =>
       left.workerId === right.workerId
         ? left.workCategory.localeCompare(right.workCategory)
-        : left.workerId.localeCompare(right.workerId),
+        : left.workerId.localeCompare(right.workerId)
     );
 }
 
@@ -3715,71 +3369,58 @@ export function buildProducerLoopReport(
   options: {
     cwd?: string;
     minReviewSampleSize?: number;
-  } = {},
+  } = {}
 ): ProducerLoopReport {
   const cwd = path.resolve(options.cwd ?? process.cwd());
   const minReviewSampleSize = Math.max(
     1,
-    Math.floor(
-      options.minReviewSampleSize ?? PRODUCER_LOOP_MIN_REVIEW_SAMPLE_SIZE,
-    ),
+    Math.floor(options.minReviewSampleSize ?? PRODUCER_LOOP_MIN_REVIEW_SAMPLE_SIZE)
   );
   const summaries = listProducerLoopArtifactFiles(cwd).map((filePath) =>
-    summarizeProducerLoopArtifactFile(filePath, cwd),
+    summarizeProducerLoopArtifactFile(filePath, cwd)
   );
   const artifacts = summaries
     .map((entry) => entry.artifact)
-    .filter((entry): entry is ProducerLoopArtifactReportSummary =>
-      Boolean(entry),
-    )
+    .filter((entry): entry is ProducerLoopArtifactReportSummary => Boolean(entry))
     .sort((left, right) =>
       left.generatedAt === right.generatedAt
         ? left.relativePath.localeCompare(right.relativePath)
-        : left.generatedAt.localeCompare(right.generatedAt),
+        : left.generatedAt.localeCompare(right.generatedAt)
     );
   const invalidArtifacts = summaries
     .map((entry) => entry.invalid)
-    .filter((entry): entry is ProducerLoopReport["invalidArtifacts"][number] =>
-      Boolean(entry),
-    );
-  const producerKinds = uniqueStrings(
-    artifacts.map((artifact) => artifact.producerKind),
-  ).filter((kind): kind is ProducerLoopProducerKind =>
-    isProducerLoopProducerKind(kind),
+    .filter((entry): entry is ProducerLoopReport["invalidArtifacts"][number] => Boolean(entry));
+  const producerKinds = uniqueStrings(artifacts.map((artifact) => artifact.producerKind)).filter(
+    (kind): kind is ProducerLoopProducerKind => isProducerLoopProducerKind(kind)
   );
   const workflowIds = uniqueStrings(
-    artifacts
-      .map((artifact) => artifact.workflowId)
-      .filter((id): id is string => Boolean(id)),
+    artifacts.map((artifact) => artifact.workflowId).filter((id): id is string => Boolean(id))
   );
   const reasonCodeCounts = countStringOccurrences(
-    artifacts.flatMap((artifact) => artifact.reasonCodes),
+    artifacts.flatMap((artifact) => artifact.reasonCodes)
   );
   const latestArtifact = artifacts[artifacts.length - 1];
   const reviewedSampleSize = artifacts.filter(
-    (artifact) => artifact.reviewStatus === "sample_reviewed",
+    (artifact) => artifact.reviewStatus === "sample_reviewed"
   ).length;
   const rejectedSampleSize = artifacts.filter(
-    (artifact) => artifact.reviewStatus === "sample_rejected",
+    (artifact) => artifact.reviewStatus === "sample_rejected"
   ).length;
   const unreviewedSampleSize = artifacts.filter(
-    (artifact) => artifact.reviewStatus === "sample_unreviewed",
+    (artifact) => artifact.reviewStatus === "sample_unreviewed"
   ).length;
   const reviewOutcomes = countStringOccurrences(
     artifacts
       .map((artifact) => artifact.reviewOutcome)
-      .filter((outcome): outcome is string => Boolean(outcome)),
+      .filter((outcome): outcome is string => Boolean(outcome))
   );
   const calibrationStatus = producerLoopCalibrationStatus(
     artifacts.length,
     reviewedSampleSize,
-    minReviewSampleSize,
+    minReviewSampleSize
   );
   const workerReceiptReport = summarizeWorkerExecutionReceipts(cwd);
-  const workerTrust = buildWorkerTrustRows(
-    workerReceiptReport.samples,
-    minReviewSampleSize,
-  );
+  const workerTrust = buildWorkerTrustRows(workerReceiptReport.samples, minReviewSampleSize);
   const recommendedActions = [
     artifacts.length === 0
       ? "Run a current Producer Loop producer, such as workflow phase-commit/final-commit or PR Answer Pack decision capture, to create samples."
@@ -3825,10 +3466,7 @@ export function buildProducerLoopReport(
       counts: reasonCodeCounts,
     },
     workerReceipts: {
-      sourceDirectories: [
-        WORKER_RECEIPT_RELATIVE_DIR,
-        WORKER_REVIEW_RELATIVE_DIR,
-      ],
+      sourceDirectories: [WORKER_RECEIPT_RELATIVE_DIR, WORKER_REVIEW_RELATIVE_DIR],
       sampleSize: workerReceiptReport.samples.length,
       samples: workerReceiptReport.samples,
       invalidArtifacts: workerReceiptReport.invalid,
@@ -3859,16 +3497,10 @@ export function buildProducerLoopReport(
   };
 }
 
-function resolveProducerLoopReviewTarget(
-  cwd: string,
-  selector?: string,
-  latest?: boolean,
-): string {
+function resolveProducerLoopReviewTarget(cwd: string, selector?: string, latest?: boolean): string {
   const files = listProducerLoopArtifactFiles(cwd);
   if (files.length === 0) {
-    throw new Error(
-      `No Producer Loop artifacts found under ${PRODUCER_LOOP_RELATIVE_DIR}.`,
-    );
+    throw new Error(`No Producer Loop artifacts found under ${PRODUCER_LOOP_RELATIVE_DIR}.`);
   }
   const normalizedSelector = selector?.trim();
   if (!normalizedSelector) {
@@ -3876,16 +3508,12 @@ function resolveProducerLoopReviewTarget(
       throw new Error("Pass --artifact <path|file|artifactId> or --latest.");
     }
     const summaries = files
-      .map(
-        (filePath) => summarizeProducerLoopArtifactFile(filePath, cwd).artifact,
-      )
-      .filter((entry): entry is ProducerLoopArtifactReportSummary =>
-        Boolean(entry),
-      )
+      .map((filePath) => summarizeProducerLoopArtifactFile(filePath, cwd).artifact)
+      .filter((entry): entry is ProducerLoopArtifactReportSummary => Boolean(entry))
       .sort((left, right) =>
         left.generatedAt === right.generatedAt
           ? left.relativePath.localeCompare(right.relativePath)
-          : left.generatedAt.localeCompare(right.generatedAt),
+          : left.generatedAt.localeCompare(right.generatedAt)
       );
     const latestArtifact = summaries[summaries.length - 1];
     if (!latestArtifact) {
@@ -3898,21 +3526,14 @@ function resolveProducerLoopReviewTarget(
     path.resolve(cwd, normalizedSelector),
     path.resolve(cwd, PRODUCER_LOOP_RELATIVE_DIR, normalizedSelector),
   ];
-  const directMatch = directCandidates.find((candidate) =>
-    fs.existsSync(candidate),
-  );
+  const directMatch = directCandidates.find((candidate) => fs.existsSync(candidate));
   if (directMatch) {
     return directMatch;
   }
 
-  const normalizedPathSelector = normalizedSelector
-    .replace(/\\/g, "/")
-    .replace(/^\.\//, "");
+  const normalizedPathSelector = normalizedSelector.replace(/\\/g, "/").replace(/^\.\//, "");
   const matches = files.filter((filePath) => {
-    const relativePath = toProjectRelativePath(filePath, cwd).replace(
-      /\\/g,
-      "/",
-    );
+    const relativePath = toProjectRelativePath(filePath, cwd).replace(/\\/g, "/");
     const basename = path.basename(filePath);
     if (
       basename === normalizedSelector ||
@@ -3923,40 +3544,33 @@ function resolveProducerLoopReviewTarget(
     }
     try {
       const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-      return (
-        isRecord(parsed) &&
-        stringValue(parsed.artifactId) === normalizedSelector
-      );
+      return isRecord(parsed) && stringValue(parsed.artifactId) === normalizedSelector;
     } catch {
       return false;
     }
   });
 
   if (matches.length === 0) {
-    throw new Error(
-      `No Producer Loop artifact matched '${normalizedSelector}'.`,
-    );
+    throw new Error(`No Producer Loop artifact matched '${normalizedSelector}'.`);
   }
   if (matches.length > 1) {
     throw new Error(
       `Producer Loop artifact selector '${normalizedSelector}' matched multiple files: ${matches
         .map((filePath) => toProjectRelativePath(filePath, cwd))
-        .join(", ")}`,
+        .join(", ")}`
     );
   }
   return matches[0];
 }
 
-function readProducerLoopArtifactForReview(
-  filePath: string,
-): ProducerLoopArtifact {
+function readProducerLoopArtifactForReview(filePath: string): ProducerLoopArtifact {
   const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf-8"));
   if (!isRecord(parsed)) {
     throw new Error("artifact must be a JSON object");
   }
   if (parsed.schemaVersion !== PRODUCER_LOOP_ARTIFACT_VERSION) {
     throw new Error(
-      `unsupported schemaVersion '${stringValue(parsed.schemaVersion) ?? "unknown"}'`,
+      `unsupported schemaVersion '${stringValue(parsed.schemaVersion) ?? "unknown"}'`
     );
   }
   const artifactId = stringValue(parsed.artifactId);
@@ -3982,7 +3596,7 @@ function applyProducerLoopArtifactReview(
     reviewer?: string;
     outcome?: ProducerLoopReviewOutcome;
     notes?: string[];
-  },
+  }
 ): ProducerLoopArtifact {
   const reviewNotes = uniqueStrings(options.notes ?? []);
   const reviewNote =
@@ -4028,16 +3642,12 @@ function reviewProducerLoopArtifact(options: {
   notes?: string[];
 }): ProducerLoopArtifactReviewResult {
   const cwd = path.resolve(options.cwd ?? process.cwd());
-  const targetPath = resolveProducerLoopReviewTarget(
-    cwd,
-    options.artifact,
-    options.latest,
-  );
+  const targetPath = resolveProducerLoopReviewTarget(cwd, options.artifact, options.latest);
   const artifact = readProducerLoopArtifactForReview(targetPath);
   const rawOutcome = stringValue(options.outcome);
   if (rawOutcome && !isProducerLoopReviewOutcome(rawOutcome)) {
     throw new Error(
-      `Unsupported producer review outcome '${rawOutcome}'. Use useful, false_positive, missing_context, unsafe, duplicate, or other.`,
+      `Unsupported producer review outcome '${rawOutcome}'. Use useful, false_positive, missing_context, unsafe, duplicate, or other.`
     );
   }
   const outcome = rawOutcome as ProducerLoopReviewOutcome | undefined;
@@ -4073,19 +3683,14 @@ function reviewProducerLoopArtifact(options: {
   };
 }
 
-function printProducerLoopReviewResult(
-  result: ProducerLoopArtifactReviewResult,
-): void {
+function printProducerLoopReviewResult(result: ProducerLoopArtifactReviewResult): void {
   console.log(chalk.bold("Producer Loop Review"));
   printKeyValue("Artifact:", result.relativePath);
   printKeyValue("Status:", result.review.status);
   if (result.review.outcome) {
     printKeyValue("Outcome:", result.review.outcome);
   }
-  printKeyValue(
-    "Hard gate ready:",
-    result.calibration.hardGateReady ? "yes" : "no",
-  );
+  printKeyValue("Hard gate ready:", result.calibration.hardGateReady ? "yes" : "no");
 }
 
 function printProducerLoopReport(report: ProducerLoopReport): void {
@@ -4096,10 +3701,7 @@ function printProducerLoopReport(report: ProducerLoopReport): void {
   printKeyValue("Reviewed:", report.calibration.reviewedSampleSize);
   printKeyValue("Rejected:", report.calibration.rejectedSampleSize);
   printKeyValue("Unreviewed:", report.calibration.unreviewedSampleSize);
-  printKeyValue(
-    "Hard gate ready:",
-    report.calibration.hardGateReady ? "yes" : "no",
-  );
+  printKeyValue("Hard gate ready:", report.calibration.hardGateReady ? "yes" : "no");
   if (report.adoption.producerKinds.length > 0) {
     printKeyValue("Producers:", report.adoption.producerKinds.join(", "));
   }
@@ -4111,17 +3713,14 @@ function printProducerLoopReport(report: ProducerLoopReport): void {
   }
   printKeyValue("Worker receipts:", report.workerReceipts.sampleSize);
   if (report.workerReceipts.invalidArtifacts.length > 0) {
-    printKeyValue(
-      "Invalid worker evidence:",
-      report.workerReceipts.invalidArtifacts.length,
-    );
+    printKeyValue("Invalid worker evidence:", report.workerReceipts.invalidArtifacts.length);
   }
   if (report.workerTrust.length > 0) {
     console.log("");
     console.log(chalk.bold("Worker Trust (supervised probation)"));
     for (const row of report.workerTrust) {
       console.log(
-        `- ${row.workerId} / ${row.workCategory}: ${row.verifiedSampleSize} accepted, ${row.blockedSampleSize} blocked, ${row.reviewedSampleSize}/${row.sampleSize} reviewed`,
+        `- ${row.workerId} / ${row.workCategory}: ${row.verifiedSampleSize} accepted, ${row.blockedSampleSize} blocked, ${row.reviewedSampleSize}/${row.sampleSize} reviewed`
       );
     }
   }
@@ -4172,10 +3771,7 @@ export async function workflowProducerReviewCommand(options: {
   printProducerLoopReviewResult(result);
 }
 
-function compactDecisionRequest(
-  request: DecisionRequest,
-  status: "pending" | "expired_pending",
-) {
+function compactDecisionRequest(request: DecisionRequest, status: "pending" | "expired_pending") {
   return {
     requestId: request.requestId,
     fingerprint: request.fingerprint,
@@ -4232,14 +3828,12 @@ function isPolicyDecisionRequest(request: DecisionRequest): boolean {
         request.question,
         request.evidence.summary,
         request.evidence.applyPath ?? "",
-      ].join(" "),
+      ].join(" ")
     )
   );
 }
 
-function classifyResolvedPolicyDecisionChoice(
-  choice: string,
-): PolicyLedgerStatus {
+function classifyResolvedPolicyDecisionChoice(choice: string): PolicyLedgerStatus {
   switch (choice) {
     case "approve_once":
     case "accept":
@@ -4313,10 +3907,7 @@ function buildPolicyLedgerEntries(): PolicyLedgerEntry[] {
   return [...pending, ...resolved].sort((left, right) => {
     const leftTime = left.resolvedAt ?? left.createdAt;
     const rightTime = right.resolvedAt ?? right.createdAt;
-    return (
-      rightTime.localeCompare(leftTime) ||
-      left.requestId.localeCompare(right.requestId)
-    );
+    return rightTime.localeCompare(leftTime) || left.requestId.localeCompare(right.requestId);
   });
 }
 
@@ -4345,24 +3936,18 @@ function summarizePolicyLedger(entries: PolicyLedgerEntry[]) {
 
 function buildPolicyLedgerAgentPrompt(entries: PolicyLedgerEntry[]): string[] {
   const active = entries.filter(
-    (entry) => entry.status === "pending" || entry.status === "expired_pending",
+    (entry) => entry.status === "pending" || entry.status === "expired_pending"
   );
   if (active.length === 0) {
-    return [
-      "No pending Project Policy decision needs a human response right now.",
-    ];
+    return ["No pending Project Policy decision needs a human response right now."];
   }
   return active.slice(0, 5).map((entry) => {
-    const options = entry.recommendation
-      ? ` Recommended: ${entry.recommendation}.`
-      : "";
+    const options = entry.recommendation ? ` Recommended: ${entry.recommendation}.` : "";
     return `Ask the user: ${entry.question} Options are recorded in the pending Decision Request.${options} Resolve with snipara-companion workflow decide ${entry.requestId} --choose <human-choice> --reviewer <name>.`;
   });
 }
 
-export async function workflowPolicyLedgerCommand(options: {
-  json?: boolean;
-}): Promise<void> {
+export async function workflowPolicyLedgerCommand(options: { json?: boolean }): Promise<void> {
   const entries = buildPolicyLedgerEntries();
   const summary = summarizePolicyLedger(entries);
   const payload = {
@@ -4392,16 +3977,14 @@ export async function workflowPolicyLedgerCommand(options: {
   }
   for (const entry of entries.slice(0, 20)) {
     const actor = entry.reviewer ? ` by ${entry.reviewer}` : "";
-    console.log(
-      `- ${entry.requestId} [${entry.status}${actor}] ${entry.question}`,
-    );
+    console.log(`- ${entry.requestId} [${entry.status}${actor}] ${entry.question}`);
     if (entry.humanChoice) {
       console.log(`  choice: ${entry.humanChoice}`);
     }
     console.log(`  evidence: ${entry.evidenceSummary}`);
     if (entry.status === "pending" || entry.status === "expired_pending") {
       console.log(
-        `  ask: snipara-companion workflow decide ${entry.requestId} --choose <human-choice> --reviewer <name>`,
+        `  ask: snipara-companion workflow decide ${entry.requestId} --choose <human-choice> --reviewer <name>`
       );
     }
   }
@@ -4418,13 +4001,8 @@ export async function workflowApplyDecisionsCommand(options: {
     return;
   }
 
-  console.log(
-    chalk.bold(`Decision Apply Pipeline${dryRun ? " (dry-run)" : ""}`),
-  );
-  printKeyValue(
-    "Resolved policy decisions:",
-    report.summary.totalResolvedPolicyDecisions,
-  );
+  console.log(chalk.bold(`Decision Apply Pipeline${dryRun ? " (dry-run)" : ""}`));
+  printKeyValue("Resolved policy decisions:", report.summary.totalResolvedPolicyDecisions);
   printKeyValue("Needs apply:", report.summary.needsApply);
   printKeyValue("Applied:", report.summary.applied);
   printKeyValue("Manual follow-up:", report.summary.manualFollowUpRequired);
@@ -4443,9 +4021,7 @@ export async function workflowApplyDecisionsCommand(options: {
 
 function printDecisionApplyItem(item: DecisionApplyItem): void {
   console.log(`- ${item.requestId} [${item.state}] ${item.question}`);
-  console.log(
-    `  choice: ${item.choice} (${item.choiceClass}) by ${item.reviewer}`,
-  );
+  console.log(`  choice: ${item.choice} (${item.choiceClass}) by ${item.reviewer}`);
   if (item.plannedActions.length > 0) {
     console.log(`  actions: ${item.plannedActions.join(", ")}`);
   }
@@ -4453,18 +4029,14 @@ function printDecisionApplyItem(item: DecisionApplyItem): void {
     console.log(`  draft: ${item.policyDraftPath}`);
   }
   if (item.applyCommand && item.state === "manual_follow_up_required") {
-    console.log(
-      `  manual: ${renderManualApplyCommand(item.applyCommand, item.choice)}`,
-    );
+    console.log(`  manual: ${renderManualApplyCommand(item.applyCommand, item.choice)}`);
   }
   for (const caveat of item.caveats) {
     console.log(`  note: ${caveat}`);
   }
 }
 
-function printDecisionRequests(
-  entries: ReturnType<typeof listPendingDecisionRequests>,
-): void {
+function printDecisionRequests(entries: ReturnType<typeof listPendingDecisionRequests>): void {
   console.log(chalk.bold("Pending Decision Requests"));
   if (entries.length === 0) {
     console.log("No pending decision requests.");
@@ -4473,9 +4045,7 @@ function printDecisionRequests(
   for (const entry of entries) {
     const request = entry.request;
     console.log(`- ${request.requestId} [${entry.status}] ${request.question}`);
-    console.log(
-      `  producer: ${request.producer.kind} via ${request.producer.command}`,
-    );
+    console.log(`  producer: ${request.producer.kind} via ${request.producer.command}`);
     console.log(`  options: ${request.options.join(", ")}`);
     if (request.recommendation) {
       console.log(`  recommendation: ${request.recommendation}`);
@@ -4486,16 +4056,14 @@ function printDecisionRequests(
       for (const item of request.evidence.items) {
         console.log(`    - ${item.ref}${item.title ? `: ${item.title}` : ""}`);
         if (item.status || item.kind) {
-          console.log(
-            `      ${[item.kind, item.status].filter(Boolean).join(" | ")}`,
-          );
+          console.log(`      ${[item.kind, item.status].filter(Boolean).join(" | ")}`);
         }
         if (item.summary) {
           console.log(`      ${item.summary}`);
         }
         if (item.files?.length) {
           console.log(
-            `      files: ${item.files.slice(0, 5).join(", ")}${item.files.length > 5 ? ` (+${item.files.length - 5})` : ""}`,
+            `      files: ${item.files.slice(0, 5).join(", ")}${item.files.length > 5 ? ` (+${item.files.length - 5})` : ""}`
           );
         }
       }
@@ -4506,22 +4074,15 @@ function printDecisionRequests(
   }
 }
 
-export async function workflowDecisionsCommand(options: {
-  json?: boolean;
-}): Promise<void> {
+export async function workflowDecisionsCommand(options: { json?: boolean }): Promise<void> {
   const entries = listPendingDecisionRequests();
   if (options.json) {
     printJson({
       version: "snipara.workflow_decisions.v0",
       generatedAt: new Date().toISOString(),
-      pendingCount: entries.filter((entry) => entry.status === "pending")
-        .length,
-      expiredPendingCount: entries.filter(
-        (entry) => entry.status === "expired_pending",
-      ).length,
-      requests: entries.map((entry) =>
-        compactDecisionRequest(entry.request, entry.status),
-      ),
+      pendingCount: entries.filter((entry) => entry.status === "pending").length,
+      expiredPendingCount: entries.filter((entry) => entry.status === "expired_pending").length,
+      requests: entries.map((entry) => compactDecisionRequest(entry.request, entry.status)),
       caveats: [
         "Decision requests never resolve by timeout or default.",
         "The LLM client renders the question; Companion only stores auditable request/response artifacts.",
@@ -4576,7 +4137,7 @@ function applyDecisionRequestLocally(options: {
     applied.push(
       `workflow producer-review ${review.artifactId} ${review.review.status}${
         review.review.outcome ? ` ${review.review.outcome}` : ""
-      }`,
+      }`
     );
   }
   return applied;
@@ -4593,18 +4154,12 @@ function recurringPolicySuggestionKey(record: {
   });
 }
 
-function recurringPolicySuggestionTargetCategory(
-  request: DecisionRequest,
-): string {
+function recurringPolicySuggestionTargetCategory(request: DecisionRequest): string {
   const evidenceCategories =
     request.evidence.items
       ?.map((item) => {
         const metadata = isRecord(item.metadata) ? item.metadata : undefined;
-        return (
-          stringValue(metadata?.category) ??
-          stringValue(metadata?.type) ??
-          item.kind
-        );
+        return stringValue(metadata?.category) ?? stringValue(metadata?.type) ?? item.kind;
       })
       .filter((value): value is string => Boolean(value)) ?? [];
   return (
@@ -4615,12 +4170,9 @@ function recurringPolicySuggestionTargetCategory(
 }
 
 function buildRecurringDecisionPolicySuggestionRequest(
-  resolvedRecords: ReturnType<typeof listResolvedDecisionRecords>,
+  resolvedRecords: ReturnType<typeof listResolvedDecisionRecords>
 ): DecisionRequest | null {
-  const grouped = new Map<
-    string,
-    ReturnType<typeof listResolvedDecisionRecords>
-  >();
+  const grouped = new Map<string, ReturnType<typeof listResolvedDecisionRecords>>();
   for (const record of resolvedRecords) {
     const key = recurringPolicySuggestionKey(record);
     const group = grouped.get(key) ?? [];
@@ -4639,9 +4191,7 @@ function buildRecurringDecisionPolicySuggestionRequest(
   const policyTitle = note
     ? `Never ask twice for: ${note}`
     : `Never ask twice for ${latest.request.decision} -> ${latest.response.choice}`;
-  const targetCategory = recurringPolicySuggestionTargetCategory(
-    latest.request,
-  );
+  const targetCategory = recurringPolicySuggestionTargetCategory(latest.request);
 
   return buildDecisionRequest({
     producer: {
@@ -4667,18 +4217,12 @@ function buildRecurringDecisionPolicySuggestionRequest(
         "never_ask_twice_candidate",
         ...latest.request.evidence.reasonCodes,
       ]),
-      files: uniqueStrings(
-        repeated.flatMap((record) => record.request.evidence.files ?? []),
-      ),
+      files: uniqueStrings(repeated.flatMap((record) => record.request.evidence.files ?? [])),
       applyPath: "manual_context_review",
       applyCommand:
         "Review the suggested rule and add it to the appropriate project policy or AGENTS.md section manually.",
     },
-    options: [
-      "create_policy_suggestion",
-      "ignore_once",
-      "reject_policy_suggestion",
-    ],
+    options: ["create_policy_suggestion", "ignore_once", "reject_policy_suggestion"],
     recommendation: "create_policy_suggestion",
     rationale:
       "Repeated human decisions should become explicit reviewable policy suggestions, never silent auto-applied rules.",
@@ -4705,16 +4249,14 @@ export async function workflowDecideCommand(options: {
   const pending = listPendingDecisionRequests().find(
     (entry) =>
       entry.request.requestId === options.requestId ||
-      entry.request.fingerprint === options.requestId,
+      entry.request.fingerprint === options.requestId
   );
   if (!pending) {
-    throw new Error(
-      `No pending decision request matched '${options.requestId}'.`,
-    );
+    throw new Error(`No pending decision request matched '${options.requestId}'.`);
   }
   if (!pending.request.options.includes(options.choice)) {
     throw new Error(
-      `Invalid choice '${options.choice}'. Valid options: ${pending.request.options.join(", ")}.`,
+      `Invalid choice '${options.choice}'. Valid options: ${pending.request.options.join(", ")}.`
     );
   }
   const appliedActions = applyDecisionRequestLocally({
@@ -4731,7 +4273,7 @@ export async function workflowDecideCommand(options: {
     appliedActions,
   });
   const policySuggestionRequest = buildRecurringDecisionPolicySuggestionRequest(
-    listResolvedDecisionRecords(),
+    listResolvedDecisionRecords()
   );
   const policySuggestionWrite = policySuggestionRequest
     ? writeDecisionRequest(policySuggestionRequest)
@@ -4761,10 +4303,7 @@ export async function workflowDecideCommand(options: {
       title: policySuggestionRequest.question,
       summary: policySuggestionRequest.evidence.summary,
       files: policySuggestionRequest.evidence.files,
-      refs: [
-        policySuggestionRequest.requestId,
-        policySuggestionRequest.fingerprint,
-      ],
+      refs: [policySuggestionRequest.requestId, policySuggestionRequest.fingerprint],
       timestamp: policySuggestionRequest.createdAt,
       metadata: {
         recommendation: policySuggestionRequest.recommendation,
@@ -4797,11 +4336,9 @@ export async function workflowDecideCommand(options: {
   }
 }
 
-function buildProducerTriageRequest(
-  report: ProducerLoopReport,
-): DecisionRequest | null {
+function buildProducerTriageRequest(report: ProducerLoopReport): DecisionRequest | null {
   const candidates = report.artifacts.filter(
-    (artifact) => artifact.reviewStatus === "sample_unreviewed",
+    (artifact) => artifact.reviewStatus === "sample_unreviewed"
   );
   if (candidates.length === 0) {
     return null;
@@ -4849,8 +4386,7 @@ function buildProducerTriageRequest(
         "snipara-companion workflow decide <request-id> --choose accept_all --reviewer <name>",
     },
     options: ["accept_all", "inspect_each", "reject_all"],
-    recommendation:
-      report.invalidArtifacts.length === 0 ? "accept_all" : "inspect_each",
+    recommendation: report.invalidArtifacts.length === 0 ? "accept_all" : "inspect_each",
     rationale:
       report.invalidArtifacts.length === 0
         ? "All candidate artifacts parsed successfully; review remains an explicit human decision."
@@ -4858,17 +4394,12 @@ function buildProducerTriageRequest(
     fingerprintParts: [
       "producer_loop_triage",
       "triage_rules_v0",
-      candidates.map((artifact) => [
-        artifact.artifactId,
-        artifact.artifactHash,
-      ]),
+      candidates.map((artifact) => [artifact.artifactId, artifact.artifactHash]),
     ],
   });
 }
 
-function producerLoopTriageItemTitle(
-  artifact: ProducerLoopArtifactReportSummary,
-): string {
+function producerLoopTriageItemTitle(artifact: ProducerLoopArtifactReportSummary): string {
   const workflow = artifact.workflowId ?? "producer-loop";
   const phase = artifact.phaseTitle ?? artifact.phaseId;
   return phase ? `${workflow} / ${phase}` : workflow;
@@ -4878,16 +4409,14 @@ export async function workflowProducerTriageCommand(options: {
   minReviewSamples?: number;
   json?: boolean;
 }): Promise<void> {
-  const report = buildProducerLoopReport({
-    minReviewSampleSize: options.minReviewSamples,
-  });
+  const report = buildProducerLoopReport({ minReviewSampleSize: options.minReviewSamples });
   const request = buildProducerTriageRequest(report);
   const write = request ? writeDecisionRequest(request) : undefined;
   const payload = {
     version: "snipara.producer_loop_triage.v0",
     generatedAt: new Date().toISOString(),
     candidateCount: report.artifacts.filter(
-      (artifact) => artifact.reviewStatus === "sample_unreviewed",
+      (artifact) => artifact.reviewStatus === "sample_unreviewed"
     ).length,
     request,
     write,
@@ -4920,9 +4449,7 @@ export async function workflowDecisionProducerMemoryCommand(options: {
     throw new Error(
       `Invalid memory decision action '${action}'. Use one of: ${[
         ...MEMORY_DECISION_PRODUCER_ACTIONS,
-      ].join(
-        ", ",
-      )}. Internal review item types such as review_queue_item are not human actions.`,
+      ].join(", ")}. Internal review item types such as review_queue_item are not human actions.`
     );
   }
   const reviewItem = await findMemoryReviewConnectorItem(options.memoryId);
@@ -4938,10 +4465,7 @@ export async function workflowDecisionProducerMemoryCommand(options: {
             ? ["invalidate", "keep", "inspect"]
             : reviewItem.options.includes(action)
               ? reviewItem.options
-              : [
-                  action,
-                  ...reviewItem.options.filter((option) => option !== action),
-                ],
+              : [action, ...reviewItem.options.filter((option) => option !== action)],
     });
     const write = writeDecisionRequest(request);
     if (options.json) {
@@ -4973,8 +4497,7 @@ export async function workflowDecisionProducerMemoryCommand(options: {
     question: `${action} memory ${options.memoryId}?`,
     evidence: {
       summary:
-        options.summary ??
-        `Memory ${options.memoryId} needs human review for action ${action}.`,
+        options.summary ?? `Memory ${options.memoryId} needs human review for action ${action}.`,
       refs: [`memory:${options.memoryId}`],
       reasonCodes: ["memory_human_review", `memory_action_${action}`],
       applyPath,
@@ -5003,7 +4526,7 @@ export async function workflowDecisionProducerMemoryCommand(options: {
 }
 
 async function findMemoryReviewConnectorItem(
-  memoryId: string,
+  memoryId: string
 ): Promise<MemoryReviewConnectorItem | null> {
   try {
     const result = await buildMemoryReviewConnector({
@@ -5016,7 +4539,7 @@ async function findMemoryReviewConnectorItem(
         (item) =>
           item.memoryId === memoryId ||
           item.evidenceItem.ref === memoryId ||
-          item.evidenceItem.ref === `memory:${memoryId}`,
+          item.evidenceItem.ref === `memory:${memoryId}`
       ) ?? null
     );
   } catch {
@@ -5031,9 +4554,7 @@ export async function workflowDecisionProducerContextRiskCommand(options: {
   json?: boolean;
 }): Promise<void> {
   const kind =
-    options.kind === "document_tombstone"
-      ? "document_tombstone"
-      : "unknown_registry_risk";
+    options.kind === "document_tombstone" ? "document_tombstone" : "unknown_registry_risk";
   const request = buildDecisionRequest({
     producer: {
       kind,
@@ -5043,14 +4564,11 @@ export async function workflowDecisionProducerContextRiskCommand(options: {
     decision: "validate_context_risk",
     question: `Is this context risk still true: ${options.ref}?`,
     evidence: {
-      summary:
-        options.summary ??
-        `Context risk ${options.ref} needs human validation.`,
+      summary: options.summary ?? `Context risk ${options.ref} needs human validation.`,
       refs: [options.ref],
       reasonCodes: [kind, "stale_context_human_review"],
       applyPath: "manual_context_review",
-      applyCommand:
-        "Update or invalidate the cited context source after review.",
+      applyCommand: "Update or invalidate the cited context source after review.",
     },
     options: ["still_true", "invalidate", "needs_rewrite", "ignore"],
     recommendation: "still_true",
@@ -5076,11 +4594,7 @@ export async function workflowScaffoldCommand(options: {
     outputPath: options.output,
   });
   fs.mkdirSync(path.dirname(scaffold.outputPath), { recursive: true });
-  fs.writeFileSync(
-    `${scaffold.outputPath}`,
-    `${JSON.stringify(scaffold.plan, null, 2)}\n`,
-    "utf8",
-  );
+  fs.writeFileSync(`${scaffold.outputPath}`, `${JSON.stringify(scaffold.plan, null, 2)}\n`, "utf8");
 
   if (options.json) {
     printJson({
@@ -5105,21 +4619,18 @@ export async function workflowScaffoldCommand(options: {
   console.log(chalk.bold("Next commands"));
   console.log(
     `snipara-companion workflow start --goal ${shellQuote(scaffold.goal)} --plan-file ${shellQuote(
-      scaffold.relativeOutputPath,
-    )}`,
+      scaffold.relativeOutputPath
+    )}`
   );
   if (scaffold.plan.steps.some((step) => step.needs_runtime)) {
     console.log(
-      "Runtime-bound phases are included; use workflow phase-start and workflow runtime-checkpoint during sandbox-backed validation.",
+      "Runtime-bound phases are included; use workflow phase-start and workflow runtime-checkpoint during sandbox-backed validation."
     );
   }
   console.log("");
 }
 
-function findWorkflowPhase(
-  state: ManagedWorkflowState,
-  phaseId: string,
-): ManagedWorkflowPhase {
+function findWorkflowPhase(state: ManagedWorkflowState, phaseId: string): ManagedWorkflowPhase {
   const phase = state.phases.find((candidate) => candidate.id === phaseId);
   if (!phase) {
     throw new Error(`Unknown workflow phase '${phaseId}'`);
@@ -5127,44 +4638,33 @@ function findWorkflowPhase(
   return phase;
 }
 
-function nextOpenPhase(
-  state: ManagedWorkflowState,
-): ManagedWorkflowPhase | undefined {
-  return state.phases.find(
-    (phase) => phase.status === "pending" || phase.status === "blocked",
-  );
+function nextOpenPhase(state: ManagedWorkflowState): ManagedWorkflowPhase | undefined {
+  return state.phases.find((phase) => phase.status === "pending" || phase.status === "blocked");
 }
 
-function currentWorkflowPhase(
-  state: ManagedWorkflowState,
-): ManagedWorkflowPhase | undefined {
+function currentWorkflowPhase(state: ManagedWorkflowState): ManagedWorkflowPhase | undefined {
   if (state.currentPhaseId) {
     return state.phases.find((phase) => phase.id === state.currentPhaseId);
   }
   return nextOpenPhase(state);
 }
 
-function sandboxBindings(
-  state: ManagedWorkflowState,
-): ManagedWorkflowSandboxRuntimeBinding[] {
+function sandboxBindings(state: ManagedWorkflowState): ManagedWorkflowSandboxRuntimeBinding[] {
   return state.runtime?.sandbox?.bindings ?? [];
 }
 
 function findSandboxRuntimeBinding(
   state: ManagedWorkflowState,
-  phaseId: string,
+  phaseId: string
 ): ManagedWorkflowSandboxRuntimeBinding | undefined {
   return sandboxBindings(state).find((binding) => binding.phaseId === phaseId);
 }
 
 function defaultSandboxSessionId(
   state: ManagedWorkflowState,
-  phase: Pick<ManagedWorkflowPhase, "id">,
+  phase: Pick<ManagedWorkflowPhase, "id">
 ): string {
-  const workflowSlug = sanitizeWorkflowId(state.workflowId, "workflow").slice(
-    0,
-    24,
-  );
+  const workflowSlug = sanitizeWorkflowId(state.workflowId, "workflow").slice(0, 24);
   const phaseSlug = sanitizeWorkflowId(phase.id, "phase").slice(0, 24);
   const digest = createHash("sha1")
     .update(`${state.workflowId}:${phase.id}`)
@@ -5176,7 +4676,7 @@ function defaultSandboxSessionId(
 function ensureSandboxRuntimeBinding(
   state: ManagedWorkflowState,
   phase: ManagedWorkflowPhase,
-  now: string,
+  now: string
 ): ManagedWorkflowSandboxRuntimeBinding {
   if (!state.runtime) {
     state.runtime = {};
@@ -5188,12 +4688,9 @@ function ensureSandboxRuntimeBinding(
     };
   }
 
-  const existing = state.runtime.sandbox.bindings.find(
-    (binding) => binding.phaseId === phase.id,
-  );
+  const existing = state.runtime.sandbox.bindings.find((binding) => binding.phaseId === phase.id);
   if (existing) {
-    existing.bootstrapQuery =
-      existing.bootstrapQuery || phaseQuery(state, phase);
+    existing.bootstrapQuery = existing.bootstrapQuery || phaseQuery(state, phase);
     return existing;
   }
 
@@ -5211,7 +4708,7 @@ function ensureSandboxRuntimeBinding(
 }
 
 function rehydratableStateKeys(
-  checkpoint: ManagedWorkflowRuntimeCheckpoint | undefined,
+  checkpoint: ManagedWorkflowRuntimeCheckpoint | undefined
 ): string[] | undefined {
   if (!checkpoint?.rehydratableState) {
     return undefined;
@@ -5220,20 +4717,19 @@ function rehydratableStateKeys(
 }
 
 function normalizeRuntimeCheckpointRecord(
-  checkpoint: ManagedWorkflowRuntimeCheckpoint,
+  checkpoint: ManagedWorkflowRuntimeCheckpoint
 ): ManagedWorkflowRuntimeCheckpoint {
   return {
     ...checkpoint,
     files: uniqueStringList(checkpoint.files) ?? [],
     commands: uniqueStringList(checkpoint.commands) ?? [],
     artifacts: uniqueStringList(checkpoint.artifacts) ?? [],
-    contextPackReceipts:
-      normalizeLocalContextPackReceipts(checkpoint.contextPackReceipts) ?? [],
+    contextPackReceipts: normalizeLocalContextPackReceipts(checkpoint.contextPackReceipts) ?? [],
   };
 }
 
 function normalizeLocalContextPackReceipts(
-  value: unknown,
+  value: unknown
 ): LocalContextPackReceiptPayload[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
@@ -5247,17 +4743,13 @@ function normalizeLocalContextPackReceipts(
 }
 
 function runtimeCheckpointEventPayload(
-  event: RecentAutomationEvent,
+  event: RecentAutomationEvent
 ): Record<string, unknown> | undefined {
-  const payload = isRecord(event.event.payload)
-    ? event.event.payload
-    : undefined;
+  const payload = isRecord(event.event.payload) ? event.event.payload : undefined;
   if (!payload) {
     return undefined;
   }
-  const toolName = stringValue(
-    payload.tool_name ?? payload.toolName ?? payload.tool,
-  );
+  const toolName = stringValue(payload.tool_name ?? payload.toolName ?? payload.tool);
   if (toolName !== "snipara_sandbox_runtime_checkpoint") {
     return undefined;
   }
@@ -5267,7 +4759,7 @@ function runtimeCheckpointEventPayload(
 function parseRuntimeCheckpointFromEvent(
   event: RecentAutomationEvent,
   workflowId: string,
-  phaseId: string,
+  phaseId: string
 ): ManagedWorkflowRuntimeCheckpoint | undefined {
   const payload = runtimeCheckpointEventPayload(event);
   if (!payload) {
@@ -5303,9 +4795,7 @@ function parseRuntimeCheckpointFromEvent(
     environment: stringValue(runtimeCheckpoint.environment),
     profile: stringValue(runtimeCheckpoint.profile),
     bootstrapQuery:
-      stringValue(runtimeCheckpoint.bootstrap_query) ??
-      stringValue(payload.task) ??
-      undefined,
+      stringValue(runtimeCheckpoint.bootstrap_query) ?? stringValue(payload.task) ?? undefined,
     files:
       normalizeStringArray(runtimeCheckpoint.files) ??
       normalizeStringArray(payload.files) ??
@@ -5316,17 +4806,13 @@ function parseRuntimeCheckpointFromEvent(
       undefined,
     artifacts: normalizeStringArray(runtimeCheckpoint.artifacts) ?? undefined,
     contextPackReceipts:
-      normalizeLocalContextPackReceipts(
-        runtimeCheckpoint.context_pack_receipts,
-      ) ??
+      normalizeLocalContextPackReceipts(runtimeCheckpoint.context_pack_receipts) ??
       normalizeLocalContextPackReceipts(payload.local_context_pack_receipts),
     rehydratableState: recordField(runtimeCheckpoint, "rehydratable_state"),
   });
 }
 
-function phaseStatusFromOutcome(
-  outcome: TaskCommitOutcome,
-): ManagedWorkflowPhaseStatus {
+function phaseStatusFromOutcome(outcome: TaskCommitOutcome): ManagedWorkflowPhaseStatus {
   if (outcome === "completed") {
     return "completed";
   }
@@ -5352,21 +4838,16 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
-function phaseQuery(
-  state: ManagedWorkflowState,
-  phase: ManagedWorkflowPhase,
-): string {
+function phaseQuery(state: ManagedWorkflowState, phase: ManagedWorkflowPhase): string {
   return phase.query || `${state.goal}: ${phase.title}`;
 }
 
-export function resolveAutoWorkflowMode(
-  query: string,
-): Exclude<WorkflowMode, "auto"> {
+export function resolveAutoWorkflowMode(query: string): Exclude<WorkflowMode, "auto"> {
   const normalized = query.toLowerCase();
 
   if (
     /\b(orchestrate|swarm|htask|handoff|multi-agent|multi agent|worker|proof gate|proof-gate|drift check|release gate|production gate)\b/.test(
-      normalized,
+      normalized
     )
   ) {
     return "orchestrate";
@@ -5374,7 +4855,7 @@ export function resolveAutoWorkflowMode(
 
   if (
     /\b(deploy|deployment|release|merge|push|migration|schema|auth|billing|security|architecture|architectural|multi-phase|multiphase|phase commit|final commit|managed workflow|roadmap|plan)\b/.test(
-      normalized,
+      normalized
     )
   ) {
     return "full";
@@ -5382,7 +4863,7 @@ export function resolveAutoWorkflowMode(
 
   if (
     /\b(why|pourquoi|decision|décision|rationale|positioning|positionnement|strategy|stratégie|cross-session|previous decision|prior decision|historical context)\b/.test(
-      normalized,
+      normalized
     )
   ) {
     return "standard";
@@ -5390,21 +4871,19 @@ export function resolveAutoWorkflowMode(
 
   if (
     /\b(status|show|list|read|lookup|recall|brief|summarize|summary|what changed|question|docs?|documentation)\b/.test(
-      normalized,
+      normalized
     ) &&
-    !/\b(implement|change|fix|ship|code|refactor|test|write|create|build)\b/.test(
-      normalized,
-    )
+    !/\b(implement|change|fix|ship|code|refactor|test|write|create|build)\b/.test(normalized)
   ) {
     return "lite";
   }
 
   if (
     /\b(typo|copy edit|small diff|tiny diff|one-line|one line|known file|obvious fix|quick fix|format|formatting|rename)\b/.test(
-      normalized,
+      normalized
     ) &&
     !/\b(architecture|release|deploy|migration|schema|auth|billing|security|multi-file|many files|5\+ files|cross-session|decision|décision)\b/.test(
-      normalized,
+      normalized
     )
   ) {
     return "lite";
@@ -5413,17 +4892,11 @@ export function resolveAutoWorkflowMode(
   return "standard";
 }
 
-function effectiveWorkflowMode(
-  mode: WorkflowMode,
-  query = "",
-): Exclude<WorkflowMode, "auto"> {
+function effectiveWorkflowMode(mode: WorkflowMode, query = ""): Exclude<WorkflowMode, "auto"> {
   return mode === "auto" ? resolveAutoWorkflowMode(query) : mode;
 }
 
-function shouldFollowWorkflowRecommendations(
-  mode: WorkflowMode,
-  query = "",
-): boolean {
+function shouldFollowWorkflowRecommendations(mode: WorkflowMode, query = ""): boolean {
   const effectiveMode = effectiveWorkflowMode(mode, query);
   return effectiveMode === "standard" || effectiveMode === "full";
 }
@@ -5438,10 +4911,7 @@ function printManagedWorkflowState(state: ManagedWorkflowState): void {
   }
   if (state.currentPhaseId) {
     printKeyValue("Current phase:", state.currentPhaseId);
-    const runtimeBinding = findSandboxRuntimeBinding(
-      state,
-      state.currentPhaseId,
-    );
+    const runtimeBinding = findSandboxRuntimeBinding(state, state.currentPhaseId);
     if (runtimeBinding) {
       printKeyValue("Sandbox session:", runtimeBinding.sessionId);
     }
@@ -5515,25 +4985,23 @@ function safeDecisionPendingCount(): number {
 function printManagedWorkflowDiscipline(): void {
   console.log(chalk.bold("Coding workflow mode"));
   console.log(
-    "- LITE: small single-phase edits have no mandatory Snipara calls; use local verification and escalate on demand.",
+    "- LITE: small single-phase edits have no mandatory Snipara calls; use local verification and escalate on demand."
   );
   console.log(
-    "- STANDARD: normal coding work uses context or code graph when the task needs source truth or prior rationale.",
+    "- STANDARD: normal coding work uses context or code graph when the task needs source truth or prior rationale."
   );
   console.log(
-    "- FULL: use this managed workflow with phases/chunks for multi-file, risky, release/deploy, architectural, or compaction-prone coding work.",
+    "- FULL: use this managed workflow with phases/chunks for multi-file, risky, release/deploy, architectural, or compaction-prone coding work."
+  );
+  console.log("- --mode auto routes by task intent; a nudge is advisory, not a gate.");
+  console.log(
+    "- FULL + ORCHESTRATED: use explicit snipara-orchestrator handoff only for production gates, drift checks, htasks, or multi-agent coordination."
   );
   console.log(
-    "- --mode auto routes by task intent; a nudge is advisory, not a gate.",
+    "- Before concluding on routes/services/jobs, risky changes, or what is missing, run the code impact gate."
   );
   console.log(
-    "- FULL + ORCHESTRATED: use explicit snipara-orchestrator handoff only for production gates, drift checks, htasks, or multi-agent coordination.",
-  );
-  console.log(
-    "- Before concluding on routes/services/jobs, risky changes, or what is missing, run the code impact gate.",
-  );
-  console.log(
-    "- For execution/test/debug/finalization that benefits from repeatable isolation, use Snipara Sandbox MCP execute_python or snipara-sandbox run.",
+    "- For execution/test/debug/finalization that benefits from repeatable isolation, use Snipara Sandbox MCP execute_python or snipara-sandbox run."
   );
   console.log("");
 }
@@ -5550,9 +5018,7 @@ function printManagedWorkflowNextCommands(state: ManagedWorkflowState): void {
   }
   if (!phase || state.status === "completed") {
     console.log(chalk.bold("Next commands"));
-    console.log(
-      "snipara-companion final-commit --summary '<final summary>' --files <files...>",
-    );
+    console.log("snipara-companion final-commit --summary '<final summary>' --files <files...>");
     console.log("");
     return;
   }
@@ -5561,28 +5027,28 @@ function printManagedWorkflowNextCommands(state: ManagedWorkflowState): void {
   console.log(`snipara-companion workflow phase-start ${phase.id}`);
   console.log(
     `snipara-companion workflow run --mode full --include-session-context --query ${shellQuote(
-      phaseQuery(state, phase),
-    )}`,
+      phaseQuery(state, phase)
+    )}`
   );
   if (phase.files && phase.files.length > 0) {
     console.log(
       `snipara-companion code impact --changed-files ${phase.files.map(shellQuote).join(" ")} --diff-summary ${shellQuote(
-        phase.title,
-      )}`,
+        phase.title
+      )}`
     );
   } else {
     console.log(
-      "snipara-companion code impact --changed-files <files...> --diff-summary '<change>'",
+      "snipara-companion code impact --changed-files <files...> --diff-summary '<change>'"
     );
   }
   if (phase.needsRuntime) {
     printManagedWorkflowRuntimeGuidance();
     console.log(
-      `snipara-companion workflow runtime-checkpoint ${phase.id} --summary '<resume-ready runtime state>' --rehydrate-file <state.json>`,
+      `snipara-companion workflow runtime-checkpoint ${phase.id} --summary '<resume-ready runtime state>' --rehydrate-file <state.json>`
     );
   }
   console.log(
-    `snipara-companion workflow phase-commit ${phase.id} --summary '<what changed>' --files <files...>`,
+    `snipara-companion workflow phase-commit ${phase.id} --summary '<what changed>' --files <files...>`
   );
   console.log("");
 }
@@ -5590,14 +5056,12 @@ function printManagedWorkflowNextCommands(state: ManagedWorkflowState): void {
 function printManagedWorkflowResumeBoundary(): void {
   console.log(chalk.bold("Resume boundary"));
   console.log(
-    "- workflow resume restores local phase state plus hosted memory and Team Sync continuity.",
+    "- workflow resume restores local phase state plus hosted memory and Team Sync continuity."
   );
   console.log(
-    "- For runtime-bound phases, it restores the recorded Sandbox binding and prints a reattach or rehydrate plan.",
+    "- For runtime-bound phases, it restores the recorded Sandbox binding and prints a reattach or rehydrate plan."
   );
-  console.log(
-    "- It does not snapshot or exactly restore a live Snipara Sandbox process.",
-  );
+  console.log("- It does not snapshot or exactly restore a live Snipara Sandbox process.");
   console.log("");
 }
 
@@ -5605,22 +5069,18 @@ function printManagedWorkflowRuntimeGuidance(): void {
   const report = detectRuntimeEnvironment();
   if (report.runtime.cliAvailable) {
     console.log(
-      "Use Snipara Sandbox MCP execute_python for execution/test/debug/finalization when repeatable isolated validation helps.",
+      "Use Snipara Sandbox MCP execute_python for execution/test/debug/finalization when repeatable isolated validation helps."
     );
     if (!report.runtime.mcpConfigured) {
-      console.log(
-        "Add Snipara Sandbox MCP config with: npx create-snipara repair --with-runtime",
-      );
+      console.log("Add Snipara Sandbox MCP config with: npx create-snipara repair --with-runtime");
     }
     return;
   }
 
   console.log(
-    "This phase may need sandboxed execution/test/debug/finalization. Add Snipara Sandbox with: npx create-snipara repair --with-runtime",
+    "This phase may need sandboxed execution/test/debug/finalization. Add Snipara Sandbox with: npx create-snipara repair --with-runtime"
   );
-  console.log(
-    "Fresh setup option: npx create-snipara --profile full-stack --advanced",
-  );
+  console.log("Fresh setup option: npx create-snipara --profile full-stack --advanced");
 }
 
 interface WorkflowRuntimeResumePlan {
@@ -5631,7 +5091,7 @@ interface WorkflowRuntimeResumePlan {
 }
 
 async function loadWorkflowRuntimeResumePlan(
-  state: ManagedWorkflowState,
+  state: ManagedWorkflowState
 ): Promise<{ data?: WorkflowRuntimeResumePlan; error?: string } | null> {
   const currentPhase = currentWorkflowPhase(state);
   if (!currentPhase) {
@@ -5656,7 +5116,7 @@ async function loadWorkflowRuntimeResumePlan(
         const hostedCheckpoint = parseRuntimeCheckpointFromEvent(
           item,
           state.workflowId,
-          currentPhase.id,
+          currentPhase.id
         );
         if (hostedCheckpoint) {
           checkpoint = hostedCheckpoint;
@@ -5683,7 +5143,7 @@ async function loadWorkflowRuntimeResumePlan(
 
   if (!checkpoint) {
     caveats.push(
-      "No runtime checkpoint payload was found for the active phase yet; capture one after material Sandbox work with workflow runtime-checkpoint.",
+      "No runtime checkpoint payload was found for the active phase yet; capture one after material Sandbox work with workflow runtime-checkpoint."
     );
   }
 
@@ -5701,7 +5161,7 @@ function printWorkflowRuntimeResumePlan(
   result: {
     data?: WorkflowRuntimeResumePlan;
     error?: string;
-  } | null,
+  } | null
 ): void {
   if (!result) {
     return;
@@ -5743,31 +5203,31 @@ function printWorkflowRuntimeResumePlan(
 
   console.log("Reattach path:");
   console.log(
-    `- In your AI client, call Snipara Sandbox MCP list_sessions and look for session_id='${data.reattachSessionId}'.`,
+    `- In your AI client, call Snipara Sandbox MCP list_sessions and look for session_id='${data.reattachSessionId}'.`
   );
   console.log(
-    `- If it exists, continue execute_python/get_repl_context calls with session_id='${data.reattachSessionId}'.`,
+    `- If it exists, continue execute_python/get_repl_context calls with session_id='${data.reattachSessionId}'.`
   );
 
   console.log("Rehydrate path:");
   console.log(
-    `- Call snipara_repl_context with the active phase query, then set_repl_context(key='context', value=<context_data>, session_id='${data.binding.sessionId}').`,
+    `- Call snipara_repl_context with the active phase query, then set_repl_context(key='context', value=<context_data>, session_id='${data.binding.sessionId}').`
   );
   if (
     data.checkpoint?.rehydratableState &&
     Object.keys(data.checkpoint.rehydratableState).length > 0
   ) {
     console.log(
-      `- Restore the checkpointed JSON state for keys ${Object.keys(data.checkpoint.rehydratableState).join(", ")} in the same session before execute_python(setup_code).`,
+      `- Restore the checkpointed JSON state for keys ${Object.keys(data.checkpoint.rehydratableState).join(", ")} in the same session before execute_python(setup_code).`
     );
   } else {
     console.log(
-      "- Restore any JSON-serializable runtime state you saved for this phase before execute_python(setup_code).",
+      "- Restore any JSON-serializable runtime state you saved for this phase before execute_python(setup_code)."
     );
   }
   if (data.checkpoint?.bootstrapQuery || data.binding.bootstrapQuery) {
     console.log(
-      `- Bootstrap query: ${shellQuote(data.checkpoint?.bootstrapQuery ?? data.binding.bootstrapQuery)}`,
+      `- Bootstrap query: ${shellQuote(data.checkpoint?.bootstrapQuery ?? data.binding.bootstrapQuery)}`
     );
   }
   if (data.caveats.length) {
@@ -5775,10 +5235,7 @@ function printWorkflowRuntimeResumePlan(
   }
 }
 
-function printCompactObject(
-  record: Record<string, unknown>,
-  keys: string[],
-): void {
+function printCompactObject(record: Record<string, unknown>, keys: string[]): void {
   for (const key of keys) {
     const value = record[key];
     if (value !== undefined && value !== null) {
@@ -5789,16 +5246,13 @@ function printCompactObject(
 
 function recordField(
   record: Record<string, unknown>,
-  key: string,
+  key: string
 ): Record<string, unknown> | undefined {
   const value = record[key];
   return isRecord(value) ? value : undefined;
 }
 
-function recordArrayField(
-  record: Record<string, unknown>,
-  key: string,
-): Record<string, unknown>[] {
+function recordArrayField(record: Record<string, unknown>, key: string): Record<string, unknown>[] {
   const value = record[key];
   return Array.isArray(value) ? value.filter(isRecord) : [];
 }
@@ -5816,11 +5270,7 @@ function readLocalGitState(cwd: string = process.cwd()): {
       timeout: 1000,
     };
     const head = execFileSync("git", ["rev-parse", "HEAD"], execOptions).trim();
-    const status = execFileSync(
-      "git",
-      ["status", "--short"],
-      execOptions,
-    ).trim();
+    const status = execFileSync("git", ["status", "--short"], execOptions).trim();
     return {
       head,
       statusLines: status ? status.split(/\r?\n/).filter(Boolean) : [],
@@ -5838,11 +5288,7 @@ function readCurrentGitBranch(cwd: string = process.cwd()): string | undefined {
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 1000,
     };
-    const branch = execFileSync(
-      "git",
-      ["branch", "--show-current"],
-      execOptions,
-    ).trim();
+    const branch = execFileSync("git", ["branch", "--show-current"], execOptions).trim();
     return branch || undefined;
   } catch {
     return undefined;
@@ -5852,7 +5298,7 @@ function readCurrentGitBranch(cwd: string = process.cwd()): string | undefined {
 function runGitText(
   args: string[],
   cwd: string = process.cwd(),
-  timeout: number = 3000,
+  timeout: number = 3000
 ): string | undefined {
   try {
     return execFileSync("git", args, {
@@ -5890,16 +5336,14 @@ function resolveWorkflowImpactBaseRef(repoRoot: string, base?: string): string {
   if (explicitBase) {
     const sha = runGitText(["rev-parse", "--verify", explicitBase], repoRoot);
     if (!sha) {
-      throw new Error(
-        `Unable to resolve workflow impact base ref '${explicitBase}'.`,
-      );
+      throw new Error(`Unable to resolve workflow impact base ref '${explicitBase}'.`);
     }
     return explicitBase;
   }
 
   const upstream = runGitText(
     ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
-    repoRoot,
+    repoRoot
   );
   if (upstream) {
     return upstream;
@@ -5907,26 +5351,20 @@ function resolveWorkflowImpactBaseRef(repoRoot: string, base?: string): string {
 
   const branch = readCurrentGitBranch(repoRoot);
   const originBranch = branch ? `origin/${branch}` : undefined;
-  if (
-    originBranch &&
-    runGitText(["rev-parse", "--verify", originBranch], repoRoot)
-  ) {
+  if (originBranch && runGitText(["rev-parse", "--verify", originBranch], repoRoot)) {
     return originBranch;
   }
 
   throw new Error(
-    "Unable to resolve an upstream branch for workflow impact gate. Pass --base <ref>.",
+    "Unable to resolve an upstream branch for workflow impact gate. Pass --base <ref>."
   );
 }
 
-function readUnpushedCommits(
-  repoRoot: string,
-  baseRef: string,
-): WorkflowImpactGateCommit[] {
+function readUnpushedCommits(repoRoot: string, baseRef: string): WorkflowImpactGateCommit[] {
   const output = runGitText(
     ["log", "--format=%H%x1f%s%x1f%an%x1f%aI%x1e", `${baseRef}..HEAD`],
     repoRoot,
-    5000,
+    5000
   );
   if (!output) {
     return [];
@@ -5949,10 +5387,7 @@ function readUnpushedCommits(
 }
 
 function readUnpushedChangedFiles(repoRoot: string, baseRef: string): string[] {
-  return readGitNulList(
-    ["diff", "--name-only", "-z", `${baseRef}..HEAD`, "--"],
-    repoRoot,
-  )
+  return readGitNulList(["diff", "--name-only", "-z", `${baseRef}..HEAD`, "--"], repoRoot)
     .map(normalizeRepoFilePath)
     .sort();
 }
@@ -5962,30 +5397,23 @@ function parseDirtyFileFromStatusLine(line: string): string | undefined {
   if (!rawPath) {
     return undefined;
   }
-  const renamedPath = rawPath.includes(" -> ")
-    ? rawPath.split(" -> ").pop()
-    : rawPath;
-  return renamedPath
-    ? normalizeRepoFilePath(renamedPath.replace(/^"|"$/g, ""))
-    : undefined;
+  const renamedPath = rawPath.includes(" -> ") ? rawPath.split(" -> ").pop() : rawPath;
+  return renamedPath ? normalizeRepoFilePath(renamedPath.replace(/^"|"$/g, "")) : undefined;
 }
 
 function isLocalImpactCodeFile(filePath: string): boolean {
-  return [".ts", ".tsx", ".mts", ".cts", ".py", ".pyi", ".go"].includes(
-    path.extname(filePath),
-  );
+  return [".ts", ".tsx", ".mts", ".cts", ".py", ".pyi", ".go"].includes(path.extname(filePath));
 }
 
 function completedWorkflowPhasesForImpact(
   state: ManagedWorkflowState | undefined,
-  changedFiles: string[],
+  changedFiles: string[]
 ): WorkflowImpactGatePhase[] {
   const changedFileSet = new Set(changedFiles);
   return (state?.phases ?? [])
     .filter((phase) => phase.status === "completed" && phase.completedAt)
     .map((phase) => {
-      const files =
-        uniqueStringList((phase.files ?? []).map(normalizeRepoFilePath)) ?? [];
+      const files = uniqueStringList((phase.files ?? []).map(normalizeRepoFilePath)) ?? [];
       return {
         id: phase.id,
         title: phase.title,
@@ -5997,15 +5425,11 @@ function completedWorkflowPhasesForImpact(
       };
     })
     .sort((left, right) =>
-      String(left.completedAt ?? "").localeCompare(
-        String(right.completedAt ?? ""),
-      ),
+      String(left.completedAt ?? "").localeCompare(String(right.completedAt ?? ""))
     );
 }
 
-function buildHostedImpactFollowUpCommand(
-  changedFiles: string[],
-): string | undefined {
+function buildHostedImpactFollowUpCommand(changedFiles: string[]): string | undefined {
   if (changedFiles.length === 0) {
     return undefined;
   }
@@ -6014,14 +5438,12 @@ function buildHostedImpactFollowUpCommand(
 }
 
 function compactLocalImpactForWorkflowGate(
-  impact: Record<string, unknown>,
+  impact: Record<string, unknown>
 ): Record<string, unknown> {
   const symbols = Array.isArray(impact.symbols) ? impact.symbols : [];
   const incoming = Array.isArray(impact.incoming) ? impact.incoming : [];
   const outgoing = Array.isArray(impact.outgoing) ? impact.outgoing : [];
-  const impactedFiles = Array.isArray(impact.impactedFiles)
-    ? impact.impactedFiles
-    : [];
+  const impactedFiles = Array.isArray(impact.impactedFiles) ? impact.impactedFiles : [];
   return {
     title: impact.title,
     caveat: impact.caveat,
@@ -6066,7 +5488,7 @@ export function buildWorkflowImpactGate(
     cwd?: string;
     base?: string;
     maxFiles?: number;
-  } = {},
+  } = {}
 ): WorkflowImpactGateResult {
   const repoRoot = readGitRepoRoot(options.cwd);
   const branch = readCurrentGitBranch(repoRoot);
@@ -6075,9 +5497,7 @@ export function buildWorkflowImpactGate(
   const headSha = runGitText(["rev-parse", "--verify", "HEAD"], repoRoot);
   const changedFiles = readUnpushedChangedFiles(repoRoot, upstream);
   const codeChangedFiles = changedFiles.filter(isLocalImpactCodeFile);
-  const nonCodeChangedFiles = changedFiles.filter(
-    (file) => !isLocalImpactCodeFile(file),
-  );
+  const nonCodeChangedFiles = changedFiles.filter((file) => !isLocalImpactCodeFile(file));
   const commits = readUnpushedCommits(repoRoot, upstream);
   const dirtyStatusLines = readLocalGitState(repoRoot).statusLines ?? [];
   const dirtyFiles = dirtyStatusLines
@@ -6086,9 +5506,7 @@ export function buildWorkflowImpactGate(
   const state = readWorkflowState(repoRoot);
   const completedPhases = completedWorkflowPhasesForImpact(state, changedFiles);
   const phaseFileSet = new Set(completedPhases.flatMap((phase) => phase.files));
-  const changedFilesWithoutPhase = changedFiles.filter(
-    (file) => !phaseFileSet.has(file),
-  );
+  const changedFilesWithoutPhase = changedFiles.filter((file) => !phaseFileSet.has(file));
   const changedFileSet = new Set(changedFiles);
   const phaseFilesOutsideUnpushedDiff = [...phaseFileSet]
     .filter((file) => !changedFileSet.has(file))
@@ -6102,18 +5520,14 @@ export function buildWorkflowImpactGate(
             commit: "HEAD",
             changedFiles: codeChangedFiles,
             maxFiles: options.maxFiles,
-          }),
+          })
         )
       : null;
   const reasonCodes = [
     dirtyFiles.length > 0 ? "dirty_working_tree_not_included" : undefined,
     commits.length === 0 ? "no_unpushed_commits" : undefined,
-    changedFilesWithoutPhase.length > 0
-      ? "changed_files_without_phase_commit"
-      : undefined,
-    phaseFilesOutsideUnpushedDiff.length > 0
-      ? "phase_files_outside_unpushed_diff"
-      : undefined,
+    changedFilesWithoutPhase.length > 0 ? "changed_files_without_phase_commit" : undefined,
+    phaseFilesOutsideUnpushedDiff.length > 0 ? "phase_files_outside_unpushed_diff" : undefined,
   ].filter((item): item is string => Boolean(item));
   const recommendedActions = [
     dirtyFiles.length > 0
@@ -6177,9 +5591,7 @@ export function buildWorkflowImpactGate(
       "Local impact is file-level import analysis from the selected local commit; hosted snipara_code_impact remains canonical after push/index.",
     ],
     ...(buildHostedImpactFollowUpCommand(changedFiles)
-      ? {
-          hostedFollowUpCommand: buildHostedImpactFollowUpCommand(changedFiles),
-        }
+      ? { hostedFollowUpCommand: buildHostedImpactFollowUpCommand(changedFiles) }
       : {}),
   };
 }
@@ -6201,9 +5613,7 @@ function printWorkflowImpactGate(result: WorkflowImpactGateResult): void {
       console.log(`- ${commit.shortSha} ${commit.subject}`);
     }
     if (result.unpushed.commits.length > 12) {
-      console.log(
-        chalk.gray(`... ${result.unpushed.commits.length - 12} more`),
-      );
+      console.log(chalk.gray(`... ${result.unpushed.commits.length - 12} more`));
     }
     console.log("");
   }
@@ -6225,24 +5635,16 @@ function printWorkflowImpactGate(result: WorkflowImpactGateResult): void {
 
   const localImpact = result.localImpact;
   if (isRecord(localImpact)) {
-    const impactedFiles = Array.isArray(localImpact.impactedFiles)
-      ? localImpact.impactedFiles
-      : [];
-    const incoming = Array.isArray(localImpact.incoming)
-      ? localImpact.incoming
-      : [];
-    const outgoing = Array.isArray(localImpact.outgoing)
-      ? localImpact.outgoing
-      : [];
+    const impactedFiles = Array.isArray(localImpact.impactedFiles) ? localImpact.impactedFiles : [];
+    const incoming = Array.isArray(localImpact.incoming) ? localImpact.incoming : [];
+    const outgoing = Array.isArray(localImpact.outgoing) ? localImpact.outgoing : [];
     console.log(chalk.bold("Local Impact"));
     printKeyValue("Impacted files:", impactedFiles.length);
     printKeyValue("Incoming edges:", incoming.length);
     printKeyValue("Outgoing edges:", outgoing.length);
     const warnings = recordArrayField(localImpact, "warnings");
     if (warnings.length > 0) {
-      console.log(
-        `Warnings: ${warnings.map((warning) => toPreview(warning.code)).join(", ")}`,
-      );
+      console.log(`Warnings: ${warnings.map((warning) => toPreview(warning.code)).join(", ")}`);
     }
     console.log("");
   }
@@ -6253,11 +5655,7 @@ function printWorkflowImpactGate(result: WorkflowImpactGateResult): void {
       console.log(`- ${line}`);
     }
     if (result.dirtyWorkingTree.statusLines.length > 8) {
-      console.log(
-        chalk.gray(
-          `... ${result.dirtyWorkingTree.statusLines.length - 8} more`,
-        ),
-      );
+      console.log(chalk.gray(`... ${result.dirtyWorkingTree.statusLines.length - 8} more`));
     }
     console.log("");
   }
@@ -6314,15 +5712,10 @@ function commitsMatch(left: string, right: string): boolean {
   );
 }
 
-function stringArrayField(
-  record: Record<string, unknown>,
-  key: string,
-): string[] {
+function stringArrayField(record: Record<string, unknown>, key: string): string[] {
   const value = record[key];
   return Array.isArray(value)
-    ? value
-        .map((item) => stringValue(item))
-        .filter((item): item is string => Boolean(item))
+    ? value.map((item) => stringValue(item)).filter((item): item is string => Boolean(item))
     : [];
 }
 
@@ -6344,7 +5737,7 @@ function printCodeIndexFreshness(record: Record<string, unknown>): void {
 
   console.log(chalk.bold("Code Graph Health"));
   console.log(
-    "Document/context health is separate; this section only describes indexed code graph freshness.",
+    "Document/context health is separate; this section only describes indexed code graph freshness."
   );
   printCompactObject(freshness, ["status", "indexed_at", "age_hours"]);
   if (indexedCommit) {
@@ -6362,7 +5755,7 @@ function printCodeIndexFreshness(record: Record<string, unknown>): void {
       "commit match:",
       matches
         ? "yes (indexed code matches local committed base)"
-        : `no (indexed ${shortCommit(commit)} vs local ${shortCommit(localGit.head)})`,
+        : `no (indexed ${shortCommit(commit)} vs local ${shortCommit(localGit.head)})`
     );
   } else if (localGit.error) {
     printKeyValue("local git:", "unavailable");
@@ -6375,7 +5768,7 @@ function printCodeIndexFreshness(record: Record<string, unknown>): void {
       "working tree:",
       localGit.statusLines.length === 0
         ? "clean"
-        : `dirty (${localGit.statusLines.length} entries; uncommitted edits are outside hosted graph)`,
+        : `dirty (${localGit.statusLines.length} entries; uncommitted edits are outside hosted graph)`
     );
   }
   const sync = recordField(freshness, "sync");
@@ -6398,20 +5791,14 @@ function formatAction(record: Record<string, unknown>): string {
   const suffix = [
     priority ? `[${priority}]` : undefined,
     reason,
-    targets.length > 0
-      ? `targets: ${targets.slice(0, 4).join(", ")}`
-      : undefined,
+    targets.length > 0 ? `targets: ${targets.slice(0, 4).join(", ")}` : undefined,
   ]
     .filter(Boolean)
     .join(" - ");
   return suffix ? `${label} - ${suffix}` : label;
 }
 
-function printActionList(
-  title: string,
-  records: Record<string, unknown>[],
-  maxItems = 8,
-): void {
+function printActionList(title: string, records: Record<string, unknown>[], maxItems = 8): void {
   if (records.length === 0) {
     return;
   }
@@ -6439,21 +5826,15 @@ function printSuggestedToolList(record: Record<string, unknown>): void {
     const tool = stringValue(suggestion.tool) ?? "snipara_code_*";
     const args = recordField(suggestion, "arguments") ?? {};
     const reason = stringValue(suggestion.reason);
-    console.log(
-      `- ${tool}(${JSON.stringify(args)})${reason ? ` - ${reason}` : ""}`,
-    );
+    console.log(`- ${tool}(${JSON.stringify(args)})${reason ? ` - ${reason}` : ""}`);
   }
   console.log("");
 }
 
 function printAgentVerificationReminder(): void {
   console.log(chalk.bold("Agent Use"));
-  console.log(
-    "- Treat this as indexed repository context, then verify exact files locally.",
-  );
-  console.log(
-    "- If degraded or stale, use the suggested lightweight code tools and local tests.",
-  );
+  console.log("- Treat this as indexed repository context, then verify exact files locally.");
+  console.log("- If degraded or stale, use the suggested lightweight code tools and local tests.");
   console.log("");
 }
 
@@ -6479,9 +5860,7 @@ function printImpactCounts(impact: Record<string, unknown>): void {
 }
 
 function displaySniparaToolName(toolName: string): string {
-  return toolName.startsWith("rlm_")
-    ? `snipara_${toolName.slice("rlm_".length)}`
-    : toolName;
+  return toolName.startsWith("rlm_") ? `snipara_${toolName.slice("rlm_".length)}` : toolName;
 }
 
 function printQueryResult(result: ContextQueryResult): void {
@@ -6489,21 +5868,26 @@ function printQueryResult(result: ContextQueryResult): void {
   printKeyValue("Sections:", result.sections.length);
   printKeyValue("Tokens:", result.total_tokens);
   if (result.recommended_tool) {
-    printKeyValue(
-      "Suggested tool:",
-      displaySniparaToolName(result.recommended_tool),
-    );
+    printKeyValue("Suggested tool:", displaySniparaToolName(result.recommended_tool));
   }
   console.log("");
 
   if (result.sections.length === 0) {
+    if (result.index_state?.status === "empty") {
+      console.log(
+        chalk.yellow(
+          result.index_state.message ||
+            "0 documents indexed. This is an empty index, not an ordinary no-match result."
+        )
+      );
+      if (result.index_state.recommended_command) {
+        console.log(chalk.cyan(`Run: ${result.index_state.recommended_command}`));
+      }
+      return;
+    }
     if (result.recommended_tool) {
       console.log(chalk.cyan("Structural query detected."));
-      console.log(
-        chalk.gray(
-          JSON.stringify(result.recommended_tool_arguments || {}, null, 2),
-        ),
-      );
+      console.log(chalk.gray(JSON.stringify(result.recommended_tool_arguments || {}, null, 2)));
       console.log("");
       return;
     }
@@ -6514,9 +5898,7 @@ function printQueryResult(result: ContextQueryResult): void {
   for (const section of result.sections) {
     console.log(chalk.bold(section.title));
     if (section.file) {
-      console.log(
-        chalk.gray(`${section.file}:${section.lines[0]}-${section.lines[1]}`),
-      );
+      console.log(chalk.gray(`${section.file}:${section.lines[0]}-${section.lines[1]}`));
     }
     if (section.content) {
       console.log(section.content.trim());
@@ -6526,17 +5908,11 @@ function printQueryResult(result: ContextQueryResult): void {
 }
 
 function formatNodeLabel(node: CodeGraphNodeResult): string {
-  const location = node.file_path
-    ? ` (${node.file_path}:${node.start_line})`
-    : "";
+  const location = node.file_path ? ` (${node.file_path}:${node.start_line})` : "";
   return `${node.qualified_name}${location}`;
 }
 
-function printNodeList(
-  label: string,
-  nodes: CodeGraphNodeResult[],
-  maxItems: number = 8,
-): void {
+function printNodeList(label: string, nodes: CodeGraphNodeResult[], maxItems: number = 8): void {
   if (nodes.length === 0) {
     return;
   }
@@ -6556,7 +5932,7 @@ function printSharedContextDocument(doc: SharedContextDocumentResult): void {
   const mandatory = doc.is_mandatory ? " mandatory" : "";
   const source = doc.source_type === "TEAM_CONTEXT" ? "team" : "linked";
   console.log(
-    `- ${doc.title} (${doc.collection_name} · ${source} · ${doc.category}${mandatory} · ${doc.token_count} tokens)${tags}`,
+    `- ${doc.title} (${doc.collection_name} · ${source} · ${doc.category}${mandatory} · ${doc.token_count} tokens)${tags}`
   );
 }
 
@@ -6564,15 +5940,12 @@ function printSharedContextResult(result: SharedContextResult): void {
   printKeyValue("Tool:", "snipara_shared_context");
   printKeyValue(
     "Linked collections:",
-    result.linked_collections_loaded ?? result.collections_loaded,
+    result.linked_collections_loaded ?? result.collections_loaded
   );
-  printKeyValue(
-    "Team context docs:",
-    result.team_context_documents_loaded ?? 0,
-  );
+  printKeyValue("Team context docs:", result.team_context_documents_loaded ?? 0);
   printKeyValue(
     "Linked collection docs:",
-    result.linked_collection_documents_loaded ?? result.documents.length,
+    result.linked_collection_documents_loaded ?? result.documents.length
   );
   printKeyValue("Documents:", result.documents.length);
   printKeyValue("Tokens:", result.total_tokens);
@@ -6672,21 +6045,12 @@ function printCodeShortestPathResult(result: CodeShortestPathResult): void {
 
 function printCodeSymbolCardResult(result: Record<string, unknown>): void {
   printKeyValue("Tool:", "snipara_code_symbol_card");
-  printCompactObject(result, [
-    "message",
-    "match_strategy",
-    "degraded",
-    "recommendation",
-  ]);
+  printCompactObject(result, ["message", "match_strategy", "degraded", "recommendation"]);
   console.log("");
 
   printCodeIndexFreshness(result);
   const targets = recordArrayField(result, "matched_targets");
-  printNodeList(
-    "Matched Targets",
-    targets as unknown as CodeGraphNodeResult[],
-    5,
-  );
+  printNodeList("Matched Targets", targets as unknown as CodeGraphNodeResult[], 5);
 
   const cards = recordArrayField(result, "cards");
   if (cards.length > 0) {
@@ -6694,32 +6058,21 @@ function printCodeSymbolCardResult(result: Record<string, unknown>): void {
     for (const card of cards.slice(0, 5)) {
       const context = recordField(card, "context") ?? {};
       const relations = recordField(card, "relations") ?? {};
-      const relationCounts = [
-        "tests",
-        "docs",
-        "routes",
-        "config",
-        "mcp_tools",
-        "symbols",
-      ]
+      const relationCounts = ["tests", "docs", "routes", "config", "mcp_tools", "symbols"]
         .map((key) => {
           const value = relations[key];
-          return Array.isArray(value) && value.length > 0
-            ? `${key}:${value.length}`
-            : undefined;
+          return Array.isArray(value) && value.length > 0 ? `${key}:${value.length}` : undefined;
         })
         .filter(Boolean)
         .join(" ");
-      console.log(
-        `- ${toPreview(context.qualified_name ?? card.symbol_key, 140)}`,
-      );
+      console.log(`- ${toPreview(context.qualified_name ?? card.symbol_key, 140)}`);
       if (context.summary) {
         console.log(`  Summary: ${toPreview(context.summary, 180)}`);
       }
       console.log(
         `  Role: ${toPreview(context.role)} | Layer: ${toPreview(
-          context.layer,
-        )} | Risk: ${toPreview(context.risk_level ?? context.riskLevel)}`,
+          context.layer
+        )} | Risk: ${toPreview(context.risk_level ?? context.riskLevel)}`
       );
       if (relationCounts) {
         console.log(`  Relations: ${relationCounts}`);
@@ -6742,27 +6095,16 @@ function printCodeSymbolCardResult(result: Record<string, unknown>): void {
 
 function printCodeImpactResult(result: Record<string, unknown>): void {
   printKeyValue("Tool:", "snipara_code_impact");
-  printCompactObject(result, [
-    "message",
-    "degraded",
-    "retryable",
-    "recommendation",
-  ]);
+  printCompactObject(result, ["message", "degraded", "retryable", "recommendation"]);
   const risk = recordField(result, "risk");
   if (risk) {
-    printKeyValue(
-      "Risk:",
-      `${toPreview(risk.level)} (${toPreview(risk.score)})`,
-    );
+    printKeyValue("Risk:", `${toPreview(risk.level)} (${toPreview(risk.score)})`);
   }
   const evidence = recordField(result, "evidence_summary");
   if (evidence?.matched_target_count !== undefined) {
     printKeyValue("Matched targets:", toPreview(evidence.matched_target_count));
   } else {
-    printKeyValue(
-      "Matched targets:",
-      recordArrayField(result, "matched_targets").length,
-    );
+    printKeyValue("Matched targets:", recordArrayField(result, "matched_targets").length);
   }
   const changedFiles = stringArrayField(result, "changed_files");
   if (changedFiles.length > 0) {
@@ -6772,11 +6114,7 @@ function printCodeImpactResult(result: Record<string, unknown>): void {
 
   printCodeIndexFreshness(result);
   const targets = recordArrayField(result, "matched_targets");
-  printNodeList(
-    "Matched Targets",
-    targets as unknown as CodeGraphNodeResult[],
-    5,
-  );
+  printNodeList("Matched Targets", targets as unknown as CodeGraphNodeResult[], 5);
 
   const impact = recordField(result, "impact");
   if (impact) {
@@ -6784,10 +6122,7 @@ function printCodeImpactResult(result: Record<string, unknown>): void {
     console.log("");
   }
 
-  printActionList(
-    "Recommended Actions",
-    recordArrayField(result, "recommended_actions"),
-  );
+  printActionList("Recommended Actions", recordArrayField(result, "recommended_actions"));
   printActionList("Coverage Gaps", recordArrayField(result, "coverage_gaps"));
   printWarningList(result);
   printSuggestedToolList(result);
@@ -6875,17 +6210,14 @@ async function runRecommendedTool(queryResult: ContextQueryResult): Promise<
     }
   | undefined
 > {
-  if (
-    !queryResult.recommended_tool ||
-    !queryResult.recommended_tool_arguments
-  ) {
+  if (!queryResult.recommended_tool || !queryResult.recommended_tool_arguments) {
     return undefined;
   }
 
   const client = createClient(20000);
   const result = await client.callTool<unknown>(
     queryResult.recommended_tool,
-    queryResult.recommended_tool_arguments,
+    queryResult.recommended_tool_arguments
   );
   return {
     toolName: queryResult.recommended_tool,
@@ -6986,32 +6318,28 @@ function printRuntimeHint(query: string, mode: WorkflowMode): void {
     const runtimeLabel = runtimeHintVersionLabel(report);
     console.log(`Snipara Sandbox is installed${runtimeLabel}.`);
     if (report.runtime.mcpConfigured) {
-      console.log(
-        "Use MCP execute_python from your AI client for sandboxed validation.",
-      );
+      console.log("Use MCP execute_python from your AI client for sandboxed validation.");
     } else {
       console.log(
-        "For MCP execute_python, add Snipara Sandbox MCP config with: npx create-snipara repair --with-runtime",
+        "For MCP execute_python, add Snipara Sandbox MCP config with: npx create-snipara repair --with-runtime"
       );
     }
-    console.log(
-      `For standalone execution: snipara-sandbox run ${JSON.stringify(query)}`,
-    );
+    console.log(`For standalone execution: snipara-sandbox run ${JSON.stringify(query)}`);
     if (!report.providerKeys.any) {
       console.log(
-        "Standalone snipara-sandbox run / snipara-sandbox agent needs OPENAI_API_KEY or ANTHROPIC_API_KEY.",
+        "Standalone snipara-sandbox run / snipara-sandbox agent needs OPENAI_API_KEY or ANTHROPIC_API_KEY."
       );
     } else if (
       report.providerKeys.sources.openai === "env-file" ||
       report.providerKeys.sources.anthropic === "env-file"
     ) {
       console.log(
-        "Provider key was found in a local .env file; export it first if standalone snipara-sandbox run does not load .env in your shell.",
+        "Provider key was found in a local .env file; export it first if standalone snipara-sandbox run does not load .env in your shell."
       );
     }
     if (!report.docker.available) {
       console.log(
-        "Docker was not detected; use local/sandbox mode or install Docker for isolation.",
+        "Docker was not detected; use local/sandbox mode or install Docker for isolation."
       );
     }
     return;
@@ -7019,32 +6347,25 @@ function printRuntimeHint(query: string, mode: WorkflowMode): void {
 
   console.log("Need sandboxed execution or autonomous Sandbox jobs?");
   console.log("Existing project: npx create-snipara repair --with-runtime");
+  console.log("Fresh setup: npx create-snipara --profile full-stack --advanced");
   console.log(
-    "Fresh setup: npx create-snipara --profile full-stack --advanced",
-  );
-  console.log(
-    'Manual install: python -m pip install "snipara-sandbox[all]" (`[all]` is the pip extra, not a separate argument).',
+    'Manual install: python -m pip install "snipara-sandbox[all]" (`[all]` is the pip extra, not a separate argument).'
   );
 }
 
-function printLiteWorkflowRun(
-  query: string,
-  requestedMode: WorkflowMode,
-): void {
+function printLiteWorkflowRun(query: string, requestedMode: WorkflowMode): void {
   console.log(chalk.bold("Workflow Lite"));
   printKeyValue("Requested mode:", requestedMode);
   printKeyValue("Effective mode:", "lite");
   printKeyValue("Task:", query);
   console.log("No Snipara recall, context query, or bootstrap call was run.");
   console.log(
-    "Escalate with recall, context_query, code impact, or task-commit only when the task creates that need.",
+    "Escalate with recall, context_query, code impact, or task-commit only when the task creates that need."
   );
   console.log("");
 }
 
-function runtimeHintVersionLabel(
-  report: ReturnType<typeof detectRuntimeEnvironment>,
-): string {
+function runtimeHintVersionLabel(report: ReturnType<typeof detectRuntimeEnvironment>): string {
   if (!report.runtime.cliVersion) {
     return report.runtime.version ? ` (${report.runtime.version})` : "";
   }
@@ -7063,10 +6384,7 @@ function runtimeHintVersionLabel(
 function printOrchestratorHandoffHint(
   query: string,
   mode: WorkflowMode,
-  recommendation: OrchestratorRecommendation | null = getOrchestratorRecommendation(
-    query,
-    mode,
-  ),
+  recommendation: OrchestratorRecommendation | null = getOrchestratorRecommendation(query, mode)
 ): void {
   if (!recommendation) {
     return;
@@ -7080,64 +6398,58 @@ function printOrchestratorHandoffHint(
     console.log(`Policy source: ${recommendation.policySource}`);
   }
   console.log(
-    `Reasons: ${recommendation.reasons.map((reason) => formatOrchestratorRecommendationReason(reason)).join("; ")}`,
+    `Reasons: ${recommendation.reasons.map((reason) => formatOrchestratorRecommendationReason(reason)).join("; ")}`
   );
 
   if (report.orchestrator.cliAvailable) {
-    const versionLabel = report.orchestrator.version
-      ? ` (${report.orchestrator.version})`
-      : "";
+    const versionLabel = report.orchestrator.version ? ` (${report.orchestrator.version})` : "";
     console.log(`snipara-orchestrator is installed${versionLabel}.`);
     if (recommendation.level === "auto") {
       console.log(
-        "Policy auto-route marked this task for orchestrator handling and prepared the handoff automatically.",
+        "Policy auto-route marked this task for orchestrator handling and prepared the handoff automatically."
       );
     } else if (recommendation.orchestratorRequired) {
       console.log(
-        "Companion recommends an explicit orchestrator handoff for production proof gates, drift checks, htask queues, or multi-agent coordination.",
+        "Companion recommends an explicit orchestrator handoff for production proof gates, drift checks, htask queues, or multi-agent coordination."
       );
     } else {
       console.log(
-        "Companion can keep this local for now, but orchestrator is likely to help once proof gates or shared coordination become explicit.",
+        "Companion can keep this local for now, but orchestrator is likely to help once proof gates or shared coordination become explicit."
       );
     }
     if (recommendation.reasons.includes("htask_or_swarm_intent")) {
       console.log(
-        "Preferred multi-agent path: snipara-orchestrator swarm-create | swarm-join | htask-create-feature | htask-create | htask-next | htask-tree | htask-complete.",
+        "Preferred multi-agent path: snipara-orchestrator swarm-create | swarm-join | htask-create-feature | htask-create | htask-next | htask-tree | htask-complete."
       );
       console.log(
-        "Companion may retain legacy direct hosted passthrough commands, but htasks belong to the orchestrator workflow surface.",
+        "Companion may retain legacy direct hosted passthrough commands, but htasks belong to the orchestrator workflow surface."
       );
     }
   } else {
     console.log(
-      "For production proof gates, drift checks, htasks, or multi-agent coordination, install explicitly with: npx create-snipara repair --with-orchestrator",
+      "For production proof gates, drift checks, htasks, or multi-agent coordination, install explicitly with: npx create-snipara repair --with-orchestrator"
     );
     console.log("Manual install: pip install snipara-orchestrator");
     if (recommendation.reasons.includes("htask_or_swarm_intent")) {
       console.log(
-        "Install orchestrator before using hosted htasks or swarm coordination as a workflow surface.",
+        "Install orchestrator before using hosted htasks or swarm coordination as a workflow surface."
       );
     }
   }
 
   console.log(
-    "Companion keeps workflow state and phase commits; it does not spawn orchestrator workers automatically.",
+    "Companion keeps workflow state and phase commits; it does not spawn orchestrator workers automatically."
   );
 }
 
-function printPreparedOrchestratorHandoff(
-  handoff: WrittenOrchestratorHandoff,
-): void {
+function printPreparedOrchestratorHandoff(handoff: WrittenOrchestratorHandoff): void {
   console.log("");
   console.log(chalk.bold("Prepared Orchestrator Handoff"));
   console.log(`Path: ${handoff.relativePath}`);
   console.log(`Command: ${handoff.command}`);
 }
 
-function printAdaptiveRoutingRecommendation(
-  routing: AdaptiveWorkRoutingRecommendation,
-): void {
+function printAdaptiveRoutingRecommendation(routing: AdaptiveWorkRoutingRecommendation): void {
   console.log("");
   console.log(chalk.bold("Adaptive Work Routing"));
   printKeyValue("Mode:", routing.routingCard.mode);
@@ -7146,40 +6458,27 @@ function printAdaptiveRoutingRecommendation(
   printKeyValue("Worker role:", routing.requirements.workerRole);
   printKeyValue("Fallback:", routing.requirements.fallback);
   if (routing.requirements.preferredEndpointTypes?.length) {
-    printKeyValue(
-      "Preferred endpoints:",
-      routing.requirements.preferredEndpointTypes.join(", "),
-    );
+    printKeyValue("Preferred endpoints:", routing.requirements.preferredEndpointTypes.join(", "));
   }
   if (routing.requirements.allowedEndpointTypes?.length) {
-    printKeyValue(
-      "Allowed endpoints:",
-      routing.requirements.allowedEndpointTypes.join(", "),
-    );
+    printKeyValue("Allowed endpoints:", routing.requirements.allowedEndpointTypes.join(", "));
   }
   if (routing.requirements.plannerRetainsReasoning) {
     printKeyValue("Planner retains reasoning:", "yes");
   }
   if (routing.strongRepair?.enabled) {
-    printKeyValue(
-      "Strong repair:",
-      "one bounded attempt after proof/output failure",
-    );
+    printKeyValue("Strong repair:", "one bounded attempt after proof/output failure");
     printKeyValue("Repair authority:", routing.strongRepair.finalAuthority);
   }
   if (routing.gateway) {
     printKeyValue(
-      routing.gateway.source === "local_orchestrator"
-        ? "Local route:"
-        : "Hosted catalog:",
+      routing.gateway.source === "local_orchestrator" ? "Local route:" : "Hosted catalog:",
       routing.gateway.success
         ? `${routing.gateway.candidateCount} candidate(s), ${routing.gateway.resolutionStatus ?? "ready"}`
-        : "unavailable",
+        : "unavailable"
     );
   }
-  const selectedCandidate = adaptiveRoutingSelectedCandidate(
-    routing.resolution,
-  );
+  const selectedCandidate = adaptiveRoutingSelectedCandidate(routing.resolution);
   if (selectedCandidate) {
     printKeyValue("Selected candidate:", selectedCandidate.candidateId);
     if (selectedCandidate.endpointType) {
@@ -7239,7 +6538,7 @@ interface AdaptiveRoutingCatalogClient {
 function policyValue(
   settings: ProjectAutomationSettings | Record<string, unknown>,
   hostedKey: keyof ProjectAutomationSettings,
-  localKey: string,
+  localKey: string
 ): unknown {
   const record = settings as Record<string, unknown>;
   return record[hostedKey] ?? record[localKey];
@@ -7251,10 +6550,7 @@ function readLocalAdaptiveRoutingProjectPolicy(): AdaptiveRoutingProjectPolicy |
     return null;
   }
 
-  const policyPath = path.join(
-    workspaceRoot,
-    ADAPTIVE_ROUTING_POLICY_RELATIVE_PATH,
-  );
+  const policyPath = path.join(workspaceRoot, ADAPTIVE_ROUTING_POLICY_RELATIVE_PATH);
   if (!fs.existsSync(policyPath)) {
     return null;
   }
@@ -7273,7 +6569,7 @@ function readLocalAdaptiveRoutingProjectPolicy(): AdaptiveRoutingProjectPolicy |
 
 async function loadAdaptiveRoutingProjectPolicy(
   client: AdaptiveRoutingPolicyClient | null,
-  fallbackPolicy: AdaptiveRoutingProjectPolicy | null = null,
+  fallbackPolicy: AdaptiveRoutingProjectPolicy | null = null
 ): Promise<AdaptiveRoutingProjectPolicy | null> {
   try {
     if (!client) {
@@ -7281,10 +6577,7 @@ async function loadAdaptiveRoutingProjectPolicy(
     }
     const result = await client.getAutomationSettings();
     return (
-      normalizeAdaptiveRoutingProjectPolicy(
-        result.settings,
-        "hosted_project",
-      ) ?? fallbackPolicy
+      normalizeAdaptiveRoutingProjectPolicy(result.settings, "hosted_project") ?? fallbackPolicy
     );
   } catch {
     return fallbackPolicy;
@@ -7293,88 +6586,52 @@ async function loadAdaptiveRoutingProjectPolicy(
 
 function normalizeAdaptiveRoutingProjectPolicy(
   settings: ProjectAutomationSettings | Record<string, unknown>,
-  source: AdaptiveRoutingProjectPolicy["source"],
+  source: AdaptiveRoutingProjectPolicy["source"]
 ): AdaptiveRoutingProjectPolicy | null {
-  const mode = normalizeAdaptiveRoutingMode(
-    policyValue(settings, "adaptiveRoutingMode", "mode"),
-  );
+  const mode = normalizeAdaptiveRoutingMode(policyValue(settings, "adaptiveRoutingMode", "mode"));
   if (!mode) {
     return null;
   }
 
   const allowedEndpointTypes = normalizeRoutingEndpointTypes(
     normalizeStringArray(
-      policyValue(
-        settings,
-        "adaptiveRoutingAllowedEndpointTypes",
-        "allowedEndpointTypes",
-      ),
-    ),
+      policyValue(settings, "adaptiveRoutingAllowedEndpointTypes", "allowedEndpointTypes")
+    )
   );
   const preferredEndpointTypes = normalizeRoutingEndpointTypes(
     normalizeStringArray(
-      policyValue(
-        settings,
-        "adaptiveRoutingPreferredEndpointTypes",
-        "preferredEndpointTypes",
-      ),
-    ),
+      policyValue(settings, "adaptiveRoutingPreferredEndpointTypes", "preferredEndpointTypes")
+    )
   );
   const allowedWorkerClasses = normalizeAdaptiveWorkerClasses(
     normalizeStringArray(
-      policyValue(
-        settings,
-        "adaptiveRoutingAllowedWorkerClasses",
-        "allowedWorkerClasses",
-      ),
-    ),
+      policyValue(settings, "adaptiveRoutingAllowedWorkerClasses", "allowedWorkerClasses")
+    )
   );
 
   return {
     source,
     mode,
     requireApproval:
-      policyValue(
-        settings,
-        "adaptiveRoutingRequireApproval",
-        "requireApproval",
-      ) !== false,
+      policyValue(settings, "adaptiveRoutingRequireApproval", "requireApproval") !== false,
     plannerRetainsReasoning:
-      policyValue(
-        settings,
-        "adaptiveRoutingPlannerRetainsReasoning",
-        "plannerRetainsReasoning",
-      ) !== false,
+      policyValue(settings, "adaptiveRoutingPlannerRetainsReasoning", "plannerRetainsReasoning") !==
+      false,
     preferLocalWorkers:
-      policyValue(
-        settings,
-        "adaptiveRoutingPreferLocalWorkers",
-        "preferLocalWorkers",
-      ) === true,
-    allowedEndpointTypes:
-      allowedEndpointTypes.length > 0 ? allowedEndpointTypes : ["cloud"],
+      policyValue(settings, "adaptiveRoutingPreferLocalWorkers", "preferLocalWorkers") === true,
+    allowedEndpointTypes: allowedEndpointTypes.length > 0 ? allowedEndpointTypes : ["cloud"],
     preferredEndpointTypes,
     allowedWorkerClasses:
-      allowedWorkerClasses.length > 0
-        ? allowedWorkerClasses
-        : ["documentation", "tests", "review"],
+      allowedWorkerClasses.length > 0 ? allowedWorkerClasses : ["documentation", "tests", "review"],
     fallback: "main_agent",
     dailyBudgetCents: normalizeCents(
-      policyValue(
-        settings,
-        "adaptiveRoutingDailyBudgetCents",
-        "dailyBudgetCents",
-      ),
+      policyValue(settings, "adaptiveRoutingDailyBudgetCents", "dailyBudgetCents")
     ),
     monthlyBudgetCents: normalizeCents(
-      policyValue(
-        settings,
-        "adaptiveRoutingMonthlyBudgetCents",
-        "monthlyBudgetCents",
-      ),
+      policyValue(settings, "adaptiveRoutingMonthlyBudgetCents", "monthlyBudgetCents")
     ),
     catalogLimit: normalizeAdaptiveRoutingCatalogLimit(
-      policyValue(settings, "adaptiveRoutingCatalogLimit", "catalogLimit"),
+      policyValue(settings, "adaptiveRoutingCatalogLimit", "catalogLimit")
     ),
   };
 }
@@ -7394,7 +6651,7 @@ function resolveAdaptiveRoutingIntent(
     strongRepair?: boolean;
   },
   policy: AdaptiveRoutingProjectPolicy | null,
-  hostedConfigured: boolean,
+  hostedConfigured: boolean
 ): AdaptiveRoutingIntent {
   const cliRequested = shouldBuildAdaptiveRouting(options);
   if (!policy) {
@@ -7420,9 +6677,7 @@ function resolveAdaptiveRoutingIntent(
       shouldBuild: cliRequested,
       shouldUseHostedCatalog: false,
       warnings: cliRequested
-        ? [
-            "Project Adaptive Work Routing policy is off; keeping recommendation metadata local.",
-          ]
+        ? ["Project Adaptive Work Routing policy is off; keeping recommendation metadata local."]
         : [],
     };
   }
@@ -7447,7 +6702,7 @@ function resolveAdaptiveRoutingIntent(
 
 async function enrichAdaptiveRoutingWithHostedCatalog(
   client: AdaptiveRoutingCatalogClient,
-  routing: AdaptiveWorkRoutingRecommendation,
+  routing: AdaptiveWorkRoutingRecommendation
 ): Promise<AdaptiveWorkRoutingRecommendation> {
   try {
     const result = await client.callTool<AdaptiveRoutingCatalogGatewayResult>(
@@ -7455,10 +6710,8 @@ async function enrichAdaptiveRoutingWithHostedCatalog(
       {
         work_profile: routing.workProfile,
         model_requirements: routing.requirements,
-        limit:
-          routing.requirements.catalogLimit ??
-          DEFAULT_ADAPTIVE_ROUTING_CATALOG_LIMIT,
-      },
+        limit: routing.requirements.catalogLimit ?? DEFAULT_ADAPTIVE_ROUTING_CATALOG_LIMIT,
+      }
     );
     const catalog = normalizeAdaptiveRoutingCatalog(result.catalog);
     const gatewaySucceeded = result.success === true;
@@ -7479,9 +6732,7 @@ async function enrichAdaptiveRoutingWithHostedCatalog(
       resolutionStatus: stringValue(result.resolution?.status),
       candidateCount,
       fallback:
-        stringValue(result.fallback) ??
-        stringValue(result.resolution?.fallback) ??
-        "main_agent",
+        stringValue(result.fallback) ?? stringValue(result.resolution?.fallback) ?? "main_agent",
       warnings: gatewayWarnings,
     };
     const reasons = [
@@ -7500,10 +6751,7 @@ async function enrichAdaptiveRoutingWithHostedCatalog(
       routingCard: {
         ...routing.routingCard,
         reasons: uniqueStrings(reasons),
-        warnings: uniqueStrings([
-          ...routing.routingCard.warnings,
-          ...gatewayWarnings,
-        ]),
+        warnings: uniqueStrings([...routing.routingCard.warnings, ...gatewayWarnings]),
       },
     };
   } catch (error) {
@@ -7526,9 +6774,7 @@ async function enrichAdaptiveRoutingWithHostedCatalog(
   }
 }
 
-function normalizeAdaptiveRoutingCatalog(
-  value: unknown,
-): AdaptiveRoutingRuntimeCatalog {
+function normalizeAdaptiveRoutingCatalog(value: unknown): AdaptiveRoutingRuntimeCatalog {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { candidates: [] };
   }
@@ -7536,28 +6782,24 @@ function normalizeAdaptiveRoutingCatalog(
   const candidates = Array.isArray(record.candidates)
     ? record.candidates.filter(
         (candidate): candidate is Record<string, unknown> =>
-          Boolean(candidate) &&
-          typeof candidate === "object" &&
-          !Array.isArray(candidate),
+          Boolean(candidate) && typeof candidate === "object" && !Array.isArray(candidate)
       )
     : [];
   const models = Array.isArray(record.models)
-    ? record.models
-        .map((item) => stringValue(item))
-        .filter((item): item is string => Boolean(item))
+    ? record.models.map((item) => stringValue(item)).filter((item): item is string => Boolean(item))
     : undefined;
   const workerEndpoints = isRecord(record.workerEndpoints)
     ? (Object.fromEntries(
         Object.entries(record.workerEndpoints).filter(
-          ([key, value]) => Boolean(stringValue(key)) && isRecord(value),
-        ),
+          ([key, value]) => Boolean(stringValue(key)) && isRecord(value)
+        )
       ) as Record<string, Record<string, unknown>>)
     : undefined;
   const workerProfiles = isRecord(record.workerProfiles)
     ? (Object.fromEntries(
         Object.entries(record.workerProfiles).filter(
-          ([key, value]) => Boolean(stringValue(key)) && isRecord(value),
-        ),
+          ([key, value]) => Boolean(stringValue(key)) && isRecord(value)
+        )
       ) as Record<string, Record<string, unknown>>)
     : undefined;
   return {
@@ -7581,7 +6823,7 @@ interface AdaptiveRoutingSelectedCandidateRecord {
 }
 
 function adaptiveRoutingSelectedCandidate(
-  resolution: AdaptiveWorkRoutingRecommendation["resolution"],
+  resolution: AdaptiveWorkRoutingRecommendation["resolution"]
 ): AdaptiveRoutingSelectedCandidateRecord | undefined {
   if (!resolution || !isRecord(resolution.selected)) {
     return undefined;
@@ -7602,16 +6844,15 @@ function adaptiveRoutingSelectedCandidate(
 }
 
 function normalizeAdaptiveRoutingResolution(
-  value: unknown,
+  value: unknown
 ): AdaptiveWorkRoutingRecommendation["resolution"] {
   if (!isRecord(value)) {
     return undefined;
   }
   const selected = isRecord(value.selected) ? value.selected : undefined;
-  const candidate =
-    selected && isRecord(selected.candidate) ? selected.candidate : undefined;
+  const candidate = selected && isRecord(selected.candidate) ? selected.candidate : undefined;
   const rejectedReasons = normalizeStringArrayRecord(
-    value.rejectedReasons ?? value.rejected_reasons,
+    value.rejectedReasons ?? value.rejected_reasons
   );
   const selectedPayload =
     selected && candidate
@@ -7620,9 +6861,7 @@ function normalizeAdaptiveRoutingResolution(
           ...(numberValue(selected.score) !== undefined
             ? { score: numberValue(selected.score) }
             : {}),
-          ...(isRecord(selected.scoreBreakdown)
-            ? { scoreBreakdown: selected.scoreBreakdown }
-            : {}),
+          ...(isRecord(selected.scoreBreakdown) ? { scoreBreakdown: selected.scoreBreakdown } : {}),
           ...(normalizeStringArray(selected.reasons)
             ? { reasons: normalizeStringArray(selected.reasons) }
             : {}),
@@ -7633,27 +6872,21 @@ function normalizeAdaptiveRoutingResolution(
   return {
     status: stringValue(value.status),
     ...(selectedPayload ? { selected: selectedPayload } : {}),
-    ...(isRecord(value.policyDecision)
-      ? { policyDecision: value.policyDecision }
-      : {}),
+    ...(isRecord(value.policyDecision) ? { policyDecision: value.policyDecision } : {}),
     ...(numberValue(value.evaluatedCount) !== undefined
       ? { evaluatedCount: numberValue(value.evaluatedCount) }
       : {}),
     ...(numberValue(value.rejectedCount) !== undefined
       ? { rejectedCount: numberValue(value.rejectedCount) }
       : {}),
-    ...(stringValue(value.fallback)
-      ? { fallback: stringValue(value.fallback) }
-      : {}),
+    ...(stringValue(value.fallback) ? { fallback: stringValue(value.fallback) } : {}),
     ...(reasons ? { reasons } : {}),
     ...(warnings ? { warnings } : {}),
     ...(rejectedReasons ? { rejectedReasons } : {}),
   };
 }
 
-function normalizeStringArrayRecord(
-  value: unknown,
-): Record<string, string[]> | undefined {
+function normalizeStringArrayRecord(value: unknown): Record<string, string[]> | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
@@ -7661,11 +6894,7 @@ function normalizeStringArrayRecord(
   for (const [candidateId, candidateReasons] of Object.entries(value)) {
     const normalizedReasons = normalizeStringArray(candidateReasons);
     const candidateIdValue = stringValue(candidateId);
-    if (
-      !candidateIdValue ||
-      !normalizedReasons ||
-      normalizedReasons.length === 0
-    ) {
+    if (!candidateIdValue || !normalizedReasons || normalizedReasons.length === 0) {
       continue;
     }
     output[candidateIdValue] = normalizedReasons;
@@ -7694,7 +6923,7 @@ function shouldResolveAdaptiveRoutingLocally(
     routingLocalApiKeyEnv?: string;
     routingLocalApiKeyHeader?: "authorization" | "x-api-key";
   },
-  routing: AdaptiveWorkRoutingRecommendation | null,
+  routing: AdaptiveWorkRoutingRecommendation | null
 ): boolean {
   if (!routing) {
     return false;
@@ -7711,11 +6940,7 @@ function shouldResolveAdaptiveRoutingLocally(
   }
   const preferred = routing.requirements.preferredEndpointTypes ?? [];
   const allowed = routing.requirements.allowedEndpointTypes ?? [];
-  return (
-    preferred.includes("local") ||
-    allowed.length === 0 ||
-    allowed.includes("local")
-  );
+  return preferred.includes("local") || allowed.length === 0 || allowed.includes("local");
 }
 
 function hasLocalRoutingRequest(options: {
@@ -7738,12 +6963,8 @@ function hasLocalRoutingRequest(options: {
     Boolean(options.routingLocalPreferModel) ||
     Boolean(options.routingLocalProvider) ||
     Boolean(options.routingLocalApiKeyEnv) ||
-    normalizeRoutingEndpointTypes(options.routingPreferredEndpoints).includes(
-      "local",
-    ) ||
-    normalizeRoutingEndpointTypes(options.routingAllowedEndpoints).includes(
-      "local",
-    )
+    normalizeRoutingEndpointTypes(options.routingPreferredEndpoints).includes("local") ||
+    normalizeRoutingEndpointTypes(options.routingAllowedEndpoints).includes("local")
   );
 }
 
@@ -7773,42 +6994,31 @@ function applyLocalWorkerRoutingDefaults<
   return {
     ...options,
     routeLocalWorkers: options.routeLocalWorkers ?? defaults.routeLocalWorkers,
-    routingLocalTransport:
-      options.routingLocalTransport ?? defaults.routingLocalTransport,
-    routingLocalAdapter:
-      options.routingLocalAdapter ?? defaults.routingLocalAdapter,
-    routingLocalCommand:
-      options.routingLocalCommand ?? defaults.routingLocalCommand,
+    routingLocalTransport: options.routingLocalTransport ?? defaults.routingLocalTransport,
+    routingLocalAdapter: options.routingLocalAdapter ?? defaults.routingLocalAdapter,
+    routingLocalCommand: options.routingLocalCommand ?? defaults.routingLocalCommand,
     routingWorkerRole: options.routingWorkerRole ?? defaults.routingWorkerRole,
     routingPreferredEndpoints:
-      options.routingPreferredEndpoints &&
-      options.routingPreferredEndpoints.length > 0
+      options.routingPreferredEndpoints && options.routingPreferredEndpoints.length > 0
         ? options.routingPreferredEndpoints
         : defaults.routingPreferredEndpoints,
     routingAllowedEndpoints:
-      options.routingAllowedEndpoints &&
-      options.routingAllowedEndpoints.length > 0
+      options.routingAllowedEndpoints && options.routingAllowedEndpoints.length > 0
         ? options.routingAllowedEndpoints
         : defaults.routingAllowedEndpoints,
-    routingLocalBaseUrl:
-      options.routingLocalBaseUrl ?? defaults.routingLocalBaseUrl,
+    routingLocalBaseUrl: options.routingLocalBaseUrl ?? defaults.routingLocalBaseUrl,
     routingLocalModel: options.routingLocalModel ?? defaults.routingLocalModel,
-    routingLocalPreferModel:
-      options.routingLocalPreferModel ?? defaults.routingLocalPreferModel,
-    routingLocalProvider:
-      options.routingLocalProvider ?? defaults.routingLocalProvider,
-    routingLocalApiKeyEnv:
-      options.routingLocalApiKeyEnv ?? defaults.routingLocalApiKeyEnv,
-    routingLocalApiKeyHeader:
-      options.routingLocalApiKeyHeader ?? defaults.routingLocalApiKeyHeader,
-    plannerRetainsReasoning:
-      options.plannerRetainsReasoning ?? defaults.plannerRetainsReasoning,
+    routingLocalPreferModel: options.routingLocalPreferModel ?? defaults.routingLocalPreferModel,
+    routingLocalProvider: options.routingLocalProvider ?? defaults.routingLocalProvider,
+    routingLocalApiKeyEnv: options.routingLocalApiKeyEnv ?? defaults.routingLocalApiKeyEnv,
+    routingLocalApiKeyHeader: options.routingLocalApiKeyHeader ?? defaults.routingLocalApiKeyHeader,
+    plannerRetainsReasoning: options.plannerRetainsReasoning ?? defaults.plannerRetainsReasoning,
   };
 }
 
 function runOrchestratorJsonCommand(
   args: string[],
-  cwd: string = process.cwd(),
+  cwd: string = process.cwd()
 ): Record<string, unknown> {
   const output = execFileSync("snipara-orchestrator", args, {
     cwd,
@@ -7816,9 +7026,7 @@ function runOrchestratorJsonCommand(
     stdio: ["ignore", "pipe", "pipe"],
     timeout: DEFAULT_LOCAL_ORCHESTRATOR_TIMEOUT_MS,
   }).trim();
-  return output
-    ? parseJsonRecord(output, "snipara-orchestrator JSON output")
-    : {};
+  return output ? parseJsonRecord(output, "snipara-orchestrator JSON output") : {};
 }
 
 function enrichAdaptiveRoutingWithLocalOrchestrator(
@@ -7835,14 +7043,12 @@ function enrichAdaptiveRoutingWithLocalOrchestrator(
     routingLocalApiKeyEnv?: string;
     routingLocalApiKeyHeader?: "authorization" | "x-api-key";
   },
-  cwd: string = process.cwd(),
+  cwd: string = process.cwd()
 ): AdaptiveWorkRoutingRecommendation {
   try {
     if (options.routingLocalTransport === "cli") {
       const candidateId =
-        options.routingLocalAdapter ??
-        options.routingLocalCommand ??
-        "declared-cli";
+        options.routingLocalAdapter ?? options.routingLocalCommand ?? "declared-cli";
       const candidate = {
         candidateId,
         workerClass: routing.requirements.workerRole,
@@ -7876,8 +7082,8 @@ function enrichAdaptiveRoutingWithLocalOrchestrator(
             "--candidate-json",
             JSON.stringify(candidate),
           ],
-          cwd,
-        ),
+          cwd
+        )
       );
       return {
         ...routing,
@@ -7932,7 +7138,7 @@ function enrichAdaptiveRoutingWithLocalOrchestrator(
     }
 
     const runtimeCatalog = normalizeAdaptiveRoutingCatalog(
-      runOrchestratorJsonCommand(catalogArgs, cwd),
+      runOrchestratorJsonCommand(catalogArgs, cwd)
     );
     const routeArgs = [
       "route",
@@ -7948,7 +7154,7 @@ function enrichAdaptiveRoutingWithLocalOrchestrator(
     }
 
     const resolution = normalizeAdaptiveRoutingResolution(
-      runOrchestratorJsonCommand(routeArgs, cwd),
+      runOrchestratorJsonCommand(routeArgs, cwd)
     );
     const selectedCandidate = adaptiveRoutingSelectedCandidate(resolution);
     const selectedEndpoint =
@@ -7958,29 +7164,23 @@ function enrichAdaptiveRoutingWithLocalOrchestrator(
     const resolutionWarnings = normalizeStringArray(resolution?.warnings) ?? [];
     const resolutionReasons = normalizeStringArray(resolution?.reasons) ?? [];
     const resolutionRejectedReasons = normalizeStringArrayRecord(
-      (resolution as { rejectedReasons?: Record<string, string[]> })
-        ?.rejectedReasons,
+      (resolution as { rejectedReasons?: Record<string, string[]> })?.rejectedReasons
     );
     const approvalRequired = booleanValue(
-      isRecord(resolution?.policyDecision)
-        ? resolution.policyDecision.approvalRequired
-        : undefined,
+      isRecord(resolution?.policyDecision) ? resolution.policyDecision.approvalRequired : undefined
     );
     const gatewayWarnings = uniqueStrings([
       ...resolutionWarnings,
       ...(selectedCandidate
         ? []
-        : [
-            "Local orchestrator did not select a worker candidate and will fail closed.",
-          ]),
+        : ["Local orchestrator did not select a worker candidate and will fail closed."]),
     ]);
     const gateway: AdaptiveRoutingGatewayStatus = {
       source: "local_orchestrator",
       success: stringValue(resolution?.status) === "resolved",
       resolutionStatus: stringValue(resolution?.status),
       candidateCount: runtimeCatalog.candidates.length,
-      fallback:
-        stringValue(resolution?.fallback) ?? routing.requirements.fallback,
+      fallback: stringValue(resolution?.fallback) ?? routing.requirements.fallback,
       warnings: gatewayWarnings,
     };
 
@@ -7994,12 +7194,8 @@ function enrichAdaptiveRoutingWithLocalOrchestrator(
         ...(selectedCandidate?.workerClass
           ? { recommendedWorkerClass: selectedCandidate.workerClass }
           : {}),
-        ...(resolutionRejectedReasons
-          ? { rejectedReasons: resolutionRejectedReasons }
-          : {}),
-        ...(approvalRequired !== undefined
-          ? { humanApprovalRequired: approvalRequired }
-          : {}),
+        ...(resolutionRejectedReasons ? { rejectedReasons: resolutionRejectedReasons } : {}),
+        ...(approvalRequired !== undefined ? { humanApprovalRequired: approvalRequired } : {}),
         reasons: uniqueStrings([
           ...routing.routingCard.reasons,
           ...resolutionReasons,
@@ -8007,22 +7203,15 @@ function enrichAdaptiveRoutingWithLocalOrchestrator(
             ? [
                 `local orchestrator resolved worker candidate ${selectedCandidate.candidateId}`,
                 ...(selectedCandidate.endpointType
-                  ? [
-                      `selected worker endpoint is ${selectedCandidate.endpointType}`,
-                    ]
+                  ? [`selected worker endpoint is ${selectedCandidate.endpointType}`]
                   : []),
                 ...(stringValue(selectedEndpoint?.model)
                   ? [`selected local model ${String(selectedEndpoint?.model)}`]
                   : []),
               ]
-            : [
-                "local orchestrator could not resolve a concrete worker candidate",
-              ]),
+            : ["local orchestrator could not resolve a concrete worker candidate"]),
         ]),
-        warnings: uniqueStrings([
-          ...routing.routingCard.warnings,
-          ...gatewayWarnings,
-        ]),
+        warnings: uniqueStrings([...routing.routingCard.warnings, ...gatewayWarnings]),
       },
     };
   } catch (error) {
@@ -8045,18 +7234,9 @@ function enrichAdaptiveRoutingWithLocalOrchestrator(
   }
 }
 
-function printUploadResult(
-  path: string,
-  result: Record<string, unknown>,
-): void {
+function printUploadResult(path: string, result: Record<string, unknown>): void {
   printKeyValue("Uploaded:", path);
-  printCompactObject(result, [
-    "message",
-    "document_id",
-    "documentId",
-    "version",
-    "status",
-  ]);
+  printCompactObject(result, ["message", "document_id", "documentId", "version", "status"]);
   console.log("");
   printJson(result);
 }
@@ -8089,15 +7269,11 @@ function printSyncDocumentsDryRun(result: SyncDocumentsDryRunSummary): void {
   }
   console.log("");
 
-  const attention = result.documents.filter(
-    (item) => item.recommended_action !== "none",
-  );
+  const attention = result.documents.filter((item) => item.recommended_action !== "none");
   if (attention.length > 0) {
     console.log(chalk.bold("Attention"));
     for (const item of attention.slice(0, 10)) {
-      console.log(
-        `- ${item.path}: ${item.recommended_action} (${item.reasons.join(", ")})`,
-      );
+      console.log(`- ${item.path}: ${item.recommended_action} (${item.reasons.join(", ")})`);
     }
     if (attention.length > 10) {
       console.log(chalk.gray(`… ${attention.length - 10} more`));
@@ -8114,23 +7290,17 @@ function printOnboardFolderManifest(result: OnboardFolderManifest): void {
   printKeyValue("Onboard folder:", result.source.root);
   printKeyValue(
     "Classification:",
-    `${result.classification.mode} (${Math.round(result.classification.confidence * 100)}%)`,
+    `${result.classification.mode} (${Math.round(result.classification.confidence * 100)}%)`
   );
   printKeyValue("Supported documents:", result.summary.supported_documents);
   printKeyValue("Ignored files:", result.summary.ignored_files);
   if (result.summary.unsupported_business_files > 0) {
-    printKeyValue(
-      "Unsupported business-looking files:",
-      result.summary.unsupported_business_files,
-    );
+    printKeyValue("Unsupported business-looking files:", result.summary.unsupported_business_files);
   }
   printKeyValue("Would sync:", result.dryRun.would_sync);
   printKeyValue("Invalid metadata:", result.dryRun.invalid_metadata);
   if (result.sync.reindex) {
-    printKeyValue(
-      "Reindex:",
-      `${result.sync.reindexKind}/${result.sync.reindexMode}`,
-    );
+    printKeyValue("Reindex:", `${result.sync.reindexKind}/${result.sync.reindexMode}`);
   }
   console.log("");
 
@@ -8140,9 +7310,7 @@ function printOnboardFolderManifest(result: OnboardFolderManifest): void {
       console.log(`- ${signal}`);
     }
     if (result.classification.signals.code.length > 8) {
-      console.log(
-        chalk.gray(`... ${result.classification.signals.code.length - 8} more`),
-      );
+      console.log(chalk.gray(`... ${result.classification.signals.code.length - 8} more`));
     }
     console.log("");
   }
@@ -8153,11 +7321,7 @@ function printOnboardFolderManifest(result: OnboardFolderManifest): void {
       console.log(`- ${signal}`);
     }
     if (result.classification.signals.business.length > 8) {
-      console.log(
-        chalk.gray(
-          `... ${result.classification.signals.business.length - 8} more`,
-        ),
-      );
+      console.log(chalk.gray(`... ${result.classification.signals.business.length - 8} more`));
     }
     console.log("");
   }
@@ -8171,9 +7335,7 @@ function printOnboardFolderManifest(result: OnboardFolderManifest): void {
   }
 
   console.log(
-    chalk.gray(
-      "Preview only. Re-run with --apply to upload, or --write-manifest to save JSON.",
-    ),
+    chalk.gray("Preview only. Re-run with --apply to upload, or --write-manifest to save JSON.")
   );
   console.log("");
   printJson(result);
@@ -8181,15 +7343,7 @@ function printOnboardFolderManifest(result: OnboardFolderManifest): void {
 
 function printReindexResult(result: Record<string, unknown>): void {
   printKeyValue("Tool:", "snipara_reindex");
-  printCompactObject(result, [
-    "message",
-    "job_id",
-    "jobId",
-    "status",
-    "kind",
-    "mode",
-    "progress",
-  ]);
+  printCompactObject(result, ["message", "job_id", "jobId", "status", "kind", "mode", "progress"]);
   console.log("");
   printJson(result);
 }
@@ -8204,9 +7358,7 @@ function printBusinessHealthResult(result: Record<string, unknown>): void {
     "needs_attention",
   ]);
 
-  const businessContext = isRecord(result.business_context)
-    ? result.business_context
-    : null;
+  const businessContext = isRecord(result.business_context) ? result.business_context : null;
   if (businessContext) {
     console.log("");
     console.log(chalk.bold("Business Context"));
@@ -8220,9 +7372,7 @@ function printBusinessHealthResult(result: Record<string, unknown>): void {
       "needs_quality_review",
     ]);
 
-    const signals = Array.isArray(businessContext.signals)
-      ? businessContext.signals
-      : [];
+    const signals = Array.isArray(businessContext.signals) ? businessContext.signals : [];
     if (signals.length > 0) {
       console.log("");
       console.log(chalk.bold("Top Signals"));
@@ -8240,19 +7390,9 @@ function printBusinessHealthResult(result: Record<string, unknown>): void {
   printJson(result);
 }
 
-function printChunkResult(
-  chunkId: string,
-  result: Record<string, unknown>,
-): void {
+function printChunkResult(chunkId: string, result: Record<string, unknown>): void {
   printKeyValue("Chunk:", chunkId);
-  printCompactObject(result, [
-    "title",
-    "file_path",
-    "path",
-    "line_start",
-    "line_end",
-    "tokens",
-  ]);
+  printCompactObject(result, ["title", "file_path", "path", "line_start", "line_end", "tokens"]);
   console.log("");
 
   const content = result.content;
@@ -8277,11 +7417,7 @@ function readSessionEntryPreview(entry: SessionMemoryEntry): string {
           const summary = stringValue(parsed.summary);
           const nextStep = stringValue(parsed.nextStep);
           const task = stringValue(parsed.task);
-          const readable = [
-            summary,
-            nextStep ? `Next: ${nextStep}` : undefined,
-            task,
-          ]
+          const readable = [summary, nextStep ? `Next: ${nextStep}` : undefined, task]
             .filter((item): item is string => Boolean(item))
             .join(" ");
           if (readable.length > 0) {
@@ -8296,10 +7432,7 @@ function readSessionEntryPreview(entry: SessionMemoryEntry): string {
       return toPreview(trimmed, 220);
     }
   }
-  return toPreview(
-    entry.text ?? entry.content ?? entry.summary ?? entry.title,
-    220,
-  );
+  return toPreview(entry.text ?? entry.content ?? entry.summary ?? entry.title, 220);
 }
 
 function compactSessionEntryLine(entry: SessionMemoryEntry): string {
@@ -8314,7 +7447,7 @@ function compactSessionEntryLine(entry: SessionMemoryEntry): string {
 
 function printSessionBootstrap(
   result: SessionMemoriesResult,
-  options: { includeSessionContext: boolean; maxTokens?: number },
+  options: { includeSessionContext: boolean; maxTokens?: number }
 ): SessionBootstrapBrief | null {
   const brief = buildSessionBootstrapBrief(result, {
     includeSessionContext: options.includeSessionContext,
@@ -8336,7 +7469,7 @@ function printSessionBootstrap(
 
 function buildPrintedBootstrapQuality(
   brief: SessionBootstrapBrief,
-  now?: Date,
+  now?: Date
 ): SessionBootstrapQualityReport {
   return buildSessionBootstrapQuality(
     {
@@ -8348,13 +7481,11 @@ function buildPrintedBootstrapQuality(
       daily: { memories: [], count: 0, tokens: 0 },
       total_tokens: brief.estimatedTokens,
     },
-    { expectedMaxTokens: brief.budgetTokens, now },
+    { expectedMaxTokens: brief.budgetTokens, now }
   );
 }
 
-function printSessionBootstrapQuality(
-  report: SessionBootstrapQualityReport,
-): void {
+function printSessionBootstrapQuality(report: SessionBootstrapQualityReport): void {
   if (report.warnings.length === 0) {
     return;
   }
@@ -8381,14 +7512,10 @@ function printPlanQualityWarnings(report: PlanQualityReport): void {
 function printTaskCommitResult(result: Record<string, unknown>): void {
   printKeyValue("Tool:", "snipara_end_of_task_commit");
   printCompactObject(result, ["stored", "skipped", "status", "message"]);
-  const handoff = isRecord(result.team_sync_handoff)
-    ? result.team_sync_handoff
-    : null;
+  const handoff = isRecord(result.team_sync_handoff) ? result.team_sync_handoff : null;
   if (handoff) {
-    const status =
-      typeof handoff.status === "string" ? handoff.status : "unknown";
-    const memoryId =
-      typeof handoff.memory_id === "string" ? ` (${handoff.memory_id})` : "";
+    const status = typeof handoff.status === "string" ? handoff.status : "unknown";
+    const memoryId = typeof handoff.memory_id === "string" ? ` (${handoff.memory_id})` : "";
     printKeyValue("Team Sync handoff:", `${status}${memoryId}`);
   }
   console.log("");
@@ -8398,14 +7525,10 @@ function printTaskCommitResult(result: Record<string, unknown>): void {
 function printFinalCommitHandoffResult(result: Record<string, unknown>): void {
   printKeyValue("Tool:", "snipara_end_of_task_commit");
   printCompactObject(result, ["stored", "skipped", "status", "message"]);
-  const handoff = isRecord(result.team_sync_handoff)
-    ? result.team_sync_handoff
-    : null;
+  const handoff = isRecord(result.team_sync_handoff) ? result.team_sync_handoff : null;
   if (handoff) {
-    const status =
-      typeof handoff.status === "string" ? handoff.status : "unknown";
-    const memoryId =
-      typeof handoff.memory_id === "string" ? ` (${handoff.memory_id})` : "";
+    const status = typeof handoff.status === "string" ? handoff.status : "unknown";
+    const memoryId = typeof handoff.memory_id === "string" ? ` (${handoff.memory_id})` : "";
     printKeyValue("Team Sync handoff:", `${status}${memoryId}`);
   }
   console.log("");
@@ -8421,13 +7544,7 @@ function printMultiQueryResult(result: unknown, queries: string[]): void {
       console.log(chalk.bold(`Query ${index + 1}`));
       printKeyValue("Input:", queries[index] || "n/a");
       if (isRecord(entry)) {
-        printCompactObject(entry, [
-          "query",
-          "total_tokens",
-          "max_tokens",
-          "answer",
-          "summary",
-        ]);
+        printCompactObject(entry, ["query", "total_tokens", "max_tokens", "answer", "summary"]);
         const sections = entry.sections;
         if (Array.isArray(sections)) {
           printKeyValue("Sections:", sections.length);
@@ -8452,13 +7569,7 @@ function printMultiQueryResult(result: unknown, queries: string[]): void {
         console.log(chalk.bold(`Query ${index + 1}`));
         printKeyValue("Input:", queries[index] || "n/a");
         if (isRecord(entry)) {
-          printCompactObject(entry, [
-            "query",
-            "total_tokens",
-            "max_tokens",
-            "answer",
-            "summary",
-          ]);
+          printCompactObject(entry, ["query", "total_tokens", "max_tokens", "answer", "summary"]);
           const sections = entry.sections;
           if (Array.isArray(sections)) {
             printKeyValue("Sections:", sections.length);
@@ -8517,12 +7628,7 @@ function printOrchestrateResult(result: unknown): void {
     for (const section of sections.slice(0, 5)) {
       if (!isRecord(section)) continue;
       console.log(chalk.bold(toPreview(section.title ?? "Untitled")));
-      printCompactObject(section, [
-        "file",
-        "file_path",
-        "score",
-        "relevance_score",
-      ]);
+      printCompactObject(section, ["file", "file_path", "score", "relevance_score"]);
       const content = section.content;
       if (content !== undefined) {
         console.log(toPreview(content, 220));
@@ -8573,16 +7679,14 @@ function printRecallResult(result: RecallResult): void {
   if (result.memories.length > 0) {
     console.log(chalk.bold("Durable Memory Matches"));
     for (const memory of result.memories.slice(0, 8)) {
-      const meta = [memory.type, memory.scope, memory.category]
-        .filter(Boolean)
-        .join(" · ");
+      const meta = [memory.type, memory.scope, memory.category].filter(Boolean).join(" · ");
       console.log(chalk.bold(toPreview(memory.content, 180)));
       if (meta.length > 0) {
         printKeyValue("Meta:", meta);
       }
       printKeyValue(
         "Scores:",
-        `relevance ${memory.relevance.toFixed(2)} · confidence ${memory.confidence.toFixed(2)}`,
+        `relevance ${memory.relevance.toFixed(2)} · confidence ${memory.confidence.toFixed(2)}`
       );
       if (memory.status !== "ACTIVE") {
         printKeyValue("Status:", memory.status);
@@ -8595,9 +7699,7 @@ function printRecallResult(result: RecallResult): void {
     console.log(chalk.bold("Lifecycle Warnings"));
     for (const warning of result.warnings.slice(0, 5)) {
       const reason = warning.reason ? ` (${warning.reason})` : "";
-      console.log(
-        `- ${warning.status}: ${toPreview(warning.content, 140)}${reason}`,
-      );
+      console.log(`- ${warning.status}: ${toPreview(warning.content, 140)}${reason}`);
     }
     console.log("");
   }
@@ -8621,24 +7723,17 @@ export async function queryCommand(options: {
   ensureConfigured();
 
   const searchMode = options.searchMode ?? "hybrid";
-  if (!( ["keyword", "semantic", "hybrid"] as const).includes(searchMode as never)) {
+  if (!(["keyword", "semantic", "hybrid"] as const).includes(searchMode as never)) {
     throw new Error("--search-mode must be keyword, semantic, or hybrid");
   }
-  const timeoutMs = Math.max(
-    1_000,
-    Math.min(options.timeoutMs ?? 30_000, 120_000),
-  );
+  const timeoutMs = Math.max(1_000, Math.min(options.timeoutMs ?? 30_000, 120_000));
   const client = createClient(timeoutMs);
-  const result = await client.queryContext(
-    options.query,
-    options.maxTokens || 8000,
-    {
-      searchMode: searchMode as "keyword" | "semantic" | "hybrid",
-      includeAnswerPack: options.includeAnswerPack,
-      autoDecompose: options.autoDecompose,
-      includeSharedContext: options.includeSharedContext,
-    },
-  );
+  const result = await client.queryContext(options.query, options.maxTokens || 8000, {
+    searchMode: searchMode as "keyword" | "semantic" | "hybrid",
+    includeAnswerPack: options.includeAnswerPack,
+    autoDecompose: options.autoDecompose,
+    includeSharedContext: options.includeSharedContext,
+  });
   const recommendedExecution =
     options.followRecommendation && result.recommended_tool
       ? await runRecommendedTool(result)
@@ -8652,7 +7747,7 @@ export async function queryCommand(options: {
             executed_recommended_tool_arguments: recommendedExecution.args,
             executed_recommended_tool_result: recommendedExecution.result,
           }
-        : result,
+        : result
     );
     return;
   }
@@ -8683,11 +7778,7 @@ export async function planCommand(options: {
 
   if (quality.valid) {
     if (options.writePlanFile || options.startWorkflow) {
-      const planFile = writeGeneratedWorkflowPlanFile(
-        result,
-        options.query,
-        options.writePlanFile,
-      );
+      const planFile = writeGeneratedWorkflowPlanFile(result, options.query, options.writePlanFile);
       payload.generated_plan_file = planFile;
       if (options.startWorkflow) {
         const state = await publishWorkflowStartCoordination(
@@ -8697,7 +7788,7 @@ export async function planCommand(options: {
             id: options.workflowId,
             force: options.force,
           }),
-          inferWorkflowCoordinationMode({ planFile: planFile.path }),
+          inferWorkflowCoordinationMode({ planFile: planFile.path })
         );
         payload.managed_workflow = state;
       }
@@ -8712,21 +7803,15 @@ export async function planCommand(options: {
   }
 
   if (options.json) {
-    printJson(
-      options.writePlanFile || options.startWorkflow ? payload : result,
-    );
+    printJson(options.writePlanFile || options.startWorkflow ? payload : result);
     return;
   }
   printPlanResult(result);
   if (payload.generated_plan_file) {
-    printGeneratedPlanFile(
-      payload.generated_plan_file as WrittenGeneratedPlanFile,
-    );
+    printGeneratedPlanFile(payload.generated_plan_file as WrittenGeneratedPlanFile);
   }
   if (payload.managed_workflow) {
-    printManagedWorkflowStarted(
-      payload.managed_workflow as ManagedWorkflowState,
-    );
+    printManagedWorkflowStarted(payload.managed_workflow as ManagedWorkflowState);
   }
 }
 
@@ -8785,9 +7870,7 @@ export async function uploadCommand(options: {
     : undefined;
 
   if (options.json) {
-    printJson(
-      reindexResult ? { upload: result, reindex: reindexResult } : result,
-    );
+    printJson(reindexResult ? { upload: result, reindex: reindexResult } : result);
     return;
   }
   printUploadResult(options.path, result);
@@ -8813,21 +7896,17 @@ export async function businessCollectionsListCommand(options: {
     return;
   }
   printKeyValue("Tool:", "snipara_list_business_collections");
-  const collections = Array.isArray(result.collections)
-    ? result.collections
-    : [];
+  const collections = Array.isArray(result.collections) ? result.collections : [];
   printKeyValue("Collections:", collections.length);
   for (const collection of collections) {
     if (!isRecord(collection)) continue;
     console.log(
       `- ${collection.name ?? collection.slug} (${collection.slug}) · ${
         collection.document_count ?? 0
-      } docs`,
+      } docs`
     );
   }
-  const missing = Array.isArray(result.missing_presets)
-    ? result.missing_presets
-    : [];
+  const missing = Array.isArray(result.missing_presets) ? result.missing_presets : [];
   if (missing.length > 0) {
     console.log("");
     printKeyValue("Missing presets:", missing.length);
@@ -8860,13 +7939,7 @@ export async function businessCollectionEnsureCommand(options: {
     return;
   }
   printKeyValue("Tool:", "snipara_ensure_business_collection");
-  printCompactObject(result, [
-    "message",
-    "action",
-    "name",
-    "slug",
-    "collection_id",
-  ]);
+  printCompactObject(result, ["message", "action", "name", "slug", "collection_id"]);
   console.log("");
   printJson(result);
 }
@@ -8887,8 +7960,7 @@ export async function businessCollectionUploadCommand(options: {
   ensureConfigured();
 
   const content =
-    options.content ??
-    (options.file ? fs.readFileSync(options.file, "utf-8") : undefined);
+    options.content ?? (options.file ? fs.readFileSync(options.file, "utf-8") : undefined);
   if (!content) {
     throw new Error("Provide either --content or --file");
   }
@@ -8944,9 +8016,7 @@ export async function clientProjectsListCommand(options: {
   printKeyValue("Projects:", projects.length);
   for (const project of projects) {
     if (!isRecord(project)) continue;
-    console.log(
-      `- ${project.name ?? project.slug} (${project.slug}) · ${project.scope}`,
-    );
+    console.log(`- ${project.name ?? project.slug} (${project.slug}) · ${project.scope}`);
   }
 }
 
@@ -8971,20 +8041,12 @@ export async function clientProjectCreateCommand(options: {
     return;
   }
   printKeyValue("Tool:", "snipara_create_client_project");
-  printCompactObject(result, [
-    "message",
-    "action",
-    "name",
-    "slug",
-    "project_id",
-  ]);
+  printCompactObject(result, ["message", "action", "name", "slug", "project_id"]);
   console.log("");
   printJson(result);
 }
 
-function normalizeSyncDocumentsPayload(
-  payload: unknown,
-): CollectedSyncDocuments {
+function normalizeSyncDocumentsPayload(payload: unknown): CollectedSyncDocuments {
   const rawDocuments = Array.isArray(payload)
     ? payload
     : isRecord(payload) && Array.isArray(payload.documents)
@@ -8992,38 +8054,22 @@ function normalizeSyncDocumentsPayload(
       : undefined;
 
   if (!rawDocuments) {
-    throw new Error(
-      "Sync payload must be an array or an object with a documents array",
-    );
+    throw new Error("Sync payload must be an array or an object with a documents array");
   }
 
-  const manifestRecord =
-    isRecord(payload) && !Array.isArray(payload) ? payload : {};
-  const defaults = isRecord(manifestRecord.defaults)
-    ? manifestRecord.defaults
-    : {};
+  const manifestRecord = isRecord(payload) && !Array.isArray(payload) ? payload : {};
+  const defaults = isRecord(manifestRecord.defaults) ? manifestRecord.defaults : {};
   const metadataDefaults = mergeRecords(
     isRecord(defaults.metadata) ? defaults.metadata : undefined,
-    isRecord(manifestRecord.metadataDefaults)
-      ? manifestRecord.metadataDefaults
-      : undefined,
-    isRecord(manifestRecord.metadata) ? manifestRecord.metadata : undefined,
+    isRecord(manifestRecord.metadataDefaults) ? manifestRecord.metadataDefaults : undefined,
+    isRecord(manifestRecord.metadata) ? manifestRecord.metadata : undefined
   );
 
   const documents = rawDocuments.map((item, index) => {
-    if (
-      !isRecord(item) ||
-      typeof item.path !== "string" ||
-      typeof item.content !== "string"
-    ) {
-      throw new Error(
-        `Invalid document at index ${index}: expected { path, content }`,
-      );
+    if (!isRecord(item) || typeof item.path !== "string" || typeof item.content !== "string") {
+      throw new Error(`Invalid document at index ${index}: expected { path, content }`);
     }
-    const metadata = mergeRecords(
-      metadataDefaults,
-      isRecord(item.metadata) ? item.metadata : {},
-    );
+    const metadata = mergeRecords(metadataDefaults, isRecord(item.metadata) ? item.metadata : {});
     const inferred = inferDocumentFormat(item.path);
     const kind = normalizeDocumentKind(item.kind) ?? inferred?.kind;
     const format = normalizeDocumentFormat(item.format) ?? inferred?.format;
@@ -9042,26 +8088,16 @@ function normalizeSyncDocumentsPayload(
     documents,
     manifestOptions: {
       metadataDefaults,
-      deleteMissing: optionalBoolean(
-        manifestRecord.deleteMissing ?? manifestRecord.delete_missing,
-      ),
+      deleteMissing: optionalBoolean(manifestRecord.deleteMissing ?? manifestRecord.delete_missing),
       dryRun: optionalBoolean(manifestRecord.dryRun ?? manifestRecord.dry_run),
       reindex: optionalBoolean(manifestRecord.reindex),
-      reindexKind: optionalReindexKind(
-        manifestRecord.reindexKind ?? manifestRecord.reindex_kind,
-      ),
-      reindexMode: optionalReindexMode(
-        manifestRecord.reindexMode ?? manifestRecord.reindex_mode,
-      ),
+      reindexKind: optionalReindexKind(manifestRecord.reindexKind ?? manifestRecord.reindex_kind),
+      reindexMode: optionalReindexMode(manifestRecord.reindexMode ?? manifestRecord.reindex_mode),
     },
   };
 }
 
-function toUploadPath(
-  filePath: string,
-  rootDir: string,
-  prefix?: string,
-): string {
+function toUploadPath(filePath: string, rootDir: string, prefix?: string): string {
   const relative = path.relative(rootDir, filePath).split(path.sep).join("/");
   const trimmedPrefix = prefix?.replace(/^\/+|\/+$/g, "");
   return trimmedPrefix ? `${trimmedPrefix}/${relative}` : relative;
@@ -9084,10 +8120,7 @@ function collectDirectoryDocuments(options: {
         }
         continue;
       }
-      if (
-        !entry.isFile() ||
-        !DEFAULT_SYNC_EXTENSIONS.has(path.extname(entry.name).toLowerCase())
-      ) {
+      if (!entry.isFile() || !DEFAULT_SYNC_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
         continue;
       }
       const documentFormat = inferDocumentFormat(entry.name);
@@ -9136,9 +8169,7 @@ export function collectSyncDocumentsInput(options: {
   }
 
   if (options.file) {
-    const payload = JSON.parse(
-      fs.readFileSync(options.file, "utf-8"),
-    ) as unknown;
+    const payload = JSON.parse(fs.readFileSync(options.file, "utf-8")) as unknown;
     return normalizeSyncDocumentsPayload(payload);
   }
 
@@ -9305,8 +8336,7 @@ export interface OnboardFolderOptions {
 }
 
 function normalizeOnboardFolderMode(value: unknown): OnboardFolderMode {
-  const normalized =
-    stringValue(value)?.replace(/[-\s]/g, "_").toLowerCase() ?? "auto";
+  const normalized = stringValue(value)?.replace(/[-\s]/g, "_").toLowerCase() ?? "auto";
   if (
     normalized === "auto" ||
     normalized === "business_context" ||
@@ -9315,9 +8345,7 @@ function normalizeOnboardFolderMode(value: unknown): OnboardFolderMode {
   ) {
     return normalized;
   }
-  throw new Error(
-    "Onboard mode must be one of: auto, business_context, code_project, mixed",
-  );
+  throw new Error("Onboard mode must be one of: auto, business_context, code_project, mixed");
 }
 
 function toPosixPath(filePath: string): string {
@@ -9340,10 +8368,7 @@ function isBusinessLookingFile(file: OnboardFolderScannedFile): boolean {
   );
 }
 
-function scanOnboardFolder(options: {
-  dir: string;
-  recursive: boolean;
-}): OnboardFolderFile[] {
+function scanOnboardFolder(options: { dir: string; recursive: boolean }): OnboardFolderFile[] {
   const rootDir = path.resolve(options.dir);
   if (!fs.existsSync(rootDir)) {
     throw new Error(`Directory does not exist: ${options.dir}`);
@@ -9394,7 +8419,7 @@ function addSignal(signals: string[], signal: string): void {
 function classifyOnboardFolder(
   rootDir: string,
   files: OnboardFolderFile[],
-  overrideMode: OnboardFolderMode = "auto",
+  overrideMode: OnboardFolderMode = "auto"
 ): OnboardFolderClassification {
   const codeSignals: string[] = [];
   const businessSignals: string[] = [];
@@ -9425,18 +8450,7 @@ function classifyOnboardFolder(
       codeSourceFiles += 1;
     }
 
-    if (
-      [
-        ".docx",
-        ".pdf",
-        ".pptx",
-        ".vsdx",
-        ".xlsx",
-        ".xls",
-        ".csv",
-        ".tsv",
-      ].includes(ext)
-    ) {
+    if ([".docx", ".pdf", ".pptx", ".vsdx", ".xlsx", ".xls", ".csv", ".tsv"].includes(ext)) {
       businessScore += 2;
       addSignal(businessSignals, `${ext} documents`);
     }
@@ -9444,10 +8458,7 @@ function classifyOnboardFolder(
       businessScore += 2;
       addSignal(businessSignals, `business keyword in ${file.path}`);
     }
-    if (
-      file.supported &&
-      [".md", ".markdown", ".mdx", ".txt", ".rst", ".adoc"].includes(ext)
-    ) {
+    if (file.supported && [".md", ".markdown", ".mdx", ".txt", ".rst", ".adoc"].includes(ext)) {
       supportedPlainDocuments += 1;
     }
   }
@@ -9458,16 +8469,12 @@ function classifyOnboardFolder(
     addSignal(codeSignals, `${codeSourceFiles} source-looking files`);
   }
   if (supportedPlainDocuments > 0) {
-    addSignal(
-      businessSignals,
-      `${supportedPlainDocuments} supported text documents`,
-    );
+    addSignal(businessSignals, `${supportedPlainDocuments} supported text documents`);
   }
 
   const codeStrong = codeScore >= 3;
   const businessStrong =
-    businessScore >= 2.5 ||
-    (!codeStrong && files.some((file) => file.supported));
+    businessScore >= 2.5 || (!codeStrong && files.some((file) => file.supported));
   let detectedMode: DetectedOnboardFolderMode = "unknown";
   if (codeStrong && businessStrong) {
     detectedMode = "mixed";
@@ -9482,15 +8489,8 @@ function classifyOnboardFolder(
     detectedMode === "unknown"
       ? 0.25
       : detectedMode === "mixed"
-        ? Math.min(
-            0.92,
-            0.58 + Math.min(codeScore, businessScore) / Math.max(totalScore, 1),
-          )
-        : Math.min(
-            0.95,
-            0.55 +
-              Math.max(codeScore, businessScore) / Math.max(totalScore + 4, 1),
-          );
+        ? Math.min(0.92, 0.58 + Math.min(codeScore, businessScore) / Math.max(totalScore, 1))
+        : Math.min(0.95, 0.55 + Math.max(codeScore, businessScore) / Math.max(totalScore + 4, 1));
   const mode = overrideMode === "auto" ? detectedMode : overrideMode;
 
   return {
@@ -9518,7 +8518,7 @@ function inferBusinessAssetClass(file: OnboardFolderScannedFile): string {
 
 function inferOnboardContextLane(
   file: OnboardFolderScannedFile,
-  mode: DetectedOnboardFolderMode,
+  mode: DetectedOnboardFolderMode
 ): "business_context" | "repo_docs" {
   if (mode === "business_context") {
     return "business_context";
@@ -9542,9 +8542,7 @@ function inferOnboardContextLane(
   return "business_context";
 }
 
-function buildOnboardSyncManifestPayload(
-  result: OnboardFolderManifest,
-): Record<string, unknown> {
+function buildOnboardSyncManifestPayload(result: OnboardFolderManifest): Record<string, unknown> {
   return {
     dryRun: true,
     reindex: result.sync.reindex,
@@ -9563,9 +8561,7 @@ function buildOnboardSyncManifestPayload(
   };
 }
 
-export function buildOnboardFolderManifest(
-  options: OnboardFolderOptions,
-): OnboardFolderManifest {
+export function buildOnboardFolderManifest(options: OnboardFolderOptions): OnboardFolderManifest {
   const rootDir = path.resolve(options.dir);
   const recursive = options.recursive ?? true;
   const files = scanOnboardFolder({ dir: rootDir, recursive });
@@ -9573,22 +8569,17 @@ export function buildOnboardFolderManifest(
   const classification = classifyOnboardFolder(rootDir, files, modeOverride);
   const sourceKind = options.sourceKind ?? "local_agent";
   const sourceProvider = options.sourceProvider ?? "local_folder";
-  const snapshotDate = options.snapshotAt
-    ? parseIsoDate(options.snapshotAt)
-    : new Date();
+  const snapshotDate = options.snapshotAt ? parseIsoDate(options.snapshotAt) : new Date();
   if (!snapshotDate) {
     throw new Error("--snapshot-at must be a valid ISO date");
   }
   const snapshotAt = snapshotDate.toISOString();
-  const usageMode =
-    normalizeUsageMode(options.usageMode ?? "current_truth") ?? "current_truth";
+  const usageMode = normalizeUsageMode(options.usageMode ?? "current_truth") ?? "current_truth";
   const supportedFiles = files.filter((file) => file.supported);
   const ignoredFiles = files.filter((file) => !file.supported);
   const unsupportedBusinessFiles = ignoredFiles.filter(isBusinessLookingFile);
   const extractionMethod =
-    sourceProvider === "local_folder"
-      ? "local_folder_scan"
-      : "llm_client_connector";
+    sourceProvider === "local_folder" ? "local_folder_scan" : "llm_client_connector";
 
   const metadataDefaults = mergeRecords(
     {
@@ -9601,7 +8592,7 @@ export function buildOnboardFolderManifest(
       detectedContextConfidence: classification.confidence,
     },
     options.sourceUri ? { sourceUri: options.sourceUri } : undefined,
-    options.clientId ? { clientId: options.clientId } : undefined,
+    options.clientId ? { clientId: options.clientId } : undefined
   );
 
   const documents = supportedFiles.map((file) => {
@@ -9637,27 +8628,27 @@ export function buildOnboardFolderManifest(
   const warnings: string[] = [];
   if (classification.mode === "unknown") {
     warnings.push(
-      "Could not confidently classify this folder; review the manifest before applying.",
+      "Could not confidently classify this folder; review the manifest before applying."
     );
   }
   if (classification.detected_mode !== classification.mode) {
     warnings.push(
-      `Mode override applied: detected ${classification.detected_mode}, using ${classification.mode}.`,
+      `Mode override applied: detected ${classification.detected_mode}, using ${classification.mode}.`
     );
   }
   if (classification.mode === "code_project") {
     warnings.push(
-      "This looks like a code project. onboard-folder is business-first and only uploads supported documents; use the GitHub OAuth/code onboarding flow for source-code indexing.",
+      "This looks like a code project. onboard-folder is business-first and only uploads supported documents; use the GitHub OAuth/code onboarding flow for source-code indexing."
     );
   }
   if (classification.mode === "mixed") {
     warnings.push(
-      "This folder looks mixed. Review per-document contextLane metadata before applying.",
+      "This folder looks mixed. Review per-document contextLane metadata before applying."
     );
   }
   if (unsupportedBusinessFiles.length > 0) {
     warnings.push(
-      `${unsupportedBusinessFiles.length} business-looking files are ignored because their formats are not supported by snipara_sync_documents yet.`,
+      `${unsupportedBusinessFiles.length} business-looking files are ignored because their formats are not supported by snipara_sync_documents yet.`
     );
   }
   if (documents.length === 0) {
@@ -9722,12 +8713,9 @@ function normalizeUsageMode(value: unknown): string | undefined {
 }
 
 function hasReferenceProvenance(metadata: Record<string, unknown>): boolean {
-  const referenceProvenance =
-    metadata.referenceProvenance ?? metadata.reference_provenance;
+  const referenceProvenance = metadata.referenceProvenance ?? metadata.reference_provenance;
   if (isRecord(referenceProvenance)) {
-    return Object.values(referenceProvenance).some((value) =>
-      Boolean(stringValue(value)),
-    );
+    return Object.values(referenceProvenance).some((value) => Boolean(stringValue(value)));
   }
   return [
     metadata.clientId,
@@ -9741,7 +8729,7 @@ function hasReferenceProvenance(metadata: Record<string, unknown>): boolean {
 
 function validateFreshnessPolicy(
   metadata: Record<string, unknown>,
-  reasons: string[],
+  reasons: string[]
 ): {
   maxAgeDays: number | undefined;
 } {
@@ -9768,7 +8756,7 @@ function validateFreshnessPolicy(
 
 function validateDocumentForDryRun(
   document: SyncDocumentInput,
-  now: Date,
+  now: Date
 ): SyncDocumentsDryRunItem {
   const metadata = isRecord(document.metadata) ? document.metadata : {};
   const inferred = inferDocumentFormat(document.path);
@@ -9789,8 +8777,7 @@ function validateDocumentForDryRun(
     reasons.push("invalid_asset_class");
   }
 
-  const usageModeRaw =
-    metadata.usageMode ?? metadata.usage_mode ?? metadata.contextRole;
+  const usageModeRaw = metadata.usageMode ?? metadata.usage_mode ?? metadata.contextRole;
   const usageMode = normalizeUsageMode(usageModeRaw);
   if (usageModeRaw !== undefined && !usageMode) {
     reasons.push("invalid_usage_mode");
@@ -9802,19 +8789,15 @@ function validateDocumentForDryRun(
   }
 
   const { maxAgeDays } = validateFreshnessPolicy(metadata, reasons);
-  const sourceModifiedAtRaw =
-    metadata.sourceModifiedAt ?? metadata.source_modified_at;
-  const sourceSnapshotAtRaw =
-    metadata.sourceSnapshotAt ?? metadata.source_snapshot_at;
+  const sourceModifiedAtRaw = metadata.sourceModifiedAt ?? metadata.source_modified_at;
+  const sourceSnapshotAtRaw = metadata.sourceSnapshotAt ?? metadata.source_snapshot_at;
   const sourceModifiedAt = parseIsoDate(sourceModifiedAtRaw);
   const sourceSnapshotAt = parseIsoDate(sourceSnapshotAtRaw);
-  const sourceHash = stringValue(
-    metadata.sourceContentHash ?? metadata.source_content_hash,
-  );
+  const sourceHash = stringValue(metadata.sourceContentHash ?? metadata.source_content_hash);
   const latestHash = stringValue(
     metadata.latestSourceContentHash ??
       metadata.currentSourceContentHash ??
-      metadata.manifestSourceContentHash,
+      metadata.manifestSourceContentHash
   );
 
   if (sourceModifiedAtRaw !== undefined && !sourceModifiedAt) {
@@ -9824,40 +8807,25 @@ function validateDocumentForDryRun(
     reasons.push("invalid_source_snapshot_at");
   }
 
-  if (
-    usageMode === "current_truth" &&
-    !sourceModifiedAt &&
-    !sourceSnapshotAt &&
-    !sourceHash
-  ) {
+  if (usageMode === "current_truth" && !sourceModifiedAt && !sourceSnapshotAt && !sourceHash) {
     reviewReasons.push("missing_source_metadata");
   }
 
-  if (
-    usageMode === "historical_reference" &&
-    !hasReferenceProvenance(metadata)
-  ) {
+  if (usageMode === "historical_reference" && !hasReferenceProvenance(metadata)) {
     reviewReasons.push("missing_reference_provenance");
   }
 
-  const effectiveMaxAgeDays =
-    maxAgeDays ?? (usageMode === "current_truth" ? 30 : undefined);
+  const effectiveMaxAgeDays = maxAgeDays ?? (usageMode === "current_truth" ? 30 : undefined);
   if (sourceSnapshotAt && effectiveMaxAgeDays !== undefined) {
     const daysSinceSnapshot = Math.max(
       0,
-      Math.floor(
-        (now.getTime() - sourceSnapshotAt.getTime()) / (1000 * 60 * 60 * 24),
-      ),
+      Math.floor((now.getTime() - sourceSnapshotAt.getTime()) / (1000 * 60 * 60 * 24))
     );
     if (daysSinceSnapshot > effectiveMaxAgeDays) {
       reuploadReasons.push("source_snapshot_expired");
     }
   }
-  if (
-    sourceModifiedAt &&
-    sourceSnapshotAt &&
-    sourceModifiedAt > sourceSnapshotAt
-  ) {
+  if (sourceModifiedAt && sourceSnapshotAt && sourceModifiedAt > sourceSnapshotAt) {
     reuploadReasons.push("source_modified_after_upload");
   }
   if (sourceHash && latestHash && sourceHash !== latestHash) {
@@ -9895,23 +8863,17 @@ export function buildSyncDocumentsDryRun(
     reindexKind?: ReindexKind;
     reindexMode?: ReindexMode;
     now?: Date;
-  } = {},
+  } = {}
 ): SyncDocumentsDryRunSummary {
   const now = options.now ?? new Date();
-  const items = documents.map((document) =>
-    validateDocumentForDryRun(document, now),
-  );
-  const invalidMetadata = items.filter(
-    (item) => item.status === "invalid_metadata",
-  ).length;
-  const needsReupload = items.filter(
-    (item) => item.recommended_action === "reupload",
-  ).length;
+  const items = documents.map((document) => validateDocumentForDryRun(document, now));
+  const invalidMetadata = items.filter((item) => item.status === "invalid_metadata").length;
+  const needsReupload = items.filter((item) => item.recommended_action === "reupload").length;
   const needsMetadataReview = items.filter(
-    (item) => item.recommended_action === "review_source_metadata",
+    (item) => item.recommended_action === "review_source_metadata"
   ).length;
   const stale = items.filter((item) =>
-    item.reasons.some((reason) => REUPLOAD_REASONS.has(reason)),
+    item.reasons.some((reason) => REUPLOAD_REASONS.has(reason))
   ).length;
 
   return {
@@ -9952,20 +8914,15 @@ export async function syncDocumentsCommand(options: {
   const documents = collected.documents;
   if (documents.length === 0) {
     throw new Error(
-      `No supported documents found to sync (${[...DEFAULT_SYNC_EXTENSIONS].sort().join(", ")})`,
+      `No supported documents found to sync (${[...DEFAULT_SYNC_EXTENSIONS].sort().join(", ")})`
     );
   }
 
-  const deleteMissing =
-    options.deleteMissing ?? collected.manifestOptions.deleteMissing ?? false;
+  const deleteMissing = options.deleteMissing ?? collected.manifestOptions.deleteMissing ?? false;
   const dryRun = options.dryRun ?? collected.manifestOptions.dryRun ?? false;
   const reindex = options.reindex ?? collected.manifestOptions.reindex ?? false;
-  const reindexKind =
-    options.reindexKind ?? collected.manifestOptions.reindexKind ?? "doc";
-  const reindexMode =
-    options.reindexMode ??
-    collected.manifestOptions.reindexMode ??
-    "incremental";
+  const reindexKind = options.reindexKind ?? collected.manifestOptions.reindexKind ?? "doc";
+  const reindexMode = options.reindexMode ?? collected.manifestOptions.reindexMode ?? "incremental";
 
   if (dryRun) {
     const result = buildSyncDocumentsDryRun(documents, {
@@ -9994,10 +8951,7 @@ export async function syncDocumentsCommand(options: {
     : undefined;
 
   if (options.json) {
-    printJson({
-      sync: result,
-      ...(reindexResult ? { reindex: reindexResult } : {}),
-    });
+    printJson({ sync: result, ...(reindexResult ? { reindex: reindexResult } : {}) });
     return;
   }
 
@@ -10013,14 +8967,14 @@ export async function onboardFolderCommand(
     apply?: boolean;
     writeManifest?: string;
     json?: boolean;
-  },
+  }
 ): Promise<void> {
   const manifest = buildOnboardFolderManifest(options);
   if (options.writeManifest) {
     fs.writeFileSync(
       options.writeManifest,
       `${JSON.stringify(buildOnboardSyncManifestPayload(manifest), null, 2)}\n`,
-      "utf-8",
+      "utf-8"
     );
   }
 
@@ -10042,7 +8996,7 @@ export async function onboardFolderCommand(
   }
   if (manifest.dryRun.invalid_metadata > 0) {
     throw new Error(
-      "Onboarding manifest has invalid metadata; run without --apply and review JSON.",
+      "Onboarding manifest has invalid metadata; run without --apply and review JSON."
     );
   }
 
@@ -10051,7 +9005,7 @@ export async function onboardFolderCommand(
   const client = createClient(30000);
   const syncResult = await client.syncDocuments(
     manifest.sync.documents,
-    manifest.sync.deleteMissing,
+    manifest.sync.deleteMissing
   );
   const reindexResult = manifest.sync.reindex
     ? await client.reindex({
@@ -10077,7 +9031,7 @@ export async function onboardFolderCommand(
   printKeyValue("Onboard folder:", manifest.source.root);
   printKeyValue(
     "Classification:",
-    `${manifest.classification.mode} (${Math.round(manifest.classification.confidence * 100)}%)`,
+    `${manifest.classification.mode} (${Math.round(manifest.classification.confidence * 100)}%)`
   );
   printKeyValue("Documents:", manifest.sync.documents.length);
   printSyncDocumentsResult(syncResult);
@@ -10101,7 +9055,7 @@ export async function reindexCommand(options: {
       : {
           kind: options.kind ?? "doc",
           mode: options.mode ?? "incremental",
-        },
+        }
   );
 
   if (options.json) {
@@ -10127,10 +9081,7 @@ export async function businessHealthCommand(options: {
   printBusinessHealthResult(result);
 }
 
-export async function chunkGetCommand(options: {
-  chunkId: string;
-  json?: boolean;
-}): Promise<void> {
+export async function chunkGetCommand(options: { chunkId: string; json?: boolean }): Promise<void> {
   ensureConfigured();
 
   const client = createClient(15000);
@@ -10152,7 +9103,7 @@ export async function multiQueryCommand(options: {
   const client = createClient(20000);
   const result = await client.multiQuery(
     options.queries.map((query) => ({ query })),
-    options.maxTokens,
+    options.maxTokens
   );
   if (options.json) {
     printJson(result);
@@ -10311,9 +9262,7 @@ export async function codeImpactCommand(options: {
     !options.filePath &&
     (!options.changedFiles || options.changedFiles.length === 0)
   ) {
-    throw new Error(
-      "Provide --qualified-name, --symbol-key, --file-path, or --changed-files",
-    );
+    throw new Error("Provide --qualified-name, --symbol-key, --file-path, or --changed-files");
   }
 
   const client = createClient(30000);
@@ -10392,14 +9341,9 @@ export async function workflowRunCommand(options: {
     !hostedConfigured &&
     effectiveMode !== "orchestrate" &&
     (localAdaptiveRoutingRequested ||
-      (localAdaptiveRoutingPolicy !== null &&
-        localAdaptiveRoutingPolicy.mode !== "off"));
+      (localAdaptiveRoutingPolicy !== null && localAdaptiveRoutingPolicy.mode !== "off"));
 
-  if (
-    !hostedConfigured &&
-    !canRunLocalAdaptiveRouting &&
-    effectiveMode !== "lite"
-  ) {
+  if (!hostedConfigured && !canRunLocalAdaptiveRouting && effectiveMode !== "lite") {
     ensureConfigured();
   }
 
@@ -10414,7 +9358,7 @@ export async function workflowRunCommand(options: {
   const adaptiveRoutingIntent = resolveAdaptiveRoutingIntent(
     options,
     adaptiveRoutingPolicy,
-    hostedConfigured,
+    hostedConfigured
   );
   const localWorkerRoutingDefaults = adaptiveRoutingIntent.shouldBuild
     ? resolveLocalWorkerRoutingDefaults({
@@ -10422,44 +9366,29 @@ export async function workflowRunCommand(options: {
         workerRole: options.routingWorkerRole,
       })
     : null;
-  const routingOptions = applyLocalWorkerRoutingDefaults(
-    options,
-    localWorkerRoutingDefaults,
-  );
+  const routingOptions = applyLocalWorkerRoutingDefaults(options, localWorkerRoutingDefaults);
   const adaptiveRoutingDryRun = adaptiveRoutingIntent.shouldBuild
     ? buildWorkflowAdaptiveRouting(
         routingOptions,
         adaptiveRoutingPolicy,
-        adaptiveRoutingIntent.warnings,
+        adaptiveRoutingIntent.warnings
       )
     : null;
   const adaptiveRoutingWithCatalog =
-    adaptiveRoutingDryRun &&
-    adaptiveRoutingIntent.shouldUseHostedCatalog &&
-    client
-      ? await enrichAdaptiveRoutingWithHostedCatalog(
-          client,
-          adaptiveRoutingDryRun,
-        )
+    adaptiveRoutingDryRun && adaptiveRoutingIntent.shouldUseHostedCatalog && client
+      ? await enrichAdaptiveRoutingWithHostedCatalog(client, adaptiveRoutingDryRun)
       : adaptiveRoutingDryRun;
   const adaptiveRouting = shouldResolveAdaptiveRoutingLocally(
     routingOptions,
-    adaptiveRoutingWithCatalog,
+    adaptiveRoutingWithCatalog
   )
-    ? enrichAdaptiveRoutingWithLocalOrchestrator(
-        adaptiveRoutingWithCatalog!,
-        routingOptions,
-      )
+    ? enrichAdaptiveRoutingWithLocalOrchestrator(adaptiveRoutingWithCatalog!, routingOptions)
     : adaptiveRoutingWithCatalog;
-  const orchestratorRecommendation = getOrchestratorRecommendation(
-    options.query,
-    effectiveMode,
-    {
-      policyAutoRoute: options.autoRouteOrchestrator,
-      policySource: options.orchestratorPolicySource,
-      adaptiveRoutingDryRun: Boolean(adaptiveRouting),
-    },
-  );
+  const orchestratorRecommendation = getOrchestratorRecommendation(options.query, effectiveMode, {
+    policyAutoRoute: options.autoRouteOrchestrator,
+    policySource: options.orchestratorPolicySource,
+    adaptiveRoutingDryRun: Boolean(adaptiveRouting),
+  });
   const shouldEmitOrchestratorHandoff =
     options.emitOrchestratorHandoff || options.autoRouteOrchestrator;
   const preparedHandoff =
@@ -10480,17 +9409,14 @@ export async function workflowRunCommand(options: {
       mode: options.mode,
       effective_mode: effectiveMode,
       local_only: true,
-      local_policy_path: localAdaptiveRoutingPolicy
-        ? ADAPTIVE_ROUTING_POLICY_RELATIVE_PATH
-        : null,
+      local_policy_path: localAdaptiveRoutingPolicy ? ADAPTIVE_ROUTING_POLICY_RELATIVE_PATH : null,
       retrieval_policy:
         effectiveMode === "lite"
           ? {
               mandatory_calls: [],
               escalation:
                 "Run recall, context_query, or code impact only when the task needs them.",
-              persistence:
-                "Use task-commit only when reusable durable knowledge was learned.",
+              persistence: "Use task-commit only when reusable durable knowledge was learned.",
             }
           : undefined,
       orchestrator_recommendation: orchestratorRecommendation,
@@ -10515,7 +9441,7 @@ export async function workflowRunCommand(options: {
     } else {
       console.log(chalk.bold("Local Adaptive Work Routing"));
       console.log(
-        "Hosted Snipara is not configured; no context query, hosted catalog, or planner call ran.",
+        "Hosted Snipara is not configured; no context query, hosted catalog, or planner call ran."
       );
     }
     if (adaptiveRouting) {
@@ -10533,10 +9459,8 @@ export async function workflowRunCommand(options: {
       effective_mode: effectiveMode,
       retrieval_policy: {
         mandatory_calls: [],
-        escalation:
-          "Run recall, context_query, or code impact only when the task needs them.",
-        persistence:
-          "Use task-commit only when reusable durable knowledge was learned.",
+        escalation: "Run recall, context_query, or code impact only when the task needs them.",
+        persistence: "Use task-commit only when reusable durable knowledge was learned.",
       },
       orchestrator_recommendation: orchestratorRecommendation,
       orchestrator_handoff: preparedHandoff,
@@ -10563,9 +9487,7 @@ export async function workflowRunCommand(options: {
   }
 
   if (!client) {
-    throw new Error(
-      "Hosted Snipara client unavailable after configuration check.",
-    );
+    throw new Error("Hosted Snipara client unavailable after configuration check.");
   }
 
   if (effectiveMode === "orchestrate") {
@@ -10584,11 +9506,7 @@ export async function workflowRunCommand(options: {
     printOrchestrateResult(result);
     if (options.runtimeHint !== false) {
       printRuntimeHint(options.query, effectiveMode);
-      printOrchestratorHandoffHint(
-        options.query,
-        effectiveMode,
-        orchestratorRecommendation,
-      );
+      printOrchestratorHandoffHint(options.query, effectiveMode, orchestratorRecommendation);
     }
     if (adaptiveRouting) {
       printAdaptiveRoutingRecommendation(adaptiveRouting);
@@ -10626,27 +9544,23 @@ export async function workflowRunCommand(options: {
 
   if (effectiveMode === "full") {
     const bootstrap = await client.getSessionMemories(
-      workflowBudget?.allocations.critical_memory_tokens ??
-        DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS,
-      workflowBudget?.allocations.session_context_tokens ?? 0,
+      workflowBudget?.allocations.critical_memory_tokens ?? DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS,
+      workflowBudget?.allocations.session_context_tokens ?? 0
     );
     payload.session_bootstrap = bootstrap;
-    payload.session_bootstrap_quality = buildSessionBootstrapQuality(
-      bootstrap,
-      {
-        expectedMaxTokens:
-          (workflowBudget?.allocations.critical_memory_tokens ??
-            DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS) +
-          (workflowBudget?.allocations.session_context_tokens ?? 0),
-      },
-    );
+    payload.session_bootstrap_quality = buildSessionBootstrapQuality(bootstrap, {
+      expectedMaxTokens:
+        (workflowBudget?.allocations.critical_memory_tokens ??
+          DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS) +
+        (workflowBudget?.allocations.session_context_tokens ?? 0),
+    });
   }
 
   const context = await client.queryContext(
     options.query,
     workflowBudget?.allocations.context_query_tokens ||
       options.maxTokens ||
-      DEFAULT_WORKFLOW_RUN_TOKENS,
+      DEFAULT_WORKFLOW_RUN_TOKENS
   );
   payload.context = context;
 
@@ -10656,12 +9570,7 @@ export async function workflowRunCommand(options: {
         workflowBudget?.allocations.shared_context_tokens ||
         Math.min(
           DEFAULT_SHARED_CONTEXT_TOKENS,
-          Math.max(
-            500,
-            Math.floor(
-              (options.maxTokens || DEFAULT_WORKFLOW_RUN_TOKENS) * 0.3,
-            ),
-          ),
+          Math.max(500, Math.floor((options.maxTokens || DEFAULT_WORKFLOW_RUN_TOKENS) * 0.3))
         ),
       categories: inferSharedContextCategories(options.query),
       includeContent: true,
@@ -10679,23 +9588,13 @@ export async function workflowRunCommand(options: {
     try {
       const plan = await client.plan(
         options.query,
-        workflowBudget?.allocations.plan_tokens ?? options.maxTokens,
+        workflowBudget?.allocations.plan_tokens ?? options.maxTokens
       );
-      const quality = validatePlanResult(plan, {
-        query: options.query,
-        cwd: process.cwd(),
-      });
+      const quality = validatePlanResult(plan, { query: options.query, cwd: process.cwd() });
       payload.plan = plan;
       payload.plan_quality = quality;
-      if (
-        quality.valid &&
-        (options.writePlanFile || options.startWorkflowFromPlan)
-      ) {
-        const planFile = writeGeneratedWorkflowPlanFile(
-          plan,
-          options.query,
-          options.writePlanFile,
-        );
+      if (quality.valid && (options.writePlanFile || options.startWorkflowFromPlan)) {
+        const planFile = writeGeneratedWorkflowPlanFile(plan, options.query, options.writePlanFile);
         payload.generated_plan_file = planFile;
         if (options.startWorkflowFromPlan) {
           payload.managed_workflow = await publishWorkflowStartCoordination(
@@ -10705,7 +9604,7 @@ export async function workflowRunCommand(options: {
               id: options.workflowId,
               force: options.force,
             }),
-            inferWorkflowCoordinationMode({ planFile: planFile.path }),
+            inferWorkflowCoordinationMode({ planFile: planFile.path })
           );
         }
       } else if (!quality.valid) {
@@ -10739,16 +9638,14 @@ export async function workflowRunCommand(options: {
           (workflowBudget?.allocations.critical_memory_tokens ??
             DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS) +
           (workflowBudget?.allocations.session_context_tokens ?? 0),
-      },
+      }
     );
     if (
       printedBootstrap &&
       payload.session_bootstrap_quality &&
       typeof payload.session_bootstrap_quality === "object"
     ) {
-      printSessionBootstrapQuality(
-        buildPrintedBootstrapQuality(printedBootstrap),
-      );
+      printSessionBootstrapQuality(buildPrintedBootstrapQuality(printedBootstrap));
     }
     if (workflowBudget?.warnings.length) {
       console.log(chalk.bold("Workflow Budget Warnings"));
@@ -10763,35 +9660,24 @@ export async function workflowRunCommand(options: {
     printSharedContextResult(payload.shared_context as SharedContextResult);
   }
 
-  if (
-    payload.executed_recommended_tool &&
-    typeof payload.executed_recommended_tool === "object"
-  ) {
+  if (payload.executed_recommended_tool && typeof payload.executed_recommended_tool === "object") {
     printRecommendedToolExecution(
       payload.executed_recommended_tool as {
         toolName: string;
         args: Record<string, unknown>;
         result: unknown;
-      },
+      }
     );
   }
 
-  if (
-    effectiveMode === "full" &&
-    payload.plan &&
-    typeof payload.plan === "object"
-  ) {
+  if (effectiveMode === "full" && payload.plan && typeof payload.plan === "object") {
     console.log(chalk.bold("Generated Plan"));
     printPlanResult(payload.plan as Record<string, unknown>);
     if (payload.plan_quality && typeof payload.plan_quality === "object") {
       printPlanQualityWarnings(payload.plan_quality as PlanQualityReport);
     }
   }
-  if (
-    effectiveMode === "full" &&
-    payload.plan_error &&
-    typeof payload.plan_error === "object"
-  ) {
+  if (effectiveMode === "full" && payload.plan_error && typeof payload.plan_error === "object") {
     console.log(chalk.bold("Plan fallback"));
     const error = payload.plan_error as Record<string, unknown>;
     if (typeof error.message === "string") {
@@ -10804,23 +9690,15 @@ export async function workflowRunCommand(options: {
     }
   }
   if (payload.generated_plan_file) {
-    printGeneratedPlanFile(
-      payload.generated_plan_file as WrittenGeneratedPlanFile,
-    );
+    printGeneratedPlanFile(payload.generated_plan_file as WrittenGeneratedPlanFile);
   }
   if (payload.managed_workflow) {
-    printManagedWorkflowStarted(
-      payload.managed_workflow as ManagedWorkflowState,
-    );
+    printManagedWorkflowStarted(payload.managed_workflow as ManagedWorkflowState);
   }
 
   if (options.runtimeHint !== false) {
     printRuntimeHint(options.query, effectiveMode);
-    printOrchestratorHandoffHint(
-      options.query,
-      effectiveMode,
-      orchestratorRecommendation,
-    );
+    printOrchestratorHandoffHint(options.query, effectiveMode, orchestratorRecommendation);
   }
   if (adaptiveRouting) {
     printAdaptiveRoutingRecommendation(adaptiveRouting);
@@ -10859,7 +9737,7 @@ function shouldBuildAdaptiveRouting(options: {
     options.routingLocalProvider ||
     options.routingLocalApiKeyEnv ||
     options.plannerRetainsReasoning ||
-    options.strongRepair,
+    options.strongRepair
   );
 }
 
@@ -10880,7 +9758,7 @@ function buildWorkflowAdaptiveRouting(
     strongRepair?: boolean;
   },
   policy: AdaptiveRoutingProjectPolicy | null = null,
-  intentWarnings: string[] = [],
+  intentWarnings: string[] = []
 ): AdaptiveWorkRoutingRecommendation {
   const state = readWorkflowState();
   const currentPhase = state ? currentWorkflowPhase(state) : undefined;
@@ -10892,15 +9770,11 @@ function buildWorkflowAdaptiveRouting(
   ]);
   const policyAllowedEndpointTypes = policy?.allowedEndpointTypes ?? [];
   const requestedAllowedEndpointTypes = normalizeRoutingEndpointTypes(
-    options.routingAllowedEndpoints,
+    options.routingAllowedEndpoints
   );
   const requestedPolicyEndpointIntersection =
-    policyAllowedEndpointTypes.length > 0 &&
-    requestedAllowedEndpointTypes.length > 0
-      ? intersectStrings(
-          requestedAllowedEndpointTypes,
-          policyAllowedEndpointTypes,
-        )
+    policyAllowedEndpointTypes.length > 0 && requestedAllowedEndpointTypes.length > 0
+      ? intersectStrings(requestedAllowedEndpointTypes, policyAllowedEndpointTypes)
       : [];
   const allowedEndpointTypes =
     policyAllowedEndpointTypes.length > 0
@@ -10912,12 +9786,10 @@ function buildWorkflowAdaptiveRouting(
       : requestedAllowedEndpointTypes;
   const preferredEndpointTypes =
     allowedEndpointTypes.length > 0
-      ? initialPreferredEndpointTypes.filter((type) =>
-          allowedEndpointTypes.includes(type),
-        )
+      ? initialPreferredEndpointTypes.filter((type) => allowedEndpointTypes.includes(type))
       : initialPreferredEndpointTypes;
   const removedPreferredEndpointTypes = initialPreferredEndpointTypes.filter(
-    (type) => !preferredEndpointTypes.includes(type),
+    (type) => !preferredEndpointTypes.includes(type)
   );
   const localRoutingRequested = hasLocalRoutingRequest(options);
   const localRoutingAllowed =
@@ -10955,8 +9827,7 @@ function buildWorkflowAdaptiveRouting(
         policy?.plannerRetainsReasoning ??
         (options.routeLocalWorkers ? true : undefined),
       strongRepair: options.strongRepair,
-      catalogLimit:
-        policy?.catalogLimit ?? DEFAULT_ADAPTIVE_ROUTING_CATALOG_LIMIT,
+      catalogLimit: policy?.catalogLimit ?? DEFAULT_ADAPTIVE_ROUTING_CATALOG_LIMIT,
       dailyBudgetCents: policy?.dailyBudgetCents,
       monthlyBudgetCents: policy?.monthlyBudgetCents,
     });
@@ -10966,23 +9837,18 @@ function buildWorkflowAdaptiveRouting(
   const allowedWorkerClasses = policy?.allowedWorkerClasses ?? [];
   if (
     allowedWorkerClasses.length > 0 &&
-    !isAdaptiveWorkerClassAllowed(
-      routing.requirements.workerRole,
-      allowedWorkerClasses,
-    )
+    !isAdaptiveWorkerClassAllowed(routing.requirements.workerRole, allowedWorkerClasses)
   ) {
-    const disallowedWorkerClass = canonicalAdaptiveWorkerClass(
-      routing.requirements.workerRole,
-    );
+    const disallowedWorkerClass = canonicalAdaptiveWorkerClass(routing.requirements.workerRole);
     const fallbackWorkerRole = selectAdaptiveWorkerRoleForPolicy(
       routing.workProfile.taskType,
-      allowedWorkerClasses,
+      allowedWorkerClasses
     );
     routing = buildRecommendation(fallbackWorkerRole);
     policyWarnings.push(
       `Project Adaptive Work Routing policy does not allow worker class ${disallowedWorkerClass}; using ${canonicalAdaptiveWorkerClass(
-        fallbackWorkerRole,
-      )}.`,
+        fallbackWorkerRole
+      )}.`
     );
   }
 
@@ -10997,14 +9863,8 @@ function buildWorkflowAdaptiveRouting(
     ...routing,
     routingCard: {
       ...routing.routingCard,
-      reasons: uniqueStrings([
-        ...routing.routingCard.reasons,
-        ...policyReasons,
-      ]),
-      warnings: uniqueStrings([
-        ...routing.routingCard.warnings,
-        ...policyWarnings,
-      ]),
+      reasons: uniqueStrings([...routing.routingCard.reasons, ...policyReasons]),
+      warnings: uniqueStrings([...routing.routingCard.warnings, ...policyWarnings]),
     },
   };
 }
@@ -11014,27 +9874,21 @@ function normalizeRoutingEndpointTypes(values: string[] | undefined): string[] {
     new Set(
       (values ?? [])
         .map((value) => stringValue(value)?.toLowerCase())
-        .filter((value): value is string => Boolean(value)),
-    ),
+        .filter((value): value is string => Boolean(value))
+    )
   ).sort();
 }
 
-function normalizeAdaptiveRoutingMode(
-  value: unknown,
-): AdaptiveRoutingMode | null {
+function normalizeAdaptiveRoutingMode(value: unknown): AdaptiveRoutingMode | null {
   const normalized = stringValue(value)?.toLowerCase();
-  return normalized === "off" ||
-    normalized === "recommend" ||
-    normalized === "catalog"
+  return normalized === "off" || normalized === "recommend" || normalized === "catalog"
     ? normalized
     : null;
 }
 
-function normalizeAdaptiveWorkerClasses(
-  values: string[] | undefined,
-): string[] {
-  return uniqueStrings((values ?? []).map(canonicalAdaptiveWorkerClass)).filter(
-    (value) => ["documentation", "tests", "review", "coding"].includes(value),
+function normalizeAdaptiveWorkerClasses(values: string[] | undefined): string[] {
+  return uniqueStrings((values ?? []).map(canonicalAdaptiveWorkerClass)).filter((value) =>
+    ["documentation", "tests", "review", "coding"].includes(value)
   );
 }
 
@@ -11046,9 +9900,7 @@ function normalizeCents(value: unknown): number {
   return Math.floor(parsed);
 }
 
-function normalizeAdaptiveRoutingCatalogLimit(
-  value: unknown,
-): number | undefined {
+function normalizeAdaptiveRoutingCatalogLimit(value: unknown): number | undefined {
   const parsed = numberValue(value);
   if (parsed === undefined || parsed < 1) {
     return undefined;
@@ -11062,8 +9914,7 @@ function intersectStrings(left: string[], right: string[]): string[] {
 }
 
 function canonicalAdaptiveWorkerClass(value: string | undefined): string {
-  const normalized =
-    stringValue(value)?.toLowerCase().replace(/[-\s]/g, "_") ?? "execution";
+  const normalized = stringValue(value)?.toLowerCase().replace(/[-\s]/g, "_") ?? "execution";
   if (normalized === "docs" || normalized === "doc") {
     return "documentation";
   }
@@ -11073,28 +9924,19 @@ function canonicalAdaptiveWorkerClass(value: string | undefined): string {
   if (normalized === "validation" || normalized === "reviewer") {
     return "review";
   }
-  if (
-    normalized === "code" ||
-    normalized === "coder" ||
-    normalized === "implementation"
-  ) {
+  if (normalized === "code" || normalized === "coder" || normalized === "implementation") {
     return "coding";
   }
   return normalized;
 }
 
-function isAdaptiveWorkerClassAllowed(
-  workerRole: string,
-  allowedWorkerClasses: string[],
-): boolean {
-  return allowedWorkerClasses.includes(
-    canonicalAdaptiveWorkerClass(workerRole),
-  );
+function isAdaptiveWorkerClassAllowed(workerRole: string, allowedWorkerClasses: string[]): boolean {
+  return allowedWorkerClasses.includes(canonicalAdaptiveWorkerClass(workerRole));
 }
 
 function selectAdaptiveWorkerRoleForPolicy(
   taskType: string,
-  allowedWorkerClasses: string[],
+  allowedWorkerClasses: string[]
 ): string {
   const preferences =
     taskType === "documentation"
@@ -11104,12 +9946,8 @@ function selectAdaptiveWorkerRoleForPolicy(
         : taskType === "coding" || taskType === "critical_code"
           ? ["coding", "review", "tests", "documentation"]
           : ["review", "coding", "documentation", "tests"];
-  const selected = preferences.find((workerClass) =>
-    allowedWorkerClasses.includes(workerClass),
-  );
-  return workerRoleFromAdaptiveClass(
-    selected ?? allowedWorkerClasses[0] ?? "review",
-  );
+  const selected = preferences.find((workerClass) => allowedWorkerClasses.includes(workerClass));
+  return workerRoleFromAdaptiveClass(selected ?? allowedWorkerClasses[0] ?? "review");
 }
 
 function workerRoleFromAdaptiveClass(workerClass: string): string {
@@ -11125,15 +9963,13 @@ function startManagedWorkflowState(options: {
   const existing = readWorkflowState();
   if (existing && existing.status === "active" && !options.force) {
     throw new Error(
-      `Active workflow '${existing.workflowId}' already exists. Use --force to replace ${WORKFLOW_STATE_RELATIVE_PATH}.`,
+      `Active workflow '${existing.workflowId}' already exists. Use --force to replace ${WORKFLOW_STATE_RELATIVE_PATH}.`
     );
   }
 
   const goal =
     options.goal ??
-    (options.planFile
-      ? `Workflow from ${path.basename(options.planFile)}`
-      : undefined);
+    (options.planFile ? `Workflow from ${path.basename(options.planFile)}` : undefined);
   if (!goal) {
     throw new Error("Provide --goal or --plan-file");
   }
@@ -11143,8 +9979,7 @@ function startManagedWorkflowState(options: {
     : normalizeWorkflowPlanInput(goal, goal);
   const now = new Date().toISOString();
   const workflowId =
-    options.id ??
-    sanitizeWorkflowId(goal, `workflow-${now.slice(0, 10).replace(/-/g, "")}`);
+    options.id ?? sanitizeWorkflowId(goal, `workflow-${now.slice(0, 10).replace(/-/g, "")}`);
   const state: ManagedWorkflowState = {
     schemaVersion: "snipara.workflow.v2",
     workflowId,
@@ -11165,9 +10000,7 @@ function startManagedWorkflowState(options: {
 function plannedWorkflowFiles(state: ManagedWorkflowState): string[] {
   return (
     uniqueStringList(
-      state.phases
-        .flatMap((phase) => phase.files ?? [])
-        .map(normalizeRepoFilePath),
+      state.phases.flatMap((phase) => phase.files ?? []).map(normalizeRepoFilePath)
     ) ?? []
   );
 }
@@ -11451,7 +10284,7 @@ async function closeManagedWorkflowJudgment(args: {
 
 async function publishWorkflowStartCoordination(
   state: ManagedWorkflowState,
-  mode: ManagedWorkflowCoordinationMode,
+  mode: ManagedWorkflowCoordinationMode
 ): Promise<ManagedWorkflowState> {
   const files = mode === "standard" ? [] : plannedWorkflowFiles(state);
   const startReceipt = await workflowCollaborationStart({
@@ -11476,9 +10309,7 @@ async function publishWorkflowStartCoordination(
     lastUpdatedAt: now,
     workSessionId: startReceipt.workSessionId,
     startReceipt,
-    ...(teamSyncReceipt
-      ? { teamSyncReceipt: readHostedStatus(teamSyncReceipt) }
-      : {}),
+    ...(teamSyncReceipt ? { teamSyncReceipt: readHostedStatus(teamSyncReceipt) } : {}),
   };
   state.updatedAt = now;
   writeWorkflowState(state);
@@ -11503,7 +10334,7 @@ async function publishWorkflowStartCoordination(
 
 async function releaseWorkflowCoordination(
   state: ManagedWorkflowState,
-  reason: string,
+  reason: string
 ): Promise<WorkflowCollaborationReceipt | undefined> {
   if (!state.coordination?.workSessionId || state.coordination.releaseReceipt) {
     return state.coordination?.releaseReceipt;
@@ -11522,14 +10353,11 @@ async function releaseWorkflowCoordination(
   return releaseReceipt;
 }
 
-function readHostedStatus(
-  payload: unknown,
-): Record<string, unknown> | undefined {
+function readHostedStatus(payload: unknown): Record<string, unknown> | undefined {
   if (!payload || typeof payload !== "object") {
     return undefined;
   }
-  const hosted = (payload as { hosted?: { status?: string; error?: string } })
-    .hosted;
+  const hosted = (payload as { hosted?: { status?: string; error?: string } }).hosted;
   return {
     action: (payload as { action?: string }).action,
     hostedStatus: hosted?.status ?? "skipped",
@@ -11551,7 +10379,7 @@ export async function workflowStartCommand(options: {
       id: options.id,
       force: options.force,
     }),
-    inferWorkflowCoordinationMode({ planFile: options.planFile }),
+    inferWorkflowCoordinationMode({ planFile: options.planFile })
   );
   appendActivityEvent({
     source: "workflow",
@@ -11712,9 +10540,7 @@ export async function workflowJudgmentRespondCommand(options: {
   console.log("");
 }
 
-export async function workflowStatusCommand(options: {
-  json?: boolean;
-}): Promise<void> {
+export async function workflowStatusCommand(options: { json?: boolean }): Promise<void> {
   const state = readRequiredWorkflowState();
   if (options.json) {
     printJson({
@@ -11728,20 +10554,18 @@ export async function workflowStatusCommand(options: {
 }
 
 function lastCompletedWorkflowPhase(
-  state: ManagedWorkflowState | undefined,
+  state: ManagedWorkflowState | undefined
 ): ManagedWorkflowPhase | undefined {
   return state?.phases
     .filter((phase) => phase.status === "completed" && phase.completedAt)
-    .sort((left, right) =>
-      String(right.completedAt).localeCompare(String(left.completedAt)),
-    )[0];
+    .sort((left, right) => String(right.completedAt).localeCompare(String(left.completedAt)))[0];
 }
 
 function latestTeamSyncHandoff(
-  handoffs: TeamSyncHandoffRecord[],
+  handoffs: TeamSyncHandoffRecord[]
 ): TeamSyncHandoffRecord | undefined {
   return [...handoffs].sort((left, right) =>
-    String(right.createdAt).localeCompare(String(left.createdAt)),
+    String(right.createdAt).localeCompare(String(left.createdAt))
   )[0];
 }
 
@@ -11753,17 +10577,13 @@ function buildAgenticStatusRisks(args: {
   latestHandoff?: TeamSyncHandoffRecord;
 }): string[] {
   const risks: string[] = [];
-  const currentPhase = args.state
-    ? currentWorkflowPhase(args.state)
-    : undefined;
+  const currentPhase = args.state ? currentWorkflowPhase(args.state) : undefined;
 
   if (!args.state) {
     risks.push("No active managed workflow state found locally.");
   }
   if (args.dirtyFileCount > 0) {
-    risks.push(
-      `${args.dirtyFileCount} dirty git file(s) need review before handoff or commit.`,
-    );
+    risks.push(`${args.dirtyFileCount} dirty git file(s) need review before handoff or commit.`);
   }
   if (args.staleWorkCount > 0) {
     risks.push(args.staleWorkExplanation.message);
@@ -11771,10 +10591,7 @@ function buildAgenticStatusRisks(args: {
   if (currentPhase?.status === "blocked") {
     risks.push(`Current phase '${currentPhase.id}' is blocked.`);
   }
-  if (
-    args.latestHandoff?.attention &&
-    args.latestHandoff.attention !== "note"
-  ) {
+  if (args.latestHandoff?.attention && args.latestHandoff.attention !== "note") {
     risks.push(`Latest handoff attention: ${args.latestHandoff.attention}.`);
   }
 
@@ -11783,7 +10600,7 @@ function buildAgenticStatusRisks(args: {
 
 function buildSuggestedAgenticNextAction(
   state: ManagedWorkflowState | undefined,
-  risks: string[],
+  risks: string[]
 ): string {
   const phase = state ? currentWorkflowPhase(state) : undefined;
   if (!state) {
@@ -11819,62 +10636,54 @@ function buildAgenticOperationalLoop(args: {
 
   if (args.pendingDecisionCount > 0) {
     nextActions.push(
-      `Resolve ${args.pendingDecisionCount} local Decision Request${args.pendingDecisionCount === 1 ? "" : "s"} with snipara-companion workflow decisions and workflow decide.`,
+      `Resolve ${args.pendingDecisionCount} local Decision Request${args.pendingDecisionCount === 1 ? "" : "s"} with snipara-companion workflow decisions and workflow decide.`
     );
   }
   if (args.teamSyncSummary.staleWorkCount > 0) {
     nextActions.push(
-      "Review stale Team Sync work with snipara-companion team-sync sweep --dry-run before continuing.",
+      "Review stale Team Sync work with snipara-companion team-sync sweep --dry-run before continuing."
     );
   }
   if (args.dirtyFileCount > 0) {
-    nextActions.push(
-      "Review dirty git state and run the relevant checks before phase-commit.",
-    );
+    nextActions.push("Review dirty git state and run the relevant checks before phase-commit.");
   }
   if (args.latestHandoff?.next) {
     nextActions.push(
-      `Continue latest handoff next step: ${toPreview(args.latestHandoff.next, 160)}`,
+      `Continue latest handoff next step: ${toPreview(args.latestHandoff.next, 160)}`
     );
   }
   if (phase?.status === "blocked") {
-    nextActions.push(
-      `Unblock current phase '${phase.id}' before new implementation work.`,
-    );
+    nextActions.push(`Unblock current phase '${phase.id}' before new implementation work.`);
   } else if (phase) {
     nextActions.push(
-      `Continue phase '${phase.id}' and close it with snipara-companion workflow phase-commit ${phase.id}.`,
+      `Continue phase '${phase.id}' and close it with snipara-companion workflow phase-commit ${phase.id}.`
     );
   } else if (!args.state) {
-    nextActions.push(
-      "Start a managed workflow before multi-step implementation work.",
-    );
+    nextActions.push("Start a managed workflow before multi-step implementation work.");
   }
 
   if (args.state && args.state.status !== "completed") {
     receiptGapCount += 1;
     receiptActions.push(
-      "Before closing the phase, capture why/outcome evidence with snipara-companion outcome-capture preview --emit-outcome-receipt.",
+      "Before closing the phase, capture why/outcome evidence with snipara-companion outcome-capture preview --emit-outcome-receipt."
     );
   }
   if (args.latestHandoff && args.latestHandoff.attention !== "note") {
     receiptGapCount += 1;
     receiptActions.push(
-      "Treat the latest Team Sync handoff as needing proof/review evidence before final-commit.",
+      "Treat the latest Team Sync handoff as needing proof/review evidence before final-commit."
     );
   }
   if (args.pendingDecisionCount > 0) {
     receiptActions.push(
-      "Decision Request resolution records the human choice; follow-up policy edits remain explicit.",
+      "Decision Request resolution records the human choice; follow-up policy edits remain explicit."
     );
   }
 
   const status =
     phase?.status === "blocked"
       ? "blocked"
-      : args.risks.length > 0 ||
-          args.pendingDecisionCount > 0 ||
-          receiptGapCount > 0
+      : args.risks.length > 0 || args.pendingDecisionCount > 0 || receiptGapCount > 0
         ? "attention"
         : "clear";
 
@@ -11888,9 +10697,7 @@ function buildAgenticOperationalLoop(args: {
   };
 }
 
-export function buildAgenticWorkStatus(
-  cwd: string = process.cwd(),
-): AgenticWorkStatus {
+export function buildAgenticWorkStatus(cwd: string = process.cwd()): AgenticWorkStatus {
   const state = readWorkflowState(cwd);
   const git = readLocalGitState(cwd);
   autoArchiveTeamSyncState(cwd);
@@ -11944,8 +10751,7 @@ export function buildAgenticWorkStatus(
                 },
               }
             : {}),
-          resumeCommand:
-            "snipara-companion workflow resume --include-session-context",
+          resumeCommand: "snipara-companion workflow resume --include-session-context",
         }
       : null,
     teamSync: {
@@ -11995,21 +10801,18 @@ function printAgenticWorkStatus(status: AgenticWorkStatus): void {
 
   if (status.workflow) {
     printKeyValue("Goal:", status.workflow.goal);
-    printKeyValue(
-      "Workflow:",
-      `${status.workflow.id} (${status.workflow.status})`,
-    );
+    printKeyValue("Workflow:", `${status.workflow.id} (${status.workflow.status})`);
     if (status.workflow.currentPhase) {
       printKeyValue(
         "Current phase:",
-        `${status.workflow.currentPhase.id} (${status.workflow.currentPhase.status})`,
+        `${status.workflow.currentPhase.id} (${status.workflow.currentPhase.status})`
       );
     }
     if (status.workflow.lastPhaseCommit) {
       const lastCommit = status.workflow.lastPhaseCommit;
       printKeyValue(
         "Last phase commit:",
-        `${lastCommit.phaseId}${lastCommit.summary ? ` - ${toPreview(lastCommit.summary, 100)}` : ""}`,
+        `${lastCommit.phaseId}${lastCommit.summary ? ` - ${toPreview(lastCommit.summary, 100)}` : ""}`
       );
     }
   } else {
@@ -12023,18 +10826,12 @@ function printAgenticWorkStatus(status: AgenticWorkStatus): void {
   console.log(`Archived work: ${status.teamSync.archivedWorkCount}`);
   console.log(`Handoffs: ${status.teamSync.handoffCount}`);
   if (status.teamSync.staleWorkCount > 0) {
-    console.log(
-      `Stale detail: ${status.teamSync.staleWorkExplanation.message}`,
-    );
+    console.log(`Stale detail: ${status.teamSync.staleWorkExplanation.message}`);
   }
   if (status.teamSync.latestHandoff) {
-    console.log(
-      `Latest handoff: ${toPreview(status.teamSync.latestHandoff.summary, 120)}`,
-    );
+    console.log(`Latest handoff: ${toPreview(status.teamSync.latestHandoff.summary, 120)}`);
     if (status.teamSync.latestHandoff.next) {
-      console.log(
-        `Next from handoff: ${toPreview(status.teamSync.latestHandoff.next, 120)}`,
-      );
+      console.log(`Next from handoff: ${toPreview(status.teamSync.latestHandoff.next, 120)}`);
     }
   }
 
@@ -12051,9 +10848,7 @@ function printAgenticWorkStatus(status: AgenticWorkStatus): void {
   console.log("");
   console.log(chalk.bold("Open Decisions"));
   if (typeof status.openDecisions.count === "number") {
-    console.log(
-      `Local pending Decision Requests: ${status.openDecisions.count}`,
-    );
+    console.log(`Local pending Decision Requests: ${status.openDecisions.count}`);
   }
   console.log(status.openDecisions.note);
 
@@ -12079,9 +10874,7 @@ function printAgenticWorkStatus(status: AgenticWorkStatus): void {
   console.log("");
 }
 
-export async function agenticStatusCommand(options: {
-  json?: boolean;
-}): Promise<void> {
+export async function agenticStatusCommand(options: { json?: boolean }): Promise<void> {
   const status = buildAgenticWorkStatus();
   if (options.json) {
     printJson(status);
@@ -12092,16 +10885,14 @@ export async function agenticStatusCommand(options: {
 
 function pushTimelineEvent(
   events: AgenticTimelineEvent[],
-  event: AgenticTimelineEvent | undefined,
+  event: AgenticTimelineEvent | undefined
 ): void {
   if (event?.time) {
     events.push(event);
   }
 }
 
-function workflowTimelineEvents(
-  state: ManagedWorkflowState | undefined,
-): AgenticTimelineEvent[] {
+function workflowTimelineEvents(state: ManagedWorkflowState | undefined): AgenticTimelineEvent[] {
   if (!state) {
     return [];
   }
@@ -12177,9 +10968,7 @@ function teamSyncWorkEvents(work: TeamSyncWorkRecord): AgenticTimelineEvent[] {
   return events;
 }
 
-function teamSyncHandoffEvent(
-  handoff: TeamSyncHandoffRecord,
-): AgenticTimelineEvent {
+function teamSyncHandoffEvent(handoff: TeamSyncHandoffRecord): AgenticTimelineEvent {
   return {
     time: handoff.createdAt,
     kind: "team-sync-handoff",
@@ -12194,21 +10983,19 @@ export function buildAgenticTimeline(
   options: {
     limit?: number;
     cwd?: string;
-  } = {},
+  } = {}
 ): AgenticTimeline {
   const limit = options.limit && options.limit > 0 ? options.limit : 20;
   const state = readWorkflowState(options.cwd);
   const teamSyncState = loadTeamSyncState(options.cwd ?? process.cwd());
-  const activityEvents = readActivityTimeline({ cwd: options.cwd }).map(
-    (event) => ({
-      time: event.timestamp,
-      kind: event.kind,
-      title: event.title,
-      detail: event.summary ?? event.outcome,
-      source: event.source,
-      files: event.files,
-    }),
-  );
+  const activityEvents = readActivityTimeline({ cwd: options.cwd }).map((event) => ({
+    time: event.timestamp,
+    kind: event.kind,
+    title: event.title,
+    detail: event.summary ?? event.outcome,
+    source: event.source,
+    files: event.files,
+  }));
   const seen = new Set<string>();
   const events = [
     ...activityEvents,
@@ -12218,9 +11005,7 @@ export function buildAgenticTimeline(
   ]
     .sort((left, right) => String(right.time).localeCompare(String(left.time)))
     .filter((event) => {
-      const key = [event.time, event.kind, event.title, event.source].join(
-        "\u0000",
-      );
+      const key = [event.time, event.kind, event.title, event.source].join("\u0000");
       if (seen.has(key)) {
         return false;
       }
@@ -12268,13 +11053,10 @@ function localWorkspacePathAliases(): string[] {
     // Best-effort redaction only.
   }
   for (const alias of [...aliases]) {
-    if (alias.startsWith("/private/var/"))
-      aliases.add(alias.replace(/^\/private/, ""));
+    if (alias.startsWith("/private/var/")) aliases.add(alias.replace(/^\/private/, ""));
     else if (alias.startsWith("/var/")) aliases.add(`/private${alias}`);
   }
-  return [...aliases]
-    .filter(Boolean)
-    .sort((left, right) => right.length - left.length);
+  return [...aliases].filter(Boolean).sort((left, right) => right.length - left.length);
 }
 
 function redactTimelineText(value: unknown, maxLength = 180): string {
@@ -12290,7 +11072,7 @@ function redactTimelineText(value: unknown, maxLength = 180): string {
 
 function redactTimelineFile(file: string): string {
   const workspaceAlias = localWorkspacePathAliases().find(
-    (alias) => path.isAbsolute(file) && file.startsWith(alias),
+    (alias) => path.isAbsolute(file) && file.startsWith(alias)
   );
   const relative = workspaceAlias ? path.relative(workspaceAlias, file) : file;
   if (relative.startsWith(".snipara/") || relative === ".snipara") {
@@ -12311,9 +11093,7 @@ function formatAgenticTimelineMarkdown(timeline: AgenticTimeline): string {
   ];
 
   for (const event of timeline.events) {
-    lines.push(
-      `## ${redactTimelineText(event.time, 40)} - ${redactTimelineText(event.kind, 80)}`,
-    );
+    lines.push(`## ${redactTimelineText(event.time, 40)} - ${redactTimelineText(event.kind, 80)}`);
     lines.push("");
     lines.push(`- Source: ${redactTimelineText(event.source, 80)}`);
     lines.push(`- Title: ${redactTimelineText(event.title, 180)}`);
@@ -12325,9 +11105,7 @@ function formatAgenticTimelineMarkdown(timeline: AgenticTimeline): string {
         `- Files: ${event.files
           .slice(0, 6)
           .map(redactTimelineFile)
-          .join(
-            ", ",
-          )}${event.files.length > 6 ? ` (+${event.files.length - 6})` : ""}`,
+          .join(", ")}${event.files.length > 6 ? ` (+${event.files.length - 6})` : ""}`
       );
     }
     lines.push("");
@@ -12348,9 +11126,7 @@ export async function workflowTimelineCommand(options: {
   }
   if (options.exportFormat) {
     if (options.exportFormat !== "md") {
-      throw new Error(
-        "Unsupported workflow timeline export format. Use --export md.",
-      );
+      throw new Error("Unsupported workflow timeline export format. Use --export md.");
     }
     process.stdout.write(formatAgenticTimelineMarkdown(timeline));
     return;
@@ -12371,16 +11147,14 @@ export async function workflowSessionCommand(options: {
   if (snapshot.workflow) {
     printKeyValue(
       "Workflow:",
-      `${snapshot.workflow.id ?? "unknown"} (${snapshot.workflow.status ?? "unknown"})`,
+      `${snapshot.workflow.id ?? "unknown"} (${snapshot.workflow.status ?? "unknown"})`
     );
     if (snapshot.workflow.currentPhaseId) {
       printKeyValue(
         "Current phase:",
         `${snapshot.workflow.currentPhaseId}${
-          snapshot.workflow.currentPhaseTitle
-            ? ` - ${snapshot.workflow.currentPhaseTitle}`
-            : ""
-        }`,
+          snapshot.workflow.currentPhaseTitle ? ` - ${snapshot.workflow.currentPhaseTitle}` : ""
+        }`
       );
     }
   } else {
@@ -12396,21 +11170,16 @@ export async function workflowSessionCommand(options: {
   printKeyValue("Team Sync active work:", snapshot.teamSync.activeWorkCount);
   printKeyValue(
     "Intent:",
-    `${snapshot.intentDetection.intent} (${snapshot.intentDetection.confidence})`,
+    `${snapshot.intentDetection.intent} (${snapshot.intentDetection.confidence})`
   );
   printKeyValue(
     "Suggested mode:",
-    `${snapshot.intentDetection.advisoryRouting.suggestedWorkflowMode} (advisory)`,
+    `${snapshot.intentDetection.advisoryRouting.suggestedWorkflowMode} (advisory)`
   );
   if (snapshot.intentDetection.signals.length > 0) {
-    console.log(
-      `Intent signals: ${snapshot.intentDetection.signals.slice(0, 5).join(", ")}`,
-    );
+    console.log(`Intent signals: ${snapshot.intentDetection.signals.slice(0, 5).join(", ")}`);
   }
-  printKeyValue(
-    "Hard routing allowed:",
-    String(snapshot.routing.hardRoutingAllowed),
-  );
+  printKeyValue("Hard routing allowed:", String(snapshot.routing.hardRoutingAllowed));
   console.log(`Reason: ${snapshot.routing.reason}`);
   printKeyValue("Snapshot:", snapshot.source.snapshotPath);
   printKeyValue("Build time:", `${snapshot.performance.buildMs}ms`);
@@ -12456,33 +11225,31 @@ export async function workflowPhaseStartCommand(options: {
   printManagedWorkflowDiscipline();
   console.log(chalk.bold("Phase context gate"));
   console.log(
-    "snipara-companion session-bootstrap --include-session-context --max-context-tokens 1000",
+    "snipara-companion session-bootstrap --include-session-context --max-context-tokens 1000"
   );
   console.log(
     `snipara-companion workflow run --mode full --include-session-context --query ${shellQuote(
-      phaseQuery(state, phase),
-    )}`,
+      phaseQuery(state, phase)
+    )}`
   );
   if (phase.files && phase.files.length > 0) {
     console.log(
       `snipara-companion code impact --changed-files ${phase.files.map(shellQuote).join(" ")} --diff-summary ${shellQuote(
-        phase.title,
-      )}`,
+        phase.title
+      )}`
     );
   } else {
     console.log(
-      "snipara-companion code impact --changed-files <files...> --diff-summary '<change>'",
+      "snipara-companion code impact --changed-files <files...> --diff-summary '<change>'"
     );
   }
   console.log(
-    "For a named class/function/method in this phase, run: snipara-companion code symbol-card --qualified-name '<symbol>'",
+    "For a named class/function/method in this phase, run: snipara-companion code symbol-card --qualified-name '<symbol>'"
   );
   if (runtimeBinding) {
+    console.log(`Runtime binding: Snipara Sandbox session ${runtimeBinding.sessionId}`);
     console.log(
-      `Runtime binding: Snipara Sandbox session ${runtimeBinding.sessionId}`,
-    );
-    console.log(
-      `Checkpoint runtime progress with: snipara-companion workflow runtime-checkpoint ${phase.id} --summary '<resume-ready runtime state>' --rehydrate-file <state.json>`,
+      `Checkpoint runtime progress with: snipara-companion workflow runtime-checkpoint ${phase.id} --summary '<resume-ready runtime state>' --rehydrate-file <state.json>`
     );
   }
   console.log("");
@@ -12520,7 +11287,7 @@ export async function workflowRuntimeCheckpointCommand(options: {
     const serialized = JSON.stringify(rehydratableState);
     if (serialized.length > 20_000) {
       throw new Error(
-        "Rehydratable runtime state is too large for workflow runtime-checkpoint; store bulky data as artifacts and pass only compact JSON here.",
+        "Rehydratable runtime state is too large for workflow runtime-checkpoint; store bulky data as artifacts and pass only compact JSON here."
       );
     }
   }
@@ -12529,7 +11296,7 @@ export async function workflowRuntimeCheckpointCommand(options: {
     operation: "reference",
   });
   const contextPackArtifacts = contextPackReceipts.map(
-    (receipt) => `context-pack:${receipt.pack_id}`,
+    (receipt) => `context-pack:${receipt.pack_id}`
   );
 
   const checkpoint = normalizeRuntimeCheckpointRecord({
@@ -12538,23 +11305,18 @@ export async function workflowRuntimeCheckpointCommand(options: {
     automationSessionId: loadConfig().sessionId,
     environment: stringValue(options.environment) ?? binding.environment,
     profile: stringValue(options.profile) ?? binding.profile,
-    bootstrapQuery:
-      stringValue(options.bootstrapQuery) ?? binding.bootstrapQuery,
+    bootstrapQuery: stringValue(options.bootstrapQuery) ?? binding.bootstrapQuery,
     files: uniqueStringList(options.files) ?? phase.files ?? [],
     commands: uniqueStringList(options.commands) ?? [],
     artifacts:
-      uniqueStringList([
-        ...(options.artifacts ?? []),
-        ...contextPackArtifacts,
-      ]) ??
+      uniqueStringList([...(options.artifacts ?? []), ...contextPackArtifacts]) ??
       binding.artifacts ??
       [],
     contextPackReceipts,
     ...(rehydratableState ? { rehydratableState } : {}),
   });
 
-  binding.automationSessionId =
-    checkpoint.automationSessionId ?? binding.automationSessionId;
+  binding.automationSessionId = checkpoint.automationSessionId ?? binding.automationSessionId;
   binding.environment = checkpoint.environment ?? binding.environment;
   binding.profile = checkpoint.profile ?? binding.profile;
   binding.bootstrapQuery = checkpoint.bootstrapQuery ?? binding.bootstrapQuery;
@@ -12669,7 +11431,7 @@ export async function workflowRuntimeCheckpointCommand(options: {
     console.log(
       `Context packs: ${checkpoint.contextPackReceipts
         .map((receipt) => receipt.pack_id)
-        .join(", ")}`,
+        .join(", ")}`
     );
   }
   if (hostedEvent?.id) {
@@ -12678,9 +11440,7 @@ export async function workflowRuntimeCheckpointCommand(options: {
     console.log(`Hosted runtime event unavailable: ${hostedError}`);
   }
   console.log("");
-  console.log(
-    `Resume with: snipara-companion workflow resume --include-session-context`,
-  );
+  console.log(`Resume with: snipara-companion workflow resume --include-session-context`);
 }
 
 export async function workflowResumeCommand(options: {
@@ -12699,12 +11459,8 @@ export async function workflowResumeCommand(options: {
         ? DEFAULT_SESSION_CONTEXT_TOKENS
         : 0;
   const client = createClient(15000);
-  const resolvedCriticalTokens =
-    options.maxCriticalTokens ?? DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS;
-  const bootstrap = await client.getSessionMemories(
-    resolvedCriticalTokens,
-    resolvedContextTokens,
-  );
+  const resolvedCriticalTokens = options.maxCriticalTokens ?? DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS;
+  const bootstrap = await client.getSessionMemories(resolvedCriticalTokens, resolvedContextTokens);
   const bootstrapQuality = buildSessionBootstrapQuality(bootstrap, {
     expectedMaxTokens: resolvedCriticalTokens + resolvedContextTokens,
   });
@@ -12738,9 +11494,7 @@ export async function workflowResumeCommand(options: {
     maxTokens: resolvedCriticalTokens + resolvedContextTokens,
   });
   if (printedBootstrap) {
-    printSessionBootstrapQuality(
-      buildPrintedBootstrapQuality(printedBootstrap),
-    );
+    printSessionBootstrapQuality(buildPrintedBootstrapQuality(printedBootstrap));
   }
   printWorkflowLocalSessionSnapshot(localSessionSnapshot);
   printWorkflowTeamSyncResume(teamSyncResume);
@@ -12750,7 +11504,7 @@ export async function workflowResumeCommand(options: {
 }
 
 async function loadWorkflowTeamSyncResume(
-  state: ManagedWorkflowState,
+  state: ManagedWorkflowState
 ): Promise<{ data?: TeamSyncResumeResponse; error?: string } | null> {
   const config = loadConfig();
   if (!config.apiKey) {
@@ -12758,8 +11512,7 @@ async function loadWorkflowTeamSyncResume(
   }
 
   const currentPhase =
-    state.phases.find((phase) => phase.id === state.currentPhaseId) ??
-    nextOpenPhase(state);
+    state.phases.find((phase) => phase.id === state.currentPhaseId) ?? nextOpenPhase(state);
   const client = createClient(15000);
 
   try {
@@ -12785,45 +11538,33 @@ function printWorkflowLocalSessionSnapshot(snapshot: SessionSnapshot): void {
     printKeyValue("Latest activity:", snapshot.summary.latestActivityAt);
   }
   if (snapshot.summary.latestActivityTitle) {
-    printKeyValue(
-      "Latest title:",
-      toPreview(snapshot.summary.latestActivityTitle, 160),
-    );
+    printKeyValue("Latest title:", toPreview(snapshot.summary.latestActivityTitle, 160));
   }
   printKeyValue("Risk:", snapshot.summary.risk);
   if (snapshot.summary.riskReasons.length > 0) {
-    console.log(
-      `Risk reasons: ${snapshot.summary.riskReasons.slice(0, 3).join("; ")}`,
-    );
+    console.log(`Risk reasons: ${snapshot.summary.riskReasons.slice(0, 3).join("; ")}`);
   }
   if (snapshot.summary.touchedFiles.length > 0) {
-    console.log(
-      `Touched files: ${snapshot.summary.touchedFiles.slice(0, 8).join(", ")}`,
-    );
+    console.log(`Touched files: ${snapshot.summary.touchedFiles.slice(0, 8).join(", ")}`);
   }
   printKeyValue(
     "Intent:",
-    `${snapshot.intentDetection.intent} (${snapshot.intentDetection.confidence})`,
+    `${snapshot.intentDetection.intent} (${snapshot.intentDetection.confidence})`
   );
   printKeyValue(
     "Suggested mode:",
-    `${snapshot.intentDetection.advisoryRouting.suggestedWorkflowMode} (advisory)`,
+    `${snapshot.intentDetection.advisoryRouting.suggestedWorkflowMode} (advisory)`
   );
   if (snapshot.intentDetection.signals.length > 0) {
-    console.log(
-      `Intent signals: ${snapshot.intentDetection.signals.slice(0, 5).join(", ")}`,
-    );
+    console.log(`Intent signals: ${snapshot.intentDetection.signals.slice(0, 5).join(", ")}`);
   }
-  printKeyValue(
-    "Hard routing allowed:",
-    String(snapshot.intentDetection.hardRoutingAllowed),
-  );
+  printKeyValue("Hard routing allowed:", String(snapshot.intentDetection.hardRoutingAllowed));
   printKeyValue("Next action:", snapshot.summary.recommendedNextAction);
   printKeyValue("Snapshot:", snapshot.source.snapshotPath);
 }
 
 function printWorkflowTeamSyncResume(
-  result: { data?: TeamSyncResumeResponse; error?: string } | null,
+  result: { data?: TeamSyncResumeResponse; error?: string } | null
 ): void {
   if (!result) {
     return;
@@ -12857,9 +11598,7 @@ function printWorkflowTeamSyncResume(
     console.log(`Checkpoints: ${data.sessionContext.checkpoints.length}`);
   }
   if (data.recommendedActions.length) {
-    console.log(
-      `Recommended actions: ${data.recommendedActions.slice(0, 3).join("; ")}`,
-    );
+    console.log(`Recommended actions: ${data.recommendedActions.slice(0, 3).join("; ")}`);
   }
   if (data.caveats.length) {
     console.log(`Caveats: ${data.caveats.slice(0, 2).join("; ")}`);
@@ -12984,7 +11723,7 @@ async function commitFinalTaskMemory(options: {
 
   const callHosted = async (
     summary: string,
-    timeoutMs: number,
+    timeoutMs: number
   ): Promise<Record<string, unknown>> => {
     const client = createClient(timeoutMs);
     const handoffOnly = isFinalCommitCategory(category) && !options.why;
@@ -13003,10 +11742,7 @@ async function commitFinalTaskMemory(options: {
   try {
     return await callHosted(
       primarySummary,
-      positiveIntegerEnv(
-        "SNIPARA_FINAL_COMMIT_TIMEOUT_MS",
-        FINAL_COMMIT_TIMEOUT_MS,
-      ),
+      positiveIntegerEnv("SNIPARA_FINAL_COMMIT_TIMEOUT_MS", FINAL_COMMIT_TIMEOUT_MS)
     );
   } catch (error) {
     attempts.push({
@@ -13017,10 +11753,7 @@ async function commitFinalTaskMemory(options: {
       try {
         return await callHosted(
           retrySummary,
-          positiveIntegerEnv(
-            "SNIPARA_FINAL_COMMIT_RETRY_TIMEOUT_MS",
-            FINAL_COMMIT_RETRY_TIMEOUT_MS,
-          ),
+          positiveIntegerEnv("SNIPARA_FINAL_COMMIT_RETRY_TIMEOUT_MS", FINAL_COMMIT_RETRY_TIMEOUT_MS)
         );
       } catch (retryError) {
         attempts.push({
@@ -13031,8 +11764,7 @@ async function commitFinalTaskMemory(options: {
     }
   }
 
-  const lastError =
-    attempts[attempts.length - 1]?.error ?? "hosted final-commit failed";
+  const lastError = attempts[attempts.length - 1]?.error ?? "hosted final-commit failed";
   const localHandoff = recordLocalFinalCommitHandoff({
     summary: options.summary,
     outcome: options.outcome,
@@ -13068,18 +11800,13 @@ function structuredTaskCommitWhy(options: {
   const rationale = compactWhitespace(options.why ?? "");
   const explicitDecision = compactWhitespace(options.decision ?? "");
   const alternatives = [
-    ...new Set(
-      (options.alternatives ?? []).map(compactWhitespace).filter(Boolean),
-    ),
+    ...new Set((options.alternatives ?? []).map(compactWhitespace).filter(Boolean)),
   ];
   const constraints = [
-    ...new Set(
-      (options.constraints ?? []).map(compactWhitespace).filter(Boolean),
-    ),
+    ...new Set((options.constraints ?? []).map(compactWhitespace).filter(Boolean)),
   ];
   const observedOutcome = compactWhitespace(options.observedOutcome ?? "");
-  const decision =
-    explicitDecision || (rationale ? compactWhitespace(options.summary) : "");
+  const decision = explicitDecision || (rationale ? compactWhitespace(options.summary) : "");
   if (
     !decision &&
     !rationale &&
@@ -13104,20 +11831,14 @@ function printJournalWarning(result?: JournalWriteResult): void {
   }
 }
 
-function printTeamSyncCompletionNotice(
-  completedWork: TeamSyncWorkRecord[],
-): void {
+function printTeamSyncCompletionNotice(completedWork: TeamSyncWorkRecord[]): void {
   if (completedWork.length === 0) {
     return;
   }
-  console.log(
-    `Team Sync completed work: ${completedWork.map((item) => item.summary).join(", ")}`,
-  );
+  console.log(`Team Sync completed work: ${completedWork.map((item) => item.summary).join(", ")}`);
 }
 
-function printProducerLoopArtifactNotice(
-  result: ProducerLoopArtifactWriteResult,
-): void {
+function printProducerLoopArtifactNotice(result: ProducerLoopArtifactWriteResult): void {
   if (result.status === "written" && result.relativePath) {
     console.log(`Producer Loop artifact: ${result.relativePath}`);
     return;
@@ -13129,17 +11850,11 @@ function printProducerLoopArtifactNotice(
 
 function printWhyCaptureNotice(result: CompanionWhyCaptureReceipt): void {
   if (result.status === "captured") {
-    console.log(
-      `Why Capture: ${result.capturedCount} candidate(s) filed for review`,
-    );
+    console.log(`Why Capture: ${result.capturedCount} candidate(s) filed for review`);
     return;
   }
   if (result.status === "error" && result.error) {
-    console.log(
-      chalk.yellow(
-        `Why Capture failed without blocking the commit: ${result.error}`,
-      ),
-    );
+    console.log(chalk.yellow(`Why Capture failed without blocking the commit: ${result.error}`));
   }
 }
 
@@ -13161,8 +11876,7 @@ export async function workflowPhaseCommitCommand(options: {
   const phase = findWorkflowPhase(state, options.phaseId);
   const outcome = options.outcome ?? "completed";
   const category = options.category ?? "workflow-phase";
-  const files =
-    options.files && options.files.length > 0 ? options.files : phase.files;
+  const files = options.files && options.files.length > 0 ? options.files : phase.files;
 
   await memoryGuardCheckCommand({
     trigger: "commit",
@@ -13201,16 +11915,14 @@ export async function workflowPhaseCommitCommand(options: {
     capturedAt: now,
   });
   state.phaseCommitReceipts = [
-    ...(state.phaseCommitReceipts ?? []).filter(
-      (receipt) => receipt.phaseId !== phase.id,
-    ),
+    ...(state.phaseCommitReceipts ?? []).filter((receipt) => receipt.phaseId !== phase.id),
     phaseCommitReceipt,
   ];
 
   const next = nextOpenPhase(state);
   state.currentPhaseId = next?.id;
   state.status = state.phases.every((candidate) =>
-    ["completed", "skipped"].includes(candidate.status),
+    ["completed", "skipped"].includes(candidate.status)
   )
     ? "completed"
     : phase.status === "blocked"
@@ -13234,8 +11946,7 @@ export async function workflowPhaseCommitCommand(options: {
     trigger: "snipara-companion workflow phase-commit",
     requireEvidence: true,
   });
-  const shouldCompleteTeamSyncWork =
-    outcome === "completed" && state.status === "completed";
+  const shouldCompleteTeamSyncWork = outcome === "completed" && state.status === "completed";
   const completedTeamSyncWork = shouldCompleteTeamSyncWork
     ? completeTeamSyncStateFromEvidence(process.cwd(), {
         workflowGoal: state.goal,
@@ -13270,7 +11981,7 @@ export async function workflowPhaseCommitCommand(options: {
   writeWorkflowState(state);
   const coordinationRelease = await releaseWorkflowCoordination(
     state,
-    `Workflow ${state.workflowId} phase ${phase.id} phase-commit.`,
+    `Workflow ${state.workflowId} phase ${phase.id} phase-commit.`
   );
   appendActivityEvent({
     source: "workflow",
@@ -13281,10 +11992,9 @@ export async function workflowPhaseCommitCommand(options: {
     phaseId: phase.id,
     outcome,
     files,
-    refs: [
-      producerLoopArtifact.artifactId,
-      producerLoopArtifact.relativePath,
-    ].filter(Boolean) as string[],
+    refs: [producerLoopArtifact.artifactId, producerLoopArtifact.relativePath].filter(
+      Boolean
+    ) as string[],
     timestamp: now,
     metadata: {
       category,
@@ -13398,8 +12108,7 @@ export async function finalCommitCommand(options: {
   if (state) {
     const now = new Date().toISOString();
     state.status = outcome === "completed" ? "completed" : "blocked";
-    state.currentPhaseId =
-      outcome === "completed" ? undefined : state.currentPhaseId;
+    state.currentPhaseId = outcome === "completed" ? undefined : state.currentPhaseId;
     state.updatedAt = now;
     state.lastCommit = {
       category,
@@ -13449,10 +12158,7 @@ export async function finalCommitCommand(options: {
   });
   const whyCapture = taskCommitWhyCaptureReceipt(result, "final_commit");
   const coordinationRelease = state
-    ? await releaseWorkflowCoordination(
-        state,
-        `Workflow ${state.workflowId} final-commit.`,
-      )
+    ? await releaseWorkflowCoordination(state, `Workflow ${state.workflowId} final-commit.`)
     : undefined;
   const report = buildFinalCommitReport({
     state,
@@ -13483,9 +12189,7 @@ export async function finalCommitCommand(options: {
     refs: [
       producerLoopArtifact.artifactId,
       producerLoopArtifact.relativePath,
-      reportArtifact.status === "written"
-        ? reportArtifact.relativePath
-        : undefined,
+      reportArtifact.status === "written" ? reportArtifact.relativePath : undefined,
     ].filter(Boolean) as string[],
     timestamp: now,
     metadata: {
@@ -13542,9 +12246,7 @@ export async function finalCommitCommand(options: {
   if (reportArtifact.status === "written") {
     printKeyValue("Final report:", reportArtifact.relativePath);
   } else if (reportArtifact.error) {
-    console.log(
-      chalk.yellow(`Final report write failed: ${reportArtifact.error}`),
-    );
+    console.log(chalk.yellow(`Final report write failed: ${reportArtifact.error}`));
   }
   printJournalWarning(journal);
   printTeamSyncCompletionNotice(completedTeamSyncWork);
@@ -13589,9 +12291,7 @@ export async function sessionBootstrapCommand(options: {
         total_tokens: 0,
         session_context: {
           included: Boolean(options.includeSessionContext),
-          max_tokens: options.includeSessionContext
-            ? DEFAULT_SESSION_CONTEXT_TOKENS
-            : 0,
+          max_tokens: options.includeSessionContext ? DEFAULT_SESSION_CONTEXT_TOKENS : 0,
         },
         session_bootstrap_quality: buildSessionBootstrapQuality({
           critical: { memories: [], count: 0, tokens: 0 },
@@ -13610,14 +12310,10 @@ export async function sessionBootstrapCommand(options: {
         ? DEFAULT_SESSION_CONTEXT_TOKENS
         : 0;
   const client = createClient(15000);
-  const result = await client.getSessionMemories(
-    options.maxCriticalTokens,
-    resolvedContextTokens,
-  );
+  const result = await client.getSessionMemories(options.maxCriticalTokens, resolvedContextTokens);
   const bootstrapQuality = buildSessionBootstrapQuality(result, {
     expectedMaxTokens:
-      (options.maxCriticalTokens ?? DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS) +
-      resolvedContextTokens,
+      (options.maxCriticalTokens ?? DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS) + resolvedContextTokens,
   });
   const config = loadConfig();
   const warmSnapshot = createLocalQueryCache({
@@ -13643,13 +12339,10 @@ export async function sessionBootstrapCommand(options: {
   const printedBootstrap = printSessionBootstrap(result, {
     includeSessionContext: resolvedContextTokens > 0,
     maxTokens:
-      (options.maxCriticalTokens ?? DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS) +
-      resolvedContextTokens,
+      (options.maxCriticalTokens ?? DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS) + resolvedContextTokens,
   });
   if (printedBootstrap) {
-    printSessionBootstrapQuality(
-      buildPrintedBootstrapQuality(printedBootstrap),
-    );
+    printSessionBootstrapQuality(buildPrintedBootstrapQuality(printedBootstrap));
   }
 }
 
@@ -13661,18 +12354,14 @@ function emptySessionMemoriesResult(): SessionMemoriesResult {
   };
 }
 
-function readLocalJsonFile(
-  relativePath: string,
-): Record<string, unknown> | null {
+function readLocalJsonFile(relativePath: string): Record<string, unknown> | null {
   const absolutePath = path.join(process.cwd(), relativePath);
   if (!fs.existsSync(absolutePath)) {
     return null;
   }
 
   try {
-    const parsed = JSON.parse(
-      fs.readFileSync(absolutePath, "utf-8"),
-    ) as unknown;
+    const parsed = JSON.parse(fs.readFileSync(absolutePath, "utf-8")) as unknown;
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
       : null;
@@ -13682,7 +12371,7 @@ function readLocalJsonFile(
 }
 
 function summarizeSourceSnapshot(
-  snapshot: Record<string, unknown> | null,
+  snapshot: Record<string, unknown> | null
 ): Record<string, unknown> {
   if (!snapshot) {
     return {
@@ -13694,9 +12383,7 @@ function summarizeSourceSnapshot(
   }
 
   const summary =
-    snapshot.summary &&
-    typeof snapshot.summary === "object" &&
-    !Array.isArray(snapshot.summary)
+    snapshot.summary && typeof snapshot.summary === "object" && !Array.isArray(snapshot.summary)
       ? (snapshot.summary as Record<string, unknown>)
       : {};
   return {
@@ -13711,7 +12398,7 @@ function summarizeSourceSnapshot(
 }
 
 function summarizeWorkflowStateForContinuity(
-  workflow: ManagedWorkflowState | undefined,
+  workflow: ManagedWorkflowState | undefined
 ): Record<string, unknown> {
   if (!workflow) {
     return {
@@ -13769,9 +12456,7 @@ function buildCompanionContinuityPayload(args: {
   const config = args.configured ? loadConfig() : null;
   const workflow = readWorkflowState();
   const sessionSnapshot = readSessionSnapshot();
-  const sourceSnapshot = readLocalJsonFile(
-    path.join(".snipara", "source", "latest.json"),
-  );
+  const sourceSnapshot = readLocalJsonFile(path.join(".snipara", "source", "latest.json"));
 
   return {
     version: COMPANION_CONTINUITY_CONTRACT_VERSION,
@@ -13830,15 +12515,13 @@ function buildCompanionContinuityPayload(args: {
       {
         id: "run_impact_gate",
         label: "Run code impact before risky edits",
-        command:
-          'snipara-companion code impact --changed-files <files> --diff-summary "next edit"',
+        command: 'snipara-companion code impact --changed-files <files> --diff-summary "next edit"',
         when: "the next edit is multi-file, risky, or user-visible",
       },
       {
         id: "commit_task_context",
         label: "Commit durable task context",
-        command:
-          'snipara-companion task-commit --summary "<done>" --files <files>',
+        command: 'snipara-companion task-commit --summary "<done>" --files <files>',
         when: "a durable phase or task is complete",
       },
     ],
@@ -13864,10 +12547,7 @@ export async function continueWorkspaceCommand(options: {
 
   if (configured) {
     const client = createClient(15000);
-    bootstrap = await client.getSessionMemories(
-      options.maxCriticalTokens,
-      resolvedContextTokens,
-    );
+    bootstrap = await client.getSessionMemories(options.maxCriticalTokens, resolvedContextTokens);
     const config = loadConfig();
     const warmSnapshot = createLocalQueryCache({
       cwd: process.cwd(),
@@ -13879,8 +12559,7 @@ export async function continueWorkspaceCommand(options: {
 
   const bootstrapQuality = buildSessionBootstrapQuality(bootstrap, {
     expectedMaxTokens:
-      (options.maxCriticalTokens ?? DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS) +
-      resolvedContextTokens,
+      (options.maxCriticalTokens ?? DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS) + resolvedContextTokens,
   });
   const payload = buildCompanionContinuityPayload({
     configured,
@@ -13899,15 +12578,9 @@ export async function continueWorkspaceCommand(options: {
   console.log(chalk.bold("Snipara Companion Continuity"));
   console.log(`Version: ${COMPANION_CONTINUITY_CONTRACT_VERSION}`);
   console.log(`Configured: ${configured ? "yes" : "no"}`);
-  console.log(
-    `Workflow: ${(payload.workflow as Record<string, unknown>).status ?? "unknown"}`,
-  );
-  console.log(
-    `Source: ${(payload.source as Record<string, unknown>).status ?? "unknown"}`,
-  );
-  console.log(
-    "Next: snipara-companion continue-workspace --json for editor integrations",
-  );
+  console.log(`Workflow: ${(payload.workflow as Record<string, unknown>).status ?? "unknown"}`);
+  console.log(`Source: ${(payload.source as Record<string, unknown>).status ?? "unknown"}`);
+  console.log("Next: snipara-companion continue-workspace --json for editor integrations");
 }
 
 export async function recallCommand(options: {

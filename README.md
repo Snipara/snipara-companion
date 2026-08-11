@@ -65,6 +65,19 @@ Hosted MCP call and labels supported retrieval traffic as
 `snipara-companion`, unless the caller supplied an explicit client label. This
 improves join coverage without inventing a second server-side identity.
 
+The workspace API key is stored in `.snipara/companion/config.json`. Companion
+keeps that directory and file owner-only on POSIX systems (`0700`/`0600`) and
+adds `/.snipara/companion/` to the workspace `.gitignore`. After initialization,
+index documentation before expecting project-specific query results:
+
+```bash
+npx -y snipara-companion@latest sync-documents --dir ./docs --recursive --reindex
+npx -y snipara-companion@latest doctor
+```
+
+An empty index is reported explicitly as “0 documents indexed” with that
+recovery command; it is not presented as an ordinary no-match.
+
 Example output excerpt:
 
 ```text
@@ -105,10 +118,55 @@ These commands are useful without hosted Snipara:
 | `workflow producer-report`                                                            | Local Producer Loop adoption and calibration report                          |
 | `workflow producer-review`                                                            | Mark local Producer Loop samples reviewed or rejected                        |
 | `context-control plan` / `apply` / `drift` / `validate` / `hosted-*`                  | Review local state and reconcile Context as Code with hosted project context |
+| `agent-context validate` / `resolve` / `evidence`                                     | Compile role policy and collect AC-1 dogfood evidence                        |
 | `context-pack`                                                                        | Reversible local packs for long logs, diffs, and tool output                 |
 | `judgment-card`, `verify`, `lead-plan`, `agent-readiness`                             | Local review artifacts and delegation contracts                              |
 | `intelligence ledger-export`                                                          | Structured redacted ledger JSON for replay and review                        |
 | `stuck-guard`, `memory-guard`, `pre-tool`, `post-tool`                                | Fail-soft local guards and hook helpers                                      |
+
+### Agent Context Dogfood
+
+`agent-context` compiles one agent's working context from a versioned local
+manifest. It layers company truth, project truth, and only the roles assigned to
+that agent. The resolver also prints the exact memory recalls, agent-local
+default write target, and review-gated promotion targets.
+
+```bash
+npx -y snipara-companion agent-context validate \
+  --manifest snipara.agent-context.json
+
+npx -y snipara-companion agent-context resolve \
+  --agent snipara-code \
+  --task "implement the next bounded change"
+```
+
+Use `--json` when another agent runtime will consume the resolution. This local
+command plans retrieval; it does not read the source documents or call Hosted
+MCP on the agent's behalf. Role memory is represented by exact categories in
+the existing project or team scopes, so the V0 dogfood flow needs no database
+migration.
+
+Collect AC-1 evidence after a representative task:
+
+```bash
+snipara-companion agent-context evidence template \
+  --agent snipara-code \
+  --task "implement a bounded product change" \
+  --output .snipara/agent-context/task-code-1.json
+
+# Complete source use, recalls, token count, capability assessment, and proof.
+snipara-companion agent-context evidence record \
+  --from .snipara/agent-context/task-code-1.json
+
+snipara-companion agent-context evidence status
+snipara-companion agent-context evidence status --enforce
+```
+
+Receipts are appended to `.snipara/agent-context/evidence.jsonl`, linked to the
+manifest hash, and rejected if they claim a source, recall, or promotion target
+outside the resolved policy. `--enforce` stays non-zero until the documented
+AC-1 exit gate is met; it does not authorize a hosted compiler or memory
+promotion workflow.
 
 ### Context Control
 

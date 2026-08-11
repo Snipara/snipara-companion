@@ -26,7 +26,6 @@ function runCli(args, options = {}) {
 }
 
 test("buildWhyOutcomeCaptureReport emits review-pending candidates with redaction and dedupe", () => {
-  const fakeApiKey = ["abc", "1234567890"].join("");
   const event = {
     kind: "phase_commit",
     summary: "Chose portable ADE adapter targets after contract review",
@@ -46,10 +45,10 @@ test("buildWhyOutcomeCaptureReport emits review-pending candidates with redactio
       event,
       {
         kind: "test_result",
-        summary: `Auth regression tests passed with API_KEY=${fakeApiKey}`,
+        summary: "Auth regression tests passed with API_KEY=abc1234567890", // gitleaks:allow
         status: "passed",
         sourceRef: "ci:auth",
-        evidence: ["Authorization: Bearer secret-token-1234567890"],
+        evidence: ["Authorization: Bearer secret-token-1234567890"], // gitleaks:allow
       },
     ],
   });

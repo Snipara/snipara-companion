@@ -64,7 +64,27 @@ function getLegacyGlobalConfigFile(): string {
 function ensureConfigDir(configFile: string): void {
   const configDir = path.dirname(configFile);
   if (!fs.existsSync(configDir)) {
-    fs.mkdirSync(configDir, { recursive: true });
+    fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  }
+  if (process.platform !== "win32") {
+    try {
+      fs.chmodSync(configDir, 0o700);
+    } catch {
+      // Best effort on filesystems that do not expose POSIX permission bits.
+    }
+  }
+}
+
+function hardenConfigPermissions(configFile: string): void {
+  if (process.platform === "win32" || !fs.existsSync(configFile)) {
+    return;
+  }
+
+  try {
+    fs.chmodSync(path.dirname(configFile), 0o700);
+    fs.chmodSync(configFile, 0o600);
+  } catch {
+    // Reading existing configuration should not fail on non-POSIX filesystems.
   }
 }
 
@@ -112,6 +132,7 @@ function getWorkspaceConfigFile(
 function readConfigFile(configFile: string): Partial<RLMConfig> {
   if (fs.existsSync(configFile)) {
     try {
+      hardenConfigPermissions(configFile);
       const content = fs.readFileSync(configFile, "utf-8");
       const config = JSON.parse(content);
       return typeof config === "object" && config !== null ? (config as Partial<RLMConfig>) : {};
@@ -240,7 +261,11 @@ export function saveConfig(
   const existing = readConfigFile(configFile);
   const merged = { ...existing, ...config };
 
-  fs.writeFileSync(configFile, JSON.stringify(merged, null, 2), "utf-8");
+  fs.writeFileSync(configFile, JSON.stringify(merged, null, 2), {
+    encoding: "utf-8",
+    mode: 0o600,
+  });
+  hardenConfigPermissions(configFile);
 }
 
 /**

@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const DECISION_REQUEST_VERSION = "snipara.decision_request.v0" as const;
-export const DECISION_RESPONSE_VERSION =
-  "snipara.decision_response.v0" as const;
+export const DECISION_RESPONSE_VERSION = "snipara.decision_response.v0" as const;
 export const DECISION_REQUEST_RELATIVE_DIR = ".snipara/decisions" as const;
 
 export type DecisionRequestProducerKind =
@@ -116,9 +115,7 @@ export function hashDecisionJsonValue(value: unknown): string {
   return `sha256:${hashDecisionContent(stableDecisionJsonStringify(value))}`;
 }
 
-export function buildDecisionFingerprint(
-  input: BuildDecisionRequestInput,
-): string {
+export function buildDecisionFingerprint(input: BuildDecisionRequestInput): string {
   return hashDecisionJsonValue(
     input.fingerprintParts ?? [
       input.producer.kind,
@@ -128,13 +125,11 @@ export function buildDecisionFingerprint(
       input.options,
       input.evidence.refs,
       input.evidence.reasonCodes,
-    ],
+    ]
   );
 }
 
-export function buildDecisionRequest(
-  input: BuildDecisionRequestInput,
-): DecisionRequest {
+export function buildDecisionRequest(input: BuildDecisionRequestInput): DecisionRequest {
   const createdAt = isoTimestamp(input.createdAt);
   const expiresAt =
     input.expiresAt === undefined || input.expiresAt === null
@@ -145,9 +140,7 @@ export function buildDecisionRequest(
     throw new Error("Decision request needs at least one option.");
   }
   if (input.recommendation && !options.includes(input.recommendation)) {
-    throw new Error(
-      `Decision recommendation '${input.recommendation}' is not a valid option.`,
-    );
+    throw new Error(`Decision recommendation '${input.recommendation}' is not a valid option.`);
   }
   const fingerprint = buildDecisionFingerprint(input);
   return {
@@ -166,16 +159,10 @@ export function buildDecisionRequest(
     evidence: {
       summary: input.evidence.summary,
       refs: uniqueStrings(input.evidence.refs),
-      ...(input.evidence.items
-        ? { items: normalizeEvidenceItems(input.evidence.items) }
-        : {}),
+      ...(input.evidence.items ? { items: normalizeEvidenceItems(input.evidence.items) } : {}),
       reasonCodes: uniqueStrings(input.evidence.reasonCodes),
-      ...(input.evidence.files
-        ? { files: uniqueStrings(input.evidence.files) }
-        : {}),
-      ...(input.evidence.applyPath
-        ? { applyPath: input.evidence.applyPath }
-        : {}),
+      ...(input.evidence.files ? { files: uniqueStrings(input.evidence.files) } : {}),
+      ...(input.evidence.applyPath ? { applyPath: input.evidence.applyPath } : {}),
       ...(normalizeOptionalString(input.evidence.applyCommand)
         ? { applyCommand: normalizeOptionalString(input.evidence.applyCommand) }
         : {}),
@@ -190,18 +177,14 @@ export function buildDecisionRequest(
   };
 }
 
-export function buildDecisionResponse(
-  input: BuildDecisionResponseInput,
-): DecisionResponse {
+export function buildDecisionResponse(input: BuildDecisionResponseInput): DecisionResponse {
   return {
     schemaVersion: DECISION_RESPONSE_VERSION,
     requestId: input.requestId,
     resolvedAt: isoTimestamp(input.resolvedAt),
     choice: input.choice,
     reviewer: input.reviewer,
-    ...(normalizeOptionalString(input.note)
-      ? { note: normalizeOptionalString(input.note) }
-      : {}),
+    ...(normalizeOptionalString(input.note) ? { note: normalizeOptionalString(input.note) } : {}),
     appliedActions: uniqueStrings(input.appliedActions ?? []),
   };
 }
@@ -239,15 +222,12 @@ export function isDecisionResponse(value: unknown): value is DecisionResponse {
 export function decisionRequestStatus(
   request: DecisionRequest,
   resolvedFingerprints: ReadonlySet<string>,
-  now: string | Date = new Date(),
+  now: string | Date = new Date()
 ): "pending" | "resolved" | "expired_pending" {
   if (resolvedFingerprints.has(request.fingerprint)) {
     return "resolved";
   }
-  if (
-    request.expiresAt &&
-    new Date(request.expiresAt).getTime() <= new Date(now).getTime()
-  ) {
+  if (request.expiresAt && new Date(request.expiresAt).getTime() <= new Date(now).getTime()) {
     return "expired_pending";
   }
   return "pending";
@@ -263,9 +243,7 @@ function isoTimestamp(value: string | Date | undefined): string {
   return new Date().toISOString();
 }
 
-function normalizeOptionalString(
-  value: string | undefined,
-): string | undefined {
+function normalizeOptionalString(value: string | undefined): string | undefined {
   const normalized = value?.trim();
   return normalized || undefined;
 }
@@ -283,7 +261,7 @@ function uniqueStrings(values: string[]): string[] {
 }
 
 function normalizeEvidenceItems(
-  items: DecisionRequestEvidenceItem[],
+  items: DecisionRequestEvidenceItem[]
 ): DecisionRequestEvidenceItem[] {
   const seen = new Set<string>();
   const normalized: DecisionRequestEvidenceItem[] = [];
@@ -299,9 +277,7 @@ function normalizeEvidenceItems(
       ...(normalizeOptionalString(item.summary)
         ? { summary: normalizeOptionalString(item.summary) }
         : {}),
-      ...(normalizeOptionalString(item.kind)
-        ? { kind: normalizeOptionalString(item.kind) }
-        : {}),
+      ...(normalizeOptionalString(item.kind) ? { kind: normalizeOptionalString(item.kind) } : {}),
       ...(normalizeOptionalString(item.status)
         ? { status: normalizeOptionalString(item.status) }
         : {}),
@@ -313,12 +289,12 @@ function normalizeEvidenceItems(
 }
 
 function normalizeMetadata(
-  metadata: Record<string, string | number | boolean | null>,
+  metadata: Record<string, string | number | boolean | null>
 ): Record<string, string | number | boolean | null> {
   return Object.fromEntries(
     Object.entries(metadata)
       .filter(([, value]) => value !== undefined)
-      .sort(([left], [right]) => left.localeCompare(right)),
+      .sort(([left], [right]) => left.localeCompare(right))
   );
 }
 
@@ -335,7 +311,7 @@ function sortJsonValue(value: unknown): unknown {
       Object.entries(value as Record<string, unknown>)
         .filter(([, entry]) => entry !== undefined)
         .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, entry]) => [key, sortJsonValue(entry)]),
+        .map(([key, entry]) => [key, sortJsonValue(entry)])
     );
   }
   return value;

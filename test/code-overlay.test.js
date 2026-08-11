@@ -899,7 +899,7 @@ test("top-level impact keeps secret-like target files visible with a redaction w
   );
   fs.writeFileSync(
     path.join(repo, "src", "unrelated.ts"),
-    "const apiKey = 'zyxwvutsrqponmlkjihgfedcba9876543210';\n",
+    "const apiKey = 'zyxwvutsrqponmlkjihgfedcba9876543210';\n", // gitleaks:allow
     "utf8"
   );
 

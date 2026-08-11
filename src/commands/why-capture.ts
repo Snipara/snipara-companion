@@ -108,8 +108,7 @@ function pendingMemoryReceipt(value: unknown): CompanionWhyCaptureMemory | undef
   }
   const memoryId = boundedText(value.memory_id ?? value.memoryId ?? value.id, 200);
   const text =
-    boundedText(value.content ?? value.text) ??
-    (memoryId ? `Memory ${memoryId}` : undefined);
+    boundedText(value.content ?? value.text) ?? (memoryId ? `Memory ${memoryId}` : undefined);
   if (!text) {
     return undefined;
   }
@@ -120,8 +119,7 @@ function pendingMemoryReceipt(value: unknown): CompanionWhyCaptureMemory | undef
       ? { type: boundedText(value.type ?? value.memory_type, 80) }
       : {}),
     category: boundedText(value.category, 120) ?? "why-capture",
-    reviewStatus:
-      boundedText(value.review_status ?? value.reviewStatus, 80) ?? "PENDING",
+    reviewStatus: boundedText(value.review_status ?? value.reviewStatus, 80) ?? "PENDING",
   };
 }
 
@@ -160,9 +158,8 @@ function issueReceipt(
         value.error ??
         value.reason ??
         value.decision_id ??
-        value.id,
-    ) ??
-    "Why Capture item";
+        value.id
+    ) ?? "Why Capture item";
   const reason = boundedText(value.reason ?? value.error, 160) ?? fallbackReason;
   return { text, ...(reason ? { reason } : {}) };
 }
@@ -218,20 +215,16 @@ function recordItems(value: unknown): Record<string, unknown>[] {
 export function taskCommitWhyCaptureReceipt(
   result: Record<string, unknown>,
   sourceKind: WhyCaptureSourceKind,
-  cwd: string = process.cwd(),
+  cwd: string = process.cwd()
 ): CompanionWhyCaptureReceipt {
   const commitSha = readCommitSha(cwd);
   const candidates = recordItems(result.candidates).filter(
-    (candidate) =>
-      isRecord(candidate.why_fields) || isRecord(candidate.whyFields),
+    (candidate) => isRecord(candidate.why_fields) || isRecord(candidate.whyFields)
   );
   const storedCandidates = recordItems(result.stored_candidates).filter(
-    (candidate) =>
-      isRecord(candidate.why_fields) || isRecord(candidate.whyFields),
+    (candidate) => isRecord(candidate.why_fields) || isRecord(candidate.whyFields)
   );
-  const decisionCapture = isRecord(result.decision_capture)
-    ? result.decision_capture
-    : {};
+  const decisionCapture = isRecord(result.decision_capture) ? result.decision_capture : {};
   const duplicates = recordItems(decisionCapture.duplicates)
     .map((item) => issueReceipt(item, "duplicate"))
     .filter((item): item is CompanionWhyCaptureIssue => Boolean(item));
@@ -239,9 +232,7 @@ export function taskCommitWhyCaptureReceipt(
     .map((item) => issueReceipt(item, "capture_failed"))
     .filter((item): item is CompanionWhyCaptureIssue => Boolean(item));
   const caveats = Array.isArray(result.caveats)
-    ? result.caveats.filter(
-        (item): item is string => typeof item === "string",
-      )
+    ? result.caveats.filter((item): item is string => typeof item === "string")
     : [];
   const hostedPhaseCommit = isRecord(result.hosted_phase_commit)
     ? result.hosted_phase_commit
@@ -249,9 +240,7 @@ export function taskCommitWhyCaptureReceipt(
   const hostedFinalCommit = isRecord(result.hosted_final_commit)
     ? result.hosted_final_commit
     : undefined;
-  const hostedError = boundedText(
-    hostedPhaseCommit?.error ?? hostedFinalCommit?.error,
-  );
+  const hostedError = boundedText(hostedPhaseCommit?.error ?? hostedFinalCommit?.error);
   const previewCandidates = candidates
     .map(previewCandidateReceipt)
     .filter((item): item is CompanionWhyCaptureCandidate => Boolean(item));
@@ -278,11 +267,7 @@ export function taskCommitWhyCaptureReceipt(
     return { ...baseReceipt, status: "error", error: hostedError };
   }
   if (caveats.includes("why_requires_human_owner")) {
-    return {
-      ...baseReceipt,
-      status: "skipped",
-      error: "why_requires_human_owner",
-    };
+    return { ...baseReceipt, status: "skipped", error: "why_requires_human_owner" };
   }
   if (
     candidates.length === 0 &&

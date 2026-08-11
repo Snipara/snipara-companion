@@ -6,6 +6,9 @@ const test = require("node:test");
 const { spawnSync } = require("node:child_process");
 
 const cliPath = path.join(__dirname, "..", "dist", "index.js");
+const cliVersion = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")
+).version;
 
 function runCli(args, options = {}) {
   const env = {
@@ -359,6 +362,7 @@ test("root help exposes workflow, intelligence, and code commands", () => {
   assert.match(result.stdout, /client-projects/);
   assert.match(result.stdout, /\breindex\b/);
   assert.match(result.stdout, /shared-context/);
+  assert.match(result.stdout, /agent-context/);
   assert.match(result.stdout, /stuck-guard/);
   assert.match(result.stdout, /memory-guard/);
   assert.match(result.stdout, /\bmemory\b/);
@@ -1543,6 +1547,53 @@ test("init help lists extended client presets", () => {
   );
 });
 
+test("CLI startup wires a cached update warning before command execution", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "src", "index.ts"), "utf8");
+
+  assert.match(source, /warnIfCompanionUpdateAvailable/);
+  assert.match(source, /program\.hook\("preAction"/);
+});
+
+test("CLI warns when the installed companion is behind the cached registry version", () => {
+  if (process.platform === "win32") {
+    return;
+  }
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-version-warning-"));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-version-home-"));
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-version-bin-"));
+  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+  fs.writeFileSync(path.join(binDir, "npm"), "#!/bin/sh\necho 99.0.0\n", "utf8");
+  fs.chmodSync(path.join(binDir, "npm"), 0o755);
+
+  try {
+    const result = runCli(["status"], {
+      cwd: dir,
+      env: {
+        CI: "",
+        HOME: home,
+        PATH: `${binDir}:${process.env.PATH}`,
+        SNIPARA_COMPANION_SKIP_NPM_VERSION_CHECK: "",
+      },
+    });
+
+    assert.equal(result.status, 0);
+    assert.match(
+      result.stderr,
+      new RegExp(`snipara-companion ${cliVersion.replaceAll(".", "\\.")} is outdated`)
+    );
+    assert.match(result.stderr, /99\.0\.0 is available/);
+    const cachePath = path.join(home, ".snipara", "companion", "version-check.json");
+    assert.equal(JSON.parse(fs.readFileSync(cachePath, "utf8")).latestVersion, "99.0.0");
+    assert.equal(fs.statSync(path.dirname(cachePath)).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(cachePath).mode & 0o777, 0o600);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(binDir, { recursive: true, force: true });
+  }
+});
+
 test("init starts browser project authorization instead of dashboard key copy-paste when no key is provided", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "src", "commands", "init.ts"), "utf8");
   const indexSource = fs.readFileSync(path.join(__dirname, "..", "src", "index.ts"), "utf8");
@@ -1720,6 +1771,16 @@ test("init writes workspace project binding and one companion config for codex",
   assert.equal(workspaceConfig.projectId, "proj_snipara_001");
   assert.equal(workspaceConfig.client, "codex");
   assert.match(workspaceConfig.sessionId, /^sess_/);
+  if (process.platform !== "win32") {
+    const configPath = path.join(dir, ".snipara", "companion", "config.json");
+    assert.equal(fs.statSync(path.dirname(configPath)).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(configPath).mode & 0o777, 0o600);
+  }
+  assert.match(
+    fs.readFileSync(path.join(dir, ".gitignore"), "utf8"),
+    /^\/\.snipara\/companion\/$/m
+  );
+  assert.match(result.stdout, /sync-documents/);
   assert.match(
     result.stdout,
     /env_http_headers = \{ "X-Snipara-Session-Id" = "SNIPARA_SESSION_ID" \}/
@@ -2279,6 +2340,30 @@ test("shared-context help exposes category filter", () => {
   assert.equal(result.status, 0);
   assert.match(result.stdout, /BEST_PRACTICES/);
   assert.match(result.stdout, /--no-content/);
+});
+
+test("agent-context help exposes validation, role resolution, and AC-1 evidence", () => {
+  const result = runCli(["agent-context", "--help"]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /\bvalidate\b/);
+  assert.match(result.stdout, /\bresolve\b/);
+  assert.match(result.stdout, /\bevidence\b/);
+
+  const resolve = runCli(["agent-context", "resolve", "--help"]);
+  assert.equal(resolve.status, 0);
+  assert.match(resolve.stdout, /--agent/);
+  assert.match(resolve.stdout, /--task/);
+  assert.match(resolve.stdout, /--manifest/);
+
+  const evidence = runCli(["agent-context", "evidence", "--help"]);
+  assert.equal(evidence.status, 0);
+  assert.match(evidence.stdout, /\btemplate\b/);
+  assert.match(evidence.stdout, /\brecord\b/);
+  assert.match(evidence.stdout, /\bstatus\b/);
+
+  const status = runCli(["agent-context", "evidence", "status", "--help"]);
+  assert.equal(status.status, 0);
+  assert.match(status.stdout, /--enforce/);
 });
 
 test("upload help exposes reindex flag", () => {

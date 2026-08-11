@@ -40,7 +40,7 @@ Use --json for full overlay details.
 ## What To Say
 
 - No global install, no init, no account for the local first run.
-- `impact` builds a local file-level code overlay from the current checkout.
+- `impact` builds a bounded transitive local code overlay from the current checkout.
 - Local mode is first-class for one repo, one machine, and one session.
 - Hosted Snipara is optional for team memory, semantic retrieval, cross-machine
   presence, and outcome learning.
@@ -49,8 +49,8 @@ Use --json for full overlay details.
 
 ## What Not To Say
 
-- Do not claim perfect AST call-site analysis. Local impact is file-level import
-  impact.
+- Do not claim perfect runtime call-site analysis. TypeScript has compiler-AST
+  edges; Python/Go use import fallback, and dynamic dispatch remains uncertain.
 - Do not imply hosted Snipara is required for the first run.
 - Do not say code is uploaded by default. `--source local` stays local.
 - Do not present local mode as degraded. It is complete for local repo impact

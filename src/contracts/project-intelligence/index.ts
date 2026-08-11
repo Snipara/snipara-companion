@@ -15,3 +15,8 @@ export * from "./unified-receipt-ledger";
 export * from "./context-control";
 export * from "./host-native-orchestration";
 export * from "./worker-trust";
+export * from "./why-capture-confidence";
+export * from "./judgment-integrity";
+export * from "./judgment-evaluation";
+export * from "./agent-context";
+export * from "./agent-context-evidence";

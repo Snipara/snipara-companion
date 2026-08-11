@@ -2,6 +2,37 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## New In 3.6.7
+
+- Adds `agent-context evidence template|record|status` for the AC-1 dogfood
+  loop, backed by a tamper-evident append-only local receipt ledger.
+- Binds evidence to the resolved manifest and rejects claimed sources, memory
+  recalls, or promotion targets outside that agent's policy.
+- Reports the documented 20-task, four-role, leak-resolution, regression-proof,
+  and repeated-benefit exit gates without implying that AC-2 is approved.
+
+## New In 3.6.6
+
+- Secures workspace and global companion configuration with owner-only
+  directory/file permissions and automatically ignores the secret-bearing
+  workspace config in Git.
+- Makes initial document indexing an explicit `init` next step and distinguishes
+  a zero-document index from an ordinary query with no relevant matches.
+- Warns once per day when the installed companion is behind npm, while keeping
+  offline and automated runs non-blocking.
+- Enables command suggestions and help recovery for mistyped or undiscovered
+  commands.
+
+## New In 3.6.5
+
+- Adds a local `agent-context` manifest and resolver for composing shared
+  organization, shared project, and role-specific context without cross-role
+  document leakage.
+- Keeps new memory writes agent-local by default and exposes only explicitly
+  allowed, human-reviewed project or team promotion targets.
+- Ships Snipara's first dogfood profiles for lead, code, review, and security
+  agents without adding a database scope or changing hosted authorization.
+
 ## New In 3.6.4
 
 - Correlates hosted Judgment responses with their immutable snapshot, append-only

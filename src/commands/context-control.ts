@@ -28,24 +28,14 @@ import {
 import { createClient } from "../api/client";
 import { writeDecisionRequest } from "./decision-requests";
 
-export const CONTEXT_CONTROL_RELATIVE_DIR = path.join(
-  ".snipara",
-  "context-control",
-);
-export const CONTEXT_CONTROL_PLANS_RELATIVE_DIR = path.join(
-  CONTEXT_CONTROL_RELATIVE_DIR,
-  "plans",
-);
+export const CONTEXT_CONTROL_RELATIVE_DIR = path.join(".snipara", "context-control");
+export const CONTEXT_CONTROL_PLANS_RELATIVE_DIR = path.join(CONTEXT_CONTROL_RELATIVE_DIR, "plans");
 export const CONTEXT_CONTROL_APPLIED_RELATIVE_DIR = path.join(
   CONTEXT_CONTROL_RELATIVE_DIR,
-  "applied",
+  "applied"
 );
-export const CONTEXT_CONTROL_STATE_RELATIVE_DIR = path.join(
-  CONTEXT_CONTROL_RELATIVE_DIR,
-  "state",
-);
-export const PROJECT_CONTEXT_MANIFEST_DEFAULT_PATH =
-  "snipara.project-context.json";
+export const CONTEXT_CONTROL_STATE_RELATIVE_DIR = path.join(CONTEXT_CONTROL_RELATIVE_DIR, "state");
+export const PROJECT_CONTEXT_MANIFEST_DEFAULT_PATH = "snipara.project-context.json";
 
 export interface ContextControlPlanCommandOptions {
   summary?: string;
@@ -118,7 +108,7 @@ const DEFAULT_PLAN_SUMMARY = "Record local context-control state";
 function runGit(
   args: string[],
   cwd: string,
-  options: { preserveLeadingWhitespace?: boolean } = {},
+  options: { preserveLeadingWhitespace?: boolean } = {}
 ): string | undefined {
   try {
     const output = execFileSync("git", args, {
@@ -174,27 +164,21 @@ function resolveGitDriftScopePaths(cwd: string): string[] {
     return normalizeScopePaths(scopePaths, cwd);
   }
 
-  const validation = validateProjectContextManifest({
-    manifest: manifestRead.value,
-  });
-  const manifestSourcePaths =
-    validation.manifest?.sources.map((source) => source.path) ?? [];
+  const validation = validateProjectContextManifest({ manifest: manifestRead.value });
+  const manifestSourcePaths = validation.manifest?.sources.map((source) => source.path) ?? [];
   return normalizeScopePaths([...scopePaths, ...manifestSourcePaths], cwd);
 }
 
 function normalizeScopePaths(scopePaths: string[], cwd: string): string[] {
   return uniqueStrings(
-    scopePaths.map((scopePath) =>
-      normalizeProjectRelativePath(scopePath, cwd).replace(/\/+$/g, ""),
-    ),
+    scopePaths.map((scopePath) => normalizeProjectRelativePath(scopePath, cwd).replace(/\/+$/g, ""))
   );
 }
 
 function isPathInsideScope(filePath: string, scopePaths: string[]): boolean {
   const normalized = filePath.replace(/\\/g, "/").replace(/\/+$/g, "");
   return scopePaths.some(
-    (scopePath) =>
-      normalized === scopePath || normalized.startsWith(`${scopePath}/`),
+    (scopePath) => normalized === scopePath || normalized.startsWith(`${scopePath}/`)
   );
 }
 
@@ -213,9 +197,7 @@ function toProjectRelativePath(absolutePath: string, cwd: string): string {
 }
 
 function normalizeProjectRelativePath(filePath: string, cwd: string): string {
-  const absolute = path.isAbsolute(filePath)
-    ? filePath
-    : path.resolve(cwd, filePath);
+  const absolute = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
   return toProjectRelativePath(absolute, cwd).split(path.sep).join("/");
 }
 
@@ -228,28 +210,18 @@ function assertContextControlTarget(target: string, cwd: string): string {
     !relative.startsWith(".snipara/context-control/")
   ) {
     throw new Error(
-      `Context-control apply can only write under ${CONTEXT_CONTROL_RELATIVE_DIR}; got ${target}`,
+      `Context-control apply can only write under ${CONTEXT_CONTROL_RELATIVE_DIR}; got ${target}`
     );
   }
   return relative;
 }
 
 function defaultTargetPath(summary: string): string {
-  return path.join(
-    CONTEXT_CONTROL_STATE_RELATIVE_DIR,
-    `${slugify(summary)}.json`,
-  );
+  return path.join(CONTEXT_CONTROL_STATE_RELATIVE_DIR, `${slugify(summary)}.json`);
 }
 
-function receiptPathFor(
-  receipt: ContextMutationApplyReceipt,
-  cwd: string,
-): string {
-  return path.resolve(
-    cwd,
-    CONTEXT_CONTROL_APPLIED_RELATIVE_DIR,
-    `${receipt.receiptId}.json`,
-  );
+function receiptPathFor(receipt: ContextMutationApplyReceipt, cwd: string): string {
+  return path.resolve(cwd, CONTEXT_CONTROL_APPLIED_RELATIVE_DIR, `${receipt.receiptId}.json`);
 }
 
 function writeStableJsonFile(filePath: string, value: unknown): void {
@@ -270,7 +242,7 @@ function buildStateOperation(options: {
 }): ContextMutationOperation {
   const target = assertContextControlTarget(
     options.target ?? defaultTargetPath(options.summary),
-    options.cwd,
+    options.cwd
   );
   return {
     opId: "write-context-control-state",
@@ -294,10 +266,7 @@ function resolveManifestPath(cwd: string, manifest?: string): string {
 }
 
 export function buildLocalProjectContextValidationReport(
-  options: ContextControlValidateCommandOptions & {
-    cwd?: string;
-    now?: Date;
-  } = {},
+  options: ContextControlValidateCommandOptions & { cwd?: string; now?: Date } = {}
 ): ProjectContextValidationReport {
   const cwd = path.resolve(options.cwd ?? process.cwd());
   const manifestPath = resolveManifestPath(cwd, options.manifest);
@@ -314,17 +283,11 @@ function buildManifestOperation(options: {
   validation: ProjectContextValidationReport;
   target?: string;
 }): ContextMutationOperation {
-  const relativeManifestPath = toProjectRelativePath(
-    options.manifestPath,
-    options.cwd,
-  );
+  const relativeManifestPath = toProjectRelativePath(options.manifestPath, options.cwd);
   const target = assertContextControlTarget(
     options.target ??
-      path.join(
-        CONTEXT_CONTROL_STATE_RELATIVE_DIR,
-        "project-context-manifest.json",
-      ),
-    options.cwd,
+      path.join(CONTEXT_CONTROL_STATE_RELATIVE_DIR, "project-context-manifest.json"),
+    options.cwd
   );
   return {
     opId: "write-project-context-manifest-state",
@@ -338,33 +301,21 @@ function buildManifestOperation(options: {
       validation: options.validation,
       source: "snipara-companion context-control plan --manifest",
     },
-    reasonCodes: [
-      "project_context_manifest",
-      "context_as_code",
-      "preview_before_apply",
-    ],
+    reasonCodes: ["project_context_manifest", "context_as_code", "preview_before_apply"],
   };
 }
 
 export function buildLocalContextMutationPlan(
-  options: ContextControlPlanCommandOptions & { cwd?: string; now?: Date } = {},
+  options: ContextControlPlanCommandOptions & { cwd?: string; now?: Date } = {}
 ): LocalContextMutationPlanResult {
   const cwd = path.resolve(options.cwd ?? process.cwd());
   const now = options.now ?? new Date();
-  const manifestPath = options.manifest
-    ? resolveManifestPath(cwd, options.manifest)
-    : undefined;
+  const manifestPath = options.manifest ? resolveManifestPath(cwd, options.manifest) : undefined;
   const validation = manifestPath
-    ? buildLocalProjectContextValidationReport({
-        cwd,
-        manifest: manifestPath,
-        now,
-      })
+    ? buildLocalProjectContextValidationReport({ cwd, manifest: manifestPath, now })
     : undefined;
   if (validation?.status === "invalid") {
-    throw new Error(
-      "ProjectContext manifest is invalid; run context-control validate first.",
-    );
+    throw new Error("ProjectContext manifest is invalid; run context-control validate first.");
   }
   const summary =
     options.summary?.trim() ||
@@ -374,12 +325,7 @@ export function buildLocalContextMutationPlan(
   const baseRevision = resolveGitBaseRevision(cwd);
   const operation =
     validation && manifestPath
-      ? buildManifestOperation({
-          cwd,
-          manifestPath,
-          validation,
-          target: options.target,
-        })
+      ? buildManifestOperation({ cwd, manifestPath, validation, target: options.target })
       : buildStateOperation({
           cwd,
           summary,
@@ -398,15 +344,9 @@ export function buildLocalContextMutationPlan(
   const plan = buildContextMutationPlan({
     createdAt: now,
     producer: {
-      kind: validation
-        ? "project_context_manifest"
-        : "companion_context_control",
-      command: validation
-        ? "context-control plan --manifest"
-        : "context-control plan",
-      ...(manifestPath
-        ? { sourceRef: toProjectRelativePath(manifestPath, cwd) }
-        : {}),
+      kind: validation ? "project_context_manifest" : "companion_context_control",
+      command: validation ? "context-control plan --manifest" : "context-control plan",
+      ...(manifestPath ? { sourceRef: toProjectRelativePath(manifestPath, cwd) } : {}),
     },
     projectId: options.projectId,
     baseRevision,
@@ -415,8 +355,7 @@ export function buildLocalContextMutationPlan(
     preconditions: [
       {
         kind: "base_revision_matches",
-        summary:
-          "Apply only when the current Git HEAD still matches the previewed base revision.",
+        summary: "Apply only when the current Git HEAD still matches the previewed base revision.",
         required: true,
       },
       {
@@ -429,9 +368,7 @@ export function buildLocalContextMutationPlan(
     approvalRequired: options.approvalRequired ?? true,
     expiresAt: options.expiresAt,
   });
-  const planPath = options.output
-    ? path.resolve(cwd, options.output)
-    : undefined;
+  const planPath = options.output ? path.resolve(cwd, options.output) : undefined;
   if (planPath) {
     writeStableJsonFile(planPath, plan);
   }
@@ -439,7 +376,7 @@ export function buildLocalContextMutationPlan(
 }
 
 export function applyLocalContextMutationPlan(
-  options: ContextControlApplyCommandOptions & { cwd?: string; now?: Date },
+  options: ContextControlApplyCommandOptions & { cwd?: string; now?: Date }
 ): LocalContextMutationApplyResult {
   const cwd = path.resolve(options.cwd ?? process.cwd());
   const planPath = path.resolve(cwd, options.plan);
@@ -492,9 +429,7 @@ export function applyLocalContextMutationPlan(
         contentHash: operation.contentHash,
         message: "Explicit --approve acknowledgement was not provided.",
       })),
-      caveats: [
-        "Re-run context-control apply with --approve after reviewing the plan.",
-      ],
+      caveats: ["Re-run context-control apply with --approve after reviewing the plan."],
     });
     return { plan, receipt, writtenFiles: [] };
   }
@@ -515,12 +450,9 @@ export function applyLocalContextMutationPlan(
         target: operation.target,
         status: "skipped",
         contentHash: operation.contentHash,
-        message:
-          "Current Git HEAD no longer matches the previewed base revision.",
+        message: "Current Git HEAD no longer matches the previewed base revision.",
       })),
-      caveats: [
-        "Re-run context-control plan before applying on the new base revision.",
-      ],
+      caveats: ["Re-run context-control plan before applying on the new base revision."],
     });
     return { plan, receipt, writtenFiles: [] };
   }
@@ -572,9 +504,7 @@ export function applyLocalContextMutationPlan(
     }
     const absoluteTarget = path.resolve(cwd, target);
     if (operation.mode === "create" && fs.existsSync(absoluteTarget)) {
-      throw new Error(
-        `Refusing to overwrite existing context-control file: ${target}`,
-      );
+      throw new Error(`Refusing to overwrite existing context-control file: ${target}`);
     }
     writeStableJsonFile(absoluteTarget, operation.content ?? {});
     writtenFiles.push(target);
@@ -618,10 +548,7 @@ function listJsonFiles(dir: string): string[] {
     .sort((left, right) => left.localeCompare(right));
 }
 
-function readJsonFileSafe(filePath: string): {
-  value?: unknown;
-  error?: string;
-} {
+function readJsonFileSafe(filePath: string): { value?: unknown; error?: string } {
   try {
     return { value: readJsonFile(filePath) };
   } catch (error) {
@@ -633,12 +560,9 @@ function collectGitDriftSignals(cwd: string): ProjectDriftSignal[] {
   const revision = resolveGitBaseRevision(cwd);
   const scopePaths = resolveGitDriftScopePaths(cwd);
   const relevantDirtyFiles = revision.dirtyFiles.filter((file) =>
-    isPathInsideScope(file, scopePaths),
+    isPathInsideScope(file, scopePaths)
   );
-  const upstream = runGit(
-    ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
-    cwd,
-  );
+  const upstream = runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], cwd);
   const upstreamCounts = upstream
     ? runGit(["rev-list", "--left-right", "--count", `${upstream}...HEAD`], cwd)
     : undefined;
@@ -688,8 +612,7 @@ function collectGitDriftSignals(cwd: string): ProjectDriftSignal[] {
           surface: "git",
           state: "UNKNOWN",
           summary: "No Git upstream was resolved.",
-          expected:
-            "A branch upstream is available for ahead/behind drift checks.",
+          expected: "A branch upstream is available for ahead/behind drift checks.",
           refs: [],
           severity: "watch",
           reasonCodes: ["git_upstream_unknown"],
@@ -752,9 +675,7 @@ function collectWorkflowDriftSignals(cwd: string): ProjectDriftSignal[] {
   const record = read.value as Record<string, unknown>;
   const status = typeof record.status === "string" ? record.status : "unknown";
   const currentPhaseId =
-    typeof record.currentPhaseId === "string"
-      ? record.currentPhaseId
-      : undefined;
+    typeof record.currentPhaseId === "string" ? record.currentPhaseId : undefined;
   return [
     {
       id: "workflow-state-present",
@@ -766,20 +687,14 @@ function collectWorkflowDriftSignals(cwd: string): ProjectDriftSignal[] {
           : `Managed workflow status is ${status}.`,
       refs: [".snipara/workflow/current.json"],
       severity: status === "active" ? "info" : "watch",
-      reasonCodes: [
-        status === "active"
-          ? "workflow_state_active"
-          : "workflow_state_unknown",
-      ],
+      reasonCodes: [status === "active" ? "workflow_state_active" : "workflow_state_unknown"],
     },
   ];
 }
 
 function collectDecisionDriftSignals(cwd: string): ProjectDriftSignal[] {
   const pendingDir = path.join(cwd, ".snipara", "decisions", "pending");
-  const pending = listJsonFiles(pendingDir).map((file) =>
-    toProjectRelativePath(file, cwd),
-  );
+  const pending = listJsonFiles(pendingDir).map((file) => toProjectRelativePath(file, cwd));
   return [
     pending.length > 0
       ? {
@@ -787,8 +702,7 @@ function collectDecisionDriftSignals(cwd: string): ProjectDriftSignal[] {
           surface: "decision_requests",
           state: "DRIFT_DETECTED",
           summary: `${pending.length} pending Decision Request artifact(s) need human resolution.`,
-          expected:
-            "Decision Requests are resolved with workflow decide or explicitly deferred.",
+          expected: "Decision Requests are resolved with workflow decide or explicitly deferred.",
           observed: `${pending.length} pending`,
           refs: pending,
           severity: "risk",
@@ -807,17 +721,13 @@ function collectDecisionDriftSignals(cwd: string): ProjectDriftSignal[] {
 }
 
 function collectContextControlDriftSignals(cwd: string): ProjectDriftSignal[] {
-  const planFiles = listJsonFiles(
-    path.join(cwd, CONTEXT_CONTROL_PLANS_RELATIVE_DIR),
-  );
-  const receiptFiles = listJsonFiles(
-    path.join(cwd, CONTEXT_CONTROL_APPLIED_RELATIVE_DIR),
-  );
+  const planFiles = listJsonFiles(path.join(cwd, CONTEXT_CONTROL_PLANS_RELATIVE_DIR));
+  const receiptFiles = listJsonFiles(path.join(cwd, CONTEXT_CONTROL_APPLIED_RELATIVE_DIR));
   const receiptPlanHashes = new Set(
     receiptFiles
       .map((file) => readJsonFileSafe(file).value)
       .filter(isContextMutationApplyReceipt)
-      .map((receipt) => receipt.planHash),
+      .map((receipt) => receipt.planHash)
   );
   if (planFiles.length === 0) {
     return [
@@ -881,8 +791,7 @@ function collectContextControlDriftSignals(cwd: string): ProjectDriftSignal[] {
           surface: "context_control",
           state: "DRIFT_DETECTED",
           summary: `Context mutation plan ${plan.planId} has not been applied.`,
-          expected:
-            "Saved plans have matching apply receipts or are superseded.",
+          expected: "Saved plans have matching apply receipts or are superseded.",
           observed: "No apply receipt for plan hash.",
           refs: [relative],
           severity: "risk",
@@ -891,9 +800,7 @@ function collectContextControlDriftSignals(cwd: string): ProjectDriftSignal[] {
   });
 }
 
-function collectProjectContextManifestDriftSignals(
-  cwd: string,
-): ProjectDriftSignal[] {
+function collectProjectContextManifestDriftSignals(cwd: string): ProjectDriftSignal[] {
   const manifestPath = resolveManifestPath(cwd);
   const relative = toProjectRelativePath(manifestPath, cwd);
   if (!fs.existsSync(manifestPath)) {
@@ -910,10 +817,7 @@ function collectProjectContextManifestDriftSignals(
       },
     ];
   }
-  const validation = buildLocalProjectContextValidationReport({
-    cwd,
-    manifest: manifestPath,
-  });
+  const validation = buildLocalProjectContextValidationReport({ cwd, manifest: manifestPath });
   if (validation.status === "invalid") {
     return [
       {
@@ -921,9 +825,7 @@ function collectProjectContextManifestDriftSignals(
         surface: "project_context_manifest",
         state: "DRIFT_DETECTED",
         summary: "ProjectContext manifest is invalid.",
-        observed: validation.findings
-          .map((finding) => finding.summary)
-          .join("; "),
+        observed: validation.findings.map((finding) => finding.summary).join("; "),
         refs: [relative],
         severity: "risk",
         reasonCodes: ["project_context_manifest_invalid"],
@@ -937,9 +839,7 @@ function collectProjectContextManifestDriftSignals(
         surface: "project_context_manifest",
         state: "STALE_EVIDENCE",
         summary: "ProjectContext manifest is valid but needs review.",
-        observed: validation.findings
-          .map((finding) => finding.summary)
-          .join("; "),
+        observed: validation.findings.map((finding) => finding.summary).join("; "),
         refs: [relative],
         severity: "watch",
         reasonCodes: ["project_context_manifest_review_required"],
@@ -960,10 +860,7 @@ function collectProjectContextManifestDriftSignals(
 }
 
 export function buildLocalProjectDriftReport(
-  options: ContextControlDriftCommandOptions & {
-    cwd?: string;
-    now?: Date;
-  } = {},
+  options: ContextControlDriftCommandOptions & { cwd?: string; now?: Date } = {}
 ): ProjectDriftReport {
   const cwd = path.resolve(options.cwd ?? process.cwd());
   return buildProjectDriftReport({
@@ -989,9 +886,7 @@ function printPlan(result: LocalContextMutationPlanResult): void {
   console.log(`Plan: ${result.plan.planId}`);
   console.log(`Hash: ${result.plan.planHash}`);
   console.log(`Summary: ${result.plan.summary}`);
-  console.log(
-    `Approval required: ${result.plan.approvalRequired ? "yes" : "no"}`,
-  );
+  console.log(`Approval required: ${result.plan.approvalRequired ? "yes" : "no"}`);
   if (result.planPath) {
     console.log(`Written: ${result.planPath}`);
   }
@@ -1005,9 +900,7 @@ function printPlan(result: LocalContextMutationPlanResult): void {
   console.log("");
   console.log(chalk.bold("Operations"));
   for (const operation of result.plan.operations) {
-    console.log(
-      `- ${operation.kind} ${operation.target}: ${operation.summary}`,
-    );
+    console.log(`- ${operation.kind} ${operation.target}: ${operation.summary}`);
   }
 }
 
@@ -1080,7 +973,7 @@ function printDrift(report: ProjectDriftReport): void {
 }
 
 export async function contextControlPlanCommand(
-  options: ContextControlPlanCommandOptions,
+  options: ContextControlPlanCommandOptions
 ): Promise<void> {
   const result = buildLocalContextMutationPlan(options);
   if (options.json) {
@@ -1091,7 +984,7 @@ export async function contextControlPlanCommand(
 }
 
 export async function contextControlApplyCommand(
-  options: ContextControlApplyCommandOptions,
+  options: ContextControlApplyCommandOptions
 ): Promise<void> {
   const result = applyLocalContextMutationPlan(options);
   if (options.json) {
@@ -1099,16 +992,13 @@ export async function contextControlApplyCommand(
   } else {
     printApply(result);
   }
-  if (
-    result.receipt.status === "stale_base" ||
-    result.receipt.status === "blocked"
-  ) {
+  if (result.receipt.status === "stale_base" || result.receipt.status === "blocked") {
     process.exitCode = 1;
   }
 }
 
 export async function contextControlDriftCommand(
-  options: ContextControlDriftCommandOptions,
+  options: ContextControlDriftCommandOptions
 ): Promise<void> {
   const report = buildLocalProjectDriftReport(options);
   if (options.json) {
@@ -1119,7 +1009,7 @@ export async function contextControlDriftCommand(
 }
 
 export async function contextControlValidateCommand(
-  options: ContextControlValidateCommandOptions,
+  options: ContextControlValidateCommandOptions
 ): Promise<void> {
   const report = buildLocalProjectContextValidationReport(options);
   if (options.json) {
@@ -1135,12 +1025,10 @@ export async function contextControlValidateCommand(
 function resolveHostedContextSources(
   cwd: string,
   manifestPath: string,
-  report: ProjectContextValidationReport,
+  report: ProjectContextValidationReport
 ): HostedContextControlSource[] {
   if (!report.manifest || report.status === "invalid") {
-    throw new Error(
-      "ProjectContext manifest is invalid; run context-control validate first.",
-    );
+    throw new Error("ProjectContext manifest is invalid; run context-control validate first.");
   }
   const workspaceRoot = fs.realpathSync(cwd);
   return report.manifest.sources.map((source) => {
@@ -1149,18 +1037,11 @@ function resolveHostedContextSources(
       throw new Error(`ProjectContext source is missing: ${source.path}`);
     }
     if (fs.lstatSync(candidate).isSymbolicLink()) {
-      throw new Error(
-        `ProjectContext source symlinks are not allowed: ${source.path}`,
-      );
+      throw new Error(`ProjectContext source symlinks are not allowed: ${source.path}`);
     }
     const canonical = fs.realpathSync(candidate);
-    if (
-      canonical !== workspaceRoot &&
-      !canonical.startsWith(`${workspaceRoot}${path.sep}`)
-    ) {
-      throw new Error(
-        `ProjectContext source escapes the workspace: ${source.path}`,
-      );
+    if (canonical !== workspaceRoot && !canonical.startsWith(`${workspaceRoot}${path.sep}`)) {
+      throw new Error(`ProjectContext source escapes the workspace: ${source.path}`);
     }
     if (!fs.statSync(canonical).isFile()) {
       throw new Error(`ProjectContext source must be a file: ${source.path}`);
@@ -1174,21 +1055,16 @@ function resolveHostedContextSources(
 }
 
 export async function contextControlHostedDiffCommand(
-  options: ContextControlHostedDiffCommandOptions,
+  options: ContextControlHostedDiffCommandOptions
 ): Promise<void> {
   const cwd = process.cwd();
   const manifestPath = resolveManifestPath(cwd, options.manifest);
-  const report = buildLocalProjectContextValidationReport({
-    cwd,
-    manifest: manifestPath,
-  });
+  const report = buildLocalProjectContextValidationReport({ cwd, manifest: manifestPath });
   const sources = resolveHostedContextSources(cwd, manifestPath, report);
-  const response = await createClient(60_000, { cwd }).diffHostedContextControl(
-    {
-      manifestHash: report.manifestHash,
-      sources,
-    },
-  );
+  const response = await createClient(60_000, { cwd }).diffHostedContextControl({
+    manifestHash: report.manifestHash,
+    sources,
+  });
   const result: HostedContextControlDiffResult = {
     project: response.project,
     plan: response.plan,
@@ -1199,14 +1075,8 @@ export async function contextControlHostedDiffCommand(
     result.planPath = toProjectRelativePath(planPath, cwd);
   }
   if (options.emitDecisionRequest && response.plan.approvalRequired) {
-    if (
-      response.plan.operations.some(
-        (operation) => operation.action === "blocked",
-      )
-    ) {
-      throw new Error(
-        "Blocked hosted operations must be removed before requesting approval.",
-      );
+    if (response.plan.operations.some((operation) => operation.action === "blocked")) {
+      throw new Error("Blocked hosted operations must be removed before requesting approval.");
     }
     const request = buildDecisionRequest({
       producer: {
@@ -1218,10 +1088,7 @@ export async function contextControlHostedDiffCommand(
       question: `Approve hosted Context Control plan ${response.plan.planId}?`,
       evidence: {
         summary: `${response.plan.operations.filter((operation) => operation.action === "create").length} create, ${response.plan.operations.filter((operation) => operation.action === "update").length} update, zero deletes.`,
-        refs: [
-          response.plan.planHash,
-          toProjectRelativePath(manifestPath, cwd),
-        ],
+        refs: [response.plan.planHash, toProjectRelativePath(manifestPath, cwd)],
         items: [
           {
             ref: response.plan.planId,
@@ -1233,19 +1100,14 @@ export async function contextControlHostedDiffCommand(
             },
           },
         ],
-        reasonCodes: [
-          "hosted_context_control_apply",
-          "human_approval_required",
-          "no_delete",
-        ],
+        reasonCodes: ["hosted_context_control_apply", "human_approval_required", "no_delete"],
         files: response.plan.sources.map((source) => source.path),
         applyPath: "context-control hosted-apply",
         applyCommand: `snipara-companion context-control hosted-apply --plan ${options.output ?? "<plan.json>"} --approval <resolved-decision.json>`,
       },
       options: ["approve_hosted_apply", "reject_hosted_apply"],
       recommendation: "approve_hosted_apply",
-      rationale:
-        "The plan is bounded to reviewed add/update operations and contains no deletes.",
+      rationale: "The plan is bounded to reviewed add/update operations and contains no deletes.",
       blocking: true,
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
       fingerprintParts: [
@@ -1280,26 +1142,20 @@ export async function contextControlHostedDiffCommand(
 }
 
 export async function contextControlHostedApplyCommand(
-  options: ContextControlHostedApplyCommandOptions,
+  options: ContextControlHostedApplyCommandOptions
 ): Promise<void> {
   const cwd = process.cwd();
   const rawPlan = readJsonFile(path.resolve(cwd, options.plan));
   if (!isHostedContextControlPlan(rawPlan)) {
     throw new Error(`Invalid hosted Context Control plan: ${options.plan}`);
   }
-  const approval = options.approval
-    ? readJsonFile(path.resolve(cwd, options.approval))
-    : undefined;
-  const response = await createClient(120_000, {
-    cwd,
-  }).applyHostedContextControl({
+  const approval = options.approval ? readJsonFile(path.resolve(cwd, options.approval)) : undefined;
+  const response = await createClient(120_000, { cwd }).applyHostedContextControl({
     plan: rawPlan,
     approval,
   });
   if (!isHostedContextControlApplyReceipt(response.receipt)) {
-    throw new Error(
-      "Hosted Context Control apply returned an invalid receipt.",
-    );
+    throw new Error("Hosted Context Control apply returned an invalid receipt.");
   }
   const result: HostedContextControlApplyResult = {
     project: response.project,
@@ -1322,9 +1178,7 @@ export async function contextControlHostedApplyCommand(
   }
   if (result.receiptPath) console.log(`Receipt written: ${result.receiptPath}`);
   if (response.receipt.reindex.warning) {
-    console.log(
-      chalk.yellow(`Reindex warning: ${response.receipt.reindex.warning}`),
-    );
+    console.log(chalk.yellow(`Reindex warning: ${response.receipt.reindex.warning}`));
   }
 }
 

@@ -207,7 +207,7 @@ test("context-pack blocks secret-like content by default and redacts metadata wh
   const content = [
     "Authorization: Bearer abcdefghijklmnopqrstuvwxyz1234567890",
     "DATABASE_URL=postgres://user:supersecretpassword@localhost:5432/app",
-    "SNIPARA_API_KEY=snp_1234567890abcdef1234567890",
+    "SNIPARA_API_KEY=snp_1234567890abcdef1234567890", // gitleaks:allow
     "-----BEGIN PRIVATE KEY-----",
     "abc123",
     "-----END PRIVATE KEY-----",
