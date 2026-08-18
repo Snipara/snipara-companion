@@ -15,7 +15,7 @@
  *   - Guards:            stuck-guard, memory-guard
  *   - Hosted context:    query, shared-context, plan, multi-query, orchestrate, chunk, reindex
  *   - Docs / knowledge:  upload, references, business-collections, client-projects,
- *                        onboard-folder, sync-documents, source
+ *                        onboard-folder, sync-documents, source, docs bootstrap
  *   - Code graph:        impact, code (local impact/callers/imports + optional hosted overlay)
  *   - Automation:        automations, events, memory
  *
@@ -59,6 +59,7 @@ import { memoryGuardCheckCommand, rememberGuardMemoryCommand } from "./commands/
 import { doctorCommand } from "./commands/doctor";
 import {
   codeGraphAutoSourceCommand,
+  resolveMinimumChangeMode,
   codeHooksInstallCommand,
   codeLocalImpactCommand,
   codeLocalCallersCommand,
@@ -78,6 +79,7 @@ import {
   sourceSyncCommand,
   sourceWatchCommand,
 } from "./commands/source";
+import { docsBootstrapCommand } from "./commands/docs";
 import {
   workersLocalAddCommand,
   workersLocalListCommand,
@@ -99,6 +101,14 @@ import {
 } from "./commands/automations";
 import { agentReadinessAuditCommand } from "./commands/agent-readiness";
 import { leadPlanCommand } from "./commands/lead-plan";
+import {
+  featureInitCommand,
+  featurePlanCommand,
+  featureSpecifyCommand,
+  featureStartCommand,
+  featureStatusCommand,
+  featureTasksCommand,
+} from "./commands/feature";
 import { outcomeCapturePreviewCommand } from "./commands/outcome-capture";
 import { codingLedgerExportCommand } from "./commands/coding-ledger";
 import { projectIntelligenceBriefCommand } from "./commands/intelligence";
@@ -113,6 +123,7 @@ import {
 } from "./commands/context-control";
 import { agentContextResolveCommand, agentContextValidateCommand } from "./commands/agent-context";
 import {
+  agentContextEvidenceCollectCommand,
   agentContextEvidenceRecordCommand,
   agentContextEvidenceStatusCommand,
   agentContextEvidenceTemplateCommand,
@@ -204,6 +215,11 @@ import { loadConfig } from "./config/store";
 export { resolveQueryFromToolInput } from "./commands/pre-tool";
 export { buildCommitResultMetadata, extractFilesFromToolInput } from "./commands/post-tool";
 export {
+  captureStandaloneCommitWhy,
+  hasActiveManagedWorkflow,
+  readStandaloneCommitEvidence,
+} from "./commands/why-capture";
+export {
   attachLocalContextPackReceipts,
   buildCanonicalEvent,
   buildLocalContextPackReceipt,
@@ -263,6 +279,7 @@ export {
 } from "./commands/agent-context";
 export {
   AGENT_CONTEXT_EVIDENCE_DEFAULT_LEDGER,
+  agentContextEvidenceCollectCommand,
   agentContextEvidenceRecordCommand,
   agentContextEvidenceStatusCommand,
   agentContextEvidenceTemplateCommand,
@@ -335,6 +352,8 @@ export {
   buildCodeStatusResult,
   buildCodeSyncResult,
   buildHostedCodeOverlayUploadPayload,
+  buildInstalledDependencyEvidence,
+  buildSmallestSafeDiffEvidence,
   buildLocalCallersResult,
   buildLocalCodeOverlay,
   buildLocalImpactResult,
@@ -347,6 +366,7 @@ export {
   readLocalCodeOverlayCache,
   readLocalCodePromotionState,
   resolveCodeGraphMode,
+  resolveMinimumChangeMode,
   summarizeLocalCodeOverlay,
   writeLocalCodeOverlayCache,
   writeLocalCodePromotionState,
@@ -360,6 +380,13 @@ export {
   readLocalSourceSnapshot,
   writeLocalSourceSnapshot,
 } from "./commands/source";
+export {
+  buildDocsBootstrapResult,
+  buildProjectBriefMarkdown,
+  docsBootstrapCommand,
+  DOCS_BOOTSTRAP_VERSION,
+  DEFAULT_DOCS_BOOTSTRAP_OUTPUT,
+} from "./commands/docs";
 export {
   addLocalWorker,
   readLocalWorkersConfig,
@@ -381,6 +408,21 @@ export {
 } from "./commands/worker-trust";
 export { getPlanStepDisplayTitle } from "./commands/workflows";
 export {
+  FEATURE_DEFAULT_OUTPUT_DIR,
+  FEATURE_WORK_ITEM_VERSION,
+  buildFeaturePlanMarkdown,
+  buildFeatureSpecMarkdown,
+  buildFeatureTasksMarkdown,
+  featureInitCommand,
+  featurePlanCommand,
+  featureSpecifyCommand,
+  featureStartCommand,
+  featureStatusCommand,
+  featureTasksCommand,
+  normalizeFeatureSlug,
+  resolveFeatureArtifactPaths,
+} from "./commands/feature";
+export {
   buildFinalCommitReport,
   buildWorkflowPhaseCommitReceipt,
   formatFinalCommitReport,
@@ -397,6 +439,7 @@ export {
 export {
   buildAgenticTimeline,
   buildAgenticWorkStatus,
+  applyManagedWorkflowPolicyAutoResponses,
   buildGeneratedWorkflowPlanDocument,
   buildProducerLoopReport,
   writeProducerLoopArtifact,
@@ -410,6 +453,7 @@ export {
   collectSyncDocuments,
   collectSyncDocumentsInput,
   normalizeWorkflowPlanInput,
+  deriveManagedWorkflowJudgmentResolution,
   resolveAutoWorkflowMode,
   resolveFullWorkflowTokenBudget,
   validatePlanResult,
@@ -769,6 +813,10 @@ program
       .description("Preview bounded decision and outcome candidates without persisting memory")
       .option("--from-file <file>", "Read one event, {events:[...]}, or an array of events as JSON")
       .option(
+        "--from-workflow [file]",
+        "Import completed phases from a workflow snapshot (default: .snipara/workflow/current.json)"
+      )
+      .option(
         "--event <kind>",
         "Event kind (commit|pull_request|phase_commit|handoff|final_commit|guard_decision|test_result|deploy_health|review_result|feedback)"
       )
@@ -800,10 +848,16 @@ program
       .option("--risk <risk>", "Outcome receipt risk (low|medium|high|critical)")
       .option("--surface <surface>", "Outcome receipt surface; repeatable", collectOption, [])
       .option("--workflow-fingerprint <fingerprint>", "Workflow identity fingerprint")
+      .option(
+        "--session-id <sessionId>",
+        "Existing opaque Companion session identity for correlation"
+      )
+      .option("-d, --dir <directory>", "Project directory (default: current)")
       .option("--json", "Print raw JSON")
       .action(async (options) => {
         await outcomeCapturePreviewCommand({
           fromFile: options.fromFile,
+          fromWorkflow: options.fromWorkflow,
           event: options.event,
           summary: options.summary,
           outcome: options.outcome,
@@ -822,6 +876,8 @@ program
           risk: options.risk,
           surface: options.surface,
           workflowFingerprint: options.workflowFingerprint,
+          sessionId: options.sessionId,
+          dir: options.dir,
           json: Boolean(options.json),
         });
       })
@@ -1436,6 +1492,7 @@ program
   .option("--search-mode <mode>", "Search mode: keyword|semantic|hybrid", "hybrid")
   .option("--timeout-ms <number>", "Hosted context query timeout in milliseconds", "30000")
   .option("--no-answer-pack", "Skip Answer Pack generation")
+  .option("--minimum-change-mode <mode>", "off|review (opt-in non-blocking review)", "off")
   .option("--no-auto-decompose", "Disable automatic query decomposition")
   .option("--no-shared-context", "Exclude linked shared context")
   .option(
@@ -1450,6 +1507,7 @@ program
       searchMode: options.searchMode,
       timeoutMs: parseInt(options.timeoutMs, 10),
       includeAnswerPack: options.answerPack !== false,
+      minimumChangeMode: resolveMinimumChangeMode(options.minimumChangeMode),
       autoDecompose: options.autoDecompose !== false,
       includeSharedContext: options.sharedContext !== false,
       followRecommendation: Boolean(options.followRecommendation),
@@ -1495,6 +1553,166 @@ program
       workflowId: options.workflowId,
       force: Boolean(options.force),
       json: options.json,
+    });
+  });
+
+const feature = program
+  .command("feature")
+  .description("Create Spec Kit-style feature specifications, plans, tasks, and workflow bridges");
+
+feature
+  .command("init")
+  .description("Initialize a feature work item with spec, plan, and task artifacts")
+  .argument("<slug>", "Feature slug")
+  .requiredOption("-g, --goal <goal>", "Feature goal")
+  .option("--why <why>", "Why this feature matters now")
+  .option("--user <user>", "Affected user, team, or system; repeatable", collectOption, [])
+  .option(
+    "--constraint <constraint>",
+    "Technical, product, or security constraint; repeatable",
+    collectOption,
+    []
+  )
+  .option("--non-goal <nonGoal>", "Explicit non-goal; repeatable", collectOption, [])
+  .option(
+    "--acceptance <criterion>",
+    "Observable acceptance criterion; repeatable",
+    collectOption,
+    []
+  )
+  .option("--output-dir <dir>", "Parent directory for feature artifacts", "docs/specs")
+  .option("-d, --dir <directory>", "Workspace directory (default: current)")
+  .option("--force", "Replace an existing feature scaffold")
+  .option("--json", "Print raw JSON")
+  .action(async (slug, options) => {
+    featureInitCommand({
+      slug,
+      goal: options.goal,
+      why: options.why,
+      users: options.user,
+      constraints: options.constraint,
+      nonGoals: options.nonGoal,
+      acceptanceCriteria: options.acceptance,
+      outputDir: options.outputDir,
+      cwd: options.dir,
+      force: Boolean(options.force),
+      json: Boolean(options.json),
+    });
+  });
+
+feature
+  .command("specify")
+  .description("Write or update the feature specification")
+  .argument("<slug>", "Feature slug")
+  .option("-g, --goal <goal>", "Feature goal (required when creating a new feature)")
+  .option("--why <why>", "Why this feature matters now")
+  .option("--user <user>", "Affected user, team, or system; repeatable", collectOption, [])
+  .option(
+    "--constraint <constraint>",
+    "Technical, product, or security constraint; repeatable",
+    collectOption,
+    []
+  )
+  .option("--non-goal <nonGoal>", "Explicit non-goal; repeatable", collectOption, [])
+  .option(
+    "--acceptance <criterion>",
+    "Observable acceptance criterion; repeatable",
+    collectOption,
+    []
+  )
+  .option("--output-dir <dir>", "Parent directory for feature artifacts", "docs/specs")
+  .option("-d, --dir <directory>", "Workspace directory (default: current)")
+  .option("--force", "Replace an existing specification")
+  .option("--json", "Print raw JSON")
+  .action(async (slug, options) => {
+    featureSpecifyCommand({
+      slug,
+      goal: options.goal,
+      why: options.why,
+      users: options.user,
+      constraints: options.constraint,
+      nonGoals: options.nonGoal,
+      acceptanceCriteria: options.acceptance,
+      outputDir: options.outputDir,
+      cwd: options.dir,
+      force: Boolean(options.force),
+      json: Boolean(options.json),
+    });
+  });
+
+feature
+  .command("plan")
+  .description("Generate a technical plan from the feature specification")
+  .argument("<slug>", "Feature slug")
+  .option("-m, --max-tokens <number>", "Hosted planner token budget")
+  .option("--output-dir <dir>", "Parent directory for feature artifacts", "docs/specs")
+  .option("-d, --dir <directory>", "Workspace directory (default: current)")
+  .option("--force", "Replace an existing technical plan")
+  .option("--json", "Print raw JSON")
+  .action(async (slug, options) => {
+    await featurePlanCommand({
+      slug,
+      maxTokens: options.maxTokens ? Number.parseInt(options.maxTokens, 10) : undefined,
+      outputDir: options.outputDir,
+      cwd: options.dir,
+      force: Boolean(options.force),
+      json: Boolean(options.json),
+    });
+  });
+
+feature
+  .command("tasks")
+  .description("Generate executable tasks from the technical plan")
+  .argument("<slug>", "Feature slug")
+  .option("--output-dir <dir>", "Parent directory for feature artifacts", "docs/specs")
+  .option("-d, --dir <directory>", "Workspace directory (default: current)")
+  .option("--from-plan", "Parse the local plan.md instead of the hosted workflow-plan.json")
+  .option("--force", "Replace existing implementation tasks")
+  .option("--json", "Print raw JSON")
+  .action(async (slug, options) => {
+    featureTasksCommand({
+      slug,
+      outputDir: options.outputDir,
+      cwd: options.dir,
+      fromPlan: Boolean(options.fromPlan),
+      force: Boolean(options.force),
+      json: Boolean(options.json),
+    });
+  });
+
+feature
+  .command("start")
+  .description("Start the existing managed workflow from generated feature tasks")
+  .argument("<slug>", "Feature slug")
+  .option("--workflow-id <id>", "Stable managed workflow id")
+  .option("--output-dir <dir>", "Parent directory for feature artifacts", "docs/specs")
+  .option("-d, --dir <directory>", "Workspace directory (default: current)")
+  .option("--force", "Replace an existing active managed workflow")
+  .option("--json", "Print raw JSON")
+  .action(async (slug, options) => {
+    await featureStartCommand({
+      slug,
+      workflowId: options.workflowId,
+      outputDir: options.outputDir,
+      cwd: options.dir,
+      force: Boolean(options.force),
+      json: Boolean(options.json),
+    });
+  });
+
+feature
+  .command("status")
+  .description("Show feature artifact and generation status")
+  .argument("<slug>", "Feature slug")
+  .option("--output-dir <dir>", "Parent directory for feature artifacts", "docs/specs")
+  .option("-d, --dir <directory>", "Workspace directory (default: current)")
+  .option("--json", "Print raw JSON")
+  .action(async (slug, options) => {
+    featureStatusCommand({
+      slug,
+      outputDir: options.outputDir,
+      cwd: options.dir,
+      json: Boolean(options.json),
     });
   });
 
@@ -1938,6 +2156,34 @@ source
     });
   });
 
+const docs = program
+  .command("docs")
+  .description("Generate reviewable, evidence-linked project documentation");
+
+docs
+  .command("bootstrap")
+  .description("Preview or write a safe Project Brief from local source evidence")
+  .argument("[dir]", "Folder to inspect", ".")
+  .option("-o, --output <file>", "Output file inside the project folder", "docs/PROJECT.md")
+  .option("--preview", "Preview only; this is the default")
+  .option("--apply", "Write the generated Project Brief")
+  .option("--force", "Overwrite an existing output when used with --apply")
+  .option("--max-files <number>", "Maximum files to inspect", "5000")
+  .option("--max-file-bytes <number>", "Maximum bytes per inspected file", "5242880")
+  .option("--json", "Print raw JSON")
+  .action(async (dir, options) => {
+    await docsBootstrapCommand({
+      dir,
+      output: options.output,
+      preview: Boolean(options.preview),
+      apply: Boolean(options.apply),
+      force: Boolean(options.force),
+      maxFiles: parseInt(options.maxFiles, 10),
+      maxFileBytes: parseInt(options.maxFileBytes, 10),
+      json: Boolean(options.json),
+    });
+  });
+
 program
   .command("reindex")
   .description("Trigger or poll a Snipara background reindex job")
@@ -2175,6 +2421,28 @@ agentContext
 const agentContextEvidence = agentContext
   .command("evidence")
   .description("Record and evaluate AC-1 dogfood evidence without mutating hosted policy");
+
+agentContextEvidence
+  .command("collect")
+  .description("Create an AC-1 evidence draft from completed local workflow proof")
+  .requiredOption("--agent <agent>", "Agent alias or stable agent id")
+  .option("--task <task>", "Override the workflow goal with the representative task")
+  .option("--workflow <file>", "Workflow state JSON", ".snipara/workflow/current.json")
+  .option("--manifest <file>", "Agent Context manifest path", "snipara.agent-context.json")
+  .option("--output <file>", "Write the draft to a JSON file")
+  .option("--force", "Replace an existing output file")
+  .option("--json", "Print raw JSON")
+  .action(async (options) => {
+    await agentContextEvidenceCollectCommand({
+      agent: options.agent,
+      task: options.task,
+      workflow: options.workflow,
+      manifest: options.manifest,
+      output: options.output,
+      force: Boolean(options.force),
+      json: Boolean(options.json),
+    });
+  });
 
 agentContextEvidence
   .command("template")
@@ -3661,6 +3929,11 @@ program
   .option("--max-nodes <number>", "Maximum graph nodes to visit", "500")
   .option("-l, --limit <number>", "Maximum impact entries", "50")
   .option("--source <source>", "auto|local|hosted|hybrid", "auto")
+  .option("--minimum-change-mode <mode>", "off|review (opt-in non-blocking review)", "off")
+  .option(
+    "--minimum-change-dependency <name>",
+    "Dependency name to verify from local manifest and lockfile"
+  )
   .option("--fallback-hosted", "Augment the local result with hosted graph context")
   .option("--cached", "When local is selected, use the cached overlay if present")
   .option("--max-files <number>", "Maximum supported code files for local overlay", "2000")
@@ -3679,6 +3952,8 @@ program
       maxNodes: parseInt(options.maxNodes, 10),
       limit: parseInt(options.limit, 10),
       source: options.source,
+      minimumChangeMode: resolveMinimumChangeMode(options.minimumChangeMode),
+      minimumChangeDependency: options.minimumChangeDependency,
       fallbackHosted: Boolean(options.fallbackHosted),
       cached: Boolean(options.cached),
       maxFiles: parseInt(options.maxFiles, 10),
@@ -4142,6 +4417,11 @@ code
       .option("--max-nodes <number>", "Maximum graph nodes to visit", "500")
       .option("-l, --limit <number>", "Maximum impact entries", "50")
       .option("--source <source>", "auto|local|hosted|hybrid", "auto")
+      .option("--minimum-change-mode <mode>", "off|review (opt-in non-blocking review)", "off")
+      .option(
+        "--minimum-change-dependency <name>",
+        "Dependency name to verify from local manifest and lockfile"
+      )
       .option("--fallback-hosted", "Augment the local result with hosted graph context")
       .option("--cached", "When local is selected, use the cached overlay if present")
       .option("--max-files <number>", "Maximum supported code files for local overlay", "2000")
@@ -4160,6 +4440,8 @@ code
           maxNodes: parseInt(options.maxNodes, 10),
           limit: parseInt(options.limit, 10),
           source: options.source,
+          minimumChangeMode: resolveMinimumChangeMode(options.minimumChangeMode),
+          minimumChangeDependency: options.minimumChangeDependency,
           fallbackHosted: Boolean(options.fallbackHosted),
           cached: Boolean(options.cached),
           maxFiles: parseInt(options.maxFiles, 10),

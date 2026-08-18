@@ -357,6 +357,7 @@ test("root help exposes workflow, intelligence, and code commands", () => {
   assert.match(result.stdout, /\bcode\b/);
   assert.match(result.stdout, /sync-documents/);
   assert.match(result.stdout, /onboard-folder/);
+  assert.match(result.stdout, /\bdocs\b/);
   assert.match(result.stdout, /business-health/);
   assert.match(result.stdout, /business-collections/);
   assert.match(result.stdout, /client-projects/);
@@ -2411,6 +2412,15 @@ test("onboard-folder help exposes preview and provenance options", () => {
   assert.match(result.stdout, /--write-manifest/);
   assert.match(result.stdout, /--source-provider/);
   assert.match(result.stdout, /business_context/);
+});
+
+test("docs bootstrap help exposes preview, apply, and overwrite controls", () => {
+  const result = runCli(["docs", "bootstrap", "--help"]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /--preview/);
+  assert.match(result.stdout, /--apply/);
+  assert.match(result.stdout, /--force/);
+  assert.match(result.stdout, /--output/);
 });
 
 test("business-health help exposes stale threshold", () => {

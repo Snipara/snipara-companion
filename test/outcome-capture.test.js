@@ -186,6 +186,56 @@ test("outcome-capture preview can emit an Outcome Intelligence receipt", () => {
   assert.ok(payload.outcomeReceipt.decision.reasonCodes.includes("why_outcome_capture_v1"));
 });
 
+test("outcome-capture preview imports completed workflow phases with shadow correlation", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-outcome-capture-workflow-"));
+  const workflowPath = path.join(dir, "workflow.json");
+  fs.writeFileSync(
+    workflowPath,
+    JSON.stringify({
+      workflowId: "workflow:ac1",
+      goal: "Close the AC-1 evidence gap",
+      status: "active",
+      phases: [
+        {
+          id: "continuity",
+          title: "Harden continuity",
+          status: "completed",
+          outcome: "completed",
+          completedAt: "2026-08-14T20:00:00.000Z",
+          files: ["packages/cli/src/commands/team-sync.ts", "/Users/alex/private.txt"],
+          summary: "Handoff artifacts passed redaction checks",
+        },
+        { id: "pending", title: "Pending phase", status: "in_progress" },
+      ],
+    })
+  );
+
+  const result = runCli(
+    [
+      "outcome-capture",
+      "preview",
+      "--from-workflow",
+      workflowPath,
+      "--session-id",
+      "session:companion/ac1",
+      "--emit-outcome-receipt",
+      "--json",
+    ],
+    { cwd: dir }
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.eventCount, 1);
+  assert.equal(payload.outcomeReceipt.sourceRef, "workflow:workflow:ac1:phase:continuity");
+  assert.equal(payload.outcomeReceipt.taskProfile.workflowFingerprint, "workflow:ac1");
+  assert.equal(payload.outcomeReceipt.taskProfile.sessionId, "session:companion/ac1");
+  assert.deepEqual(payload.outcomeReceipt.taskProfile.changedFiles, [
+    "packages/cli/src/commands/team-sync.ts",
+  ]);
+  assert.ok(payload.outcomeReceipt.caveats.some((caveat) => caveat.includes("not causal proof")));
+});
+
 test("outcome-capture preview accepts direct feedback without a summary", () => {
   const result = runCli([
     "outcome-capture",

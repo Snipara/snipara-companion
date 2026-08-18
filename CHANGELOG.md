@@ -2,6 +2,97 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## Unreleased
+
+## New In 3.6.19 - 2026-08-16
+
+- Adds the non-blocking, fingerprinted `git_diff` evidence adapter for
+  `smallest_safe_diff` and records five real Git-history replay cases for
+  calibration.
+
+## New In 3.6.18 - 2026-08-16
+
+- Adds a local lockfile/manifest evidence adapter for direct installed-dependency
+  checks, with bounded versioned receipts and fail-closed unresolved states.
+- Adds the `--minimum-change-dependency` option to code-impact review commands
+  and keeps minimum-safe-change review non-blocking.
+
+## New In 3.6.17 - 2026-08-16
+
+- Adds the evidence-linked `docs bootstrap` command to the Companion package.
+- Keeps preview read-only and protects an existing output unless `--force` is explicit.
+
+## New In 3.6.15
+
+- Adds typed `minimumChangeEvidence` forwarding for hosted context queries and
+  code-impact reviews, including bounded provenance and preservation-guard
+  receipts.
+
+## New In 3.6.14
+
+- Adds opt-in `--minimum-change-mode review` forwarding for hosted context
+  queries and code-impact reviews, including the evidence-backed
+  minimum-safe-change receipt in answer packs.
+
+- Lets managed `pre-commit` and `pre-push` hooks receive an explicit,
+  one-operation review-only acknowledgement through
+  `SNIPARA_COLLABORATION_GUARD_ACK_REVIEW_ONLY=1`; the hook immediately
+  re-runs without the flag so blocking leases and hard conflicts remain
+  enforced.
+
+## New In 3.6.13
+
+- Adds a native spec-driven `feature` workflow for durable `spec.md`, `plan.md`,
+  and `tasks.md` artifacts.
+- Supports both Hosted Snipara plans and numbered local `plan.md` phases,
+  normalizing either source into the existing managed workflow chunks.
+- Keeps `.snipara/workflow/current.json` as the only runtime workflow state and
+  protects existing artifacts unless `--force` is supplied.
+
+## New In 3.6.12
+
+- Adds workflow-backed Outcome Intelligence preview with bounded session
+  correlation and shadow-only receipt propagation.
+- Hardens continuity handoff artifacts with recursive secret/path redaction and
+  canonical project-bound output validation.
+- Adds workflow proof collection for AC-1 evidence without changing the Agent
+  Context manifest or hosted policy.
+
+## New In 3.6.11
+
+- Adds Snipara-specific lead, code, review, and security role adapters for
+  isolated Agent Context retrieval.
+- Scopes the AC-1 evidence status gate to the current manifest hash and reports
+  historical receipts excluded from the current readiness calculation.
+
+## New In 3.6.10
+
+- Captures rationale-shaped messages from verified standalone commits through
+  Why Capture, carrying commit SHA and changed-file provenance while keeping
+  candidates pending human review.
+- Skips automatic commit capture during managed workflows so phase/final
+  rationale is not duplicated.
+
+## New In 3.6.9
+
+- Auto-accepts only `info` and `watch` Advisor recommendations in managed
+  workflows, with an auditable `policy_auto` source and stable reason codes;
+  `risk` and `block` recommendations still require explicit authority.
+- Adds an evidence-derived Judgment Resolution V1 beside the immutable original
+  card. Verification-only warnings can become `ready` after a completed outcome
+  and matching passed evidence, while failed evidence, collaboration blockers,
+  `resolve_blocker` actions, and explicit blocked decisions remain hard blocks.
+- Preserves superseded responses and refreshed cards in bounded local history,
+  and normalizes older Judgment V1 states without a migration or schema reset.
+- Makes action-to-evidence matching explicit for tests, type checks, lint,
+  builds, package review, deployment/guard review, impact inspection, and Team
+  Sync handoffs.
+
+## New In 3.6.8
+
+- Redacts macOS workspace paths consistently when the same temporary directory
+  is exposed through both `/tmp` and `/private/tmp` during timeline exports.
+
 ## New In 3.6.7
 
 - Adds `agent-context evidence template|record|status` for the AC-1 dogfood

@@ -23,6 +23,7 @@ import {
   type CodeImportsResult,
   type CodeNeighborsResult,
   type CodeShortestPathResult,
+  type MinimumChangeEvidence,
   normalizeSessionMemoriesResult,
   type ContextQueryResult,
   type ProjectAutomationSettings,
@@ -128,7 +129,14 @@ import {
 } from "./run";
 import type { AdvisorInfluenceAgentDecision, EndOfTaskCommitWhyInput } from "../api/client";
 import type { ProjectIntelligenceBrief } from "./intelligence";
-import { formatProjectJudgmentCard, type ProjectIntelligenceJudgmentCard } from "./judgment-card";
+import {
+  formatProjectJudgmentCard,
+  type ProjectAdvisorRecommendationCard,
+  type ProjectIntelligenceJudgmentCard,
+  type ProjectJudgmentAction,
+  type ProjectJudgmentCanProceed,
+  type ProjectJudgmentState,
+} from "./judgment-card";
 
 const DEFAULT_SESSION_CONTEXT_TOKENS = 1000;
 const DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS = 2000;
@@ -584,11 +592,39 @@ export interface ManagedWorkflowJudgmentResponse {
   recommendationId: string;
   decision: AdvisorInfluenceAgentDecision;
   respondedAt: string;
+  source: "explicit" | "policy_auto";
+  policyVersion?: "snipara.workflow.judgment-autonomy.v1";
+  reasonCodes: string[];
   planBefore?: string;
   planAfter?: string;
   initialReceipt?: ProjectRunAdvisorReceiptCapture;
   closeoutReceipt?: ProjectRunAdvisorReceiptCapture;
   outcomeReceipts?: OutcomeIntelligenceReceipt[];
+}
+
+export interface ManagedWorkflowJudgmentResolution {
+  version: "snipara.workflow.judgment-resolution.v1";
+  evaluatedAt: string;
+  state: ProjectJudgmentState;
+  canProceed: ProjectJudgmentCanProceed;
+  originalCard: {
+    generatedAt: string;
+    state: ProjectJudgmentState;
+    canProceed: ProjectJudgmentCanProceed;
+    score: number;
+  };
+  reasonCodes: string[];
+  hardBlockerCodes: string[];
+  pendingExplicitRecommendationIds: string[];
+  autoResponseCount: number;
+  evidence: {
+    passedCount: number;
+    failedCount: number;
+    skippedCount: number;
+    requiredActionCount: number;
+    satisfiedRequiredActionCount: number;
+    unsatisfiedRequiredActions: string[];
+  };
 }
 
 export interface ManagedWorkflowJudgmentState {
@@ -598,6 +634,8 @@ export interface ManagedWorkflowJudgmentState {
   brief: ManagedWorkflowJudgmentBrief;
   card: ProjectIntelligenceJudgmentCard;
   responses: ManagedWorkflowJudgmentResponse[];
+  responseHistory?: ManagedWorkflowJudgmentResponse[];
+  resolution?: ManagedWorkflowJudgmentResolution;
 }
 
 export interface ManagedWorkflowState {
@@ -614,6 +652,7 @@ export interface ManagedWorkflowState {
   runtime?: ManagedWorkflowRuntimeState;
   coordination?: ManagedWorkflowCoordinationState;
   judgment?: ManagedWorkflowJudgmentState;
+  judgmentHistory?: ManagedWorkflowJudgmentState[];
   phaseCommitReceipts?: WorkflowPhaseCommitReceipt[];
   finalReport?: FinalCommitReportArtifact;
   lastCommit?: {
@@ -1223,7 +1262,7 @@ export interface SessionBootstrapBrief {
 export interface GeneratedWorkflowPlanDocument {
   mode: "full";
   goal: string;
-  source: "snipara_plan";
+  source: "snipara_plan" | "local_plan";
   plan_id?: string;
   generatedAt: string;
   steps: Array<{
@@ -2732,15 +2771,48 @@ function normalizeManagedWorkflowState(state: ManagedWorkflowState): ManagedWork
     throw new Error(`${WORKFLOW_STATE_RELATIVE_PATH} is not a valid Snipara workflow state file`);
   }
 
+  const judgment: ManagedWorkflowJudgmentState | undefined = state.judgment
+    ? {
+        ...state.judgment,
+        responses: (Array.isArray(state.judgment.responses) ? state.judgment.responses : []).map(
+          (response): ManagedWorkflowJudgmentResponse => ({
+            ...response,
+            source: response.source === "policy_auto" ? "policy_auto" : "explicit",
+            reasonCodes:
+              uniqueStringList(response.reasonCodes) ??
+              (response.source === "policy_auto"
+                ? ["low_risk_advisory_auto_accepted"]
+                : ["explicit_agent_response"]),
+          })
+        ),
+        responseHistory: (Array.isArray(state.judgment.responseHistory)
+          ? state.judgment.responseHistory
+          : []
+        ).map(
+          (response): ManagedWorkflowJudgmentResponse => ({
+            ...response,
+            source: response.source === "policy_auto" ? "policy_auto" : "explicit",
+            reasonCodes:
+              uniqueStringList(response.reasonCodes) ??
+              (response.source === "policy_auto"
+                ? ["low_risk_advisory_auto_accepted"]
+                : ["explicit_agent_response"]),
+          })
+        ),
+      }
+    : undefined;
+  if (judgment) {
+    applyManagedWorkflowPolicyAutoResponses(judgment, judgment.generatedAt);
+    judgment.resolution ??= deriveManagedWorkflowJudgmentResolution(judgment, {
+      evaluatedAt: judgment.generatedAt,
+    });
+  }
+
   return {
     ...state,
     runtime: normalizeManagedWorkflowRuntimeState(state.runtime),
-    judgment: state.judgment
-      ? {
-          ...state.judgment,
-          responses: Array.isArray(state.judgment.responses) ? state.judgment.responses : [],
-        }
-      : undefined,
+    judgment,
+    judgmentHistory: Array.isArray(state.judgmentHistory) ? state.judgmentHistory : [],
     phaseCommitReceipts: Array.isArray(state.phaseCommitReceipts) ? state.phaseCommitReceipts : [],
   };
 }
@@ -4917,14 +4989,20 @@ function printManagedWorkflowState(state: ManagedWorkflowState): void {
     }
   }
   if (state.judgment) {
+    const resolution =
+      state.judgment.resolution ?? deriveManagedWorkflowJudgmentResolution(state.judgment);
     printKeyValue(
       "Judgment:",
-      `${state.judgment.card.state} (${state.judgment.responses.length}/${state.judgment.card.advisorRecommendations.length} response(s))`
+      `${resolution.state} (original ${state.judgment.card.state}; ${state.judgment.responses.length}/${state.judgment.card.advisorRecommendations.length} response(s))`
     );
+    printKeyValue("Judgment authority:", resolution.canProceed);
     printKeyValue(
       "Judgment identity:",
       state.judgment.brief.servedJudgmentId ? "linked" : "missing"
     );
+    if ((state.judgmentHistory ?? []).length > 0) {
+      printKeyValue("Prior judgment cards:", String(state.judgmentHistory?.length ?? 0));
+    }
   }
   console.log("");
 
@@ -4946,7 +5024,23 @@ function printManagedWorkflowJudgmentNextCommands(state: ManagedWorkflowState): 
   const judgment = state.judgment;
   if (!judgment) return;
   console.log("");
-  console.log(chalk.bold("Explicit advisor responses"));
+  const resolution = judgment.resolution ?? deriveManagedWorkflowJudgmentResolution(judgment);
+  console.log(chalk.bold("Effective judgment resolution"));
+  printKeyValue("State:", resolution.state);
+  printKeyValue("Can proceed:", resolution.canProceed);
+  printKeyValue(
+    "Original card:",
+    `${resolution.originalCard.state}/${resolution.originalCard.canProceed}`
+  );
+  printKeyValue("Reason codes:", resolution.reasonCodes.join(", "));
+  if (resolution.evidence.unsatisfiedRequiredActions.length > 0) {
+    printKeyValue(
+      "Unsatisfied actions:",
+      resolution.evidence.unsatisfiedRequiredActions.join(" | ")
+    );
+  }
+  console.log("");
+  console.log(chalk.bold("Advisor responses"));
   if (!judgment.brief.servedJudgmentId) {
     console.log(
       "No served judgment identity was returned. The card is inspectable, but hosted influence receipts cannot be linked yet."
@@ -4960,7 +5054,11 @@ function printManagedWorkflowJudgmentNextCommands(state: ManagedWorkflowState): 
   for (const recommendation of judgment.card.advisorRecommendations) {
     const response = judgment.responses.find((item) => item.recommendationId === recommendation.id);
     console.log(
-      `- ${recommendation.id}: ${response ? `${response.decision} (${response.initialReceipt?.status ?? "local"})` : "pending explicit response"}`
+      `- ${recommendation.id}: ${
+        response
+          ? `${response.decision} [${response.source}] (${response.initialReceipt?.status ?? "local"})`
+          : "pending explicit response"
+      }`
     );
     if (!response) {
       console.log(
@@ -4969,7 +5067,7 @@ function printManagedWorkflowJudgmentNextCommands(state: ManagedWorkflowState): 
     }
   }
   console.log(
-    "Use --decision modified with distinct --plan-before/--plan-after snapshots when the judgment changed the plan; use ignored or blocked explicitly when applicable."
+    "Info/watch recommendations are accepted locally by policy. Risk/block recommendations still require an explicit response. Use --decision modified with distinct --plan-before/--plan-after snapshots when the judgment changed the plan."
   );
   console.log("");
 }
@@ -7714,6 +7812,8 @@ export async function queryCommand(options: {
   maxTokens?: number;
   searchMode?: string;
   includeAnswerPack?: boolean;
+  minimumChangeMode?: "off" | "review";
+  minimumChangeEvidence?: MinimumChangeEvidence;
   autoDecompose?: boolean;
   includeSharedContext?: boolean;
   timeoutMs?: number;
@@ -7731,6 +7831,8 @@ export async function queryCommand(options: {
   const result = await client.queryContext(options.query, options.maxTokens || 8000, {
     searchMode: searchMode as "keyword" | "semantic" | "hybrid",
     includeAnswerPack: options.includeAnswerPack,
+    minimumChangeMode: options.minimumChangeMode,
+    minimumChangeEvidence: options.minimumChangeEvidence,
     autoDecompose: options.autoDecompose,
     includeSharedContext: options.includeSharedContext,
   });
@@ -9252,6 +9354,8 @@ export async function codeImpactCommand(options: {
   changedFiles?: string[];
   diffSummary?: string;
   limit?: number;
+  minimumChangeMode?: "off" | "review";
+  minimumChangeEvidence?: MinimumChangeEvidence;
   json?: boolean;
 }): Promise<void> {
   ensureConfigured();
@@ -9273,6 +9377,8 @@ export async function codeImpactCommand(options: {
     changedFiles: options.changedFiles,
     diffSummary: options.diffSummary,
     limit: options.limit,
+    minimumChangeMode: options.minimumChangeMode,
+    minimumChangeEvidence: options.minimumChangeEvidence,
   });
   if (options.json) {
     printJson(result);
@@ -10144,19 +10250,21 @@ function workflowOutcomeEvidence(values: string[] | undefined): OutcomeIntellige
           ? "failed"
           : "skipped";
     const normalizedDetail = detail.toLowerCase();
-    const source: OutcomeIntelligenceEvidence["source"] = normalizedDetail.includes("typecheck")
+    const source: OutcomeIntelligenceEvidence["source"] = /\b(type[-_ ]?check|tsc)\b/.test(
+      normalizedDetail
+    )
       ? "typecheck"
-      : normalizedDetail.includes("lint")
+      : /\b(lint|eslint|ruff|black)\b/.test(normalizedDetail)
         ? "lint"
-        : normalizedDetail.includes("build")
+        : /\b(build|compile)\b/.test(normalizedDetail)
           ? "build"
-          : normalizedDetail.includes("deploy") || normalizedDetail.includes("health")
+          : /\b(deploy|health)\b/.test(normalizedDetail)
             ? "deploy_health"
-            : normalizedDetail.includes("publish") || normalizedDetail.includes("npm")
+            : /\b(npm|package|publish|pack(?::|\b))\b/.test(normalizedDetail)
               ? "package_publish"
-              : normalizedDetail.includes("guard")
+              : /\bguard\b/.test(normalizedDetail)
                 ? "guard"
-                : normalizedDetail.includes("test") || normalizedDetail.includes("smoke")
+                : /\b(test|vitest|jest|pytest|smoke)\b/.test(normalizedDetail)
                   ? "test"
                   : "manual";
     return [
@@ -10168,6 +10276,333 @@ function workflowOutcomeEvidence(values: string[] | undefined): OutcomeIntellige
       },
     ];
   });
+}
+
+const MANAGED_WORKFLOW_JUDGMENT_AUTONOMY_VERSION = "snipara.workflow.judgment-autonomy.v1" as const;
+
+function isPolicyAutoEligibleRecommendation(
+  recommendation: ProjectAdvisorRecommendationCard
+): boolean {
+  return recommendation.severity === "info" || recommendation.severity === "watch";
+}
+
+export function applyManagedWorkflowPolicyAutoResponses(
+  judgment: ManagedWorkflowJudgmentState,
+  respondedAt = new Date().toISOString()
+): ManagedWorkflowJudgmentResponse[] {
+  const created: ManagedWorkflowJudgmentResponse[] = [];
+  for (const recommendation of judgment.card.advisorRecommendations) {
+    if (
+      !isPolicyAutoEligibleRecommendation(recommendation) ||
+      judgment.responses.some((response) => response.recommendationId === recommendation.id)
+    ) {
+      continue;
+    }
+    created.push({
+      recommendationId: recommendation.id,
+      decision: "accepted",
+      respondedAt,
+      source: "policy_auto",
+      policyVersion: MANAGED_WORKFLOW_JUDGMENT_AUTONOMY_VERSION,
+      reasonCodes: [
+        "low_risk_advisory_auto_accepted",
+        `advisor_severity_${recommendation.severity}`,
+        "no_plan_mutation",
+      ],
+    });
+  }
+  if (created.length > 0) {
+    judgment.responses = [...judgment.responses, ...created];
+  }
+  return created;
+}
+
+function judgmentResponseEvidence(
+  judgment: ManagedWorkflowJudgmentState
+): OutcomeIntelligenceEvidence[] {
+  const receipts = [...(judgment.responseHistory ?? []), ...judgment.responses]
+    .flatMap((response) => response.outcomeReceipts ?? [])
+    .sort((left, right) => left.generatedAt.localeCompare(right.generatedAt));
+  return receipts.flatMap((receipt) => receipt.verification.evidence);
+}
+
+function effectiveJudgmentEvidence(
+  judgment: ManagedWorkflowJudgmentState,
+  currentEvidence: OutcomeIntelligenceEvidence[]
+): OutcomeIntelligenceEvidence[] {
+  const latestBySemanticKey = new Map<string, OutcomeIntelligenceEvidence>();
+  for (const evidence of [...judgmentResponseEvidence(judgment), ...currentEvidence]) {
+    const label = (evidence.command ?? evidence.label).toLowerCase().replace(/\s+/g, " ").trim();
+    latestBySemanticKey.set(`${evidence.source}:${label}`, evidence);
+  }
+  return [...latestBySemanticKey.values()];
+}
+
+function completedJudgmentOutcomeRecorded(judgment: ManagedWorkflowJudgmentState): boolean {
+  return [...(judgment.responseHistory ?? []), ...judgment.responses].some((response) =>
+    (response.outcomeReceipts ?? []).some((receipt) => receipt.outcome.status === "success")
+  );
+}
+
+function judgmentTextTokens(value: string): string[] {
+  const ignored = new Set([
+    "and",
+    "before",
+    "check",
+    "close",
+    "command",
+    "for",
+    "from",
+    "into",
+    "review",
+    "run",
+    "the",
+    "this",
+    "with",
+  ]);
+  return (
+    value
+      .toLowerCase()
+      .match(/[a-z0-9][a-z0-9_-]{2,}/g)
+      ?.filter((token) => !ignored.has(token)) ?? []
+  );
+}
+
+function judgmentEvidenceText(evidence: OutcomeIntelligenceEvidence): string {
+  return `${evidence.label} ${evidence.command ?? ""} ${evidence.detail ?? ""}`.toLowerCase();
+}
+
+function expectedEvidenceSourceForAction(
+  action: ProjectJudgmentAction
+): OutcomeIntelligenceEvidence["source"] | undefined {
+  const text = `${action.title} ${action.command ?? ""}`.toLowerCase();
+  if (/\b(type[-_ ]?check|tsc)\b/.test(text)) return "typecheck";
+  if (/\b(lint|eslint|ruff|black)\b/.test(text)) return "lint";
+  if (/\b(pre-?deploy guard|collaboration guard|guard)\b/.test(text)) return "guard";
+  if (/\b(deploy|production health|health check)\b/.test(text)) return "deploy_health";
+  if (/\b(npm|package|pack(?::|\b)|publish)\b/.test(text)) return "package_publish";
+  if (/\b(test|vitest|jest|pytest|smoke)\b/.test(text)) return "test";
+  if (/\b(build|compile)\b/.test(text)) return "build";
+  return undefined;
+}
+
+function passedEvidenceSatisfiesAction(
+  action: ProjectJudgmentAction,
+  passedEvidence: OutcomeIntelligenceEvidence[]
+): boolean {
+  if (action.type === "resolve_blocker") return false;
+  if (action.type === "acknowledge") {
+    return passedEvidence.some((evidence) => evidence.source === "guard");
+  }
+  if (action.type === "package_review") {
+    return passedEvidence.some((evidence) => evidence.source === "package_publish");
+  }
+  if (action.type === "deploy_review") {
+    const expected = expectedEvidenceSourceForAction(action);
+    return passedEvidence.some((evidence) => evidence.source === (expected ?? "deploy_health"));
+  }
+  if (action.type === "handoff") {
+    return passedEvidence.some((evidence) =>
+      /\b(team sync|handoff)\b/i.test(judgmentEvidenceText(evidence))
+    );
+  }
+
+  const actionText = `${action.title} ${action.command ?? ""}`;
+  const expected = expectedEvidenceSourceForAction(action);
+  if (action.type === "run_check" && expected) {
+    return passedEvidence.some((evidence) => evidence.source === expected);
+  }
+  if (/\bcode impact\b/i.test(actionText)) {
+    return passedEvidence.some((evidence) =>
+      /\bcode impact\b/i.test(judgmentEvidenceText(evidence))
+    );
+  }
+  if (/\bverification gap\b/i.test(actionText)) {
+    return passedEvidence.some((evidence) =>
+      ["test", "typecheck", "lint", "build", "manual"].includes(evidence.source)
+    );
+  }
+  if (expected) {
+    return passedEvidence.some((evidence) => evidence.source === expected);
+  }
+
+  const tokens = judgmentTextTokens(actionText);
+  return passedEvidence.some((evidence) => {
+    const evidenceText = judgmentEvidenceText(evidence);
+    return tokens.some((token) => evidenceText.includes(token));
+  });
+}
+
+function unresolvedJudgmentReasonCodes(
+  card: ProjectIntelligenceJudgmentCard,
+  passedEvidence: OutcomeIntelligenceEvidence[]
+): string[] {
+  const passedText = passedEvidence.map(judgmentEvidenceText).join(" ");
+  return card.reasons.flatMap((reason): string[] => {
+    if (reason.code.startsWith("surface_unavailable_")) return [reason.code];
+    if (reason.code === "memory_health_low") return [reason.code];
+    if (
+      reason.code === "code_impact_degraded" &&
+      !/\b(local (read|inspection)|code impact)\b/.test(passedText)
+    ) {
+      return [reason.code];
+    }
+    if (
+      reason.code === "code_graph_stale" &&
+      !/\b(local (read|inspection)|code impact)\b/.test(passedText)
+    ) {
+      return [reason.code];
+    }
+    if (reason.code === "team_sync_proof_required" && !/\b(team sync|handoff)\b/.test(passedText)) {
+      return [reason.code];
+    }
+    return [];
+  });
+}
+
+export function deriveManagedWorkflowJudgmentResolution(
+  judgment: ManagedWorkflowJudgmentState,
+  options: {
+    evidence?: OutcomeIntelligenceEvidence[];
+    outcome?: TaskCommitOutcome;
+    evaluatedAt?: string;
+  } = {}
+): ManagedWorkflowJudgmentResolution {
+  const evidence = effectiveJudgmentEvidence(judgment, options.evidence ?? []);
+  const passedEvidence = evidence.filter((item) => item.status === "passed");
+  const failedEvidence = evidence.filter((item) => item.status === "failed");
+  const skippedEvidence = evidence.filter(
+    (item) => item.status === "skipped" || item.status === "warning"
+  );
+  const responsesByRecommendation = new Map(
+    judgment.responses.map((response) => [response.recommendationId, response])
+  );
+  const pendingExplicitRecommendations = judgment.card.advisorRecommendations.filter(
+    (recommendation) =>
+      !isPolicyAutoEligibleRecommendation(recommendation) &&
+      !responsesByRecommendation.has(recommendation.id)
+  );
+  const ignoredRiskRecommendations = judgment.card.advisorRecommendations.filter(
+    (recommendation) => {
+      const response = responsesByRecommendation.get(recommendation.id);
+      return recommendation.severity === "risk" && response?.decision === "ignored";
+    }
+  );
+  const ignoredBlockRecommendations = judgment.card.advisorRecommendations.filter(
+    (recommendation) => {
+      const response = responsesByRecommendation.get(recommendation.id);
+      return recommendation.severity === "block" && response?.decision === "ignored";
+    }
+  );
+  const unsatisfiedActions = judgment.card.requiredActions.filter(
+    (action) => !passedEvidenceSatisfiesAction(action, passedEvidence)
+  );
+  const unresolvedSignals = unresolvedJudgmentReasonCodes(judgment.card, passedEvidence);
+  const hardBlockerCodes = uniqueStrings([
+    ...judgment.card.reasons
+      .filter((reason) => reason.code === "guard_blocked")
+      .map((reason) => reason.code),
+    ...judgment.card.requiredActions
+      .filter((action) => action.type === "resolve_blocker")
+      .map(() => "required_action_resolve_blocker"),
+    ...judgment.responses
+      .filter((response) => response.decision === "blocked")
+      .map(() => "explicit_blocked_decision"),
+    ...pendingExplicitRecommendations
+      .filter((recommendation) => recommendation.severity === "block")
+      .map(() => "pending_block_recommendation"),
+    ...ignoredBlockRecommendations.map(() => "ignored_block_recommendation"),
+    ...(failedEvidence.length > 0 ? ["failed_verification_evidence"] : []),
+  ]);
+  const reasonCodes = ["original_judgment_card_preserved"];
+  const autoResponseCount = judgment.responses.filter(
+    (response) => response.source === "policy_auto"
+  ).length;
+  if (autoResponseCount > 0) reasonCodes.push("low_risk_advisories_auto_accepted");
+
+  let state: ProjectJudgmentState;
+  let canProceed: ProjectJudgmentCanProceed;
+  if (hardBlockerCodes.length > 0) {
+    state = "blocked";
+    canProceed = "block";
+    reasonCodes.push(...hardBlockerCodes);
+  } else if (
+    pendingExplicitRecommendations.some((recommendation) => recommendation.severity === "risk") ||
+    ignoredRiskRecommendations.length > 0 ||
+    unresolvedSignals.length > 0
+  ) {
+    state = "review";
+    canProceed = "review";
+    if (pendingExplicitRecommendations.some((item) => item.severity === "risk")) {
+      reasonCodes.push("pending_risk_recommendation");
+    }
+    if (ignoredRiskRecommendations.length > 0) reasonCodes.push("ignored_risk_recommendation");
+    if (unresolvedSignals.length > 0) reasonCodes.push("unresolved_review_signal");
+  } else {
+    const proofRequired =
+      judgment.card.canProceed !== "yes" || judgment.card.requiredActions.length > 0;
+    const completedOutcome =
+      options.outcome === "completed" || completedJudgmentOutcomeRecorded(judgment);
+    if (
+      unsatisfiedActions.length > 0 ||
+      (proofRequired && (!completedOutcome || passedEvidence.length === 0))
+    ) {
+      state = "proof_required";
+      canProceed = "review";
+      if (unsatisfiedActions.length > 0) reasonCodes.push("required_action_unsatisfied");
+      if (!completedOutcome) reasonCodes.push("workflow_outcome_incomplete");
+      if (passedEvidence.length === 0) reasonCodes.push("verification_evidence_missing");
+    } else if (judgment.card.state === "watch" || autoResponseCount > 0) {
+      state = "watch";
+      canProceed = "yes";
+      reasonCodes.push("required_actions_verified");
+    } else {
+      state = "ready";
+      canProceed = "yes";
+      reasonCodes.push("required_actions_verified");
+    }
+  }
+
+  return {
+    version: "snipara.workflow.judgment-resolution.v1",
+    evaluatedAt: options.evaluatedAt ?? new Date().toISOString(),
+    state,
+    canProceed,
+    originalCard: {
+      generatedAt: judgment.card.generatedAt,
+      state: judgment.card.state,
+      canProceed: judgment.card.canProceed,
+      score: judgment.card.score,
+    },
+    reasonCodes: uniqueStrings(reasonCodes),
+    hardBlockerCodes,
+    pendingExplicitRecommendationIds: pendingExplicitRecommendations.map((item) => item.id),
+    autoResponseCount,
+    evidence: {
+      passedCount: passedEvidence.length,
+      failedCount: failedEvidence.length,
+      skippedCount: skippedEvidence.length,
+      requiredActionCount: judgment.card.requiredActions.length,
+      satisfiedRequiredActionCount:
+        judgment.card.requiredActions.length - unsatisfiedActions.length,
+      unsatisfiedRequiredActions: unsatisfiedActions.map(
+        (action) => action.command ?? action.title
+      ),
+    },
+  };
+}
+
+function updateManagedWorkflowJudgmentResolution(
+  judgment: ManagedWorkflowJudgmentState,
+  options: {
+    evidence?: OutcomeIntelligenceEvidence[];
+    outcome?: TaskCommitOutcome;
+    evaluatedAt?: string;
+  } = {}
+): ManagedWorkflowJudgmentResolution {
+  applyManagedWorkflowPolicyAutoResponses(judgment, options.evaluatedAt);
+  judgment.resolution = deriveManagedWorkflowJudgmentResolution(judgment, options);
+  return judgment.resolution;
 }
 
 function workflowOutcomeSurfaces(
@@ -10246,8 +10681,10 @@ async function closeManagedWorkflowJudgment(args: {
   trigger: string;
   requireEvidence?: boolean;
 }): Promise<ProjectRunAdvisorReceiptCapture[]> {
-  if (!args.state?.judgment || args.state.judgment.responses.length === 0) return [];
-  if (args.requireEvidence && workflowOutcomeEvidence(args.evidence).length === 0) return [];
+  if (!args.state?.judgment) return [];
+  const parsedEvidence = workflowOutcomeEvidence(args.evidence);
+  if (args.requireEvidence && parsedEvidence.length === 0) return [];
+  applyManagedWorkflowPolicyAutoResponses(args.state.judgment);
 
   const captures: ProjectRunAdvisorReceiptCapture[] = [];
   for (const response of args.state.judgment.responses) {
@@ -10277,7 +10714,13 @@ async function closeManagedWorkflowJudgment(args: {
       captures.push(capture);
     }
   }
-  args.state.updatedAt = new Date().toISOString();
+  const evaluatedAt = new Date().toISOString();
+  updateManagedWorkflowJudgmentResolution(args.state.judgment, {
+    evidence: parsedEvidence,
+    outcome: args.outcome,
+    evaluatedAt,
+  });
+  args.state.updatedAt = evaluatedAt;
   writeWorkflowState(args.state);
   return captures;
 }
@@ -10418,11 +10861,6 @@ export async function workflowJudgmentCommand(options: {
     printManagedWorkflowJudgmentNextCommands(state);
     return;
   }
-  if (state.judgment?.responses.length) {
-    throw new Error(
-      "Cannot refresh a managed judgment after responses were recorded; start a new workflow for a new served judgment."
-    );
-  }
 
   const result = await buildProjectIntelligenceRun({
     task: state.goal,
@@ -10431,7 +10869,10 @@ export async function workflowJudgmentCommand(options: {
     skipGuard: true,
     skipAdvisorReceipts: true,
   });
-  state.judgment = {
+  if (state.judgment) {
+    state.judgmentHistory = [...(state.judgmentHistory ?? []), state.judgment].slice(-5);
+  }
+  const judgment: ManagedWorkflowJudgmentState = {
     version: "snipara.workflow.judgment.v1",
     generatedAt: result.generatedAt,
     runEnvelope: result.runEnvelope,
@@ -10439,13 +10880,18 @@ export async function workflowJudgmentCommand(options: {
     card: result.judgmentCard,
     responses: [],
   };
+  const autoResponses = applyManagedWorkflowPolicyAutoResponses(judgment, result.generatedAt);
+  const resolution = updateManagedWorkflowJudgmentResolution(judgment, {
+    evaluatedAt: result.generatedAt,
+  });
+  state.judgment = judgment;
   state.updatedAt = new Date().toISOString();
   writeWorkflowState(state);
   appendActivityEvent({
     source: "workflow",
     kind: "workflow-judgment",
     title: state.judgment.card.summary,
-    summary: `${state.judgment.card.advisorRecommendations.length} advisor recommendation(s) served for explicit response.`,
+    summary: `${autoResponses.length} low-risk recommendation(s) accepted by policy; ${resolution.pendingExplicitRecommendationIds.length} recommendation(s) require explicit authority.`,
     workflowId: state.workflowId,
     files: state.judgment.brief.changedFiles,
     refs: [state.judgment.brief.servedJudgmentId].filter(Boolean) as string[],
@@ -10453,7 +10899,11 @@ export async function workflowJudgmentCommand(options: {
     metadata: {
       state: state.judgment.card.state,
       canProceed: state.judgment.card.canProceed,
+      effectiveState: resolution.state,
+      effectiveCanProceed: resolution.canProceed,
       recommendationCount: state.judgment.card.advisorRecommendations.length,
+      autoResponseCount: autoResponses.length,
+      pendingExplicitRecommendationCount: resolution.pendingExplicitRecommendationIds.length,
       identityStatus: state.judgment.brief.servedJudgmentId ? "linked" : "missing",
     },
   });
@@ -10495,6 +10945,8 @@ export async function workflowJudgmentRespondCommand(options: {
     recommendationId: recommendation.id,
     decision,
     respondedAt: new Date().toISOString(),
+    source: "explicit",
+    reasonCodes: ["explicit_agent_response"],
     ...(planBefore ? { planBefore } : {}),
     ...(planAfter ? { planAfter } : {}),
   };
@@ -10503,23 +10955,35 @@ export async function workflowJudgmentRespondCommand(options: {
     response,
     trigger: "snipara-companion workflow judgment-respond",
   });
+  const supersededResponses = judgment.responses.filter(
+    (item) => item.recommendationId === recommendation.id
+  );
+  if (supersededResponses.length > 0) {
+    judgment.responseHistory = [...(judgment.responseHistory ?? []), ...supersededResponses];
+  }
   judgment.responses = [
     ...judgment.responses.filter((item) => item.recommendationId !== recommendation.id),
     response,
   ];
+  const resolution = updateManagedWorkflowJudgmentResolution(judgment, {
+    evaluatedAt: response.respondedAt,
+  });
   state.updatedAt = response.respondedAt;
   writeWorkflowState(state);
   appendActivityEvent({
     source: "workflow",
     kind: "workflow-judgment-response",
     title: recommendation.title,
-    summary: `Agent explicitly ${decision} recommendation ${recommendation.id}.`,
+    summary: `Agent explicitly ${decision} recommendation ${recommendation.id}; effective judgment is ${resolution.state}.`,
     workflowId: state.workflowId,
     files: judgment.brief.changedFiles,
     refs: [judgment.brief.servedJudgmentId, recommendation.id].filter(Boolean) as string[],
     timestamp: response.respondedAt,
     metadata: {
       decision,
+      responseSource: response.source,
+      effectiveState: resolution.state,
+      effectiveCanProceed: resolution.canProceed,
       receiptStatus: response.initialReceipt?.status ?? "unavailable",
       recordedCount: response.initialReceipt?.recordedCount ?? 0,
     },
@@ -10533,6 +10997,8 @@ export async function workflowJudgmentRespondCommand(options: {
   console.log(chalk.bold("Workflow judgment response"));
   printKeyValue("Recommendation:", recommendation.id);
   printKeyValue("Decision:", decision);
+  printKeyValue("Source:", response.source);
+  printKeyValue("Effective judgment:", `${resolution.state}/${resolution.canProceed}`);
   printKeyValue("Receipt:", response.initialReceipt?.status ?? "unavailable");
   if (response.initialReceipt?.reason) {
     printKeyValue("Reason:", response.initialReceipt.reason);
@@ -11053,8 +11519,10 @@ function localWorkspacePathAliases(): string[] {
     // Best-effort redaction only.
   }
   for (const alias of [...aliases]) {
-    if (alias.startsWith("/private/var/")) aliases.add(alias.replace(/^\/private/, ""));
-    else if (alias.startsWith("/var/")) aliases.add(`/private${alias}`);
+    // macOS can expose the same directory through both `/tmp` and
+    // `/private/tmp` (and similarly for `/var`). Redact either spelling.
+    if (alias.startsWith("/private/")) aliases.add(alias.replace(/^\/private/, ""));
+    else if (alias.startsWith("/")) aliases.add(`/private${alias}`);
   }
   return [...aliases].filter(Boolean).sort((left, right) => right.length - left.length);
 }
@@ -12073,18 +12541,25 @@ export async function finalCommitCommand(options: {
   json?: boolean;
 }): Promise<void> {
   const state = readWorkflowState();
-  const pendingJudgmentResponses = state?.judgment?.card.advisorRecommendations.filter(
-    (recommendation) =>
-      !state.judgment?.responses.some((response) => response.recommendationId === recommendation.id)
-  );
-  if (pendingJudgmentResponses && pendingJudgmentResponses.length > 0) {
-    throw new Error(
-      `Managed workflow judgment has ${pendingJudgmentResponses.length} unanswered recommendation(s): ${pendingJudgmentResponses
-        .map((item) => item.id)
-        .join(
-          ", "
-        )}. Record accepted, modified, ignored, or blocked explicitly before final-commit.`
-    );
+  const outcome = options.outcome ?? "completed";
+  if (state?.judgment) {
+    const evaluatedAt = new Date().toISOString();
+    const resolution = updateManagedWorkflowJudgmentResolution(state.judgment, {
+      evidence: workflowOutcomeEvidence(options.evidence),
+      outcome,
+      evaluatedAt,
+    });
+    state.updatedAt = evaluatedAt;
+    writeWorkflowState(state);
+    if (outcome === "completed" && resolution.canProceed !== "yes") {
+      throw new Error(
+        `Managed workflow judgment is ${resolution.state}/${resolution.canProceed}. ` +
+          `Pending authority: ${resolution.pendingExplicitRecommendationIds.join(", ") || "none"}. ` +
+          `Hard blockers: ${resolution.hardBlockerCodes.join(", ") || "none"}. ` +
+          `Unsatisfied actions: ${resolution.evidence.unsatisfiedRequiredActions.join(" | ") || "none"}. ` +
+          "Respond to risk/block recommendations explicitly, clear hard blockers with a refreshed judgment, and attach passed evidence before final-commit."
+      );
+    }
   }
   await memoryGuardCheckCommand({
     trigger: "pre-final",
@@ -12092,7 +12567,6 @@ export async function finalCommitCommand(options: {
     strict: true,
   });
 
-  const outcome = options.outcome ?? "completed";
   const category = normalizeFinalCommitCategory(options.category);
   const structuredWhy = structuredTaskCommitWhy(options);
   const result = await commitFinalTaskMemory({

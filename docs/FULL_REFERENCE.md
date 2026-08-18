@@ -177,6 +177,12 @@ The AC-1 evidence workflow turns a completed representative task into a bounded,
 tamper-evident local receipt:
 
 ```bash
+snipara-companion agent-context evidence collect \
+  --agent snipara-code \
+  --output .snipara/agent-context/task-code-1.json
+
+# The collect command only imports proof references from completed local workflow
+# phases. Review observations before recording; it never claims source or memory use.
 snipara-companion agent-context evidence template \
   --agent snipara-code \
   --task "implement a bounded product change" \
@@ -201,7 +207,10 @@ every configured role, no high-severity leak remains unresolved, every observed
 leak points to a regression test, repeated benefits are documented, and every
 task includes an explicit missing-capability assessment. A repeated
 cross-machine or multi-runtime signal is reported only as AC-2 evidence; it does
-not replace the separate external design-partner gate.
+not replace the separate external design-partner gate. The CLI gate evaluates
+only receipts linked to the current manifest hash and reports older receipts as
+excluded, so a manifest change cannot inherit a false-ready result from an
+earlier policy revision.
 
 ## When To Use It
 
@@ -309,8 +318,8 @@ snipara-companion workflow resume --include-session-context
 - `timeline` is the Git-style log for workflow starts, phase starts, phase
   commits, final commits, and Team Sync handoffs.
 - `workflow timeline` reads the append-only local activity log at
-  `.snipara/activity/timeline.jsonl`, enriched by workflow, Producer Loop,
-  Decision Request, Team Sync, and journal-adjacent events. Add `--export md`
+  `.snipara/activity/timeline.jsonl`, enriched by workflow, PostToolUse,
+  Producer Loop, Decision Request, Team Sync, and journal-adjacent events. Add `--export md`
   for a compact redacted Markdown artifact suitable for handoff or publication.
 - `workflow session` writes `.snipara/activity/session.json`, a fast Session
   Snapshot V0 for local resume and Orchestrator dogfood. It includes latest
@@ -822,6 +831,21 @@ caveats. It is local calibration evidence; it is not causal proof, canonical
 Project Brain memory, a global agent trust score, or permission to bypass
 Project Policy.
 
+For a managed workflow, import only the completed phases from its local snapshot
+and preserve an existing Companion session identity for Hosted MCP joins:
+
+```bash
+snipara-companion outcome-capture preview \
+  --from-workflow .snipara/workflow/current.json \
+  --session-id "$SNIPARA_SESSION_ID" \
+  --emit-outcome-receipt \
+  --json
+```
+
+The session identity is optional, bounded, and correlation-only; it is never
+authentication or tenant authority. Workflow receipts remain audit/shadow
+signals and do not influence ranking or Project Policy.
+
 ## ADE Adapter Pack Handoffs
 
 Use `handoff --adapter-pack` when the receiving execution cockpit is Codex,
@@ -1013,6 +1037,14 @@ snipara-companion post-tool '{"file_path":"/src/api/auth.ts"}'
 snipara-companion post-tool '{"tool":"Bash","command":"pnpm test","exit_code":1}'
 ```
 
+When the hook verifies that a commit-like Git operation actually created the
+current commit, and no managed workflow is in progress, it also submits the
+commit message to Why Capture. The preview/confirmation flow carries the full
+commit SHA and changed-file evidence as `sourceKind=commit`; only
+rationale-shaped messages create candidates, which remain pending human review.
+Managed workflow commits keep their existing phase/final capture path and are
+not captured a second time by this hook.
+
 ### `snipara-companion stuck-guard`
 
 Inspect or simulate hosted Memory Guard decisions.
@@ -1085,8 +1117,30 @@ durable memory policy locally.
 These commands keep local workflow state moving and call hosted Snipara only
 where the specific command needs hosted context or memory:
 
+#### Canonical command forms
+
+`workflow run --mode` accepts exactly these values:
+
+| CLI value     | Guide label         | Runtime behavior                                                      |
+| ------------- | ------------------- | --------------------------------------------------------------------- |
+| `lite`        | LITE                | Small, known-scope work with no mandatory hosted context call         |
+| `standard`    | STANDARD            | Normal work with context and code-graph follow-up when needed         |
+| `auto`        | AUTO                | Routes by task intent to `lite`, `standard`, `full`, or `orchestrate` |
+| `full`        | FULL                | Managed, phased work with durable context and plan support            |
+| `orchestrate` | FULL + ORCHESTRATED | Explicit deeper orchestration for multi-agent or proof-gate work      |
+
+The root `run` command is the Project Intelligence judgment/release flow.
+`workflow run` is the workflow-mode runner; they are different commands.
+Use root `final-commit` as the canonical final closeout. The registered
+`workflow final-commit` spelling is a compatibility alias. Similarly,
+`code impact` is the canonical impact gate, root `impact` is its compatibility
+alias, and `code local impact` is the separate repository-local overlay query.
+`task-commit` captures a durable task outcome; `workflow phase-commit`
+records one managed phase and advances the workflow.
+
 ```bash
 npx -y snipara-companion@latest workflow run --mode standard --query "who imports src.mcp_transport"
+npx -y snipara-companion@latest workflow run --mode auto --query "map the next bounded change"
 npx -y snipara-companion@latest workflow run --mode full --include-session-context --query "plan the auth refactor"
 npx -y snipara-companion@latest plan --query "plan the auth refactor" --write-plan-file .snipara/workflow/plans/auth-refactor-plan.json
 npx -y snipara-companion@latest task-commit --summary "Shipped auth refactor" --files apps/web/src/lib/auth.ts
@@ -1120,6 +1174,7 @@ snipara-companion workflow producer-review --artifact producer-abc123 --outcome 
 snipara-companion final-commit --summary "Shipped auth hardening and tests" --why "Close the reported session replay gap" --evidence "passed:pnpm test auth" --next-step "Review the first 24 hours of telemetry" --files src/auth.ts tests/auth.test.ts
 snipara-companion doctor
 snipara-companion doctor --json
+snipara-companion collaboration guard --profile pre-deploy --enforce
 snipara-companion code callers --qualified-name src.mcp_transport.handle_call_tool
 snipara-companion code imports --file-path src/mcp_transport.py
 snipara-companion code neighbors --qualified-name src.mcp_transport.handle_call_tool --depth 3
@@ -1433,7 +1488,9 @@ package-review, and policy-gate diagnostics remain available in compatibility
 metadata, but they do not advance this lifecycle by themselves.
 
 Managed FULL workflows expose the same contract directly. Serve one bounded
-card before editing, then answer every recommendation explicitly:
+card before editing. Companion auto-accepts only `info` and `watch`
+recommendations with `source=policy_auto`; answer `risk` and `block`
+recommendations explicitly:
 
 ```bash
 snipara-companion workflow judgment
@@ -1450,9 +1507,25 @@ non-application decisions and cannot carry plan snapshots. Companion writes a
 targeted Advisor Influence receipt immediately, then idempotently replays that
 same `(served judgment, recommendation)` receipt when `workflow phase-commit`
 has explicit `--evidence` and again at `final-commit`. The backend preserves
-monotone lifecycle progress and owns canonical OutcomeSignal linking. A final
-commit fails closed while any served recommendation is unanswered; there is no
-implicit ignored receipt.
+monotone lifecycle progress and owns canonical OutcomeSignal linking.
+
+The stored card stays immutable. Companion appends
+`snipara.workflow.judgment-resolution.v1`, which reports the original state,
+effective state, reason codes, pending explicit recommendation ids, hard
+blockers, and per-action evidence coverage. A completed phase or final outcome
+can resolve verification-only warnings when passed evidence matches every
+required action. `run_check` matches its concrete test/typecheck/lint/build
+source; package and deployment reviews require package or guard/deploy proof;
+code-impact inspection and Team Sync handoff require matching labeled proof.
+Generic tests never resolve `resolve_blocker`. Failed evidence, `guard_blocked`,
+a `resolve_blocker` action, a pending `block` recommendation, or an explicit
+blocked decision remains non-proceedable. A completed final commit also fails
+closed while any `risk` or `block` recommendation lacks explicit authority.
+
+`workflow judgment --refresh` archives the prior card and response history
+locally before serving a new immutable card. Older Judgment V1 state files are
+normalized additively: missing response sources are treated as explicit, while
+eligible low-risk recommendations receive policy responses on load.
 
 `run` can also consume Outcome Intelligence V0 receipts:
 
@@ -1537,6 +1610,44 @@ snipara-companion workflow scaffold \
 - Do not use memory as a substitute for document retrieval.
 - Do not upload specs or raw documents into memory.
 
+### Spec-driven feature artifacts
+
+Use the `feature` command family when a change needs a durable product
+specification, technical plan, and executable task list. The artifacts are
+stored under `docs/specs/<slug>/`:
+
+```bash
+snipara-companion feature init auth-hardening \
+  --goal "Harden authentication error handling" \
+  --acceptance "Users receive an actionable recovery path"
+snipara-companion feature specify auth-hardening --goal "Harden authentication error handling" --force
+snipara-companion feature plan auth-hardening
+snipara-companion feature tasks auth-hardening
+snipara-companion feature status auth-hardening --json
+snipara-companion feature start auth-hardening
+```
+
+`feature init` creates `feature.json`, `spec.md`, `plan.md`, and `tasks.md` as a
+reviewable scaffold. `feature specify` updates the specification, `feature plan`
+calls Hosted Snipara's `snipara_plan` and writes `plan.md` plus
+`workflow-plan.json`, and `feature tasks` derives one stable task per managed
+workflow phase. A local plan can be used instead: author numbered entries under
+`## Phases` in `plan.md`, then run `feature tasks <slug> --from-plan`; Companion
+normalizes those entries to the same chunk contract as the hosted plan.
+`feature start` passes that machine plan to the existing `workflow start`; it
+does not create a parallel runtime state file. Existing human-edited artifacts
+are protected unless `--force` is supplied.
+
+The generated artifact contract is:
+
+| Artifact             | Role                                                                   |
+| -------------------- | ---------------------------------------------------------------------- |
+| `feature.json`       | Slug, goal, source, artifact paths, and generation status              |
+| `spec.md`            | Product intent, users, acceptance criteria, constraints, and non-goals |
+| `plan.md`            | Human-readable technical phases from Hosted Snipara or local planning  |
+| `tasks.md`           | Reviewable checklist with stable phase IDs and dependencies            |
+| `workflow-plan.json` | Machine-readable phases consumed by `workflow start`                   |
+
 Semantics:
 
 - `snipara-companion query --follow-recommendation` = execute the hosted recommended structural tool instead of only printing it; context retrieval defaults to a 30-second timeout and supports `--search-mode keyword|semantic|hybrid`, `--no-answer-pack`, `--no-auto-decompose`, and `--no-shared-context`
@@ -1587,8 +1698,8 @@ Semantics:
 - `snipara-companion team-sync what-changed` = prints the local state summary and the hosted What Changed For Me response when configured
 - `snipara-companion team-sync sweep` = archives stale local work items after an inactivity threshold; default is 14 days and `--dry-run` previews candidates, actual archive count, and remaining stale work
 - `snipara-companion team-sync resume` = reloads local carryover plus the hosted latest handoff and checkpoint-aware resume guidance when available
-- `snipara-companion final-commit` / `workflow final-commit` = final hosted handoff plus a redacted seven-section closeout report in human output and `.snipara/workflow/final-report.json`; stored phase outcomes, pending Why Capture candidates, non-persisted items, evidence statuses, risks, and the next step remain visibly distinct
-- `snipara-companion code callers/imports/neighbors/shortest-path/impact` = primary code graph surface for agents with shell access. These commands use `--source auto` by default; clean configured checkouts use hosted MCP, dirty/ahead worktrees use a hosted-base plus local-delta hybrid, and unconfigured projects stay local. Every response reports `sourceSelection` and provenance.
+- `snipara-companion final-commit` (canonical) / `workflow final-commit` (compatibility alias) = final hosted handoff plus a redacted seven-section closeout report in human output and `.snipara/workflow/final-report.json`; stored phase outcomes, pending Why Capture candidates, non-persisted items, evidence statuses, risks, and the next step remain visibly distinct
+- `snipara-companion code callers/imports/neighbors/shortest-path/impact` = primary code graph surface for agents with shell access. These commands use `--source auto` by default; clean configured checkouts use hosted MCP, dirty/ahead worktrees use a hosted-base plus local-delta hybrid, and unconfigured projects stay local. Every response reports `sourceSelection` and provenance. The canonical impact spelling is `code impact`; root `impact` remains an alias.
 - `snipara-companion code symbol-card` = direct `snipara_code_symbol_card` for an important symbol before editing, with an agent guidance summary before raw JSON
 - `snipara-companion code impact --source hosted|local|hybrid` = optional source override. `--fallback-hosted` augments a local query when hosted auth is available; failures remain explicit degraded-local results.
 - `snipara-companion code local impact` = explicit repository-local bounded transitive impact. TypeScript uses compiler-AST calls/references/imports; Python and Go use import fallback. Use `--depth`, `--direction`, `--edge-kinds`, and `--max-nodes` to control expansion.
@@ -1698,7 +1809,7 @@ Use this when the user's LLM has already produced a plan and Snipara should enfo
 
 1. Generate or save a visible plan into a JSON file. `snipara-companion plan --query "<goal>" --write-plan-file ./plan.json` converts hosted `snipara_plan` output into a managed workflow plan; keep a Markdown/Text copy only when you also want a human-facing contract alongside the machine plan. Keep simple Q&A and single-source lookups on targeted `snipara_context_query`; for FULL-mode audits, comparisons, roadmap/implementation planning, release readiness, or package-surface reviews, preserve the axes with `snipara_decompose` and execute independent follow-up questions with `snipara_multi_query` when those tools are exposed.
 2. Run `snipara-companion workflow start --goal "<goal>" --plan-file ./plan.json`.
-3. Run `snipara-companion workflow judgment`, then answer every served Advisor recommendation with `workflow judgment-respond <recommendation-id> --decision accepted|modified|ignored|blocked`. Use distinct `--plan-before` and `--plan-after` snapshots only for `modified`.
+3. Run `snipara-companion workflow judgment`. Companion handles `info`/`watch` recommendations with auditable policy responses; answer every `risk`/`block` recommendation with `workflow judgment-respond <recommendation-id> --decision accepted|modified|ignored|blocked`. Use distinct `--plan-before` and `--plan-after` snapshots only for `modified`.
 4. At each phase/chunk, run `snipara-companion workflow phase-start <phase_id>`, then `snipara-companion workflow run --mode full --query "<phase query>"`. Add `--include-session-context` after compaction, handoff, or another agent's work may matter.
 5. Before risky code changes, routes/services/jobs work, or any "what is missing" conclusion, run `snipara-companion code impact --changed-files <files...> --diff-summary "<change>"`. For an important symbol, run `snipara-companion code symbol-card --qualified-name <symbol>`.
 6. After compaction, first run `snipara-companion workflow resume --include-session-context`, then rerun `workflow judgment` to inspect the persisted card and `workflow phase-start <phase_id>` before editing again.

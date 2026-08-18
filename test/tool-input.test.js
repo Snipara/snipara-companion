@@ -7,6 +7,8 @@ const test = require("node:test");
 
 const {
   buildCommitResultMetadata,
+  hasActiveManagedWorkflow,
+  readStandaloneCommitEvidence,
   buildCanonicalEvent,
   resolveQueryFromToolInput,
   extractFilesFromToolInput,
@@ -137,6 +139,11 @@ test("buildCommitResultMetadata emits only full SHAs for actual commit-like resu
   assert.deepEqual(initialMetadata, { commitSha: initialSha });
   assert.deepEqual(Object.keys(initialMetadata), ["commitSha"]);
 
+  const initialEvidence = readStandaloneCommitEvidence(repo, initialSha);
+  assert.equal(initialEvidence.commitSha, initialSha);
+  assert.equal(initialEvidence.summary, "initial");
+  assert.deepEqual(initialEvidence.files, ["tracked.txt"]);
+
   fs.appendFileSync(path.join(repo, "tracked.txt"), "amended\n", "utf8");
   runGit(repo, ["add", "tracked.txt"]);
   runGit(repo, ["commit", "--amend", "-m", "amended"]);
@@ -183,6 +190,17 @@ test("buildCommitResultMetadata emits only full SHAs for actual commit-like resu
     }),
     { commitSha: revertSha }
   );
+});
+
+test("standalone commit evidence skips managed workflow state", () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-standalone-rationale-"));
+  const workflowDir = path.join(repo, ".snipara", "workflow");
+  fs.mkdirSync(workflowDir, { recursive: true });
+  fs.writeFileSync(path.join(workflowDir, "current.json"), '{"status":"active"}\n', "utf8");
+  assert.equal(hasActiveManagedWorkflow(repo), true);
+
+  fs.writeFileSync(path.join(workflowDir, "current.json"), '{"status":"completed"}\n', "utf8");
+  assert.equal(hasActiveManagedWorkflow(repo), false);
 });
 
 test("buildCommitResultMetadata rejects mentions, failures, no-ops, and reflog mismatches", () => {

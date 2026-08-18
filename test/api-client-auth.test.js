@@ -608,6 +608,7 @@ test("queryContext forwards bounded retrieval options", async () => {
       autoDecompose: false,
       includeSharedContext: false,
       includeAllTiers: false,
+      minimumChangeMode: "review",
     });
 
     const args = payload.params.arguments;
@@ -616,6 +617,7 @@ test("queryContext forwards bounded retrieval options", async () => {
     assert.equal(args.auto_decompose, false);
     assert.equal(args.include_shared_context, false);
     assert.equal(args.include_all_tiers, false);
+    assert.equal(args.minimum_change_mode, "review");
   });
 });
 

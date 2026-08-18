@@ -22,6 +22,8 @@ import {
   classifyToolResult,
   extractCommandFromToolInput,
 } from "./stuck-guard";
+import { appendActivityEvent, writeSessionSnapshot } from "./activity";
+import { captureStandaloneCommitWhy, type CompanionWhyCaptureReceipt } from "./why-capture";
 
 function normalizeStringArray(value: unknown): string[] {
   if (typeof value === "string") {
@@ -238,6 +240,69 @@ export async function postToolCommand(options: {
     exitCode: options.exitCode,
     status: options.status,
   });
+  const commitResultMetadata = buildCommitResultMetadata({
+    tool: options.tool,
+    toolInput: options.toolInput,
+    result: options.result,
+    exitCode: options.exitCode,
+    status: options.status,
+  });
+  let standaloneWhyCapture: CompanionWhyCaptureReceipt | undefined;
+  if (commitResultMetadata.commitSha && isConfigured()) {
+    try {
+      standaloneWhyCapture = await captureStandaloneCommitWhy({
+        cwd: process.cwd(),
+        commitSha: commitResultMetadata.commitSha,
+        files: uniqueFiles,
+      });
+    } catch (error) {
+      if (process.env.RLM_DEBUG) {
+        console.error(
+          `[Snipara] Standalone Why Capture error: ${error instanceof Error ? error.message : "Unknown error"}`
+        );
+      }
+    }
+  }
+  try {
+    appendActivityEvent({
+      source: "tool",
+      kind: "post-tool",
+      title: options.tool?.trim() || "unknown",
+      summary:
+        classification === "success"
+          ? "Tool completed successfully"
+          : classification === "empty_result"
+            ? "Tool returned an empty result"
+            : classification === "timeout"
+              ? "Tool timed out"
+              : "Tool failed",
+      outcome: classification,
+      files: uniqueFiles,
+      refs: commitResultMetadata.commitSha ? [`commit:${commitResultMetadata.commitSha}`] : [],
+      metadata: {
+        tool: options.tool?.trim() || "unknown",
+        classification,
+        fileCount: uniqueFiles.length,
+        ...(typeof options.exitCode === "number" ? { exitCode: options.exitCode } : {}),
+        ...(options.status ? { status: options.status } : {}),
+        ...commitResultMetadata,
+        ...(standaloneWhyCapture
+          ? {
+              whyCaptureStatus: standaloneWhyCapture.status,
+              whyCaptureCandidateCount: standaloneWhyCapture.previewCandidateCount,
+              whyCaptureCapturedCount: standaloneWhyCapture.capturedCount,
+            }
+          : {}),
+      },
+    });
+    writeSessionSnapshot();
+  } catch (error) {
+    if (process.env.RLM_DEBUG) {
+      console.error(
+        `[Snipara] Local activity error: ${error instanceof Error ? error.message : "Unknown error"}`
+      );
+    }
+  }
   const contextPackReceipts: LocalContextPackReceiptPayload[] = [];
   let contextPackSkipped: Record<string, unknown> | undefined;
   const shouldPackResult =
@@ -296,13 +361,7 @@ export async function postToolCommand(options: {
           status: options.status,
           files: uniqueFiles,
         }),
-        ...buildCommitResultMetadata({
-          tool: options.tool,
-          toolInput: options.toolInput,
-          result: options.result,
-          exitCode: options.exitCode,
-          status: options.status,
-        }),
+        ...commitResultMetadata,
         ...(contextPackSkipped ? { local_context_pack_skipped: contextPackSkipped } : {}),
       },
       contextPackReceipts

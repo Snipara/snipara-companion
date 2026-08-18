@@ -16,9 +16,13 @@ import type { AddressInfo } from "net";
 import path from "path";
 import chalk from "chalk";
 import ts from "typescript";
-import { createClient } from "../api/client";
+import { createClient, type MinimumChangeEvidence, type MinimumChangeMode } from "../api/client";
 import { findWorkspaceRoot, isConfigured, loadConfig } from "../config/store";
 import { emitCanonicalEvent } from "./events";
+import {
+  buildInstalledDependencyEvidence,
+  buildSmallestSafeDiffEvidence,
+} from "./minimum-change-evidence";
 
 export type LocalCodeOverlayMode = "working_tree" | "local_commit";
 export type LocalCodeOverlayKind = "none" | "local_commit" | "working_tree" | "mixed";
@@ -279,6 +283,9 @@ export interface CodeGraphAutoSourceOptions extends LocalCodeQueryCommandOptions
   includeFileNodes?: boolean;
   diffSummary?: string;
   limit?: number;
+  minimumChangeMode?: MinimumChangeMode;
+  minimumChangeDependency?: string;
+  minimumChangeEvidence?: MinimumChangeEvidence;
 }
 
 export interface CodeGraphSourceSelection {
@@ -3107,6 +3114,12 @@ function resolveRequestedCodeGraphSource(value: unknown): CodeGraphSource {
   throw new Error("--source must be one of: auto, local, hosted, hybrid");
 }
 
+export function resolveMinimumChangeMode(value: unknown): MinimumChangeMode {
+  if (value === undefined || value === null || value === "") return "off";
+  if (value === "off" || value === "review") return value;
+  throw new Error("--minimum-change-mode must be one of: off, review");
+}
+
 export function resolveCodeGraphMode(args: {
   requested: CodeGraphSource;
   dirtyFiles: string[];
@@ -3295,6 +3308,8 @@ export function mergeHybridCodeResults(
   );
   const coverageGaps = mergeResultArrays([hosted, local], ["coverage_gaps", "coverageGaps"]);
   const warnings = mergeResultArrays([hosted, local], ["warnings"]);
+  const minimumSafeChange =
+    hosted.minimum_safe_change ?? hosted.minimumSafeChange ?? local.minimum_safe_change;
   return {
     title: `Hybrid ${verb}`,
     mode: hostedError ? "hybrid_degraded_local" : "hybrid",
@@ -3317,6 +3332,7 @@ export function mergeHybridCodeResults(
     recommended_actions: recommendedActions,
     coverage_gaps: coverageGaps,
     warnings,
+    ...(minimumSafeChange ? { minimum_safe_change: minimumSafeChange } : {}),
     ...(hosted.index_freshness !== undefined ? { index_freshness: hosted.index_freshness } : {}),
     ...(hosted.impact !== undefined ? { impact: hosted.impact } : {}),
     local: localResult,
@@ -3413,6 +3429,8 @@ async function callHostedCodeTool(
         direction: traversalDirection(options.direction),
         edgeKinds: options.edgeKinds,
         limit: options.limit,
+        minimumChangeMode: options.minimumChangeMode,
+        minimumChangeEvidence: options.minimumChangeEvidence,
       });
     }
   }
@@ -3640,6 +3658,31 @@ export async function resolveCodeGraphAutoSourceResult(
   const repoRoot = resolveRepoRoot(options.dir ?? process.cwd());
   const dirtyStatus = readGitStatus(repoRoot);
   const dirtyFiles = parseDirtyFiles(dirtyStatus);
+  const requestedChangedFiles =
+    options.changedFiles ?? (verb === "impact" ? dirtyFiles : undefined);
+  const minimumChangeEvidence =
+    options.minimumChangeMode === "review" && options.minimumChangeDependency
+      ? {
+          ...(options.minimumChangeEvidence ?? {}),
+          installed_dependency: buildInstalledDependencyEvidence(
+            repoRoot,
+            options.minimumChangeDependency
+          ),
+        }
+      : options.minimumChangeEvidence;
+  const initialGitDiffEvidence =
+    options.minimumChangeMode === "review" && verb === "impact"
+      ? buildSmallestSafeDiffEvidence(repoRoot, requestedChangedFiles)
+      : undefined;
+  const effectiveOptions: CodeGraphAutoSourceOptions = {
+    ...options,
+    dir: repoRoot,
+    changedFiles: options.changedFiles,
+    minimumChangeEvidence: {
+      ...(minimumChangeEvidence ?? {}),
+      ...(initialGitDiffEvidence ? { smallest_safe_diff: initialGitDiffEvidence } : {}),
+    },
+  };
   const aheadCount = readAheadCount(repoRoot);
   const hostedConfigured = isConfigured({ cwd: repoRoot });
   const decision = resolveCodeGraphMode({
@@ -3658,8 +3701,16 @@ export async function resolveCodeGraphAutoSourceResult(
       mode: options.mode ?? "working_tree",
     });
     writeLocalCodeOverlayCache(manifest);
-    const localOptions = { ...options, dir: repoRoot, cached: true };
-    const result = buildLocalResultForVerb(verb, localOptions);
+    const localOptions = { ...effectiveOptions, cached: true };
+    const rawResult = buildLocalResultForVerb(verb, localOptions);
+    const localEvidence =
+      options.minimumChangeMode === "review" && verb === "impact"
+        ? buildSmallestSafeDiffEvidence(repoRoot, requestedChangedFiles, rawResult)
+        : undefined;
+    const result = {
+      ...rawResult,
+      ...(localEvidence ? { minimum_change_evidence: { smallest_safe_diff: localEvidence } } : {}),
+    };
     autoResult = {
       title: `Code ${verb}`,
       sourceSelection: localOverlaySelection(
@@ -3678,7 +3729,7 @@ export async function resolveCodeGraphAutoSourceResult(
       );
     }
 
-    const hostedResult = await callHostedCodeTool(verb, { ...options, dir: repoRoot });
+    const hostedResult = await callHostedCodeTool(verb, effectiveOptions);
     autoResult = {
       title: `Code ${verb}`,
       sourceSelection: hostedSelection(requested, decision.reason, repoRoot, hostedResult),
@@ -3691,15 +3742,29 @@ export async function resolveCodeGraphAutoSourceResult(
       mode: options.mode ?? "working_tree",
     });
     writeLocalCodeOverlayCache(manifest);
-    const localResult = buildLocalResultForVerb(verb, {
-      ...options,
-      dir: repoRoot,
+    const rawLocalResult = buildLocalResultForVerb(verb, {
+      ...effectiveOptions,
       cached: true,
     });
+    const localEvidence =
+      options.minimumChangeMode === "review" && verb === "impact"
+        ? buildSmallestSafeDiffEvidence(repoRoot, requestedChangedFiles, rawLocalResult)
+        : undefined;
+    const localResult = {
+      ...rawLocalResult,
+      ...(localEvidence ? { minimum_change_evidence: { smallest_safe_diff: localEvidence } } : {}),
+    };
+    const hostedOptions: CodeGraphAutoSourceOptions = {
+      ...effectiveOptions,
+      minimumChangeEvidence: {
+        ...(effectiveOptions.minimumChangeEvidence ?? {}),
+        ...(localEvidence ? { smallest_safe_diff: localEvidence } : {}),
+      },
+    };
     let hostedResult: unknown = null;
     let hostedError: string | undefined;
     try {
-      hostedResult = await callHostedCodeTool(verb, { ...options, dir: repoRoot });
+      hostedResult = await callHostedCodeTool(verb, hostedOptions);
     } catch (error) {
       hostedError = error instanceof Error ? error.message : String(error);
     }
@@ -3729,6 +3794,11 @@ export async function codeGraphAutoSourceCommand(
   const autoResult = await resolveCodeGraphAutoSourceResult(verb, options);
   printCodeGraphAutoSourceResult(autoResult, options.json);
 }
+
+export {
+  buildInstalledDependencyEvidence,
+  buildSmallestSafeDiffEvidence,
+} from "./minimum-change-evidence";
 
 export function buildCodeStatusResult(options: CodeStatusCommandOptions): Record<string, unknown> {
   const manifest = buildLocalCodeOverlay({

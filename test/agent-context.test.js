@@ -224,6 +224,41 @@ test("agent-context evidence status stays enforceably blocked below the exit gat
   assert.match(enforced.stdout, /Tasks: 0\/20/);
 });
 
+test("agent-context evidence collect creates a proof-linked draft without claiming retrieval use", () => {
+  const { cwd } = createFixture();
+  fs.mkdirSync(path.join(cwd, ".snipara", "workflow"), { recursive: true });
+  fs.writeFileSync(
+    path.join(cwd, ".snipara", "workflow", "current.json"),
+    JSON.stringify({
+      goal: "Implement a bounded resolver change",
+      updatedAt: "2026-08-14T12:00:00.000Z",
+      phases: [
+        {
+          id: "resolver-phase",
+          status: "completed",
+          outcome: "completed",
+          summary: "Focused resolver tests passed.",
+          completedAt: "2026-08-14T11:00:00.000Z",
+          files: ["docs/code.md", "/Users/alex/private.txt"],
+        },
+      ],
+    })
+  );
+  const output = path.join(cwd, "evidence-draft.json");
+  const result = runCli(
+    ["agent-context", "evidence", "collect", "--agent", "code", "--output", output],
+    cwd
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const draft = JSON.parse(fs.readFileSync(output, "utf8"));
+  assert.equal(draft.task, "Implement a bounded resolver change");
+  assert.equal(draft.outcome.status, "passed");
+  assert.deepEqual(draft.outcome.proofRefs, ["resolver-phase", "docs/code.md"]);
+  assert.deepEqual(draft.usedSourceIds, []);
+  assert.deepEqual(draft.executedRecallKeys, []);
+});
+
 test("agent-context evidence ledger fails closed when a receipt is edited", () => {
   const { cwd } = createFixture();
   const evidencePath = path.join(cwd, "evidence.json");

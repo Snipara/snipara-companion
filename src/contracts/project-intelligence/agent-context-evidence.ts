@@ -138,6 +138,8 @@ export interface AgentContextEvidenceCriterion {
 export interface AgentContextEvidenceReport {
   schemaVersion: typeof AGENT_CONTEXT_EVIDENCE_REPORT_VERSION;
   generatedAt: string;
+  manifestHash: string | null;
+  excludedReceiptCount: number;
   status: "ready" | "blocked";
   receiptCount: number;
   manifestHashes: string[];
@@ -185,6 +187,8 @@ export interface BuildAgentContextEvidenceReceiptInput {
 export interface BuildAgentContextEvidenceReportInput {
   receipts: AgentContextEvidenceReceipt[];
   expectedRoles: string[];
+  /** Restrict the gate to receipts produced by the current manifest. */
+  manifestHash?: string;
   generatedAt?: string | Date;
   minimumTaskCount?: number;
 }
@@ -597,7 +601,13 @@ export function buildAgentContextEvidenceReport(
   if (!Number.isInteger(minimumTaskCount) || minimumTaskCount < 1) {
     throw new Error("minimumTaskCount must be a positive integer.");
   }
-  const duplicateTaskIds = input.receipts
+  const manifestHash =
+    input.manifestHash === undefined ? null : safeCode(input.manifestHash, "manifestHash");
+  const receipts = manifestHash
+    ? input.receipts.filter((receipt) => receipt.manifestHash === manifestHash)
+    : input.receipts;
+  const excludedReceiptCount = input.receipts.length - receipts.length;
+  const duplicateTaskIds = receipts
     .map((receipt) => receipt.taskId)
     .filter((taskId, index, values) => values.indexOf(taskId) !== index);
   if (duplicateTaskIds.length > 0) {
@@ -609,16 +619,14 @@ export function buildAgentContextEvidenceReport(
     input.expectedRoles.map((role) => safeCode(role, "expectedRoles"))
   );
   if (expectedRoles.length === 0) throw new Error("expectedRoles must not be empty.");
-  const observedRoles = uniqueStrings(
-    input.receipts.flatMap((receipt) => receipt.agent.roles)
-  ).sort();
+  const observedRoles = uniqueStrings(receipts.flatMap((receipt) => receipt.agent.roles)).sort();
   const missingRoles = expectedRoles.filter((role) => !observedRoles.includes(role));
-  const unresolvedHighLeaks = input.receipts.flatMap((receipt) =>
+  const unresolvedHighLeaks = receipts.flatMap((receipt) =>
     receipt.leaks
       .filter((leak) => leak.severity === "high" && !leak.resolved)
       .map((leak) => `${receipt.taskId}:${leak.id}`)
   );
-  const leaksWithoutRegression = input.receipts.flatMap((receipt) =>
+  const leaksWithoutRegression = receipts.flatMap((receipt) =>
     receipt.leaks
       .filter((leak) => !leak.regressionTestRef)
       .map((leak) => `${receipt.taskId}:${leak.id}`)
@@ -636,7 +644,7 @@ export function buildAgentContextEvidenceReport(
   let observedTokens = 0;
   let overBudgetTasks = 0;
 
-  for (const receipt of input.receipts) {
+  for (const receipt of receipts) {
     receipt.agent.roles.forEach((role) => increment(tasksByRole, role));
     increment(outcomes, receipt.outcome.status);
     increment(memoryQuality, receipt.memory.quality);
@@ -660,11 +668,11 @@ export function buildAgentContextEvidenceReport(
   const criteria: AgentContextEvidenceCriterion[] = [
     {
       id: "representative_task_count",
-      passed: input.receipts.length >= minimumTaskCount,
-      summary: `${input.receipts.length}/${minimumTaskCount} representative tasks recorded.`,
-      actual: input.receipts.length,
+      passed: receipts.length >= minimumTaskCount,
+      summary: `${receipts.length}/${minimumTaskCount} representative tasks recorded.`,
+      actual: receipts.length,
       required: minimumTaskCount,
-      refs: input.receipts.map((receipt) => receipt.taskId),
+      refs: receipts.map((receipt) => receipt.taskId),
     },
     {
       id: "configured_role_coverage",
@@ -706,9 +714,9 @@ export function buildAgentContextEvidenceReport(
     },
     {
       id: "capability_assessments_documented",
-      passed: input.receipts.length >= minimumTaskCount,
-      summary: `${input.receipts.length} task-level missing-capability assessments recorded.`,
-      actual: input.receipts.length,
+      passed: receipts.length >= minimumTaskCount,
+      summary: `${receipts.length} task-level missing-capability assessments recorded.`,
+      actual: receipts.length,
       required: minimumTaskCount,
       refs: Object.keys(missingCapabilityCodes).sort(),
     },
@@ -717,7 +725,7 @@ export function buildAgentContextEvidenceReport(
     .filter((criterion) => !criterion.passed)
     .map((criterion) => {
       if (criterion.id === "representative_task_count") {
-        return `Record ${minimumTaskCount - input.receipts.length} more representative task(s).`;
+        return `Record ${minimumTaskCount - receipts.length} more representative task(s).`;
       }
       if (criterion.id === "configured_role_coverage") {
         return `Record evidence for missing role(s): ${missingRoles.join(", ")}.`;
@@ -736,9 +744,11 @@ export function buildAgentContextEvidenceReport(
   return {
     schemaVersion: AGENT_CONTEXT_EVIDENCE_REPORT_VERSION,
     generatedAt: isoTimestamp(input.generatedAt),
+    manifestHash,
+    excludedReceiptCount,
     status: criteria.every((criterion) => criterion.passed) ? "ready" : "blocked",
-    receiptCount: input.receipts.length,
-    manifestHashes: uniqueStrings(input.receipts.map((receipt) => receipt.manifestHash)).sort(),
+    receiptCount: receipts.length,
+    manifestHashes: uniqueStrings(receipts.map((receipt) => receipt.manifestHash)).sort(),
     expectedRoles,
     observedRoles,
     missingRoles,

@@ -436,6 +436,40 @@ test("top-level handoff persists Team Sync and writes an artifact", () => {
   assert.equal(state.handoffs[0].attention, "proof");
 });
 
+test("agentic handoff markdown redacts secrets and home paths", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-agentic-handoff-redaction-"));
+
+  const result = runCli(
+    [
+      "handoff",
+      "--summary",
+      "api_key=super-secret-value",
+      "--next",
+      "/Users/alex/private-note.txt",
+      "--files",
+      "/Users/alex/project/src/auth.ts",
+    ],
+    { cwd: dir }
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.doesNotMatch(result.stdout, /super-secret-value/);
+  assert.doesNotMatch(result.stdout, /\/Users\/alex/);
+  assert.match(result.stdout, /<redacted>|\[home\]/);
+});
+
+test("top-level handoff refuses output paths outside the project", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-agentic-handoff-boundary-"));
+
+  const result = runCli(
+    ["handoff", "--summary", "Safe handoff", "--output", "../outside-handoff.md"],
+    { cwd: dir }
+  );
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /must stay inside the project directory/);
+});
+
 test("top-level handoff json returns the artifact schema", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-agentic-handoff-json-"));
 

@@ -18,7 +18,7 @@ state, handoffs, and durable task outcomes.
 ```bash
 npx -y create-snipara@latest init --client cursor --starter
 npx -y snipara-companion session-bootstrap --include-session-context --max-context-tokens 1000
-npx -y snipara-companion impact src/auth/session.ts --source local
+npx -y snipara-companion code impact --changed-files src/auth/session.ts --source local
 npx -y snipara-companion source init .
 ```
 
@@ -106,10 +106,12 @@ These commands are useful without hosted Snipara:
 | Command                                                                               | What it gives you locally                                                    |
 | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | `source init` / `source sync` / `source status`                                       | Local source snapshot, document preview, and code overlay                    |
-| `impact` / `code impact`                                                              | Bounded transitive blast radius, chains, and explainable local risk          |
+| `docs bootstrap`                                                                      | Reviewable Project Brief preview or safe write from local source evidence    |
+| `code impact` (`impact` alias) / `code local impact`                                  | Bounded transitive blast radius, chains, and explainable local risk          |
 | `reality-check`                                                                       | Intent Ledger, Unknown Registry, auto-linked context, and inspectable proof  |
 | `code callers` / `imports` / `neighbors` / `shortest-path`                            | Structural repo questions from local files                                   |
 | `workflow start` / `phase-start` / `phase-commit` / `resume`                          | Agent continuity that survives compaction                                    |
+| `feature init` / `specify` / `plan` / `tasks` / `start`                               | Spec-driven feature artifacts bridged into the managed workflow              |
 | `workflow timeline` / `workflow session`                                              | Append-only local activity log and Session Snapshot V0                       |
 | `workflow decisions` / `workflow decide`                                              | Local human decision requests and response receipts                          |
 | `workflow policy-ledger` / `workflow apply-decisions` / `workflow sync-policy-ledger` | Project Policy review ledger, explicit apply pipeline, and hosted audit sync |
@@ -123,6 +125,80 @@ These commands are useful without hosted Snipara:
 | `judgment-card`, `verify`, `lead-plan`, `agent-readiness`                             | Local review artifacts and delegation contracts                              |
 | `intelligence ledger-export`                                                          | Structured redacted ledger JSON for replay and review                        |
 | `stuck-guard`, `memory-guard`, `pre-tool`, `post-tool`                                | Fail-soft local guards and hook helpers                                      |
+
+### Canonical command forms
+
+Use the exact CLI value after `workflow run --mode`:
+
+| CLI value     | Guide label         | Meaning                                                               |
+| ------------- | ------------------- | --------------------------------------------------------------------- |
+| `lite`        | LITE                | Small, known-scope work with no mandatory hosted context call         |
+| `standard`    | STANDARD            | Normal work with context and code-graph follow-up when needed         |
+| `auto`        | AUTO                | Routes by task intent to `lite`, `standard`, `full`, or `orchestrate` |
+| `full`        | FULL                | Managed, phased work with durable context and plan support            |
+| `orchestrate` | FULL + ORCHESTRATED | Explicit deeper orchestration for multi-agent or proof-gate work      |
+
+The root `run` command is the Project Intelligence judgment/release flow.
+`workflow run` is the workflow-mode runner. They share a verb but are not
+aliases.
+
+Use `code impact` as the canonical impact gate. The root `impact` command is a
+compatibility alias, while `code local impact` is the separate non-canonical
+local-overlay query. Use `final-commit` as the canonical final workflow
+closeout; `workflow final-commit` remains a compatibility alias. `task-commit`
+captures a durable task outcome, and `workflow phase-commit` records one
+managed phase and advances the workflow; these are distinct operations.
+
+For a non-blocking dependency proof, add the dependency name to the impact
+review. Companion reads the local manifest and lockfile, emits a bounded
+versioned adapter receipt when both agree, and leaves the check unresolved when
+one side is missing:
+
+```bash
+npx -y snipara-companion code impact \
+  --changed-files src/cache.ts \
+  --minimum-change-mode review \
+  --minimum-change-dependency yaml
+```
+
+In the same local or hybrid review, Companion also reads the working-tree Git
+diff. It confirms `smallest_safe_diff` only when the diff files match the
+requested and local impact files, the local risk is low, and the impact has no
+missing targets, warnings, or truncated traversal. Otherwise it returns
+`needs_review`; the `git_diff` receipt is versioned and fingerprinted, and the
+review remains non-blocking.
+
+For a public, copy/paste-oriented table, see the
+[Companion CLI Command Reference](https://www.snipara.com/docs/integration/companion/reference).
+
+### Spec-driven feature workflow
+
+Companion provides a native Spec Kit-style preparation layer without creating a
+second workflow state machine. Durable product and engineering artifacts live
+under `docs/specs/<feature>/`; `.snipara/workflow/current.json` remains the only
+managed execution state.
+
+```bash
+snipara-companion feature init oauth-onboarding \
+  --goal "Make GitHub OAuth onboarding recoverable" \
+  --why "Users need an actionable recovery path" \
+  --user "new Snipara user" \
+  --constraint "Never expose OAuth secrets" \
+  --acceptance "OAuth failures show a recovery action"
+
+snipara-companion feature plan oauth-onboarding
+snipara-companion feature tasks oauth-onboarding
+snipara-companion feature start oauth-onboarding
+```
+
+The flow creates `feature.json`, `spec.md`, `plan.md`, `tasks.md`, and a
+machine-readable `workflow-plan.json`. `feature plan` uses Hosted Snipara's
+planner; if you prefer to author or review the plan locally, edit `plan.md`
+with a numbered `## Phases` section and run
+`snipara-companion feature tasks <slug> --from-plan`. Both sources normalize to
+the same phase-shaped chunks, and `feature start` delegates to the existing
+`workflow start` command. It does not replace Companion's phases, memory, code
+impact, or handoff logic.
 
 ### Agent Context Dogfood
 
@@ -164,9 +240,10 @@ snipara-companion agent-context evidence status --enforce
 
 Receipts are appended to `.snipara/agent-context/evidence.jsonl`, linked to the
 manifest hash, and rejected if they claim a source, recall, or promotion target
-outside the resolved policy. `--enforce` stays non-zero until the documented
-AC-1 exit gate is met; it does not authorize a hosted compiler or memory
-promotion workflow.
+outside the resolved policy. The status gate evaluates only receipts linked to
+the current manifest hash and reports older receipts as excluded. `--enforce`
+stays non-zero until the documented AC-1 exit gate is met; it does not authorize
+a hosted compiler or memory promotion workflow.
 
 ### Context Control
 
@@ -313,6 +390,7 @@ After the first impact check, keep the work resumable:
 
 ```bash
 npx -y snipara-companion workflow start --goal "ship auth hardening"
+npx -y snipara-companion workflow judgment
 npx -y snipara-companion workflow phase-start audit
 npx -y snipara-companion lead-plan --task "ship auth hardening" --changed-files src/auth/session.ts --proof "pnpm test auth" --acceptance "auth tests pass"
 npx -y snipara-companion lead-plan --from-plan ./project-health-lead-plan.json --reconcile --changed-files src/auth/session.ts
@@ -332,12 +410,21 @@ npx -y snipara-companion workflow producer-review --latest --outcome useful --re
 npx -y snipara-companion handoff --summary "auth impact mapped" --next "run auth tests"
 ```
 
+Managed workflow judgments use risk-based authority. `info` and `watch`
+recommendations are accepted locally by policy and remain auditable; `risk` and
+`block` recommendations still need `workflow judgment-respond`. The immutable
+card is never rewritten. Companion appends an effective resolution and can lift
+a verification-only `proof_required` state only after a completed outcome and
+matching passed evidence. Failed evidence, a blocked collaboration guard, a
+`resolve_blocker` action, or an explicit blocked response remains a hard stop.
+
 `snipara-companion` writes local state under `.snipara/` so a coding agent can
 resume with the current phase, recent handoffs, timeline, context packs, and
 verification hints.
 
 `workflow timeline` reads the append-only activity log at
-`.snipara/activity/timeline.jsonl`. `workflow session` derives
+`.snipara/activity/timeline.jsonl`, including privacy-safe PostToolUse outcomes
+and file evidence when the Companion hook is installed. `workflow session` derives
 `.snipara/activity/session.json` for fast local resume and Orchestrator dogfood;
 Session Snapshot V0 includes latest activity, risk reasons, touched files, a
 next action, and advisory Intent Detection V0. Intent Detection V0 reports the
@@ -452,6 +539,23 @@ This writes `.snipara/source/latest.json`, builds a local document sync preview,
 and refreshes `.snipara/code-overlay/latest.json`. The hosted code graph remains
 the canonical shared graph after provider sync.
 
+### Generate a reviewable Project Brief
+
+When a project has code but little or no documentation, Companion can generate a
+local, evidence-linked starting point without inventing architecture or business
+rules:
+
+```bash
+npx -y snipara-companion docs bootstrap --preview
+npx -y snipara-companion docs bootstrap --apply
+npx -y snipara-companion source sync --apply --reindex
+```
+
+The default output is `docs/PROJECT.md`. Preview does not write anything, and an
+existing output is protected unless `--force` is explicit. The generated brief
+lists observed files, safe package metadata, and documentation gaps; review it
+before indexing it into hosted Snipara.
+
 Overlay v2 uses the TypeScript Compiler API to extract stable symbols plus
 `CALLS`, `REFERENCES`, `IMPORTS`, and `CONTAINS` edges. Python and Go retain an
 import-level fallback. Use `--depth`, `--direction`, `--edge-kinds`, and
@@ -465,14 +569,14 @@ or ahead work; `--source local` remains completely offline.
 Use `npx` for one-off checks:
 
 ```bash
-npx -y snipara-companion impact src/auth/session.ts --source local
+npx -y snipara-companion code impact --changed-files src/auth/session.ts --source local
 ```
 
 Install globally only if you use it every day:
 
 ```bash
 npm install -g snipara-companion
-snipara-companion impact src/auth/session.ts
+snipara-companion code impact --changed-files src/auth/session.ts
 snipara-companion workflow resume
 ```
 
@@ -489,8 +593,15 @@ Release notes live in [CHANGELOG.md](./CHANGELOG.md).
 When project auth is configured, `workflow phase-commit`, `final-commit`, and
 `team-sync handoff` also run reviewed Why Capture. The Companion first sends a
 read-only preview and confirms only when the server detects durable rationale.
-Confirmed candidates enter the pending review queue; capture failures remain
-visible but do not block the primary workflow command. No documentation prompt
-is shown. `final-commit` remains handoff-only: the report explains what was
-stored or proposed, but it does not approve pending candidates or write final
-summary text as durable memory.
+Low-risk, directly confirmed and sufficiently evidenced captures can be
+approved by the hosted memory policy; shared-scope, conflicting, weakly
+supported, imported, or canonical decision-draft candidates remain reviewed.
+Capture failures stay visible but do not block the primary workflow command. No
+documentation prompt is shown. `final-commit` remains handoff-only: the report
+explains what was stored or proposed, but it does not itself approve canonical
+decision drafts or write final summary text as durable memory.
+After a verified `git commit`, `git revert`, or `git cherry-pick` result, the
+PostToolUse hook runs the same preview-then-confirm flow when no managed
+workflow is active. It submits the commit message, commit SHA, and changed-file
+evidence as `sourceKind=commit`; ordinary messages produce no candidate, and
+any captured rationale remains pending human review.

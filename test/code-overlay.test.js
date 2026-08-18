@@ -14,6 +14,7 @@ const {
   readLocalCodeOverlayCache,
   readLocalCodePromotionState,
   resolveCodeGraphMode,
+  resolveMinimumChangeMode,
   writeLocalCodeOverlayCache,
 } = require("../dist/index.js");
 
@@ -789,6 +790,12 @@ test("auto source uses hosted for clean checkouts and hybrid for local deltas", 
     }),
     { selected: "hybrid_graph", reason: "fallback_hosted_requested" }
   );
+});
+
+test("minimum-change review remains explicitly opt-in", () => {
+  assert.equal(resolveMinimumChangeMode(undefined), "off");
+  assert.equal(resolveMinimumChangeMode("review"), "review");
+  assert.throws(() => resolveMinimumChangeMode("block"), /off, review/);
 });
 
 test("local traversal rejects an invalid direction instead of silently widening it", () => {

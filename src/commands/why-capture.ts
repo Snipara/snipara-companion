@@ -52,6 +52,7 @@ export interface CompanionWhyCaptureReceipt {
 const MAX_SOURCE_TEXT_CHARS = 12_000;
 const MAX_TASK_CHARS = 700;
 const MAX_RECEIPT_TEXT_CHARS = 900;
+const FULL_COMMIT_SHA = /^[0-9a-f]{40}$/i;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -168,9 +169,9 @@ function boundedUnique(values: string[] | undefined, limit: number): string[] {
   return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))].slice(0, limit);
 }
 
-function readCommitSha(cwd: string): string | undefined {
+function readGitValue(cwd: string, args: string[]): string | undefined {
   try {
-    return execFileSync("git", ["rev-parse", "--verify", "HEAD^{commit}"], {
+    return execFileSync("git", args, {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -179,6 +180,61 @@ function readCommitSha(cwd: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function readCommitSha(cwd: string): string | undefined {
+  return readGitValue(cwd, ["rev-parse", "--verify", "HEAD^{commit}"]);
+}
+
+export interface StandaloneCommitEvidence {
+  commitSha: string;
+  summary: string;
+  files: string[];
+}
+
+export function hasActiveManagedWorkflow(cwd: string): boolean {
+  const statePath = path.join(cwd, ".snipara", "workflow", "current.json");
+  if (!fs.existsSync(statePath)) {
+    return false;
+  }
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(statePath, "utf8")) as { status?: unknown };
+    return parsed.status !== "completed";
+  } catch {
+    // An unreadable workflow state is ambiguous; skip automatic capture rather
+    // than risk duplicating a managed workflow's reviewed rationale.
+    return true;
+  }
+}
+
+export function readStandaloneCommitEvidence(
+  cwd: string,
+  commitSha: string,
+  additionalFiles: string[] = []
+): StandaloneCommitEvidence | undefined {
+  if (!FULL_COMMIT_SHA.test(commitSha)) {
+    return undefined;
+  }
+
+  const summary = readGitValue(cwd, ["show", "--no-patch", "--format=%B", commitSha]);
+  if (!summary) {
+    return undefined;
+  }
+
+  const commitFiles = readGitValue(cwd, [
+    "diff-tree",
+    "--root",
+    "--no-commit-id",
+    "--name-only",
+    "-r",
+    commitSha,
+  ]);
+  const files = boundedUnique(
+    [...(commitFiles ? commitFiles.split(/\r?\n/) : []), ...additionalFiles],
+    40
+  );
+  return { commitSha, summary, files };
 }
 
 export function readLatestWorkflowCommands(cwd: string): string[] {
@@ -206,6 +262,45 @@ export function readLatestWorkflowCommands(cwd: string): string[] {
     // Missing or partial workflow state should never block the primary command.
   }
   return [];
+}
+
+export async function captureStandaloneCommitWhy(input: {
+  cwd: string;
+  commitSha: string;
+  files?: string[];
+}): Promise<CompanionWhyCaptureReceipt> {
+  const baseReceipt = {
+    sourceKind: "commit" as const,
+    previewCandidateCount: 0,
+    capturedCount: 0,
+    previewCandidates: [] as CompanionWhyCaptureCandidate[],
+    pendingMemories: [] as CompanionWhyCaptureMemory[],
+    duplicates: [] as CompanionWhyCaptureIssue[],
+    failed: [] as CompanionWhyCaptureIssue[],
+    commitSha: input.commitSha,
+  };
+
+  if (hasActiveManagedWorkflow(input.cwd)) {
+    return { ...baseReceipt, status: "skipped", error: "managed_workflow_active" };
+  }
+
+  const evidence = readStandaloneCommitEvidence(input.cwd, input.commitSha, input.files);
+  if (!evidence) {
+    return { ...baseReceipt, status: "skipped", error: "commit_evidence_unavailable" };
+  }
+
+  const currentSha = readCommitSha(input.cwd);
+  if (currentSha !== input.commitSha) {
+    return { ...baseReceipt, status: "skipped", error: "head_changed_before_capture" };
+  }
+
+  return captureCompanionWhy({
+    cwd: input.cwd,
+    sourceKind: "commit",
+    task: `Standalone commit ${input.commitSha.slice(0, 12)}`,
+    summary: evidence.summary,
+    files: evidence.files,
+  });
 }
 
 function recordItems(value: unknown): Record<string, unknown>[] {

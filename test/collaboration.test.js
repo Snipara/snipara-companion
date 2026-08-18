@@ -986,6 +986,7 @@ test("collaboration hooks install plan writes blocking managed hooks", () => {
     true
   );
   const preCommitHook = fs.readFileSync(path.join(dir, ".git", "hooks", "pre-commit"), "utf8");
+  const prePushHook = fs.readFileSync(path.join(dir, ".git", "hooks", "pre-push"), "utf8");
   assert.match(preCommitHook, /snipara_companion_hook collaboration guard --profile pre-commit/);
   assert.match(preCommitHook, /pnpm --filter snipara-companion exec tsx src\/index\.ts/);
   assert.match(preCommitHook, /snipara-companion "\$@"/);
@@ -993,9 +994,57 @@ test("collaboration hooks install plan writes blocking managed hooks", () => {
   assert.match(preCommitHook, /collaboration claim .*--json >\/dev\/null \|\| true/);
   assert.match(preCommitHook, /guard --profile pre-commit .*--resource SURFACE:checkout-git-write/);
   assert.match(preCommitHook, /--mode EXCLUSIVE --ttl-seconds 300/);
+  assert.match(preCommitHook, /SNIPARA_COLLABORATION_GUARD_ACK_REVIEW_ONLY/);
+  assert.match(preCommitHook, /snipara_companion_guard --ack-review-only/);
+  assert.match(preCommitHook, /snipara_companion_guard\n\s+snipara_guard_status=\$\?/);
+  assert.match(prePushHook, /SNIPARA_COLLABORATION_GUARD_ACK_REVIEW_ONLY/);
+  assert.match(prePushHook, /snipara_companion_guard --ack-review-only/);
   assert.doesNotMatch(preCommitHook, /snipara-companion@latest/);
   assert.match(preCommitHook, /SNIPARA_COLLABORATION_GUARD=0/);
   assert.match(preCommitHook, /return 127/);
+});
+
+test("managed hooks forward and consume one-shot review-only acknowledgements", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-collaboration-hook-ack-"));
+  spawnSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  const result = buildCollaborationHooksInstallPlan({ dir });
+  assert.equal(
+    result.hooks.every((hook) => hook.action === "created"),
+    true
+  );
+
+  const binDir = path.join(dir, "bin");
+  fs.mkdirSync(binDir, { recursive: true });
+  const logPath = path.join(dir, "hook-calls.log");
+  const companionPath = path.join(binDir, "snipara-companion");
+  fs.writeFileSync(
+    companionPath,
+    ["#!/usr/bin/env sh", 'printf "%s\\n" "$*" >> "$SNIPARA_HOOK_CALL_LOG"', "exit 0", ""].join(
+      "\n"
+    ),
+    "utf8"
+  );
+  fs.chmodSync(companionPath, 0o755);
+
+  const hookPath = path.join(dir, ".git", "hooks", "pre-commit");
+  const hookResult = spawnSync("sh", [hookPath], {
+    cwd: dir,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      SNIPARA_HOOK_CALL_LOG: logPath,
+      SNIPARA_COLLABORATION_GUARD_ACK_REVIEW_ONLY: "1",
+    },
+  });
+
+  assert.equal(hookResult.status, 0, hookResult.stderr || hookResult.stdout);
+  const calls = fs.readFileSync(logPath, "utf8").trim().split("\n");
+  assert.equal(calls.length, 3);
+  assert.match(calls[0], /collaboration claim/);
+  assert.match(calls[1], /collaboration guard .*--enforce --ack-review-only --json/);
+  assert.match(calls[2], /collaboration guard .*--enforce --json/);
+  assert.doesNotMatch(calls[2], /--ack-review-only/);
 });
 
 test("collaboration status reads hosted active sessions and leases", () => {

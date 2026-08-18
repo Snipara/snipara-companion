@@ -61,6 +61,55 @@ export interface ContextQueryResult {
 }
 
 export type ContextQuerySearchMode = "keyword" | "semantic" | "hybrid";
+export type MinimumChangeMode = "off" | "review";
+export type MinimumChangeEvidenceStatus =
+  | "asserted"
+  | "confirmed"
+  | "candidate"
+  | "unknown"
+  | "not_applicable"
+  | "needs_review";
+
+export interface MinimumChangeEvidenceCheck {
+  status: MinimumChangeEvidenceStatus;
+  source?:
+    | "code_impact"
+    | "git_diff"
+    | "lockfile"
+    | "manifest"
+    | "runtime"
+    | "test_runner"
+    | "caller_assertion";
+  evidence?: Array<string | number | boolean | Record<string, unknown>>;
+  scope?: string;
+  observed_at?: string;
+  confidence?: number;
+  adapter_receipt?: MinimumChangeAdapterReceipt;
+}
+
+export interface MinimumChangeAdapterReceipt {
+  name: string;
+  version: string;
+  status: "verified";
+  claim: string;
+  fingerprint: string;
+}
+
+export interface MinimumChangeEvidence {
+  existing_capability?: MinimumChangeEvidenceCheck;
+  stdlib_or_native?: MinimumChangeEvidenceCheck;
+  installed_dependency?: MinimumChangeEvidenceCheck;
+  smallest_safe_diff?: MinimumChangeEvidenceCheck;
+  validation_surface?: MinimumChangeEvidenceCheck;
+  preservation?: {
+    validation?: MinimumChangeEvidenceCheck;
+    error_contract?: MinimumChangeEvidenceCheck;
+    security_auth?: MinimumChangeEvidenceCheck;
+    accessibility?: MinimumChangeEvidenceCheck;
+    public_contract?: MinimumChangeEvidenceCheck;
+    tests?: MinimumChangeEvidenceCheck;
+  };
+}
 
 export interface ContextQueryOptions {
   searchMode?: ContextQuerySearchMode;
@@ -70,6 +119,8 @@ export interface ContextQueryOptions {
   includeSharedContext?: boolean;
   includeAllTiers?: boolean;
   returnReferences?: boolean;
+  minimumChangeMode?: MinimumChangeMode;
+  minimumChangeEvidence?: MinimumChangeEvidence;
 }
 
 export interface AnswerPackSource {
@@ -101,6 +152,7 @@ export interface AnswerPack {
     graph_context_included?: boolean;
     impact_hint?: string | null;
   };
+  minimum_safe_change?: Record<string, unknown>;
   token_count?: number;
 }
 
@@ -296,7 +348,7 @@ export interface SessionPersistResult {
   files_tracked: number;
 }
 
-export type WhyCaptureSourceKind = "phase_commit" | "final_commit" | "handoff";
+export type WhyCaptureSourceKind = "commit" | "phase_commit" | "final_commit" | "handoff";
 
 export interface WhyCaptureInput {
   decision?: string;
@@ -1204,11 +1256,6 @@ const CORRELATED_RETRIEVAL_TOOL_NAMES = new Set([
   "snipara_search",
   "snipara_recall",
   "snipara_get_chunk",
-  "rlm_context_query",
-  "rlm_ask",
-  "rlm_search",
-  "rlm_recall",
-  "rlm_get_chunk",
 ]);
 
 function withCompanionRetrievalClient(
@@ -1633,6 +1680,8 @@ export class RLMClient {
       include_shared_context: options.includeSharedContext,
       include_all_tiers: options.includeAllTiers,
       return_references: options.returnReferences,
+      minimum_change_mode: options.minimumChangeMode ?? "off",
+      minimum_change_evidence: options.minimumChangeEvidence,
     });
 
     // Transform MCP result to expected format
@@ -1781,6 +1830,8 @@ export class RLMClient {
     direction?: "in" | "out" | "both";
     edgeKinds?: string[];
     limit?: number;
+    minimumChangeMode?: MinimumChangeMode;
+    minimumChangeEvidence?: MinimumChangeEvidence;
   }): Promise<Record<string, unknown>> {
     return this.mcpCall<Record<string, unknown>>("snipara_code_impact", {
       qualified_name: options.qualifiedName,
@@ -1792,6 +1843,8 @@ export class RLMClient {
       direction: options.direction ?? "both",
       edge_kinds: options.edgeKinds,
       limit: options.limit ?? 50,
+      minimum_change_mode: options.minimumChangeMode ?? "off",
+      minimum_change_evidence: options.minimumChangeEvidence,
     });
   }
 

@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+  applyManagedWorkflowPolicyAutoResponses,
   buildJournalCheckpointEntry,
   appendActivityEvent,
   buildAdaptiveWorkRoutingRecommendation,
@@ -20,6 +21,7 @@ const {
   createEmptyTeamSyncState,
   createClient,
   detectReleaseSurfacesFromFiles,
+  deriveManagedWorkflowJudgmentResolution,
   formatOrchestratorRecommendationReason,
   formatFinalCommitReport,
   getPlanStepDisplayTitle,
@@ -2139,7 +2141,171 @@ test("workflow runtime-checkpoint records local context pack receipts without ho
   );
 });
 
-test("managed workflow serves a judgment, records an explicit response, and enriches one receipt through closeout", () => {
+function managedJudgmentFixture(cardOverrides = {}) {
+  const generatedAt = "2026-07-18T10:00:00.000Z";
+  return {
+    version: "snipara.workflow.judgment.v1",
+    generatedAt,
+    runEnvelope: {
+      version: "project-intelligence.judgment-run-envelope.v1",
+      runId: "judgment-run:test",
+      identitySource: "generated",
+      startedAt: generatedAt,
+    },
+    brief: {
+      version: "project-intelligence-brief-v1",
+      generatedAt,
+      servedJudgmentId: "served_test",
+      task: "Test judgment autonomy",
+      changedFiles: ["src/app.ts"],
+      recentFiles: [],
+      errors: [],
+      suggestedCommands: [],
+    },
+    card: {
+      version: "project-intelligence.judgment-card.v1",
+      generatedAt,
+      target: { changedFiles: ["src/app.ts"] },
+      score: 80,
+      band: "high",
+      state: "watch",
+      canProceed: "yes",
+      summary: "Proceed with watch",
+      reasons: [],
+      requiredActions: [],
+      advisories: [],
+      advisorRecommendations: [],
+      evidence: [],
+      caveats: [],
+      ...cardOverrides,
+    },
+    responses: [],
+  };
+}
+
+test("managed workflow policy auto-accepts only info and watch recommendations", () => {
+  const judgment = managedJudgmentFixture({
+    advisorRecommendations: ["info", "watch", "risk", "block"].map((severity) => ({
+      id: `advisor:${severity}`,
+      source: "test",
+      severity,
+      title: `${severity} recommendation`,
+      reasonCodes: [`advisor_${severity}`],
+      recommendedVerification: [],
+    })),
+  });
+
+  const created = applyManagedWorkflowPolicyAutoResponses(judgment, judgment.generatedAt);
+
+  assert.deepEqual(
+    created.map((response) => [response.recommendationId, response.source, response.decision]),
+    [
+      ["advisor:info", "policy_auto", "accepted"],
+      ["advisor:watch", "policy_auto", "accepted"],
+    ]
+  );
+  assert.equal(judgment.responses.length, 2);
+  const resolution = deriveManagedWorkflowJudgmentResolution(judgment);
+  assert.equal(resolution.state, "blocked");
+  assert.deepEqual(resolution.pendingExplicitRecommendationIds, ["advisor:risk", "advisor:block"]);
+  assert.ok(resolution.hardBlockerCodes.includes("pending_block_recommendation"));
+});
+
+test("managed workflow evidence can resolve a verification-only blocked card without mutating it", () => {
+  const judgment = managedJudgmentFixture({
+    score: 40,
+    band: "blocked",
+    state: "blocked",
+    canProceed: "block",
+    reasons: [
+      {
+        code: "code_impact_high_risk",
+        severity: "critical",
+        message: "Code impact reports critical risk.",
+        points: 35,
+        source: "code_impact",
+      },
+    ],
+    requiredActions: [
+      {
+        type: "inspect",
+        title: "Inspect code impact blast radius",
+        severity: "critical",
+      },
+    ],
+  });
+
+  const resolution = deriveManagedWorkflowJudgmentResolution(judgment, {
+    outcome: "completed",
+    evidence: [
+      {
+        source: "manual",
+        label: "code impact inspected against the current diff",
+        status: "passed",
+      },
+    ],
+  });
+
+  assert.equal(resolution.state, "ready");
+  assert.equal(resolution.canProceed, "yes");
+  assert.equal(resolution.originalCard.state, "blocked");
+  assert.equal(judgment.card.state, "blocked");
+
+  const unrelatedProof = deriveManagedWorkflowJudgmentResolution(judgment, {
+    outcome: "completed",
+    evidence: [{ source: "test", label: "unit tests", status: "passed" }],
+  });
+  assert.equal(unrelatedProof.state, "proof_required");
+  assert.deepEqual(unrelatedProof.evidence.unsatisfiedRequiredActions, [
+    "Inspect code impact blast radius",
+  ]);
+});
+
+test("managed workflow hard blockers and failed evidence never auto-resolve", () => {
+  const guardBlocked = managedJudgmentFixture({
+    state: "blocked",
+    canProceed: "block",
+    reasons: [
+      {
+        code: "guard_blocked",
+        severity: "critical",
+        message: "Collaboration guard blocked.",
+        points: 100,
+        source: "collaboration_guard",
+      },
+    ],
+    requiredActions: [
+      {
+        type: "resolve_blocker",
+        title: "Resolve collaboration guard blocker",
+        severity: "critical",
+      },
+    ],
+  });
+  const guardResolution = deriveManagedWorkflowJudgmentResolution(guardBlocked, {
+    outcome: "completed",
+    evidence: [{ source: "guard", label: "guard rerun", status: "passed" }],
+  });
+  assert.equal(guardResolution.state, "blocked");
+  assert.ok(guardResolution.hardBlockerCodes.includes("guard_blocked"));
+  assert.ok(guardResolution.hardBlockerCodes.includes("required_action_resolve_blocker"));
+
+  const failedCheck = managedJudgmentFixture({
+    state: "proof_required",
+    canProceed: "review",
+    requiredActions: [
+      { type: "run_check", title: "Run workflow tests", command: "pnpm test", severity: "high" },
+    ],
+  });
+  const failedResolution = deriveManagedWorkflowJudgmentResolution(failedCheck, {
+    outcome: "completed",
+    evidence: [{ source: "test", label: "pnpm test", status: "failed" }],
+  });
+  assert.equal(failedResolution.state, "blocked");
+  assert.ok(failedResolution.hardBlockerCodes.includes("failed_verification_evidence"));
+});
+
+test("managed workflow serves a judgment, allows an explicit override, and enriches one receipt through closeout", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-judgment-loop-"));
   fs.mkdirSync(path.join(dir, "src"), { recursive: true });
   fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "app" }), "utf8");
@@ -2202,7 +2368,8 @@ test("managed workflow serves a judgment, records an explicit response, and enri
   const judgmentPayload = JSON.parse(judged.stdout);
   assert.equal(judgmentPayload.judgment.brief.servedJudgmentId, "served_workflow_1");
   assert.equal(judgmentPayload.judgment.card.advisorRecommendations.length, 1);
-  assert.equal(judgmentPayload.judgment.responses.length, 0);
+  assert.equal(judgmentPayload.judgment.responses.length, 1);
+  assert.equal(judgmentPayload.judgment.responses[0].source, "policy_auto");
 
   const responded = run([
     "workflow",
@@ -2293,11 +2460,66 @@ test("managed workflow serves a judgment, records an explicit response, and enri
   );
   assert.equal(current.status, "completed");
   assert.equal(current.judgment.responses[0].decision, "modified");
+  assert.equal(current.judgment.responses[0].source, "explicit");
+  assert.equal(current.judgment.responseHistory[0].source, "policy_auto");
   assert.equal(current.judgment.responses[0].outcomeReceipts.length, 2);
   assert.equal(current.judgment.responses[0].closeoutReceipt.status, "recorded");
 });
 
-test("final-commit refuses to invent an implicit response for a served workflow judgment", () => {
+test("managed workflow judgment refresh archives the prior immutable card and responses", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-judgment-refresh-"));
+  fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "app" }), "utf8");
+  const preloadPath = writeWorkflowPreload(dir);
+  const recommendationId = "advisor:refresh-watch";
+  const env = {
+    SNIPARA_API_KEY: "test-key",
+    SNIPARA_PROJECT_ID: "project_1",
+    SNIPARA_API_URL: "https://api.example.test",
+    SNIPARA_TEST_WORKFLOW_JUDGMENT: JSON.stringify({
+      servedJudgmentId: "served_refresh",
+      advisorRecommendations: [
+        {
+          id: recommendationId,
+          source: "verification",
+          severity: "watch",
+          title: "Review workflow proof",
+          reasonCodes: ["workflow_watch"],
+          recommendedVerification: ["Run tests"],
+        },
+      ],
+    }),
+  };
+  const run = (args) => runCli(args, { cwd: dir, env, nodeArgs: ["--require", preloadPath] });
+
+  assert.equal(
+    run(["workflow", "start", "--goal", "Refresh a managed judgment", "--json"]).status,
+    0
+  );
+  assert.equal(run(["workflow", "judgment", "--json"]).status, 0);
+  assert.equal(
+    run([
+      "workflow",
+      "judgment-respond",
+      recommendationId,
+      "--decision",
+      "accepted",
+      "--json",
+    ]).status,
+    0
+  );
+
+  const refreshed = run(["workflow", "judgment", "--refresh", "--json"]);
+  assert.equal(refreshed.status, 0, refreshed.stderr || refreshed.stdout);
+  const current = JSON.parse(
+    fs.readFileSync(path.join(dir, ".snipara", "workflow", "current.json"), "utf8")
+  );
+  assert.equal(current.judgmentHistory.length, 1);
+  assert.equal(current.judgmentHistory[0].responses[0].source, "explicit");
+  assert.equal(current.judgment.card.generatedAt, JSON.parse(refreshed.stdout).judgment.card.generatedAt);
+  assert.equal(current.judgment.responses[0].source, "policy_auto");
+});
+
+test("final-commit still requires explicit authority for a risk recommendation", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-judgment-required-"));
   fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "app" }), "utf8");
   writeWorkflowState(dir);
@@ -2338,7 +2560,7 @@ test("final-commit refuses to invent an implicit response for a served workflow 
         {
           id: "advisor:required",
           source: "verification",
-          severity: "watch",
+          severity: "risk",
           title: "Review verification",
           reasonCodes: ["verification_required"],
           recommendedVerification: ["Run tests"],
@@ -2356,7 +2578,57 @@ test("final-commit refuses to invent an implicit response for a served workflow 
     { cwd: dir }
   );
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /unanswered recommendation/i);
+  assert.match(result.stderr, /pending_risk_recommendation|Pending authority/i);
+});
+
+test("final-commit auto-handles a legacy watch recommendation and persists its audit source", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-judgment-auto-"));
+  fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "app" }), "utf8");
+  writeWorkflowState(dir);
+  const statePath = path.join(dir, ".snipara", "workflow", "current.json");
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  state.judgment = managedJudgmentFixture({
+    advisorRecommendations: [
+      {
+        id: "advisor:legacy-watch",
+        source: "verification",
+        severity: "watch",
+        title: "Keep an eye on workflow proof",
+        reasonCodes: ["workflow_watch"],
+        recommendedVerification: ["Run tests"],
+      },
+    ],
+  });
+  fs.writeFileSync(statePath, JSON.stringify(state, null, 2), "utf8");
+  const preloadPath = writeWorkflowPreload(dir);
+
+  const result = runCli(
+    [
+      "workflow",
+      "final-commit",
+      "--summary",
+      "Close a low-risk watched workflow",
+      "--evidence",
+      "passed:workflow tests",
+      "--json",
+    ],
+    {
+      cwd: dir,
+      nodeArgs: ["--require", preloadPath],
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "project_1",
+        SNIPARA_API_URL: "https://api.example.test",
+      },
+    }
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const current = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(current.judgment.responses[0].source, "policy_auto");
+  assert.equal(current.judgment.responses[0].decision, "accepted");
+  assert.equal(current.judgment.resolution.canProceed, "yes");
+  assert.equal(current.judgment.resolution.originalCard.state, "watch");
 });
 
 test("final-commit surfaces the backend Team Sync handoff invariant", () => {

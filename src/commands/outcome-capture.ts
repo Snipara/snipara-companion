@@ -9,6 +9,7 @@ import {
   type OutcomeIntelligenceSurface,
   type OutcomeIntelligenceTaskKind,
 } from "../contracts/project-intelligence";
+import { loadConfig } from "../config/store";
 import { writeDecisionRequest } from "./decision-requests";
 
 export const WHY_OUTCOME_CAPTURE_VERSION = "snipara.why_outcome_capture.v1" as const;
@@ -121,6 +122,7 @@ interface NormalizedCaptureEvent {
 
 interface OutcomeCapturePreviewCommandOptions {
   fromFile?: string;
+  fromWorkflow?: string | boolean;
   event?: string;
   summary?: string;
   outcome?: string;
@@ -139,6 +141,8 @@ interface OutcomeCapturePreviewCommandOptions {
   risk?: string;
   surface?: string[];
   workflowFingerprint?: string;
+  sessionId?: string;
+  dir?: string;
   json?: boolean;
 }
 
@@ -234,23 +238,34 @@ export function buildWhyOutcomeCaptureReport(
 export async function outcomeCapturePreviewCommand(
   options: OutcomeCapturePreviewCommandOptions
 ): Promise<void> {
+  const rootDir = path.resolve(options.dir ?? process.cwd());
+  const workflowFile =
+    typeof options.fromWorkflow === "string"
+      ? options.fromWorkflow
+      : options.fromWorkflow
+        ? ".snipara/workflow/current.json"
+        : undefined;
+  const workflow = workflowFile ? readWorkflowSnapshot(rootDir, workflowFile) : undefined;
+  const workflowEvents = workflow ? buildWorkflowOutcomeEvents(workflow, rootDir) : [];
   const events = options.fromFile
-    ? readEventsFromFile(options.fromFile)
-    : [
-        {
-          kind: options.event,
-          summary: options.summary,
-          outcome: options.outcome,
-          status: options.status,
-          sourceRef: options.sourceRef,
-          actor: options.actor,
-          files: options.files,
-          evidence: options.evidence,
-          commands: options.command,
-          reason: options.reason,
-          feedback: options.feedback,
-        },
-      ];
+    ? readEventsFromFile(options.fromFile, rootDir)
+    : workflowEvents.length > 0
+      ? workflowEvents
+      : [
+          {
+            kind: options.event,
+            summary: options.summary,
+            outcome: options.outcome,
+            status: options.status,
+            sourceRef: options.sourceRef,
+            actor: options.actor,
+            files: options.files,
+            evidence: options.evidence,
+            commands: options.command,
+            reason: options.reason,
+            feedback: options.feedback,
+          },
+        ];
 
   if (
     events.length === 0 ||
@@ -313,7 +328,10 @@ export async function outcomeCapturePreviewCommand(
         taskKind: options.taskKind,
         risk: options.risk,
         surfaces: options.surface,
-        workflowFingerprint: options.workflowFingerprint,
+        workflowFingerprint:
+          options.workflowFingerprint ??
+          (workflow ? boundedWorkflowValue(workflow.workflowId, undefined) : undefined),
+        sessionId: options.sessionId ?? loadConfig({ cwd: rootDir }).sessionId,
       })
     : undefined;
 
@@ -372,6 +390,7 @@ export function buildOutcomeIntelligenceReceiptFromCapture(
     risk?: string;
     surfaces?: string[];
     workflowFingerprint?: string;
+    sessionId?: string;
   } = {}
 ): OutcomeIntelligenceReceipt {
   const files = uniqueStrings(events.flatMap((event) => normalizeStringList(event.files)));
@@ -415,6 +434,7 @@ export function buildOutcomeIntelligenceReceiptFromCapture(
           : inferSurfaces(files),
       changedFiles: files,
       ...(options.workflowFingerprint ? { workflowFingerprint: options.workflowFingerprint } : {}),
+      ...(options.sessionId ? { sessionId: options.sessionId } : {}),
     },
     decision: {
       summary: decisionSummaryForReceipt(events, report),
@@ -831,8 +851,8 @@ function normalizeStringList(value: string | string[] | undefined): string[] {
     .slice(0, MAX_LIST_ITEMS);
 }
 
-function readEventsFromFile(filePath: string): WhyOutcomeCaptureEvent[] {
-  const resolved = path.resolve(process.cwd(), filePath);
+function readEventsFromFile(filePath: string, cwd = process.cwd()): WhyOutcomeCaptureEvent[] {
+  const resolved = path.resolve(cwd, filePath);
   const parsed = JSON.parse(fs.readFileSync(resolved, "utf8")) as unknown;
   if (Array.isArray(parsed)) {
     return parsed as WhyOutcomeCaptureEvent[];
@@ -848,6 +868,90 @@ function readEventsFromFile(filePath: string): WhyOutcomeCaptureEvent[] {
     return [parsed as WhyOutcomeCaptureEvent];
   }
   return [];
+}
+
+interface WorkflowSnapshot {
+  workflowId?: unknown;
+  goal?: unknown;
+  status?: unknown;
+  updatedAt?: unknown;
+  phases?: unknown;
+}
+
+function readWorkflowSnapshot(rootDir: string, filePath: string): WorkflowSnapshot {
+  const resolved = path.resolve(rootDir, filePath);
+  const parsed = JSON.parse(fs.readFileSync(resolved, "utf8")) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Workflow snapshot must be a JSON object.");
+  }
+  return parsed as WorkflowSnapshot;
+}
+
+function buildWorkflowOutcomeEvents(
+  workflow: WorkflowSnapshot,
+  rootDir: string
+): WhyOutcomeCaptureEvent[] {
+  const workflowId = boundedWorkflowValue(workflow.workflowId, "managed-workflow");
+  const phases = Array.isArray(workflow.phases)
+    ? workflow.phases.filter((phase): phase is Record<string, unknown> => isRecord(phase))
+    : [];
+  const completedPhases = phases.filter((phase) => {
+    const status = (boundedWorkflowValue(phase.status, "") ?? "").toLowerCase();
+    const outcome = (boundedWorkflowValue(phase.outcome, "") ?? "").toLowerCase();
+    return status === "completed" || outcome === "completed" || Boolean(phase.completedAt);
+  });
+
+  if (completedPhases.length === 0) {
+    return [
+      {
+        kind: "phase_commit",
+        summary: boundedWorkflowValue(workflow.goal, "Managed workflow has no completed phase."),
+        status: boundedWorkflowValue(workflow.status, "unknown"),
+        sourceRef: `workflow:${workflowId}:status`,
+        observedAt: boundedWorkflowValue(workflow.updatedAt, undefined),
+        evidence: ["workflow snapshot imported in shadow mode"],
+      },
+    ];
+  }
+
+  return completedPhases.map((phase) => {
+    const phaseId = boundedWorkflowValue(phase.id, "phase");
+    const phaseFiles = Array.isArray(phase.files)
+      ? phase.files
+          .filter((file): file is string => typeof file === "string")
+          .map((file) => projectRelativeWorkflowFile(file, rootDir))
+          .filter((file): file is string => Boolean(file))
+      : [];
+    const outcome = boundedWorkflowValue(phase.outcome ?? phase.status, "completed");
+    return {
+      kind: "phase_commit",
+      summary: boundedWorkflowValue(phase.summary ?? phase.title, `Workflow phase ${phaseId}`),
+      outcome,
+      status: outcome,
+      sourceRef: `workflow:${workflowId}:phase:${phaseId}`,
+      files: phaseFiles,
+      evidence: ["workflow phase marked completed"],
+      observedAt: boundedWorkflowValue(phase.completedAt, undefined),
+    } satisfies WhyOutcomeCaptureEvent;
+  });
+}
+
+function projectRelativeWorkflowFile(value: string, rootDir: string): string | null {
+  const absolute = path.resolve(rootDir, value);
+  const relative = path.relative(rootDir, absolute);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    return null;
+  }
+  return relative.split(path.sep).join("/");
+}
+
+function boundedWorkflowValue(value: unknown, fallback: string | undefined): string | undefined {
+  if (typeof value !== "string" || !value.trim()) return fallback;
+  return truncateText(value.trim(), 240);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function stableHash(parts: string[]): string {

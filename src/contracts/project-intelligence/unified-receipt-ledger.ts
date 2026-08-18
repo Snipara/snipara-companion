@@ -305,6 +305,7 @@ export function outcomeReceiptToUnifiedEnvelope(
     receivedAt: input.receivedAt,
     workflow: {
       workflowFingerprint: receipt.taskProfile.workflowFingerprint,
+      sessionId: receipt.taskProfile.sessionId,
       ...input.workflow,
     },
     producer: normalizeProducer({

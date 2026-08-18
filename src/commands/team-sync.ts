@@ -1159,7 +1159,7 @@ function buildAgenticHandoffArtifact(
     options,
   });
 
-  return {
+  const artifact: AgenticHandoffArtifact = {
     version: "snipara.agentic_handoff.v1",
     generatedAt: new Date().toISOString(),
     command: "snipara-companion handoff",
@@ -1180,6 +1180,78 @@ function buildAgenticHandoffArtifact(
     suggestedCommands: whereToResume,
     ...(adapter ? { adapter } : {}),
   };
+
+  return sanitizeHandoffArtifact(artifact, rootDir);
+}
+
+function redactHandoffText(value: string, rootDir: string): string {
+  let result = value;
+  const aliases = new Set([rootDir]);
+  try {
+    aliases.add(fs.realpathSync(rootDir));
+  } catch {
+    // Best effort: the workspace may not exist yet in a handoff fixture.
+  }
+
+  for (const alias of aliases) {
+    result = result.split(alias).join("[workspace]");
+  }
+
+  return result
+    .replace(
+      /\b(api[_-]?key|token|password|passwd|secret|private[_-]?key)\b\s*[:=]\s*["']?[^"'\s,;]+/gi,
+      "$1=<redacted>"
+    )
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/g, "Bearer <redacted>")
+    .replace(/\bsnp[-_][A-Za-z0-9._~+/=-]{8,}/gi, "<redacted-key>")
+    .replace(/\bsk-[A-Za-z0-9_-]{16,}/g, "<redacted-key>")
+    .replace(/\bgh[pousr]_[A-Za-z0-9_]{16,}/g, "<redacted-key>")
+    .replace(/\/(?:Users|home)\/[^/\s]+/g, "[home]")
+    .replace(/\b[A-Za-z]:\\Users\\[^\\\s]+/g, "[home]");
+}
+
+function sanitizeHandoffValue(value: unknown, rootDir: string): unknown {
+  if (typeof value === "string") {
+    return redactHandoffText(value, rootDir);
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeHandoffValue(entry, rootDir));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, sanitizeHandoffValue(entry, rootDir)])
+    );
+  }
+  return value;
+}
+
+function sanitizeHandoffArtifact(
+  artifact: AgenticHandoffArtifact,
+  rootDir: string
+): AgenticHandoffArtifact {
+  return sanitizeHandoffValue(artifact, rootDir) as AgenticHandoffArtifact;
+}
+
+function canonicalizePathForBoundary(value: string): string {
+  let current = path.resolve(value);
+  const suffix: string[] = [];
+
+  while (!fs.existsSync(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) {
+      break;
+    }
+    suffix.unshift(path.basename(current));
+    current = parent;
+  }
+
+  try {
+    current = fs.realpathSync(current);
+  } catch {
+    // Keep the normalized path when no existing ancestor can be resolved.
+  }
+
+  return path.join(current, ...suffix);
 }
 
 function markdownList(values: string[]): string {
@@ -1267,6 +1339,19 @@ function writeAgenticHandoffArtifact(
   }
 
   const outputPath = path.resolve(rootDir, output);
+  const relative = path.relative(
+    canonicalizePathForBoundary(rootDir),
+    canonicalizePathForBoundary(outputPath)
+  );
+  if (
+    !relative ||
+    relative.startsWith("..") ||
+    path.isAbsolute(relative) ||
+    relative === ".git" ||
+    relative.startsWith(`.git${path.sep}`)
+  ) {
+    throw new Error("Handoff output must stay inside the project directory and outside .git.");
+  }
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   const content = outputPath.toLowerCase().endsWith(".json")
     ? `${JSON.stringify(artifact, null, 2)}\n`
@@ -1290,7 +1375,7 @@ export async function agenticHandoffCommand(options: TeamSyncCommandOptions): Pr
       JSON.stringify(
         {
           ...artifact,
-          ...(outputPath ? { outputPath } : {}),
+          ...(outputPath ? { outputPath: redactHandoffText(outputPath, rootDir) } : {}),
         },
         null,
         2

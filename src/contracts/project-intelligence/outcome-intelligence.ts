@@ -39,6 +39,7 @@ export interface OutcomeIntelligenceTaskProfile {
   surfaces: OutcomeIntelligenceSurface[];
   changedFiles: string[];
   workflowFingerprint?: string;
+  sessionId?: string;
 }
 
 export interface OutcomeIntelligenceEvidence {
@@ -273,6 +274,7 @@ function calibrationKey(receipt: OutcomeIntelligenceReceipt, reasonCode: string)
 function normalizeTaskProfile(
   profile: Partial<OutcomeIntelligenceTaskProfile>
 ): OutcomeIntelligenceTaskProfile {
+  const sessionId = normalizeCorrelationSessionId(profile.sessionId);
   return {
     kind: normalizeTaskKind(profile.kind),
     risk: normalizeRisk(profile.risk),
@@ -281,7 +283,20 @@ function normalizeTaskProfile(
     ...(profile.workflowFingerprint?.trim()
       ? { workflowFingerprint: profile.workflowFingerprint.trim() }
       : {}),
+    ...(sessionId ? { sessionId } : {}),
   };
+}
+
+function normalizeCorrelationSessionId(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  if (
+    !normalized ||
+    normalized.length > 128 ||
+    !/^[A-Za-z0-9][A-Za-z0-9._~:/@+-]*$/.test(normalized)
+  ) {
+    return undefined;
+  }
+  return normalized;
 }
 
 function normalizeEvidence(evidence: OutcomeIntelligenceEvidence[]): OutcomeIntelligenceEvidence[] {

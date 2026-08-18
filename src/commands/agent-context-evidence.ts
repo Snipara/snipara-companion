@@ -31,6 +31,17 @@ export interface AgentContextEvidenceTemplateCommandOptions {
   cwd?: string;
 }
 
+export interface AgentContextEvidenceCollectCommandOptions {
+  agent: string;
+  task?: string;
+  workflow?: string;
+  manifest?: string;
+  output?: string;
+  force?: boolean;
+  json?: boolean;
+  cwd?: string;
+}
+
 export interface AgentContextEvidenceRecordCommandOptions {
   from: string;
   manifest?: string;
@@ -119,13 +130,109 @@ function writeJsonOutput(value: unknown, outputPath?: string, force = false): st
   return outputPath;
 }
 
+function safeWorkflowReference(value: unknown, cwd: string): string | undefined {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  const candidate = value.trim();
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate)) return candidate;
+  const absolute = path.isAbsolute(candidate) ? candidate : path.resolve(cwd, candidate);
+  const relative = path.relative(cwd, absolute);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return undefined;
+  return relative.replaceAll(path.sep, "/");
+}
+
+function collectWorkflowProofRefs(workflow: unknown, cwd: string): string[] {
+  if (!workflow || typeof workflow !== "object" || Array.isArray(workflow)) {
+    throw new Error("Workflow state must be a JSON object.");
+  }
+  const root = workflow as Record<string, unknown>;
+  const refs = new Set<string>();
+  const add = (value: unknown) => {
+    const ref = safeWorkflowReference(value, cwd);
+    if (ref) refs.add(ref);
+  };
+
+  add(root.planFile);
+  const phases = Array.isArray(root.phases) ? root.phases : [];
+  for (const phase of phases) {
+    if (!phase || typeof phase !== "object" || Array.isArray(phase)) continue;
+    const candidate = phase as Record<string, unknown>;
+    if (candidate.status !== "completed") continue;
+    add(candidate.id);
+    (Array.isArray(candidate.files) ? candidate.files : []).forEach(add);
+    const receipt = candidate.receipt;
+    if (receipt && typeof receipt === "object" && !Array.isArray(receipt)) {
+      const receiptFiles = (receipt as Record<string, unknown>).files;
+      if (Array.isArray(receiptFiles)) receiptFiles.forEach(add);
+    }
+  }
+
+  const finalReport = root.finalReport;
+  if (finalReport && typeof finalReport === "object" && !Array.isArray(finalReport)) {
+    const report = finalReport as Record<string, unknown>;
+    (Array.isArray(report.files) ? report.files : []).forEach(add);
+    const verification = report.verification;
+    if (verification && typeof verification === "object" && !Array.isArray(verification)) {
+      const proofRefs = (verification as Record<string, unknown>).proofRefs;
+      (Array.isArray(proofRefs) ? proofRefs : []).forEach(add);
+    }
+  }
+  return [...refs].slice(0, 32);
+}
+
+function workflowDraftEvidence(
+  template: ReturnType<typeof buildAgentContextEvidenceTemplate>,
+  workflow: unknown,
+  cwd: string
+): ReturnType<typeof buildAgentContextEvidenceTemplate> {
+  if (!workflow || typeof workflow !== "object" || Array.isArray(workflow)) {
+    throw new Error("Workflow state must be a JSON object.");
+  }
+  const root = workflow as Record<string, unknown>;
+  const completedPhases = (Array.isArray(root.phases) ? root.phases : [])
+    .filter(
+      (phase): phase is Record<string, unknown> =>
+        Boolean(phase) && typeof phase === "object" && !Array.isArray(phase)
+    )
+    .filter((phase) => phase.status === "completed");
+  const latest = completedPhases.at(-1);
+  const summary =
+    latest && typeof latest.summary === "string" && latest.summary.trim()
+      ? latest.summary.trim()
+      : typeof root.goal === "string" && root.goal.trim()
+        ? root.goal.trim()
+        : "Complete the bounded workflow task and replace this summary with observed proof.";
+  const status =
+    latest?.outcome === "blocked"
+      ? "blocked"
+      : latest?.outcome === "partial"
+        ? "partial"
+        : "passed";
+  const completedAt =
+    typeof latest?.completedAt === "string"
+      ? latest.completedAt
+      : typeof root.updatedAt === "string"
+        ? root.updatedAt
+        : template.completedAt;
+  return {
+    ...template,
+    completedAt,
+    outcome: {
+      status,
+      summary,
+      proofRefs: collectWorkflowProofRefs(workflow, cwd),
+    },
+  };
+}
+
 function formatStatus(report: AgentContextEvidenceReport, ledgerPath: string): string {
   const lines = [
     "# Agent Context AC-1 evidence",
     "",
     `Status: ${report.status}`,
     `Ledger: ${ledgerPath}`,
+    `Manifest hash: ${report.manifestHash ?? "all"}`,
     `Tasks: ${report.receiptCount}/20`,
+    `Excluded receipts: ${report.excludedReceiptCount}`,
     `Roles: ${report.observedRoles.join(", ") || "none"}`,
     `Unresolved high-severity leaks: ${report.metrics.leaks.unresolvedHighSeverity}`,
     `Leaks without regression proof: ${report.metrics.leaks.withoutRegressionTest}`,
@@ -169,6 +276,36 @@ export async function agentContextEvidenceTemplateCommand(
   }
 }
 
+export async function agentContextEvidenceCollectCommand(
+  options: AgentContextEvidenceCollectCommandOptions
+): Promise<void> {
+  const cwd = path.resolve(options.cwd ?? process.cwd());
+  const manifest = validatedManifest(cwd, options.manifest);
+  const workflowPath = path.resolve(
+    cwd,
+    options.workflow ?? path.join(".snipara", "workflow", "current.json")
+  );
+  const workflow = readJson(workflowPath, "workflow state");
+  const workflowGoal =
+    workflow && typeof workflow === "object" && !Array.isArray(workflow)
+      ? (workflow as Record<string, unknown>).goal
+      : undefined;
+  const task = options.task ?? (typeof workflowGoal === "string" ? workflowGoal : undefined);
+  if (!task?.trim()) {
+    throw new Error("AC-1 evidence collect requires --task or a workflow goal.");
+  }
+  const resolution = resolveAgentContext({ manifest, agent: options.agent, task });
+  const draft = workflowDraftEvidence(buildAgentContextEvidenceTemplate(resolution), workflow, cwd);
+  const outputPath = options.output ? path.resolve(cwd, options.output) : undefined;
+  const written = writeJsonOutput(draft, outputPath, Boolean(options.force));
+  if (written && !options.json) {
+    console.log(`Wrote AC-1 evidence draft from workflow: ${path.relative(cwd, written)}`);
+    console.log(
+      "Review usedSourceIds, executedRecallKeys, contextEffect, and capabilityAssessment before recording it."
+    );
+  }
+}
+
 export async function agentContextEvidenceRecordCommand(
   options: AgentContextEvidenceRecordCommandOptions
 ): Promise<AgentContextEvidenceReceipt> {
@@ -207,12 +344,24 @@ export async function agentContextEvidenceStatusCommand(
   options: AgentContextEvidenceStatusCommandOptions = {}
 ): Promise<AgentContextEvidenceReport> {
   const cwd = path.resolve(options.cwd ?? process.cwd());
-  const manifest = validatedManifest(cwd, options.manifest);
+  const validation = buildLocalAgentContextValidationReport({
+    cwd,
+    manifest: readManifest(cwd, options.manifest),
+  });
+  if (!validation.manifest || validation.status === "invalid") {
+    const errors = validation.findings
+      .filter((finding) => finding.severity === "error")
+      .map((finding) => finding.summary)
+      .join(" ");
+    throw new Error(`Invalid Agent Context manifest. ${errors}`.trim());
+  }
+  const manifest = validation.manifest;
   const ledgerPath = path.resolve(cwd, options.ledger ?? AGENT_CONTEXT_EVIDENCE_DEFAULT_LEDGER);
   const receipts = readAgentContextEvidenceLedger(ledgerPath);
   const report = buildAgentContextEvidenceReport({
     receipts,
     expectedRoles: Object.keys(manifest.roles),
+    manifestHash: validation.manifestHash,
   });
   console.log(
     options.json

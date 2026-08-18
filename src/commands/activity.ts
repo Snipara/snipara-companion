@@ -14,6 +14,7 @@ export const SESSION_SNAPSHOT_RELATIVE_PATH = path.join(ACTIVITY_RELATIVE_DIR, "
 
 export type ActivityEventSource =
   | "workflow"
+  | "tool"
   | "team-sync"
   | "decision"
   | "producer-loop"

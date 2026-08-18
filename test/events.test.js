@@ -155,3 +155,41 @@ test("post-tool --pack-result keeps no-account local fallback", () => {
   assert.equal(manifest.kind, "tool_output");
   assert.equal(manifest.source, "node fixture.js");
 });
+
+test("post-tool records privacy-safe local activity without hosted configuration", () => {
+  const repo = makeTempRepo();
+  const result = runCli(
+    [
+      "post-tool",
+      JSON.stringify({ command: "npm test", file_path: "packages/cli/test/events.test.js" }),
+      "--tool",
+      "Bash",
+      "--status",
+      "success",
+      "--result",
+      "TOKEN=super-secret-value",
+    ],
+    { cwd: repo }
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const timelinePath = path.join(repo, ".snipara", "activity", "timeline.jsonl");
+  const timelineText = fs.readFileSync(timelinePath, "utf8");
+  const event = JSON.parse(timelineText.trim());
+  assert.equal(event.schemaVersion, "snipara.activity_timeline.v0");
+  assert.equal(event.source, "tool");
+  assert.equal(event.kind, "post-tool");
+  assert.equal(event.title, "Bash");
+  assert.equal(event.outcome, "success");
+  assert.deepEqual(event.files, ["packages/cli/test/events.test.js"]);
+  assert.equal(event.metadata.classification, "success");
+  assert.equal(event.metadata.fileCount, 1);
+  assert.equal(timelineText.includes("super-secret-value"), false);
+
+  const snapshot = JSON.parse(
+    fs.readFileSync(path.join(repo, ".snipara", "activity", "session.json"), "utf8")
+  );
+  assert.equal(snapshot.activity.totalEvents, 1);
+  assert.equal(snapshot.summary.latestActivityTitle, "Bash");
+  assert.equal(snapshot.summary.latestActivityKind, "post-tool");
+});
