@@ -239,6 +239,7 @@ export type ManagedWorkflowPhaseStatus =
   | "completed"
   | "blocked"
   | "skipped";
+export type ManagedWorkflowTaskStatus = ManagedWorkflowPhaseStatus;
 
 type ReindexKind = "doc" | "code";
 type ReindexMode = "incremental" | "full";
@@ -570,10 +571,62 @@ export interface ManagedWorkflowPhase {
   files?: string[];
   gates?: string[];
   needsRuntime?: boolean;
+  dependsOn?: string[];
+  parallelGroup?: string;
+  tasks?: ManagedWorkflowTask[];
+  currentTaskId?: string;
   startedAt?: string;
   completedAt?: string;
   summary?: string;
   outcome?: TaskCommitOutcome;
+}
+
+export interface ManagedWorkflowTask {
+  id: string;
+  title: string;
+  query: string;
+  status: ManagedWorkflowTaskStatus;
+  acceptance?: string;
+  files?: string[];
+  verification?: string[];
+  commit?: string;
+  dependsOn?: string[];
+  parallelGroup?: string;
+  attempt: number;
+  maxAttempts: number;
+  recoveryTaskId?: string;
+  startedAt?: string;
+  completedAt?: string;
+  summary?: string;
+  outcome?: TaskCommitOutcome;
+  lastError?: string;
+  evidence?: string[];
+  contextEnvelope?: ManagedWorkflowTaskContextEnvelope;
+}
+
+export interface ManagedWorkflowTaskContextEnvelope {
+  version: "snipara.workflow.task-context.v1";
+  workflowId: string;
+  phaseId: string;
+  taskId: string;
+  attempt: number;
+  maxAttempts: number;
+  contextPolicy: "bounded-task-context-no-raw-transcript";
+  scope: {
+    title: string;
+    query: string;
+    acceptance?: string;
+    files: string[];
+    verification: string[];
+    dependencies: string[];
+    parallelGroup?: string;
+  };
+  commands: {
+    bootstrap: string;
+    resume: string;
+    impact: string;
+    commit: string;
+  };
 }
 
 export interface ManagedWorkflowJudgmentBrief {
@@ -1272,7 +1325,28 @@ export interface GeneratedWorkflowPlanDocument {
     acceptance?: string;
     files?: string[];
     needs_runtime?: boolean;
+    verify?: string[];
+    commit?: string;
+    depends_on?: string[];
+    parallel_group?: string;
+    max_attempts?: number;
+    recovery_task_id?: string;
+    tasks?: GeneratedWorkflowTaskDocument[];
   }>;
+}
+
+export interface GeneratedWorkflowTaskDocument {
+  id: string;
+  title: string;
+  query: string;
+  acceptance?: string;
+  files?: string[];
+  verify?: string[];
+  commit?: string;
+  depends_on?: string[];
+  parallel_group?: string;
+  max_attempts?: number;
+  recovery_task_id?: string;
 }
 
 export interface WrittenGeneratedPlanFile {
@@ -2108,12 +2182,196 @@ function normalizeStringArray(value: unknown): string[] | undefined {
   return items.length > 0 ? items : undefined;
 }
 
+function normalizeTaskMaxAttempts(value: unknown): number {
+  const parsed = numberValue(value);
+  if (parsed === undefined || parsed < 1) {
+    return 3;
+  }
+  return Math.min(Math.floor(parsed), 20);
+}
+
+function normalizeTaskStatus(value: unknown): ManagedWorkflowTaskStatus {
+  if (
+    value === "pending" ||
+    value === "in_progress" ||
+    value === "completed" ||
+    value === "blocked" ||
+    value === "skipped"
+  ) {
+    return value;
+  }
+  return "pending";
+}
+
+function normalizeTaskDependencies(step: Record<string, unknown>): string[] | undefined {
+  return (
+    normalizeStringArray(step.dependsOn) ??
+    normalizeStringArray(step.depends_on) ??
+    normalizeStringArray(step.dependencies) ??
+    normalizeStringArray(step.blocked_by)
+  );
+}
+
+function normalizeWorkflowTask(
+  step: unknown,
+  index: number,
+  usedIds: Set<string>,
+  fallbackGoal: string,
+  defaults: {
+    phaseId: string;
+    title: string;
+    query: string;
+    acceptance?: string;
+    files?: string[];
+    dependsOn?: string[];
+    parallelGroup?: string;
+    maxAttempts?: number;
+  }
+): ManagedWorkflowTask {
+  const record = isRecord(step) ? step : {};
+  const title = stringValue(record.title) ?? stringValue(record.name) ?? defaults.title;
+  const query =
+    stringValue(record.query) ??
+    stringValue(record.goal) ??
+    stringValue(record.description) ??
+    (typeof step === "string" ? step : undefined) ??
+    defaults.query ??
+    `${fallbackGoal}: ${title}`;
+  const acceptance =
+    stringValue(record.acceptance) ??
+    stringValue(record.expected_output) ??
+    stringValue(record.done_when) ??
+    defaults.acceptance;
+  const files =
+    normalizeStringArray(record.files) ??
+    normalizeStringArray(record.files_touched) ??
+    normalizeStringArray(record.paths) ??
+    defaults.files;
+  const verification =
+    normalizeStringArray(record.verification) ??
+    normalizeStringArray(record.verify) ??
+    normalizeStringArray(record.gates);
+  const dependsOn = normalizeTaskDependencies(record) ?? defaults.dependsOn;
+  const parallelGroup =
+    stringValue(record.parallelGroup) ??
+    stringValue(record.parallel_group) ??
+    defaults.parallelGroup;
+  const maxAttempts = normalizeTaskMaxAttempts(
+    record.maxAttempts ?? record.max_attempts ?? defaults.maxAttempts
+  );
+  const candidateId =
+    stringValue(record.id) ??
+    stringValue(record.task_id) ??
+    stringValue(record.key) ??
+    `${defaults.phaseId}-task-${index + 1}`;
+
+  return {
+    id: uniquePhaseId(candidateId, index, usedIds),
+    title,
+    query,
+    status: normalizeTaskStatus(record.status),
+    ...(acceptance ? { acceptance } : {}),
+    ...(files ? { files } : {}),
+    ...(verification ? { verification } : {}),
+    ...((stringValue(record.commit) ?? stringValue(record.commit_spec))
+      ? { commit: stringValue(record.commit) ?? stringValue(record.commit_spec) }
+      : {}),
+    ...(dependsOn ? { dependsOn } : {}),
+    ...(parallelGroup ? { parallelGroup } : {}),
+    attempt: Math.max(0, Math.floor(numberValue(record.attempt) ?? 0)),
+    maxAttempts,
+    ...((stringValue(record.recoveryTaskId) ?? stringValue(record.recovery_task_id))
+      ? {
+          recoveryTaskId:
+            stringValue(record.recoveryTaskId) ?? stringValue(record.recovery_task_id),
+        }
+      : {}),
+    ...(stringValue(record.startedAt) ? { startedAt: stringValue(record.startedAt) } : {}),
+    ...(stringValue(record.completedAt) ? { completedAt: stringValue(record.completedAt) } : {}),
+    ...(stringValue(record.summary) ? { summary: stringValue(record.summary) } : {}),
+    ...(record.outcome === "completed" ||
+    record.outcome === "partial" ||
+    record.outcome === "blocked" ||
+    record.outcome === "abandoned"
+      ? { outcome: record.outcome }
+      : {}),
+    ...(stringValue(record.lastError) ? { lastError: stringValue(record.lastError) } : {}),
+    ...(normalizeStringArray(record.evidence)
+      ? { evidence: normalizeStringArray(record.evidence) }
+      : {}),
+  };
+}
+
 function isUsableGeneratedStepQuery(value: unknown): value is string {
   if (typeof value !== "string") {
     return false;
   }
   const trimmed = value.trim();
   return trimmed.length > 0 && !trimmed.startsWith("$step");
+}
+
+function planTaskToWorkflowTask(
+  task: unknown,
+  index: number,
+  fallbackGoal: string,
+  phaseId: string
+): GeneratedWorkflowTaskDocument {
+  const record = isRecord(task) ? task : {};
+  const title =
+    stringValue(record.title) ??
+    stringValue(record.name) ??
+    stringValue(record.action) ??
+    (typeof task === "string" ? task : undefined) ??
+    `Task ${index + 1}`;
+  const query =
+    stringValue(record.query) ??
+    stringValue(record.goal) ??
+    stringValue(record.description) ??
+    (typeof task === "string" ? task : undefined) ??
+    `${fallbackGoal}: ${title}`;
+  const acceptance =
+    stringValue(record.acceptance) ??
+    stringValue(record.expected_output) ??
+    stringValue(record.done_when);
+  const files =
+    normalizeStringArray(record.files) ??
+    normalizeStringArray(record.files_touched) ??
+    normalizeStringArray(record.paths);
+  const verify =
+    normalizeStringArray(record.verify) ??
+    normalizeStringArray(record.verification) ??
+    normalizeStringArray(record.gates);
+  const dependsOn = normalizeTaskDependencies(record);
+  const parallelGroup = stringValue(record.parallelGroup) ?? stringValue(record.parallel_group);
+  const maxAttempts = numberValue(record.maxAttempts ?? record.max_attempts);
+  const id = sanitizeWorkflowId(
+    stringValue(record.id) ??
+      stringValue(record.task_id) ??
+      stringValue(record.key) ??
+      `${phaseId}-task-${index + 1}`,
+    `${phaseId}-task-${index + 1}`
+  );
+
+  return {
+    id,
+    title,
+    query,
+    ...(acceptance ? { acceptance } : {}),
+    ...(files ? { files } : {}),
+    ...(verify ? { verify } : {}),
+    ...((stringValue(record.commit) ?? stringValue(record.commit_spec))
+      ? { commit: stringValue(record.commit) ?? stringValue(record.commit_spec) }
+      : {}),
+    ...(dependsOn ? { depends_on: dependsOn } : {}),
+    ...(parallelGroup ? { parallel_group: parallelGroup } : {}),
+    ...(maxAttempts !== undefined ? { max_attempts: normalizeTaskMaxAttempts(maxAttempts) } : {}),
+    ...((stringValue(record.recoveryTaskId) ?? stringValue(record.recovery_task_id))
+      ? {
+          recovery_task_id:
+            stringValue(record.recoveryTaskId) ?? stringValue(record.recovery_task_id),
+        }
+      : {}),
+  };
 }
 
 function planStepToWorkflowStep(
@@ -2150,16 +2408,40 @@ function planStepToWorkflowStep(
       : (normalizeStringArray(step.files) ??
         normalizeStringArray(step.files_touched) ??
         normalizeStringArray(step.paths));
+  const verify =
+    normalizeStringArray(step.verify) ??
+    normalizeStringArray(step.verification) ??
+    normalizeStringArray(step.gates);
+  const dependsOn = normalizeTaskDependencies(step);
+  const parallelGroup = stringValue(step.parallelGroup) ?? stringValue(step.parallel_group);
+  const maxAttempts = numberValue(step.maxAttempts ?? step.max_attempts);
+  const phaseId = sanitizeWorkflowId(
+    stringValue(step.id) ?? stringValue(step.phase_id) ?? stringValue(step.key) ?? title,
+    `phase-${index + 1}`
+  );
+  const nestedTasks = Array.isArray(step.tasks)
+    ? step.tasks.map((task, taskIndex) => planTaskToWorkflowTask(task, taskIndex, query, phaseId))
+    : undefined;
 
   return {
-    id: sanitizeWorkflowId(
-      stringValue(step.id) ?? stringValue(step.phase_id) ?? stringValue(step.key) ?? title,
-      `phase-${index + 1}`
-    ),
+    id: phaseId,
     title,
     query,
     ...(acceptance ? { acceptance } : {}),
     ...(likelyFiles ? { files: likelyFiles } : {}),
+    ...(verify ? { verify } : {}),
+    ...((stringValue(step.commit) ?? stringValue(step.commit_spec))
+      ? { commit: stringValue(step.commit) ?? stringValue(step.commit_spec) }
+      : {}),
+    ...(dependsOn ? { depends_on: dependsOn } : {}),
+    ...(parallelGroup ? { parallel_group: parallelGroup } : {}),
+    ...(maxAttempts !== undefined ? { max_attempts: normalizeTaskMaxAttempts(maxAttempts) } : {}),
+    ...((stringValue(step.recoveryTaskId) ?? stringValue(step.recovery_task_id))
+      ? {
+          recovery_task_id: stringValue(step.recoveryTaskId) ?? stringValue(step.recovery_task_id),
+        }
+      : {}),
+    ...(nestedTasks && nestedTasks.length > 0 ? { tasks: nestedTasks } : {}),
     ...(booleanValue(step.needs_runtime ?? step.runtime) !== undefined
       ? { needs_runtime: Boolean(booleanValue(step.needs_runtime ?? step.runtime)) }
       : {}),
@@ -2291,21 +2573,39 @@ function normalizeWorkflowPhase(
 ): ManagedWorkflowPhase {
   if (typeof step === "string") {
     const title = toPreview(step, 120);
+    const id = uniquePhaseId(title, index, usedIds);
+    const taskIds = new Set<string>();
     return {
-      id: uniquePhaseId(title, index, usedIds),
+      id,
       title,
       query: step,
       status: "pending",
+      tasks: [
+        normalizeWorkflowTask(step, 0, taskIds, fallbackGoal, {
+          phaseId: id,
+          title,
+          query: step,
+        }),
+      ],
     };
   }
 
   if (!isRecord(step)) {
     const title = `Phase ${index + 1}`;
+    const id = uniquePhaseId(title, index, usedIds);
+    const taskIds = new Set<string>();
     return {
-      id: uniquePhaseId(title, index, usedIds),
+      id,
       title,
       query: fallbackGoal,
       status: "pending",
+      tasks: [
+        normalizeWorkflowTask(undefined, 0, taskIds, fallbackGoal, {
+          phaseId: id,
+          title,
+          query: fallbackGoal,
+        }),
+      ],
     };
   }
 
@@ -2335,6 +2635,22 @@ function normalizeWorkflowPhase(
     stringValue(step.expected_output) ??
     stringValue(step.done_when) ??
     stringValue(step.verify);
+  const dependsOn = normalizeTaskDependencies(step);
+  const parallelGroup = stringValue(step.parallelGroup) ?? stringValue(step.parallel_group);
+  const taskRecords = Array.isArray(step.tasks) ? step.tasks : undefined;
+  const taskIds = new Set<string>();
+  const tasks = (taskRecords?.length ? taskRecords : [step]).map((task, taskIndex) =>
+    normalizeWorkflowTask(task, taskIndex, taskIds, fallbackGoal, {
+      phaseId: id,
+      title: taskRecords?.length ? `Task ${taskIndex + 1}` : title,
+      query,
+      acceptance,
+      files,
+      dependsOn: taskRecords?.length ? undefined : dependsOn,
+      parallelGroup: taskRecords?.length ? undefined : parallelGroup,
+      maxAttempts: numberValue(step.maxAttempts ?? step.max_attempts),
+    })
+  );
 
   return {
     id,
@@ -2347,6 +2663,9 @@ function normalizeWorkflowPhase(
     ...(booleanValue(step.needs_runtime ?? step.runtime) !== undefined
       ? { needsRuntime: Boolean(booleanValue(step.needs_runtime ?? step.runtime)) }
       : {}),
+    ...(dependsOn ? { dependsOn } : {}),
+    ...(parallelGroup ? { parallelGroup } : {}),
+    tasks,
   };
 }
 
@@ -2763,6 +3082,89 @@ function getWorkflowStatePath(cwd: string = process.cwd()): string {
   return path.join(cwd, WORKFLOW_STATE_RELATIVE_PATH);
 }
 
+function normalizeManagedWorkflowTaskState(
+  task: Partial<ManagedWorkflowTask>,
+  phase: ManagedWorkflowPhase,
+  index: number,
+  fallbackStatus: ManagedWorkflowTaskStatus
+): ManagedWorkflowTask {
+  const status = normalizeTaskStatus(task.status ?? fallbackStatus);
+  const attempt = Math.max(
+    0,
+    Math.floor(numberValue(task.attempt) ?? (status === "pending" ? 0 : 1))
+  );
+  const maxAttempts = normalizeTaskMaxAttempts(task.maxAttempts);
+  const taskId = stringValue(task.id) ?? `${phase.id}-task-${index + 1}`;
+  return {
+    id: taskId,
+    title: stringValue(task.title) ?? phase.title,
+    query: stringValue(task.query) ?? phase.query,
+    status,
+    ...((stringValue(task.acceptance) ?? phase.acceptance)
+      ? { acceptance: stringValue(task.acceptance) ?? phase.acceptance }
+      : {}),
+    ...((uniqueStringList(task.files) ?? phase.files)
+      ? { files: uniqueStringList(task.files) ?? phase.files }
+      : {}),
+    ...(uniqueStringList(task.verification)
+      ? { verification: uniqueStringList(task.verification) }
+      : {}),
+    ...(stringValue(task.commit) ? { commit: stringValue(task.commit) } : {}),
+    ...((uniqueStringList(task.dependsOn) ?? phase.dependsOn)
+      ? { dependsOn: uniqueStringList(task.dependsOn) ?? phase.dependsOn }
+      : {}),
+    ...((stringValue(task.parallelGroup) ?? phase.parallelGroup)
+      ? { parallelGroup: stringValue(task.parallelGroup) ?? phase.parallelGroup }
+      : {}),
+    attempt,
+    maxAttempts,
+    ...(stringValue(task.recoveryTaskId)
+      ? { recoveryTaskId: stringValue(task.recoveryTaskId) }
+      : {}),
+    ...(stringValue(task.startedAt) ? { startedAt: stringValue(task.startedAt) } : {}),
+    ...(stringValue(task.completedAt) ? { completedAt: stringValue(task.completedAt) } : {}),
+    ...(stringValue(task.summary) ? { summary: stringValue(task.summary) } : {}),
+    ...(task.outcome ? { outcome: task.outcome } : {}),
+    ...(stringValue(task.lastError) ? { lastError: stringValue(task.lastError) } : {}),
+    ...(uniqueStringList(task.evidence) ? { evidence: uniqueStringList(task.evidence) } : {}),
+    ...(task.contextEnvelope ? { contextEnvelope: task.contextEnvelope } : {}),
+  };
+}
+
+function normalizeManagedWorkflowPhaseTasks(phase: ManagedWorkflowPhase): ManagedWorkflowTask[] {
+  const sourceTasks =
+    Array.isArray(phase.tasks) && phase.tasks.length > 0
+      ? phase.tasks
+      : [
+          {
+            id: `${phase.id}-task`,
+            title: phase.title,
+            query: phase.query,
+            status: phase.status,
+            acceptance: phase.acceptance,
+            files: phase.files,
+            dependsOn: phase.dependsOn,
+            parallelGroup: phase.parallelGroup,
+            startedAt: phase.startedAt,
+            completedAt: phase.completedAt,
+            summary: phase.summary,
+            outcome: phase.outcome,
+            attempt: phase.status === "pending" ? 0 : 1,
+          } satisfies Partial<ManagedWorkflowTask>,
+        ];
+  const usedIds = new Set<string>();
+  return sourceTasks.map((task, index) => {
+    const normalized = normalizeManagedWorkflowTaskState(task, phase, index, phase.status);
+    let id = normalized.id;
+    if (usedIds.has(id)) {
+      id = uniquePhaseId(id, index, usedIds);
+    } else {
+      usedIds.add(id);
+    }
+    return { ...normalized, id };
+  });
+}
+
 function normalizeManagedWorkflowState(state: ManagedWorkflowState): ManagedWorkflowState {
   if (
     state.schemaVersion !== "snipara.workflow.v1" &&
@@ -2808,8 +3210,21 @@ function normalizeManagedWorkflowState(state: ManagedWorkflowState): ManagedWork
     });
   }
 
+  const phases = state.phases.map((phase) => {
+    const tasks = normalizeManagedWorkflowPhaseTasks(phase);
+    const currentTask =
+      tasks.find((task) => task.status === "in_progress") ??
+      tasks.find((task) => task.status === "pending" || task.status === "blocked");
+    return {
+      ...phase,
+      tasks,
+      currentTaskId: phase.currentTaskId ?? currentTask?.id,
+    };
+  });
+
   return {
     ...state,
+    phases,
     runtime: normalizeManagedWorkflowRuntimeState(state.runtime),
     judgment,
     judgmentHistory: Array.isArray(state.judgmentHistory) ? state.judgmentHistory : [],
@@ -2874,10 +3289,11 @@ function readRequiredWorkflowState(): ManagedWorkflowState {
 function writeWorkflowState(state: ManagedWorkflowState): void {
   const statePath = getWorkflowStatePath();
   fs.mkdirSync(path.dirname(statePath), { recursive: true });
+  const normalizedState = normalizeManagedWorkflowState(state);
   const normalized: ManagedWorkflowState = {
-    ...state,
+    ...normalizedState,
     schemaVersion: "snipara.workflow.v2",
-    runtime: normalizeManagedWorkflowRuntimeState(state.runtime),
+    runtime: normalizeManagedWorkflowRuntimeState(normalizedState.runtime),
   };
   fs.writeFileSync(statePath, `${JSON.stringify(normalized, null, 2)}\n`, "utf-8");
 }
@@ -4710,6 +5126,150 @@ function findWorkflowPhase(state: ManagedWorkflowState, phaseId: string): Manage
   return phase;
 }
 
+function workflowTasks(phase: ManagedWorkflowPhase): ManagedWorkflowTask[] {
+  return phase.tasks ?? [];
+}
+
+function findWorkflowTask(phase: ManagedWorkflowPhase, taskId: string): ManagedWorkflowTask {
+  const task = workflowTasks(phase).find((candidate) => candidate.id === taskId);
+  if (!task) {
+    throw new Error(`Unknown workflow task '${taskId}' in phase '${phase.id}'`);
+  }
+  return task;
+}
+
+function findWorkflowTaskAcrossPhases(
+  state: ManagedWorkflowState,
+  taskId: string
+): { phase: ManagedWorkflowPhase; task: ManagedWorkflowTask } | undefined {
+  for (const phase of state.phases) {
+    const task = workflowTasks(phase).find((candidate) => candidate.id === taskId);
+    if (task) {
+      return { phase, task };
+    }
+  }
+  return undefined;
+}
+
+function phaseDependenciesReady(
+  state: ManagedWorkflowState,
+  phase: ManagedWorkflowPhase
+): { ready: boolean; blockedBy: string[] } {
+  const blockedBy = (phase.dependsOn ?? []).filter((dependencyId) => {
+    const dependency = state.phases.find((candidate) => candidate.id === dependencyId);
+    return !dependency || !["completed", "skipped"].includes(dependency.status);
+  });
+  return { ready: blockedBy.length === 0, blockedBy };
+}
+
+function taskDependenciesReady(
+  state: ManagedWorkflowState,
+  phase: ManagedWorkflowPhase,
+  task: ManagedWorkflowTask
+): { ready: boolean; blockedBy: string[] } {
+  const blockedBy: string[] = [];
+  for (const dependencyId of task.dependsOn ?? []) {
+    const taskDependency = findWorkflowTaskAcrossPhases(state, dependencyId);
+    if (taskDependency) {
+      if (!["completed", "skipped"].includes(taskDependency.task.status)) {
+        blockedBy.push(`${dependencyId} (${taskDependency.task.status})`);
+      }
+      continue;
+    }
+    const phaseDependency = state.phases.find((candidate) => candidate.id === dependencyId);
+    if (!phaseDependency || !["completed", "skipped"].includes(phaseDependency.status)) {
+      blockedBy.push(`${dependencyId} (missing or incomplete phase)`);
+    }
+  }
+  const phaseGate = phaseDependenciesReady(state, phase);
+  blockedBy.push(...phaseGate.blockedBy.map((dependencyId) => `${dependencyId} (phase)`));
+  return { ready: blockedBy.length === 0, blockedBy };
+}
+
+function nextEligibleWorkflowTask(
+  state: ManagedWorkflowState,
+  phase: ManagedWorkflowPhase
+): ManagedWorkflowTask | undefined {
+  return workflowTasks(phase).find((task) => {
+    if (task.status !== "pending") {
+      return false;
+    }
+    return taskDependenciesReady(state, phase, task).ready;
+  });
+}
+
+function taskContextEnvelope(
+  state: ManagedWorkflowState,
+  phase: ManagedWorkflowPhase,
+  task: ManagedWorkflowTask
+): ManagedWorkflowTaskContextEnvelope {
+  const files = task.files ?? phase.files ?? [];
+  const fileArgs = files.length > 0 ? files.map(shellQuote).join(" ") : "<files...>";
+  return {
+    version: "snipara.workflow.task-context.v1",
+    workflowId: state.workflowId,
+    phaseId: phase.id,
+    taskId: task.id,
+    attempt: task.attempt,
+    maxAttempts: task.maxAttempts,
+    contextPolicy: "bounded-task-context-no-raw-transcript",
+    scope: {
+      title: task.title,
+      query: task.query,
+      ...(task.acceptance ? { acceptance: task.acceptance } : {}),
+      files,
+      verification: task.verification ?? [],
+      dependencies: task.dependsOn ?? [],
+      ...(task.parallelGroup ? { parallelGroup: task.parallelGroup } : {}),
+    },
+    commands: {
+      bootstrap:
+        "snipara-companion session-bootstrap --include-session-context --max-context-tokens 1000",
+      resume: "snipara-companion workflow resume --include-session-context",
+      impact: `snipara-companion code impact --changed-files ${fileArgs} --diff-summary ${shellQuote(task.title)}`,
+      commit: `snipara-companion workflow task-commit ${shellQuote(phase.id)} ${shellQuote(task.id)} --summary '<what changed>' --outcome completed --files ${fileArgs}`,
+    },
+  };
+}
+
+function printWorkflowTaskEnvelope(
+  envelope: ManagedWorkflowTaskContextEnvelope,
+  task: ManagedWorkflowTask
+): void {
+  console.log(chalk.bold("Fresh task context"));
+  printKeyValue("Task:", `${envelope.taskId} (${envelope.scope.title})`);
+  printKeyValue("Attempt:", `${envelope.attempt}/${envelope.maxAttempts}`);
+  printKeyValue("Context policy:", envelope.contextPolicy);
+  printKeyValue("Scope:", toPreview(envelope.scope.query, 240));
+  if (envelope.scope.acceptance) {
+    printKeyValue("Done when:", toPreview(envelope.scope.acceptance, 220));
+  }
+  if (envelope.scope.files.length > 0) {
+    printKeyValue("Files:", envelope.scope.files.join(", "));
+  }
+  if (envelope.scope.verification.length > 0) {
+    printKeyValue("Verify:", envelope.scope.verification.join("; "));
+  }
+  if (envelope.scope.dependencies.length > 0) {
+    printKeyValue("Depends on:", envelope.scope.dependencies.join(", "));
+  }
+  if (envelope.scope.parallelGroup) {
+    printKeyValue("Parallel group:", envelope.scope.parallelGroup);
+    console.log(
+      "Claim the file scope before editing; collaboration claims/locks remain authoritative."
+    );
+  }
+  console.log("");
+  console.log(chalk.bold("Task context gate"));
+  console.log(envelope.commands.bootstrap);
+  console.log(envelope.commands.impact);
+  if (task.verification?.length) {
+    console.log(`Verify: ${task.verification.join(" && ")}`);
+  }
+  console.log(envelope.commands.commit);
+  console.log("");
+}
+
 function nextOpenPhase(state: ManagedWorkflowState): ManagedWorkflowPhase | undefined {
   return state.phases.find((phase) => phase.status === "pending" || phase.status === "blocked");
 }
@@ -5016,6 +5576,21 @@ function printManagedWorkflowState(state: ManagedWorkflowState): void {
     if (phase.files && phase.files.length > 0) {
       console.log(`  Files: ${phase.files.join(", ")}`);
     }
+    for (const task of workflowTasks(phase)) {
+      const taskMarker = task.id === phase.currentTaskId ? "*" : "-";
+      console.log(
+        `  ${taskMarker} [${task.status}] ${task.id}: ${task.title} (attempt ${task.attempt}/${task.maxAttempts})`
+      );
+      if (task.dependsOn?.length) {
+        console.log(`    Depends on: ${task.dependsOn.join(", ")}`);
+      }
+      if (task.parallelGroup) {
+        console.log(`    Parallel group: ${task.parallelGroup}`);
+      }
+      if (task.lastError) {
+        console.log(`    Last error: ${toPreview(task.lastError, 180)}`);
+      }
+    }
   }
   console.log("");
 }
@@ -5122,6 +5697,10 @@ function printManagedWorkflowNextCommands(state: ManagedWorkflowState): void {
   }
 
   console.log(chalk.bold("Next commands"));
+  const nextTask = nextEligibleWorkflowTask(state, phase);
+  if (nextTask) {
+    console.log(`snipara-companion workflow task-start ${phase.id} ${nextTask.id}`);
+  }
   console.log(`snipara-companion workflow phase-start ${phase.id}`);
   console.log(
     `snipara-companion workflow run --mode full --include-session-context --query ${shellQuote(
@@ -11723,6 +12302,405 @@ export async function workflowPhaseStartCommand(options: {
   console.log("");
 }
 
+export async function workflowTaskStartCommand(options: {
+  phaseId: string;
+  taskId?: string;
+  json?: boolean;
+}): Promise<void> {
+  const state = readRequiredWorkflowState();
+  const phase = findWorkflowPhase(state, options.phaseId);
+  const phaseGate = phaseDependenciesReady(state, phase);
+  if (!phaseGate.ready) {
+    throw new Error(
+      `Phase '${phase.id}' is waiting on dependencies: ${phaseGate.blockedBy.join(", ")}`
+    );
+  }
+
+  const task = options.taskId
+    ? findWorkflowTask(phase, options.taskId)
+    : nextEligibleWorkflowTask(state, phase);
+  if (!task) {
+    const pending = workflowTasks(phase).filter((candidate) => candidate.status === "pending");
+    const blocked = pending.flatMap((candidate) => {
+      const dependencies = taskDependenciesReady(state, phase, candidate).blockedBy;
+      return dependencies.length > 0 ? [`${candidate.id}: ${dependencies.join(", ")}`] : [];
+    });
+    throw new Error(
+      blocked.length > 0
+        ? `No eligible task in phase '${phase.id}'. ${blocked.join(" | ")}`
+        : `No pending task remains in phase '${phase.id}'.`
+    );
+  }
+  if (task.status !== "pending") {
+    throw new Error(`Task '${task.id}' is ${task.status}; only pending tasks can be started.`);
+  }
+  if (task.attempt >= task.maxAttempts) {
+    throw new Error(
+      `Task '${task.id}' reached its maximum of ${task.maxAttempts} attempts. Use its recovery task or revise the task contract.`
+    );
+  }
+  const dependencyGate = taskDependenciesReady(state, phase, task);
+  if (!dependencyGate.ready) {
+    throw new Error(
+      `Task '${task.id}' is waiting on dependencies: ${dependencyGate.blockedBy.join(", ")}`
+    );
+  }
+
+  const now = new Date().toISOString();
+  phase.status = "in_progress";
+  phase.startedAt = phase.startedAt ?? now;
+  phase.currentTaskId = task.id;
+  task.status = "in_progress";
+  task.attempt += 1;
+  task.startedAt = now;
+  task.completedAt = undefined;
+  task.outcome = undefined;
+  task.lastError = undefined;
+  const envelope = taskContextEnvelope(state, phase, task);
+  task.contextEnvelope = envelope;
+  state.currentPhaseId = phase.id;
+  state.status = "active";
+  state.updatedAt = now;
+  writeWorkflowState(state);
+  appendActivityEvent({
+    source: "workflow",
+    kind: "task-start",
+    title: task.title,
+    summary: task.query,
+    workflowId: state.workflowId,
+    phaseId: phase.id,
+    files: task.files ?? phase.files,
+    refs: [task.id, task.parallelGroup].filter(Boolean) as string[],
+    timestamp: now,
+    metadata: {
+      taskId: task.id,
+      attempt: task.attempt,
+      maxAttempts: task.maxAttempts,
+      parallelGroup: task.parallelGroup,
+      dependencyCount: task.dependsOn?.length ?? 0,
+      contextPolicy: envelope.contextPolicy,
+    },
+  });
+  writeSessionSnapshot();
+
+  if (options.json) {
+    printJson({
+      workflow: state,
+      current_phase: phase,
+      current_task: task,
+      context_envelope: envelope,
+    });
+    return;
+  }
+  printManagedWorkflowState(state);
+  printWorkflowTaskEnvelope(envelope, task);
+}
+
+export async function workflowTaskStatusCommand(options: {
+  phaseId?: string;
+  json?: boolean;
+}): Promise<void> {
+  const state = readRequiredWorkflowState();
+  const phases = options.phaseId ? [findWorkflowPhase(state, options.phaseId)] : state.phases;
+  const tasks = phases.flatMap((phase) =>
+    workflowTasks(phase).map((task) => ({
+      phaseId: phase.id,
+      phaseTitle: phase.title,
+      task,
+      dependencies: taskDependenciesReady(state, phase, task),
+    }))
+  );
+  if (options.json) {
+    printJson({ workflowId: state.workflowId, currentPhaseId: state.currentPhaseId, tasks });
+    return;
+  }
+  console.log(chalk.bold("Workflow Tasks"));
+  for (const item of tasks) {
+    const gate = item.dependencies.ready
+      ? "eligible"
+      : `waiting: ${item.dependencies.blockedBy.join(", ")}`;
+    console.log(
+      `- [${item.task.status}] ${item.phaseId}/${item.task.id} — ${item.task.title} (${gate}; attempt ${item.task.attempt}/${item.task.maxAttempts})`
+    );
+  }
+  if (tasks.length === 0) {
+    console.log("No workflow tasks found.");
+  }
+  console.log("");
+}
+
+export async function workflowTaskNextCommand(options: {
+  phaseId?: string;
+  json?: boolean;
+}): Promise<void> {
+  const state = readRequiredWorkflowState();
+  const phase = options.phaseId
+    ? findWorkflowPhase(state, options.phaseId)
+    : currentWorkflowPhase(state);
+  if (!phase) {
+    throw new Error("No current workflow phase has been selected.");
+  }
+  const task = nextEligibleWorkflowTask(state, phase);
+  if (!task) {
+    const blocked = workflowTasks(phase)
+      .filter((candidate) => candidate.status === "pending")
+      .map((candidate) => ({
+        taskId: candidate.id,
+        blockedBy: taskDependenciesReady(state, phase, candidate).blockedBy,
+      }))
+      .filter((candidate) => candidate.blockedBy.length > 0);
+    if (options.json) {
+      printJson({ workflowId: state.workflowId, phaseId: phase.id, next_task: null, blocked });
+      return;
+    }
+    console.log(`No eligible task in phase '${phase.id}'.`);
+    if (blocked.length > 0) {
+      for (const item of blocked) {
+        console.log(`- ${item.taskId}: ${item.blockedBy.join(", ")}`);
+      }
+    }
+    return;
+  }
+  const envelope = taskContextEnvelope(state, phase, task);
+  if (options.json) {
+    printJson({
+      workflowId: state.workflowId,
+      phaseId: phase.id,
+      next_task: task,
+      context_envelope: envelope,
+    });
+    return;
+  }
+  console.log(`Next task: ${phase.id}/${task.id} — ${task.title}`);
+  console.log(`Start with: snipara-companion workflow task-start ${phase.id} ${task.id}`);
+}
+
+export async function workflowTaskCommitCommand(options: {
+  phaseId: string;
+  taskId?: string;
+  summary: string;
+  decision?: string;
+  why?: string;
+  alternatives?: string[];
+  constraints?: string[];
+  observedOutcome?: string;
+  category?: string;
+  outcome?: TaskCommitOutcome;
+  files?: string[];
+  evidence?: string[];
+  json?: boolean;
+}): Promise<void> {
+  const state = readRequiredWorkflowState();
+  const phase = findWorkflowPhase(state, options.phaseId);
+  const inProgress = workflowTasks(phase).filter((task) => task.status === "in_progress");
+  const task = options.taskId
+    ? findWorkflowTask(phase, options.taskId)
+    : inProgress.length === 1
+      ? inProgress[0]
+      : inProgress.length === 0
+        ? undefined
+        : undefined;
+  if (!task) {
+    throw new Error(
+      options.taskId
+        ? `Unknown workflow task '${options.taskId}' in phase '${phase.id}'`
+        : `Specify a task id when phase '${phase.id}' has zero or multiple in-progress tasks.`
+    );
+  }
+  if (task.status !== "in_progress") {
+    throw new Error(
+      `Task '${task.id}' is ${task.status}; only in-progress tasks can be committed.`
+    );
+  }
+  const outcome = options.outcome ?? "completed";
+  const category = options.category ?? "workflow-task";
+  const files =
+    options.files && options.files.length > 0 ? options.files : (task.files ?? phase.files);
+
+  await memoryGuardCheckCommand({
+    trigger: "commit",
+    files,
+    strict: true,
+  });
+
+  const result = await commitPhaseTaskMemory({
+    summary: `${state.goal}\nPhase ${phase.id}: ${phase.title}\nTask ${task.id}: ${task.title}\n${options.summary}`,
+    task: `${state.goal} / ${phase.title} / ${task.title}`,
+    why: structuredTaskCommitWhy(options),
+    category,
+    outcome,
+    files,
+  });
+  const now = new Date().toISOString();
+  task.status = phaseStatusFromOutcome(outcome);
+  task.completedAt = now;
+  task.summary = options.summary;
+  task.outcome = outcome;
+  task.evidence = uniqueStringList(options.evidence) ?? [];
+  if (files && files.length > 0) {
+    task.files = files;
+  }
+  if (outcome === "blocked" || outcome === "partial") {
+    task.lastError = options.summary;
+    phase.status = "blocked";
+    state.status = "blocked";
+  } else {
+    task.lastError = undefined;
+    phase.status = "in_progress";
+    state.status = "active";
+  }
+  const nextTask = nextEligibleWorkflowTask(state, phase);
+  phase.currentTaskId = nextTask?.id;
+  state.currentPhaseId = phase.id;
+  state.updatedAt = now;
+  writeWorkflowState(state);
+  const journal = await appendJournalCheckpoint({
+    action: "workflow:task-commit",
+    summary: options.summary,
+    outcome,
+    workflowId: state.workflowId,
+    phaseId: phase.id,
+    phaseTitle: `${phase.title} / ${task.title}`,
+    files,
+  });
+  appendActivityEvent({
+    source: "workflow",
+    kind: "task-commit",
+    title: task.title,
+    summary: options.summary,
+    workflowId: state.workflowId,
+    phaseId: phase.id,
+    outcome,
+    files,
+    refs: [task.id],
+    timestamp: now,
+    metadata: {
+      category,
+      attempt: task.attempt,
+      maxAttempts: task.maxAttempts,
+      nextTaskId: nextTask?.id,
+      taskStatus: task.status,
+      journalStatus: journal.status,
+      evidenceCount: task.evidence.length,
+      hostedCommitStatus: result.hosted_phase_commit
+        ? (result.hosted_phase_commit as Record<string, unknown>).status
+        : "processed",
+    },
+  });
+  writeSessionSnapshot();
+
+  const retryAvailable = task.status === "blocked" && task.attempt < task.maxAttempts;
+  if (options.json) {
+    printJson({
+      workflow: state,
+      task,
+      phase,
+      commit: result,
+      journal,
+      next_task: nextTask ?? null,
+      retry_available: retryAvailable,
+    });
+    return;
+  }
+  printTaskCommitResult(result);
+  printJournalWarning(journal);
+  console.log(chalk.bold("Workflow task committed"));
+  printKeyValue("Task:", task.id);
+  printKeyValue("Outcome:", outcome);
+  printKeyValue("Attempt:", `${task.attempt}/${task.maxAttempts}`);
+  if (retryAvailable) {
+    console.log(
+      `Retry with: snipara-companion workflow task-retry ${phase.id} ${task.id} --reason '<what to change>'`
+    );
+  } else if (task.status === "blocked") {
+    console.log(
+      "The task reached its attempt limit or remains blocked; use the declared recovery task or revise the contract."
+    );
+  }
+  if (nextTask) {
+    console.log(`Next task: snipara-companion workflow task-start ${phase.id} ${nextTask.id}`);
+  } else if (
+    workflowTasks(phase).every((candidate) => ["completed", "skipped"].includes(candidate.status))
+  ) {
+    console.log(
+      `All tasks complete; close the phase with: snipara-companion workflow phase-commit ${phase.id} --summary '<phase outcome>'`
+    );
+  }
+  console.log("");
+}
+
+export async function workflowTaskRetryCommand(options: {
+  phaseId: string;
+  taskId: string;
+  reason: string;
+  recoveryTaskId?: string;
+  json?: boolean;
+}): Promise<void> {
+  const state = readRequiredWorkflowState();
+  const phase = findWorkflowPhase(state, options.phaseId);
+  const task = findWorkflowTask(phase, options.taskId);
+  if (task.status !== "blocked") {
+    throw new Error(`Task '${task.id}' is ${task.status}; only blocked tasks can be retried.`);
+  }
+  if (task.attempt >= task.maxAttempts) {
+    throw new Error(
+      `Task '${task.id}' exhausted ${task.maxAttempts} attempts. Use a recovery task or revise the task contract.`
+    );
+  }
+  const recoveryId = options.recoveryTaskId ?? task.recoveryTaskId;
+  const recoveryTask = recoveryId ? findWorkflowTask(phase, recoveryId) : task;
+  if (["completed", "skipped"].includes(recoveryTask.status)) {
+    throw new Error(`Recovery task '${recoveryTask.id}' is already ${recoveryTask.status}.`);
+  }
+  const now = new Date().toISOString();
+  recoveryTask.status = "pending";
+  recoveryTask.completedAt = undefined;
+  recoveryTask.outcome = undefined;
+  recoveryTask.lastError = options.reason;
+  phase.status = "in_progress";
+  phase.currentTaskId = recoveryTask.id;
+  state.currentPhaseId = phase.id;
+  state.status = "active";
+  state.updatedAt = now;
+  writeWorkflowState(state);
+  appendActivityEvent({
+    source: "workflow",
+    kind: "task-retry",
+    title: recoveryTask.title,
+    summary: options.reason,
+    workflowId: state.workflowId,
+    phaseId: phase.id,
+    refs: [task.id, recoveryTask.id],
+    files: recoveryTask.files ?? phase.files,
+    timestamp: now,
+    metadata: {
+      failedTaskId: task.id,
+      recoveryTaskId: recoveryTask.id,
+      attempt: recoveryTask.attempt,
+      maxAttempts: recoveryTask.maxAttempts,
+    },
+  });
+  writeSessionSnapshot();
+
+  if (options.json) {
+    printJson({
+      workflow: state,
+      failed_task: task,
+      recovery_task: recoveryTask,
+      retry_available: recoveryTask.attempt < recoveryTask.maxAttempts,
+    });
+    return;
+  }
+  console.log(chalk.bold("Workflow task ready for retry"));
+  printKeyValue("Failed task:", task.id);
+  printKeyValue("Recovery task:", recoveryTask.id);
+  printKeyValue("Reason:", options.reason);
+  console.log(
+    `Start it with: snipara-companion workflow task-start ${phase.id} ${recoveryTask.id}`
+  );
+  console.log("");
+}
+
 export async function workflowRuntimeCheckpointCommand(options: {
   phaseId: string;
   summary: string;
@@ -12346,6 +13324,12 @@ export async function workflowPhaseCommitCommand(options: {
   const category = options.category ?? "workflow-phase";
   const files = options.files && options.files.length > 0 ? options.files : phase.files;
 
+  if (outcome === "completed" && workflowTasks(phase).some((task) => task.status === "blocked")) {
+    throw new Error(
+      `Phase '${phase.id}' still has blocked tasks. Retry or complete their recovery tasks before phase-commit.`
+    );
+  }
+
   await memoryGuardCheckCommand({
     trigger: "commit",
     files,
@@ -12372,6 +13356,17 @@ export async function workflowPhaseCommitCommand(options: {
   phase.completedAt = now;
   phase.summary = options.summary;
   phase.outcome = outcome;
+  for (const task of workflowTasks(phase)) {
+    if (task.status === "completed" || task.status === "skipped") {
+      continue;
+    }
+    task.status = phaseStatusFromOutcome(outcome);
+    task.completedAt = now;
+    task.summary = task.summary ?? options.summary;
+    task.outcome = task.outcome ?? outcome;
+    task.evidence = task.evidence ?? uniqueStringList(options.evidence) ?? [];
+  }
+  phase.currentTaskId = undefined;
   if (files && files.length > 0) {
     phase.files = files;
   }

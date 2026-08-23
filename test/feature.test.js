@@ -219,3 +219,53 @@ test("feature markdown builders preserve the workflow boundary", () => {
   assert.match(buildFeaturePlanMarkdown(manifest, plan), /Build it/);
   assert.match(buildFeatureTasksMarkdown(manifest, plan), /phase-one/);
 });
+
+test("feature tasks preserve explicit DAG and parallel metadata", () => {
+  const manifest = {
+    schemaVersion: "snipara.feature_work_item.v1",
+    source: "snipara-companion",
+    slug: "dag-demo",
+    goal: "Ship the DAG demo",
+    users: [],
+    constraints: [],
+    nonGoals: [],
+    acceptanceCriteria: [],
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    artifacts: {
+      spec: "spec.md",
+      plan: "plan.md",
+      tasks: "tasks.md",
+      workflowPlan: "workflow-plan.json",
+    },
+    status: { spec: "ready", plan: "ready", tasks: "ready" },
+  };
+  const plan = {
+    mode: "full",
+    goal: manifest.goal,
+    source: "snipara_plan",
+    generatedAt: "2026-01-01T00:00:00.000Z",
+    steps: [
+      {
+        id: "parallel-ui",
+        title: "Parallel UI work",
+        query: "Update independent UI surfaces",
+        tasks: [
+          { id: "header", title: "Update header", query: "Update header", parallel_group: "ui" },
+          {
+            id: "footer",
+            title: "Update footer",
+            query: "Update footer",
+            parallel_group: "ui",
+            depends_on: ["data-contract"],
+          },
+        ],
+      },
+    ],
+  };
+
+  const markdown = buildFeatureTasksMarkdown(manifest, plan);
+  assert.match(markdown, /Parallel group: ui/);
+  assert.match(markdown, /Depends on: data-contract/);
+  assert.doesNotMatch(markdown, /Depends on: header/);
+});

@@ -196,6 +196,11 @@ import {
   workflowSessionCommand,
   workflowStartCommand,
   workflowStatusCommand,
+  workflowTaskCommitCommand,
+  workflowTaskNextCommand,
+  workflowTaskRetryCommand,
+  workflowTaskStartCommand,
+  workflowTaskStatusCommand,
   workflowTimelineCommand,
   WORKFLOW_PLAN_PRESET_IDS,
 } from "./commands/workflows";
@@ -462,6 +467,12 @@ export {
   PRODUCER_LOOP_RELATIVE_DIR,
   WORKFLOW_PLANS_RELATIVE_DIR,
   WORKFLOW_STATE_RELATIVE_PATH,
+} from "./commands/workflows";
+export type {
+  GeneratedWorkflowTaskDocument,
+  ManagedWorkflowTask,
+  ManagedWorkflowTaskContextEnvelope,
+  ManagedWorkflowTaskStatus,
 } from "./commands/workflows";
 export {
   buildPolicyLedgerSyncReport,
@@ -2894,6 +2905,91 @@ workflow
   .option("--json", "Print raw JSON")
   .action(async (phaseId, options) => {
     await workflowPhaseStartCommand({ phaseId, json: options.json });
+  });
+
+workflow
+  .command("task-start")
+  .description("Start one eligible workflow task with a fresh, bounded context envelope")
+  .argument("<phaseId>", "Workflow phase id")
+  .argument("[taskId]", "Optional task id; omit to start the next eligible task")
+  .option("--json", "Print raw JSON")
+  .action(async (phaseId, taskId, options) => {
+    await workflowTaskStartCommand({ phaseId, taskId, json: options.json });
+  });
+
+workflow
+  .command("task-status")
+  .description("List workflow tasks, dependencies, attempts, and eligibility")
+  .argument("[phaseId]", "Optional workflow phase id")
+  .option("--json", "Print raw JSON")
+  .action(async (phaseId, options) => {
+    await workflowTaskStatusCommand({ phaseId, json: options.json });
+  });
+
+workflow
+  .command("task-next")
+  .description("Show the next eligible task in a phase without changing workflow state")
+  .argument("[phaseId]", "Optional workflow phase id; defaults to the current phase")
+  .option("--json", "Print raw JSON")
+  .action(async (phaseId, options) => {
+    await workflowTaskNextCommand({ phaseId, json: options.json });
+  });
+
+workflow
+  .command("task-commit")
+  .description("Persist a task outcome and keep the workflow resumable")
+  .argument("<phaseId>", "Workflow phase id")
+  .argument("[taskId]", "Task id; required when multiple tasks are active")
+  .requiredOption("-s, --summary <summary>", "Task outcome summary")
+  .option("--decision <decision>", "Decision text; defaults to summary when --why is set")
+  .option("--why <why>", "Decision rationale; never inferred when absent")
+  .option("--alternative <alternative>", "Rejected alternative; repeatable", collectOption, [])
+  .option("--constraint <constraint>", "Decision constraint; repeatable", collectOption, [])
+  .option("--observed-outcome <outcome>", "Observed result, distinct from execution status")
+  .option("-c, --category <category>", "Memory category", "workflow-task")
+  .option("-o, --outcome <outcome>", "completed|partial|blocked|abandoned", "completed")
+  .option("-f, --files <files...>", "Files touched")
+  .option(
+    "--evidence <evidence>",
+    "Task evidence as passed|failed|not-run|unknown:text; repeatable",
+    collectOption,
+    []
+  )
+  .option("--json", "Print raw JSON")
+  .action(async (phaseId, taskId, options) => {
+    await workflowTaskCommitCommand({
+      phaseId,
+      taskId,
+      summary: options.summary,
+      decision: options.decision,
+      why: options.why,
+      alternatives: options.alternative,
+      constraints: options.constraint,
+      observedOutcome: options.observedOutcome,
+      category: options.category,
+      outcome: options.outcome,
+      files: options.files,
+      evidence: options.evidence,
+      json: options.json,
+    });
+  });
+
+workflow
+  .command("task-retry")
+  .description("Reset a blocked task or route it to its declared recovery task")
+  .argument("<phaseId>", "Workflow phase id")
+  .argument("<taskId>", "Blocked task id")
+  .requiredOption("-r, --reason <reason>", "What failed and what should change")
+  .option("--recovery-task <taskId>", "Override the task contract's recovery task")
+  .option("--json", "Print raw JSON")
+  .action(async (phaseId, taskId, options) => {
+    await workflowTaskRetryCommand({
+      phaseId,
+      taskId,
+      reason: options.reason,
+      recoveryTaskId: options.recoveryTask,
+      json: options.json,
+    });
   });
 
 workflow

@@ -111,6 +111,7 @@ These commands are useful without hosted Snipara:
 | `reality-check`                                                                       | Intent Ledger, Unknown Registry, auto-linked context, and inspectable proof  |
 | `code callers` / `imports` / `neighbors` / `shortest-path`                            | Structural repo questions from local files                                   |
 | `workflow start` / `phase-start` / `phase-commit` / `resume`                          | Agent continuity that survives compaction                                    |
+| `workflow task-start` / `task-next` / `task-status` / `task-commit` / `task-retry`    | Fresh task context, DAG selection, bounded retries, and recovery             |
 | `feature init` / `specify` / `plan` / `tasks` / `start`                               | Spec-driven feature artifacts bridged into the managed workflow              |
 | `workflow timeline` / `workflow session`                                              | Append-only local activity log and Session Snapshot V0                       |
 | `workflow decisions` / `workflow decide`                                              | Local human decision requests and response receipts                          |
@@ -199,6 +200,59 @@ with a numbered `## Phases` section and run
 the same phase-shaped chunks, and `feature start` delegates to the existing
 `workflow start` command. It does not replace Companion's phases, memory, code
 impact, or handoff logic.
+
+#### Task-level execution
+
+Each managed phase now contains a normalized task contract. Existing
+phase-only plans are migrated in memory to one task per phase, so older
+`.snipara/workflow/current.json` files remain readable. A planner may add
+`tasks`, `depends_on`, `parallel_group`, `verify`, `max_attempts`, and
+`recovery_task_id` fields when a phase needs finer-grained execution:
+
+```json
+{
+  "id": "implementation",
+  "title": "Implementation",
+  "tasks": [
+    {
+      "id": "data-contract",
+      "query": "Define the data contract",
+      "files": ["src/contracts.ts"],
+      "verify": ["pnpm test --filter contracts"],
+      "max_attempts": 2,
+      "parallel_group": "contracts"
+    },
+    {
+      "id": "ui-slice",
+      "query": "Implement the UI slice",
+      "depends_on": ["data-contract"],
+      "recovery_task_id": "data-contract"
+    }
+  ]
+}
+```
+
+Run one task with a compact, fresh context envelope rather than carrying a raw
+conversation across tasks:
+
+```bash
+snipara-companion workflow task-start implementation data-contract
+snipara-companion workflow task-status implementation
+snipara-companion workflow task-commit implementation data-contract \
+  --summary "Contract implemented" \
+  --evidence "passed:pnpm test --filter contracts" \
+  --files src/contracts.ts
+snipara-companion workflow task-retry implementation ui-slice \
+  --reason "Focused verification still fails after the first attempt"
+```
+
+`task-start` increments a bounded attempt counter and prints the bootstrap,
+impact, verification, and commit gates for that task. `task-commit` records the
+outcome and evidence without pushing commits automatically. A blocked task can
+be retried until `max_attempts`; after that, the declared recovery task or an
+explicit contract revision is required. `parallel_group` is coordination
+metadata only: agents must still use Companion collaboration claims and locks
+before editing overlapping files.
 
 ### Agent Context Dogfood
 

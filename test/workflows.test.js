@@ -564,6 +564,25 @@ test("workflow phase-commit help exposes structured Why Capture inputs", () => {
   assert.match(result.stdout, /--observed-outcome/);
 });
 
+test("workflow task commands expose bounded execution controls", () => {
+  const taskStart = runCli(["workflow", "task-start", "--help"]);
+  assert.equal(taskStart.status, 0, taskStart.stderr || taskStart.stdout);
+  assert.match(taskStart.stdout, /fresh, bounded context envelope/);
+
+  const taskNext = runCli(["workflow", "task-next", "--help"]);
+  assert.equal(taskNext.status, 0, taskNext.stderr || taskNext.stdout);
+  assert.match(taskNext.stdout, /next eligible task/);
+
+  const taskCommit = runCli(["workflow", "task-commit", "--help"]);
+  assert.equal(taskCommit.status, 0, taskCommit.stderr || taskCommit.stdout);
+  assert.match(taskCommit.stdout, /--evidence/);
+  assert.match(taskCommit.stdout, /partial\|blocked/);
+
+  const taskRetry = runCli(["workflow", "task-retry", "--help"]);
+  assert.equal(taskRetry.status, 0, taskRetry.stderr || taskRetry.stdout);
+  assert.match(taskRetry.stdout, /--recovery-task/);
+});
+
 test("agentic status summarizes workflow, git, and Team Sync state", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-agentic-status-"));
   writeWorkflowState(dir);
@@ -815,6 +834,47 @@ test("managed workflow plan normalization accepts hosted plan shapes", () => {
   assert.equal(phases[0].acceptance, "Relevant auth notes");
   assert.deepEqual(phases[0].files, ["src/auth.ts"]);
   assert.equal(phases[1].needsRuntime, true);
+});
+
+test("managed workflow normalization creates bounded task contracts and preserves DAG metadata", () => {
+  const phases = normalizeWorkflowPlanInput(
+    {
+      steps: [
+        {
+          id: "implementation",
+          title: "Implementation",
+          query: "Implement the change",
+          tasks: [
+            {
+              id: "data-contract",
+              title: "Data contract",
+              query: "Define the data contract",
+              max_attempts: 2,
+              verify: ["pnpm test --filter data"],
+              parallel_group: "contracts",
+            },
+            {
+              id: "ui-slice",
+              title: "UI slice",
+              query: "Implement the UI slice",
+              depends_on: ["data-contract"],
+              parallel_group: "ui",
+              recovery_task_id: "data-contract",
+            },
+          ],
+        },
+      ],
+    },
+    "Ship the change"
+  );
+
+  assert.equal(phases[0].tasks.length, 2);
+  assert.equal(phases[0].tasks[0].maxAttempts, 2);
+  assert.deepEqual(phases[0].tasks[0].verification, ["pnpm test --filter data"]);
+  assert.equal(phases[0].tasks[0].parallelGroup, "contracts");
+  assert.deepEqual(phases[0].tasks[1].dependsOn, ["data-contract"]);
+  assert.equal(phases[0].tasks[1].recoveryTaskId, "data-contract");
+  assert.equal(phases[0].tasks[1].attempt, 0);
 });
 
 test("plan validation rejects placeholder and empty hosted plans", () => {
@@ -1293,6 +1353,147 @@ test("workflow start auto-publishes full Team Sync and claims planned files", ()
   const teamSyncCalls = fs.readFileSync(teamSyncLog, "utf8").trim().split("\n").map(JSON.parse);
   assert.equal(teamSyncCalls.length, 1);
   assert.equal(teamSyncCalls[0].body.task, "Ship workflow coordination");
+});
+
+test("workflow task runner starts eligible tasks, preserves fresh context, and retries blocked work", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-task-runner-"));
+  const planFile = path.join(dir, "workflow-plan.json");
+  fs.writeFileSync(
+    planFile,
+    JSON.stringify({
+      mode: "standard",
+      steps: [
+        {
+          id: "implementation",
+          title: "Implementation",
+          query: "Implement the feature",
+          tasks: [
+            {
+              id: "first-slice",
+              title: "First slice",
+              query: "Implement the first slice",
+              files: ["src/first.ts"],
+              verify: ["pnpm test --filter first"],
+              max_attempts: 2,
+            },
+            {
+              id: "second-slice",
+              title: "Second slice",
+              query: "Implement the second slice",
+              depends_on: ["first-slice"],
+              parallel_group: "feature-slices",
+            },
+          ],
+        },
+      ],
+    }),
+    "utf8"
+  );
+  const preloadPath = writeWorkflowPreload(dir);
+  const env = {
+    SNIPARA_API_KEY: "test-key",
+    SNIPARA_PROJECT_ID: "project_1",
+    SNIPARA_API_URL: "https://api.example.test",
+  };
+  const start = runCli(
+    ["workflow", "start", "--goal", "Ship task runner", "--plan-file", planFile, "--json"],
+    { cwd: dir, nodeArgs: ["--require", preloadPath], env }
+  );
+  assert.equal(start.status, 0, start.stderr || start.stdout);
+
+  const firstStart = runCli(["workflow", "task-start", "implementation", "first-slice", "--json"], {
+    cwd: dir,
+    nodeArgs: ["--require", preloadPath],
+    env,
+  });
+  assert.equal(firstStart.status, 0, firstStart.stderr || firstStart.stdout);
+  const firstPayload = JSON.parse(firstStart.stdout);
+  assert.equal(firstPayload.current_task.attempt, 1);
+  assert.equal(
+    firstPayload.context_envelope.contextPolicy,
+    "bounded-task-context-no-raw-transcript"
+  );
+  assert.match(firstPayload.context_envelope.commands.bootstrap, /session-bootstrap/);
+
+  const blockedStart = runCli(
+    ["workflow", "task-start", "implementation", "second-slice", "--json"],
+    { cwd: dir, nodeArgs: ["--require", preloadPath], env }
+  );
+  assert.notEqual(blockedStart.status, 0);
+  assert.match(`${blockedStart.stderr}${blockedStart.stdout}`, /waiting on dependencies/);
+
+  const firstCommit = runCli(
+    [
+      "workflow",
+      "task-commit",
+      "implementation",
+      "first-slice",
+      "--summary",
+      "First slice passed",
+      "--outcome",
+      "completed",
+      "--evidence",
+      "passed:pnpm test --filter first",
+      "--json",
+    ],
+    { cwd: dir, nodeArgs: ["--require", preloadPath], env }
+  );
+  assert.equal(firstCommit.status, 0, firstCommit.stderr || firstCommit.stdout);
+
+  const secondStart = runCli(
+    ["workflow", "task-start", "implementation", "second-slice", "--json"],
+    { cwd: dir, nodeArgs: ["--require", preloadPath], env }
+  );
+  assert.equal(secondStart.status, 0, secondStart.stderr || secondStart.stdout);
+  const secondPayload = JSON.parse(secondStart.stdout);
+  assert.equal(secondPayload.current_task.parallelGroup, "feature-slices");
+
+  const blockedCommit = runCli(
+    [
+      "workflow",
+      "task-commit",
+      "implementation",
+      "second-slice",
+      "--summary",
+      "Second slice needs repair",
+      "--outcome",
+      "blocked",
+      "--evidence",
+      "failed:focused check",
+      "--json",
+    ],
+    { cwd: dir, nodeArgs: ["--require", preloadPath], env }
+  );
+  assert.equal(blockedCommit.status, 0, blockedCommit.stderr || blockedCommit.stdout);
+  const blockedPayload = JSON.parse(blockedCommit.stdout);
+  assert.equal(blockedPayload.task.status, "blocked");
+  assert.equal(blockedPayload.retry_available, true);
+
+  const retry = runCli(
+    [
+      "workflow",
+      "task-retry",
+      "implementation",
+      "second-slice",
+      "--reason",
+      "Repair the failing focused check",
+      "--json",
+    ],
+    { cwd: dir, nodeArgs: ["--require", preloadPath], env }
+  );
+  assert.equal(retry.status, 0, retry.stderr || retry.stdout);
+  const retryPayload = JSON.parse(retry.stdout);
+  assert.equal(retryPayload.recovery_task.status, "pending");
+
+  const taskStatus = runCli(["workflow", "task-status", "implementation", "--json"], {
+    cwd: dir,
+    nodeArgs: ["--require", preloadPath],
+    env,
+  });
+  assert.equal(taskStatus.status, 0, taskStatus.stderr || taskStatus.stdout);
+  const statusPayload = JSON.parse(taskStatus.stdout);
+  assert.equal(statusPayload.tasks.length, 2);
+  assert.equal(statusPayload.tasks[1].dependencies.ready, true);
 });
 
 test("workflow phase-commit releases workflow coordination leases", () => {
@@ -2497,14 +2698,8 @@ test("managed workflow judgment refresh archives the prior immutable card and re
   );
   assert.equal(run(["workflow", "judgment", "--json"]).status, 0);
   assert.equal(
-    run([
-      "workflow",
-      "judgment-respond",
-      recommendationId,
-      "--decision",
-      "accepted",
-      "--json",
-    ]).status,
+    run(["workflow", "judgment-respond", recommendationId, "--decision", "accepted", "--json"])
+      .status,
     0
   );
 
@@ -2515,7 +2710,10 @@ test("managed workflow judgment refresh archives the prior immutable card and re
   );
   assert.equal(current.judgmentHistory.length, 1);
   assert.equal(current.judgmentHistory[0].responses[0].source, "explicit");
-  assert.equal(current.judgment.card.generatedAt, JSON.parse(refreshed.stdout).judgment.card.generatedAt);
+  assert.equal(
+    current.judgment.card.generatedAt,
+    JSON.parse(refreshed.stdout).judgment.card.generatedAt
+  );
   assert.equal(current.judgment.responses[0].source, "policy_auto");
 });
 
