@@ -348,6 +348,79 @@ function writeWorkflowPreload(dir) {
   return preloadPath;
 }
 
+function writeAgentContextFixture(dir, agentId = "code") {
+  fs.mkdirSync(path.join(dir, "docs"), { recursive: true });
+  for (const [file, title] of [
+    ["shared.md", "Shared"],
+    ["code.md", "Code"],
+    ["security.md", "Security"],
+  ]) {
+    fs.writeFileSync(path.join(dir, "docs", file), `# ${title}\n`, "utf8");
+  }
+  const agent = (id, role) => ({
+    agentId: id,
+    displayName: id,
+    roles: [role],
+    budget: {
+      totalTokens: 5000,
+      organizationTokens: 500,
+      projectTokens: 1000,
+      roleTokens: 2000,
+      memoryTokens: 1000,
+    },
+    memory: {
+      localCategory: `agent:${id}`,
+      defaultWriteScope: "agent",
+      promotionRequiresReview: true,
+      promotionTargets: [{ scope: "project", category: `role:${role}` }],
+    },
+  });
+  const manifest = {
+    schemaVersion: "snipara.agent_context_manifest.v0",
+    organization: {
+      sourceIds: ["shared"],
+      memory: [{ scope: "team", category: "organization:fixture" }],
+    },
+    project: {
+      id: "fixture",
+      sourceIds: [],
+      memory: [{ scope: "project", category: "project:fixture" }],
+    },
+    sources: [
+      { id: "shared", path: "docs/shared.md", authority: "canonical", tier: "HOT" },
+      { id: "code", path: "docs/code.md", authority: "canonical", tier: "HOT" },
+      { id: "security", path: "docs/security.md", authority: "canonical", tier: "HOT" },
+    ],
+    roles: {
+      code: {
+        description: "Implement.",
+        capabilities: ["implementation"],
+        boundaries: ["No deploy."],
+        queryHints: ["code graph"],
+        sourceIds: ["code"],
+        memory: [{ scope: "project", category: "role:code" }],
+      },
+      security: {
+        description: "Review security.",
+        capabilities: ["security review"],
+        boundaries: ["No secret output."],
+        queryHints: ["threat model"],
+        sourceIds: ["security"],
+        memory: [{ scope: "project", category: "role:security" }],
+      },
+    },
+    agents: {
+      code: agent("code-agent", "code"),
+      security: agent("security-agent", "security"),
+    },
+  };
+  fs.writeFileSync(
+    path.join(dir, "snipara.agent-context.json"),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    "utf8"
+  );
+}
+
 function writeWorkflowState(dir) {
   const workflowDir = path.join(dir, ".snipara", "workflow");
   fs.mkdirSync(workflowDir, { recursive: true });
@@ -568,10 +641,13 @@ test("workflow task commands expose bounded execution controls", () => {
   const taskStart = runCli(["workflow", "task-start", "--help"]);
   assert.equal(taskStart.status, 0, taskStart.stderr || taskStart.stdout);
   assert.match(taskStart.stdout, /fresh, bounded context envelope/);
+  assert.match(taskStart.stdout, /--agent-context-manifest/);
+  assert.match(taskStart.stdout, /--skip-agent-context/);
 
   const taskNext = runCli(["workflow", "task-next", "--help"]);
   assert.equal(taskNext.status, 0, taskNext.stderr || taskNext.stdout);
   assert.match(taskNext.stdout, /next eligible task/);
+  assert.match(taskNext.stdout, /--agent/);
 
   const taskCommit = runCli(["workflow", "task-commit", "--help"]);
   assert.equal(taskCommit.status, 0, taskCommit.stderr || taskCommit.stdout);
@@ -1447,6 +1523,7 @@ test("workflow task runner starts eligible tasks, preserves fresh context, and r
   assert.equal(secondStart.status, 0, secondStart.stderr || secondStart.stdout);
   const secondPayload = JSON.parse(secondStart.stdout);
   assert.equal(secondPayload.current_task.parallelGroup, "feature-slices");
+  assert.equal(secondPayload.context_envelope.agentContext, undefined);
 
   const blockedCommit = runCli(
     [
@@ -1494,6 +1571,93 @@ test("workflow task runner starts eligible tasks, preserves fresh context, and r
   const statusPayload = JSON.parse(taskStatus.stdout);
   assert.equal(statusPayload.tasks.length, 2);
   assert.equal(statusPayload.tasks[1].dependencies.ready, true);
+});
+
+test("workflow task envelopes dogfood the local Agent Context policy", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-agent-context-"));
+  const planFile = path.join(dir, "workflow-plan.json");
+  writeAgentContextFixture(dir);
+  fs.writeFileSync(
+    planFile,
+    JSON.stringify({
+      mode: "standard",
+      steps: [
+        {
+          id: "implementation",
+          title: "Implementation",
+          query: "Implement the dogfood slice",
+          tasks: [
+            {
+              id: "first-slice",
+              title: "First slice",
+              query: "Wire Agent Context into the task envelope",
+              files: ["src/first.ts"],
+              verify: ["pnpm test --filter first"],
+            },
+            {
+              id: "second-slice",
+              title: "Second slice",
+              query: "Document the task envelope",
+              files: ["README.md"],
+              depends_on: ["first-slice"],
+            },
+          ],
+        },
+      ],
+    }),
+    "utf8"
+  );
+  const env = { SNIPARA_AGENT_ID: "code" };
+  try {
+    const start = runCli(
+      ["workflow", "start", "--goal", "Dogfood Agent Context", "--plan-file", planFile, "--json"],
+      { cwd: dir, env }
+    );
+    assert.equal(start.status, 0, start.stderr || start.stdout);
+    const startPayload = JSON.parse(start.stdout);
+    assert.deepEqual(startPayload.agentContext, {
+      agentId: "code",
+      manifest: "snipara.agent-context.json",
+    });
+
+    const next = runCli(["workflow", "task-next", "implementation", "--json"], {
+      cwd: dir,
+      env,
+    });
+    assert.equal(next.status, 0, next.stderr || next.stdout);
+    const nextPayload = JSON.parse(next.stdout);
+    assert.equal(nextPayload.context_envelope.agentContext.agentId, "code-agent");
+    assert.deepEqual(
+      nextPayload.context_envelope.agentContext.sources.map((source) => source.id),
+      ["shared", "code"]
+    );
+    assert.equal(
+      nextPayload.context_envelope.agentContext.memory.recall.some(
+        (request) => request.category === "role:security"
+      ),
+      false
+    );
+    assert.match(nextPayload.context_envelope.commands.agentContext, /agent-context resolve/);
+    assert.match(nextPayload.context_envelope.commands.hostedRecall, /snipara_recall/);
+    assert.match(nextPayload.context_envelope.commands.hostedContextQuery, /snipara_context_query/);
+
+    const taskStart = runCli(
+      ["workflow", "task-start", "implementation", "first-slice", "--json"],
+      {
+        cwd: dir,
+        env,
+      }
+    );
+    assert.equal(taskStart.status, 0, taskStart.stderr || taskStart.stdout);
+    const taskPayload = JSON.parse(taskStart.stdout);
+    assert.equal(
+      taskPayload.current_task.contextEnvelope.agentContext.manifest,
+      "snipara.agent-context.json"
+    );
+    assert.match(taskPayload.current_task.contextEnvelope.agentContext.manifestHash, /^sha256:/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("workflow phase-commit releases workflow coordination leases", () => {

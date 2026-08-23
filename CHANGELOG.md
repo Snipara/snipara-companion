@@ -4,6 +4,15 @@ Release notes for `snipara-companion`, newest first.
 
 ## Unreleased
 
+## New In 3.6.20 - 2026-08-23
+
+- Dogfoods the local Agent Context manifest in managed workflow task envelopes.
+- Carries the selected agent, manifest hash, role-scoped sources, memory policy,
+  and explicit Hosted MCP retrieval commands into `workflow task-start` and
+  `workflow task-next`.
+- Keeps repositories without an Agent Context manifest compatible and adds
+  explicit `--skip-agent-context` and override controls.
+
 ## New In 3.6.19 - 2026-08-16
 
 - Adds the non-blocking, fingerprinted `git_diff` evidence adapter for

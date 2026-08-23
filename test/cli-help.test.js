@@ -2367,6 +2367,18 @@ test("agent-context help exposes validation, role resolution, and AC-1 evidence"
   assert.match(status.stdout, /--enforce/);
 });
 
+test("workflow help exposes Agent Context dogfooding controls", () => {
+  const start = runCli(["workflow", "start", "--help"]);
+  assert.equal(start.status, 0, start.stderr || start.stdout);
+  assert.match(start.stdout, /--agent-context-manifest/);
+  assert.match(start.stdout, /--skip-agent-context/);
+
+  const taskStart = runCli(["workflow", "task-start", "--help"]);
+  assert.equal(taskStart.status, 0, taskStart.stderr || taskStart.stdout);
+  assert.match(taskStart.stdout, /--agent/);
+  assert.match(taskStart.stdout, /--skip-agent-context/);
+});
+
 test("upload help exposes reindex flag", () => {
   const result = runCli(["upload", "--help"]);
   assert.equal(result.status, 0);

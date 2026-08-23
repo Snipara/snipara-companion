@@ -2691,6 +2691,9 @@ workflow
     "LLM plan file; prefer JSON for stable phase ids, Markdown/Text also accepted"
   )
   .option("--id <id>", "Stable workflow id")
+  .option("--agent <agent>", "Agent Context identity to carry into task envelopes")
+  .option("--agent-context-manifest <file>", "Agent Context manifest path")
+  .option("--skip-agent-context", "Disable automatic Agent Context dogfooding for this workflow")
   .option("--force", "Replace an existing active workflow state")
   .option("--json", "Print raw JSON")
   .action(async (options) => {
@@ -2699,6 +2702,9 @@ workflow
       planFile: options.planFile,
       id: options.id,
       force: Boolean(options.force),
+      agent: options.agent,
+      manifest: options.agentContextManifest,
+      skipAgentContext: Boolean(options.skipAgentContext),
       json: options.json,
     });
   });
@@ -2912,9 +2918,19 @@ workflow
   .description("Start one eligible workflow task with a fresh, bounded context envelope")
   .argument("<phaseId>", "Workflow phase id")
   .argument("[taskId]", "Optional task id; omit to start the next eligible task")
+  .option("--agent <agent>", "Override the Agent Context identity for this task")
+  .option("--agent-context-manifest <file>", "Override the Agent Context manifest path")
+  .option("--skip-agent-context", "Disable Agent Context dogfooding for this task")
   .option("--json", "Print raw JSON")
   .action(async (phaseId, taskId, options) => {
-    await workflowTaskStartCommand({ phaseId, taskId, json: options.json });
+    await workflowTaskStartCommand({
+      phaseId,
+      taskId,
+      agent: options.agent,
+      manifest: options.agentContextManifest,
+      skipAgentContext: Boolean(options.skipAgentContext),
+      json: options.json,
+    });
   });
 
 workflow
@@ -2930,9 +2946,18 @@ workflow
   .command("task-next")
   .description("Show the next eligible task in a phase without changing workflow state")
   .argument("[phaseId]", "Optional workflow phase id; defaults to the current phase")
+  .option("--agent <agent>", "Override the Agent Context identity for this task")
+  .option("--agent-context-manifest <file>", "Override the Agent Context manifest path")
+  .option("--skip-agent-context", "Disable Agent Context dogfooding for this task")
   .option("--json", "Print raw JSON")
   .action(async (phaseId, options) => {
-    await workflowTaskNextCommand({ phaseId, json: options.json });
+    await workflowTaskNextCommand({
+      phaseId,
+      agent: options.agent,
+      manifest: options.agentContextManifest,
+      skipAgentContext: Boolean(options.skipAgentContext),
+      json: options.json,
+    });
   });
 
 workflow

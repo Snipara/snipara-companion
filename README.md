@@ -276,6 +276,26 @@ MCP on the agent's behalf. Role memory is represented by exact categories in
 the existing project or team scopes, so the V0 dogfood flow needs no database
 migration.
 
+Managed workflows now dogfood this policy automatically when the repository
+contains `snipara.agent-context.json` and the configured agent (or
+`SNIPARA_AGENT_ID`) exists in the manifest. Start a workflow normally:
+
+```bash
+snipara-companion workflow start \
+  --goal "implement the next bounded change" \
+  --plan-file .snipara/plans/next-change.json
+snipara-companion workflow task-start implementation
+```
+
+The task envelope carries the selected agent, manifest hash, role-scoped source
+list, memory recall/write policy, boundaries, and retrieval commands. The
+agent still performs the Hosted MCP `snipara_recall` and
+`snipara_context_query` calls explicitly; Companion does not hide retrieval or
+promote memory on the agent's behalf. Use `--agent <id>` or
+`--agent-context-manifest <file>` to override the workflow defaults, and
+`--skip-agent-context` only when a task is intentionally outside the local
+manifest policy.
+
 Collect AC-1 evidence after a representative task:
 
 ```bash

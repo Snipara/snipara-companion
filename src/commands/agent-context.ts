@@ -94,6 +94,50 @@ function manifestPath(cwd: string, candidate?: string): string {
   return path.resolve(cwd, candidate ?? AGENT_CONTEXT_MANIFEST_DEFAULT_PATH);
 }
 
+export interface LocalAgentContextResolutionOptions {
+  manifest?: string;
+  agent: string;
+  task: string;
+  cwd?: string;
+}
+
+export interface LocalAgentContextResolution {
+  manifestPath: string;
+  resolution: AgentContextResolution;
+}
+
+/**
+ * Resolve the local Agent Context policy without printing or calling Hosted MCP.
+ *
+ * Workflow commands use this helper to attach a bounded, manifest-hashed policy
+ * to task envelopes. Retrieval remains visible to the agent runtime, which must
+ * call Hosted MCP with the returned scopes and source plan.
+ */
+export function resolveLocalAgentContext(
+  options: LocalAgentContextResolutionOptions
+): LocalAgentContextResolution {
+  const cwd = path.resolve(options.cwd ?? process.cwd());
+  const resolvedManifestPath = manifestPath(cwd, options.manifest);
+  const manifest = readManifest(resolvedManifestPath);
+  const validation = buildLocalAgentContextValidationReport({ cwd, manifest });
+  if (validation.status === "invalid") {
+    const errors = validation.findings
+      .filter((finding) => finding.severity === "error")
+      .map((finding) => finding.summary)
+      .join(" ");
+    throw new Error(`Invalid Agent Context manifest. ${errors}`.trim());
+  }
+
+  return {
+    manifestPath: path.relative(cwd, resolvedManifestPath) || path.basename(resolvedManifestPath),
+    resolution: resolveAgentContext({
+      manifest,
+      agent: options.agent,
+      task: options.task,
+    }),
+  };
+}
+
 function formatValidationReport(report: AgentContextValidationReport, manifest: string): string {
   const lines = [
     `Agent Context manifest: ${manifest}`,
@@ -189,19 +233,9 @@ export async function agentContextValidateCommand(
 export async function agentContextResolveCommand(
   options: AgentContextResolveCommandOptions
 ): Promise<AgentContextResolution> {
-  const cwd = path.resolve(options.cwd ?? process.cwd());
-  const resolvedManifestPath = manifestPath(cwd, options.manifest);
-  const manifest = readManifest(resolvedManifestPath);
-  const validation = buildLocalAgentContextValidationReport({ cwd, manifest });
-  if (validation.status === "invalid") {
-    const errors = validation.findings
-      .filter((finding) => finding.severity === "error")
-      .map((finding) => finding.summary)
-      .join(" ");
-    throw new Error(`Invalid Agent Context manifest. ${errors}`.trim());
-  }
-  const resolution = resolveAgentContext({
-    manifest,
+  const { resolution } = resolveLocalAgentContext({
+    cwd: options.cwd,
+    manifest: options.manifest,
     agent: options.agent,
     task: options.task,
   });

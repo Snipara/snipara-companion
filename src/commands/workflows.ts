@@ -74,6 +74,7 @@ import {
   DECISION_RESPONSE_VERSION,
   buildDecisionRequest,
   stableDecisionJsonStringify,
+  type AgentContextResolution,
   type OutcomeIntelligenceEvidence,
   type OutcomeIntelligenceReceipt,
   type DecisionRequest,
@@ -127,6 +128,7 @@ import {
   type ProjectIntelligenceRunEnvelope,
   type ProjectRunAdvisorReceiptCapture,
 } from "./run";
+import { resolveLocalAgentContext } from "./agent-context";
 import type { AdvisorInfluenceAgentDecision, EndOfTaskCommitWhyInput } from "../api/client";
 import type { ProjectIntelligenceBrief } from "./intelligence";
 import {
@@ -604,6 +606,35 @@ export interface ManagedWorkflowTask {
   contextEnvelope?: ManagedWorkflowTaskContextEnvelope;
 }
 
+export interface ManagedWorkflowAgentContextConfig {
+  agentId: string;
+  manifest: string;
+}
+
+export interface ManagedWorkflowAgentContext {
+  agentId: string;
+  displayName: string;
+  roles: string[];
+  manifest: string;
+  manifestHash: string;
+  sources: Array<{
+    id: string;
+    path: string;
+    authority: string;
+    tier: string;
+    includedBy: string[];
+  }>;
+  excludedRoleSourceIds: string[];
+  memory: {
+    recall: Array<{ scope: string; category: string; agentId?: string }>;
+    defaultWrite: { scope: string; category: string; agentId: string; reviewRequired: boolean };
+    promotion: Array<{ scope: string; category: string; reviewRequired: boolean; reason: string }>;
+  };
+  boundaries: string[];
+  queryHints: string[];
+  caveats: string[];
+}
+
 export interface ManagedWorkflowTaskContextEnvelope {
   version: "snipara.workflow.task-context.v1";
   workflowId: string;
@@ -621,11 +652,15 @@ export interface ManagedWorkflowTaskContextEnvelope {
     dependencies: string[];
     parallelGroup?: string;
   };
+  agentContext?: ManagedWorkflowAgentContext;
   commands: {
     bootstrap: string;
     resume: string;
     impact: string;
     commit: string;
+    agentContext?: string;
+    hostedRecall?: string;
+    hostedContextQuery?: string;
   };
 }
 
@@ -702,6 +737,7 @@ export interface ManagedWorkflowState {
   createdAt: string;
   updatedAt: string;
   phases: ManagedWorkflowPhase[];
+  agentContext?: ManagedWorkflowAgentContextConfig;
   runtime?: ManagedWorkflowRuntimeState;
   coordination?: ManagedWorkflowCoordinationState;
   judgment?: ManagedWorkflowJudgmentState;
@@ -5198,13 +5234,113 @@ function nextEligibleWorkflowTask(
   });
 }
 
+const DEFAULT_AGENT_CONTEXT_AGENT = "snipara-code";
+
+function agentContextManifestConfig(
+  cwd = process.cwd()
+): ManagedWorkflowAgentContextConfig | undefined {
+  const manifestPath = path.resolve(cwd, "snipara.agent-context.json");
+  if (!fs.existsSync(manifestPath)) return undefined;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
+      agents?: Record<string, unknown>;
+    };
+    const agentId = process.env.SNIPARA_AGENT_ID?.trim() || DEFAULT_AGENT_CONTEXT_AGENT;
+    if (!parsed.agents || !Object.prototype.hasOwnProperty.call(parsed.agents, agentId)) {
+      return undefined;
+    }
+    return {
+      agentId,
+      manifest: path.relative(cwd, manifestPath) || path.basename(manifestPath),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function buildManagedWorkflowAgentContext(
+  manifest: string,
+  resolution: AgentContextResolution
+): ManagedWorkflowAgentContext {
+  return {
+    agentId: resolution.agent.agentId,
+    displayName: resolution.agent.displayName,
+    roles: resolution.agent.roles,
+    manifest,
+    manifestHash: resolution.manifestHash,
+    sources: resolution.sources.map((source) => ({
+      id: source.id,
+      path: source.path,
+      authority: source.authority,
+      tier: source.tier,
+      includedBy: source.includedBy,
+    })),
+    excludedRoleSourceIds: resolution.excludedRoleSourceIds,
+    memory: {
+      recall: resolution.memory.recall.map((request) => ({
+        scope: request.scope,
+        category: request.category,
+        ...(request.agentId ? { agentId: request.agentId } : {}),
+      })),
+      defaultWrite: {
+        scope: resolution.memory.defaultWrite.scope,
+        category: resolution.memory.defaultWrite.category,
+        agentId: resolution.memory.defaultWrite.agentId,
+        reviewRequired: resolution.memory.defaultWrite.reviewRequired,
+      },
+      promotion: resolution.memory.promotion.map((target) => ({
+        scope: target.scope,
+        category: target.category,
+        reviewRequired: target.reviewRequired,
+        reason: target.reason,
+      })),
+    },
+    boundaries: resolution.boundaries,
+    queryHints: resolution.queryHints,
+    caveats: resolution.caveats,
+  };
+}
+
+function resolveWorkflowAgentContext(
+  state: ManagedWorkflowState,
+  task: ManagedWorkflowTask,
+  options: {
+    agent?: string;
+    manifest?: string;
+    skipAgentContext?: boolean;
+  } = {}
+): ManagedWorkflowAgentContext | undefined {
+  if (options.skipAgentContext) return undefined;
+  const configured =
+    options.agent || options.manifest
+      ? {
+          agentId:
+            options.agent?.trim() || state.agentContext?.agentId || DEFAULT_AGENT_CONTEXT_AGENT,
+          manifest:
+            options.manifest?.trim() ||
+            state.agentContext?.manifest ||
+            "snipara.agent-context.json",
+        }
+      : state.agentContext || agentContextManifestConfig();
+  if (!configured) return undefined;
+
+  const resolved = resolveLocalAgentContext({
+    agent: configured.agentId,
+    manifest: configured.manifest,
+    task: task.query,
+  });
+  return buildManagedWorkflowAgentContext(resolved.manifestPath, resolved.resolution);
+}
+
 function taskContextEnvelope(
   state: ManagedWorkflowState,
   phase: ManagedWorkflowPhase,
-  task: ManagedWorkflowTask
+  task: ManagedWorkflowTask,
+  agentContext?: ManagedWorkflowAgentContext
 ): ManagedWorkflowTaskContextEnvelope {
   const files = task.files ?? phase.files ?? [];
   const fileArgs = files.length > 0 ? files.map(shellQuote).join(" ") : "<files...>";
+  const hostedQuery = shellQuote(task.query);
   return {
     version: "snipara.workflow.task-context.v1",
     workflowId: state.workflowId,
@@ -5222,12 +5358,21 @@ function taskContextEnvelope(
       dependencies: task.dependsOn ?? [],
       ...(task.parallelGroup ? { parallelGroup: task.parallelGroup } : {}),
     },
+    ...(agentContext ? { agentContext } : {}),
     commands: {
       bootstrap:
         "snipara-companion session-bootstrap --include-session-context --max-context-tokens 1000",
       resume: "snipara-companion workflow resume --include-session-context",
       impact: `snipara-companion code impact --changed-files ${fileArgs} --diff-summary ${shellQuote(task.title)}`,
       commit: `snipara-companion workflow task-commit ${shellQuote(phase.id)} ${shellQuote(task.id)} --summary '<what changed>' --outcome completed --files ${fileArgs}`,
+      ...(agentContext
+        ? {
+            agentContext: `snipara-companion agent-context resolve --agent ${shellQuote(agentContext.agentId)} --task ${hostedQuery} --manifest ${shellQuote(agentContext.manifest)} --json`,
+            hostedRecall:
+              "Use Hosted MCP snipara_recall for each listed memory scope/category; keep the selected agent identity in the correlation context.",
+            hostedContextQuery: `Use Hosted MCP snipara_context_query for the task with the resolved source plan; task=${hostedQuery}`,
+          }
+        : {}),
     },
   };
 }
@@ -5258,6 +5403,35 @@ function printWorkflowTaskEnvelope(
     console.log(
       "Claim the file scope before editing; collaboration claims/locks remain authoritative."
     );
+  }
+  if (envelope.agentContext) {
+    console.log("");
+    console.log(chalk.bold("Agent Context dogfood gate"));
+    printKeyValue(
+      "Agent:",
+      `${envelope.agentContext.displayName} (${envelope.agentContext.agentId}; role=${envelope.agentContext.roles.join(", ")})`
+    );
+    printKeyValue(
+      "Manifest:",
+      `${envelope.agentContext.manifest} (${envelope.agentContext.manifestHash})`
+    );
+    printKeyValue(
+      "Sources:",
+      envelope.agentContext.sources.map((source) => source.path).join(", ")
+    );
+    printKeyValue(
+      "Memory recall:",
+      envelope.agentContext.memory.recall
+        .map((request) => `${request.scope}/${request.category}`)
+        .join(", ")
+    );
+    printKeyValue(
+      "Default write:",
+      `${envelope.agentContext.memory.defaultWrite.scope}/${envelope.agentContext.memory.defaultWrite.category}`
+    );
+    console.log(envelope.commands.agentContext);
+    console.log(envelope.commands.hostedRecall);
+    console.log(envelope.commands.hostedContextQuery);
   }
   console.log("");
   console.log(chalk.bold("Task context gate"));
@@ -5682,6 +5856,13 @@ function printManagedWorkflowDiscipline(): void {
 function printManagedWorkflowNextCommands(state: ManagedWorkflowState): void {
   const phase = currentWorkflowPhase(state);
   printManagedWorkflowDiscipline();
+  if (state.agentContext) {
+    console.log(chalk.bold("Agent Context dogfooding"));
+    console.log(
+      `Automatic task envelopes use ${state.agentContext.agentId} with ${state.agentContext.manifest}. Override with --agent/--agent-context-manifest or disable with --skip-agent-context.`
+    );
+    console.log("");
+  }
   if (!state.judgment) {
     console.log(chalk.bold("Judgment gate"));
     console.log("snipara-companion workflow judgment");
@@ -10644,6 +10825,9 @@ function startManagedWorkflowState(options: {
   planFile?: string;
   id?: string;
   force?: boolean;
+  agent?: string;
+  manifest?: string;
+  skipAgentContext?: boolean;
 }): ManagedWorkflowState {
   const existing = readWorkflowState();
   if (existing && existing.status === "active" && !options.force) {
@@ -10665,6 +10849,14 @@ function startManagedWorkflowState(options: {
   const now = new Date().toISOString();
   const workflowId =
     options.id ?? sanitizeWorkflowId(goal, `workflow-${now.slice(0, 10).replace(/-/g, "")}`);
+  const agentContext = options.skipAgentContext
+    ? undefined
+    : options.agent || options.manifest
+      ? {
+          agentId: options.agent?.trim() || DEFAULT_AGENT_CONTEXT_AGENT,
+          manifest: options.manifest?.trim() || "snipara.agent-context.json",
+        }
+      : agentContextManifestConfig();
   const state: ManagedWorkflowState = {
     schemaVersion: "snipara.workflow.v2",
     workflowId,
@@ -10676,6 +10868,7 @@ function startManagedWorkflowState(options: {
     createdAt: now,
     updatedAt: now,
     phases,
+    ...(agentContext ? { agentContext } : {}),
   };
 
   writeWorkflowState(state);
@@ -11392,6 +11585,9 @@ export async function workflowStartCommand(options: {
   planFile?: string;
   id?: string;
   force?: boolean;
+  agent?: string;
+  manifest?: string;
+  skipAgentContext?: boolean;
   json?: boolean;
 }): Promise<void> {
   const state = await publishWorkflowStartCoordination(
@@ -11400,6 +11596,9 @@ export async function workflowStartCommand(options: {
       planFile: options.planFile,
       id: options.id,
       force: options.force,
+      agent: options.agent,
+      manifest: options.manifest,
+      skipAgentContext: options.skipAgentContext,
     }),
     inferWorkflowCoordinationMode({ planFile: options.planFile })
   );
@@ -12305,6 +12504,9 @@ export async function workflowPhaseStartCommand(options: {
 export async function workflowTaskStartCommand(options: {
   phaseId: string;
   taskId?: string;
+  agent?: string;
+  manifest?: string;
+  skipAgentContext?: boolean;
   json?: boolean;
 }): Promise<void> {
   const state = readRequiredWorkflowState();
@@ -12356,7 +12558,8 @@ export async function workflowTaskStartCommand(options: {
   task.completedAt = undefined;
   task.outcome = undefined;
   task.lastError = undefined;
-  const envelope = taskContextEnvelope(state, phase, task);
+  const agentContext = resolveWorkflowAgentContext(state, task, options);
+  const envelope = taskContextEnvelope(state, phase, task, agentContext);
   task.contextEnvelope = envelope;
   state.currentPhaseId = phase.id;
   state.status = "active";
@@ -12431,6 +12634,9 @@ export async function workflowTaskStatusCommand(options: {
 
 export async function workflowTaskNextCommand(options: {
   phaseId?: string;
+  agent?: string;
+  manifest?: string;
+  skipAgentContext?: boolean;
   json?: boolean;
 }): Promise<void> {
   const state = readRequiredWorkflowState();
@@ -12461,7 +12667,8 @@ export async function workflowTaskNextCommand(options: {
     }
     return;
   }
-  const envelope = taskContextEnvelope(state, phase, task);
+  const agentContext = resolveWorkflowAgentContext(state, task, options);
+  const envelope = taskContextEnvelope(state, phase, task, agentContext);
   if (options.json) {
     printJson({
       workflowId: state.workflowId,
