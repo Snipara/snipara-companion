@@ -4,6 +4,13 @@ Release notes for `snipara-companion`, newest first.
 
 ## Unreleased
 
+## New In 3.6.21 - 2026-08-31
+
+- Requires manual device-code entry and explicit all-project consent for the
+  personal user-key flow.
+- Reports a 30-day personal-key expiry and rotates the previous key on login.
+- Uses cryptographically random local session identifiers.
+
 ## New In 3.6.20 - 2026-08-23
 
 - Dogfoods the local Agent Context manifest in managed workflow task envelopes.

@@ -10,6 +10,7 @@
 import * as readline from "readline";
 import * as fs from "fs";
 import * as path from "path";
+import { randomBytes } from "node:crypto";
 import { saveConfig, loadConfig, getConfigPath, isConfigured } from "../config/store";
 import { createClient, listProjectsForApiKey, type ApiKeyProjectSummary } from "../api/client";
 import { automationsInstallCommand } from "./automations";
@@ -1243,7 +1244,7 @@ export async function initCommand(options: {
   });
 
   // Save one workspace-local companion config: auth, project selection, and session state.
-  const sessionId = `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const sessionId = `sess_${Date.now()}_${randomBytes(6).toString("hex")}`;
   saveConfig(
     {
       apiKey,

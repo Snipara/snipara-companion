@@ -6,10 +6,12 @@
  * user code, polls for up to MAX_POLL_DURATION_MS (15 min) at the
  * server-provided interval, then stores the resulting project (or legacy user)
  * key. Project selection is delegated to project-auth; `--user-key` selects the
- * legacy project-agnostic flow.
+ * project-agnostic flow, which requires explicit all-project consent and returns
+ * a personal key that expires after 30 days.
  */
 import { saveConfig, loadConfig, getConfigPath } from "../config/store";
 import { execSync } from "child_process";
+import { randomBytes } from "node:crypto";
 import {
   addExplicitProjectHint,
   collectLocalProjectHints,
@@ -44,6 +46,8 @@ interface TokenResponse {
   access_token: string;
   token_type: string;
   key_type?: "user" | "team";
+  expires_in?: number;
+  expires_at?: string;
   user?: { id: string; email: string; name: string | null };
   team?: { id: string; slug: string; name: string };
   server_url?: string;
@@ -126,7 +130,7 @@ async function pollForToken(
 }
 
 function createSessionId(): string {
-  return `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  return `sess_${Date.now()}_${randomBytes(6).toString("hex")}`;
 }
 
 /**
@@ -180,10 +184,10 @@ async function userKeyLoginCommand(apiUrl: string): Promise<void> {
   const device = await startDeviceFlow(apiUrl);
 
   console.log("Opening browser to authorize this device...");
-  console.log(`\n  Verification URL: ${device.verification_uri_complete}`);
-  console.log(`  If it doesn't open, paste the code: ${device.user_code}\n`);
+  console.log(`\n  Verification URL: ${device.verification_uri}`);
+  console.log(`  Enter this code in the browser: ${device.user_code}\n`);
 
-  openBrowser(device.verification_uri_complete);
+  openBrowser(device.verification_uri);
 
   console.log("Waiting for authorization...");
   const token = await pollForToken(
@@ -214,6 +218,9 @@ async function userKeyLoginCommand(apiUrl: string): Promise<void> {
     console.log("\n✓ Logged in");
   }
   console.log(`✓ API key saved to ${getConfigPath()}`);
-  console.log("\nThis legacy user key is not project-bound.");
+  if (token.expires_at) {
+    console.log(`This personal user key expires on ${token.expires_at}.`);
+  }
+  console.log("This legacy user key is not project-bound and a new login rotates it.");
   console.log("For agent setup, prefer `npx -y snipara-companion@latest init` or project login.\n");
 }
