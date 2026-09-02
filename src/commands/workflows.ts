@@ -70,6 +70,12 @@ import { appendJournalCheckpoint, type JournalWriteResult } from "./journal";
 import { buildCodingIntelligenceLedger, type CodingIntelligenceLedger } from "./coding-ledger";
 import { buildLocalImpactResult } from "./code";
 import {
+  buildChangeBudget,
+  parseGitNumstat,
+  READABILITY_BUDGET,
+  type ChangeBudget,
+} from "../readability/change-budget";
+import {
   buildOutcomeIntelligenceReceipt,
   DECISION_RESPONSE_VERSION,
   buildDecisionRequest,
@@ -864,6 +870,7 @@ export interface WorkflowImpactGateResult {
     codeChangedFiles: string[];
     nonCodeChangedFiles: string[];
   };
+  readability: ChangeBudget;
   dirtyWorkingTree: {
     fileCount: number;
     statusLines: string[];
@@ -6354,6 +6361,12 @@ export function buildWorkflowImpactGate(
   const baseSha = runGitText(["rev-parse", "--verify", upstream], repoRoot);
   const headSha = runGitText(["rev-parse", "--verify", "HEAD"], repoRoot);
   const changedFiles = readUnpushedChangedFiles(repoRoot, upstream);
+  const numstat = runGitText(
+    ["diff", "--numstat", "--no-renames", `${upstream}..HEAD`],
+    repoRoot,
+    5000
+  );
+  const readability = buildChangeBudget(parseGitNumstat(numstat ?? ""));
   const codeChangedFiles = changedFiles.filter(isLocalImpactCodeFile);
   const nonCodeChangedFiles = changedFiles.filter((file) => !isLocalImpactCodeFile(file));
   const commits = readUnpushedCommits(repoRoot, upstream);
@@ -6382,12 +6395,20 @@ export function buildWorkflowImpactGate(
         )
       : null;
   const reasonCodes = [
+    readability.status === "review" ? "change_budget_review" : undefined,
+    readability.status === "split" ? "change_budget_exceeded" : undefined,
     dirtyFiles.length > 0 ? "dirty_working_tree_not_included" : undefined,
     commits.length === 0 ? "no_unpushed_commits" : undefined,
     changedFilesWithoutPhase.length > 0 ? "changed_files_without_phase_commit" : undefined,
     phaseFilesOutsideUnpushedDiff.length > 0 ? "phase_files_outside_unpushed_diff" : undefined,
   ].filter((item): item is string => Boolean(item));
   const recommendedActions = [
+    readability.status === "review"
+      ? `Review whether this change can be split; target fewer than ${READABILITY_BUDGET.targetLines} changed lines.`
+      : undefined,
+    readability.status === "split"
+      ? `Split this change before review; more than ${READABILITY_BUDGET.splitLines} changed lines requires explicit justification.`
+      : undefined,
     dirtyFiles.length > 0
       ? "Review dirty working-tree files separately; they are not included in this committed-phase impact gate."
       : undefined,
@@ -6423,6 +6444,7 @@ export function buildWorkflowImpactGate(
       codeChangedFiles,
       nonCodeChangedFiles,
     },
+    readability,
     dirtyWorkingTree: {
       fileCount: dirtyFiles.length,
       statusLines: dirtyStatusLines,
@@ -6463,6 +6485,15 @@ function printWorkflowImpactGate(result: WorkflowImpactGateResult): void {
   printKeyValue("Changed files:", result.unpushed.changedFiles.length);
   printKeyValue("Code files:", result.unpushed.codeChangedFiles.length);
   printKeyValue("Dirty files not included:", result.dirtyWorkingTree.fileCount);
+  console.log("");
+
+  console.log(chalk.bold("Readability Budget"));
+  printKeyValue(
+    "Changed lines:",
+    `${result.readability.changedLines} (${result.readability.addedLines} added, ${result.readability.deletedLines} deleted)`
+  );
+  printKeyValue("Target:", `<${result.readability.targetLines}`);
+  printKeyValue("Status:", result.readability.status);
   console.log("");
 
   if (result.unpushed.commits.length > 0) {

@@ -8,6 +8,7 @@ const {
   buildAdaptiveWorkRoutingRecommendation,
   buildAgenticTimeline,
   buildAgenticWorkStatus,
+  buildChangeBudget,
   buildSessionSnapshot,
   buildGeneratedWorkflowPlanDocument,
   buildFinalCommitReport,
@@ -35,6 +36,8 @@ const {
   PRODUCER_LOOP_ARTIFACT_VERSION,
   PRODUCER_LOOP_REPORT_VERSION,
   PRODUCER_LOOP_RELATIVE_DIR,
+  parseGitNumstat,
+  READABILITY_BUDGET,
   FINAL_COMMIT_REPORT_RELATIVE_PATH,
   FINAL_COMMIT_REPORT_VERSION,
   resolveAutoWorkflowMode,
@@ -825,6 +828,8 @@ test("workflow impact gate audits unpushed committed phases without dirty files"
   assert.equal(result.version, "snipara.workflow_impact_gate.v1");
   assert.equal(result.repo.upstream, "origin/dev");
   assert.equal(result.unpushed.commitCount, 1);
+  assert.equal(result.readability.changedLines, 5);
+  assert.equal(result.readability.status, "within_budget");
   assert.deepEqual(result.unpushed.codeChangedFiles.sort(), ["src/base.ts", "src/feature.ts"]);
   assert.deepEqual(result.unpushed.nonCodeChangedFiles, ["docs/note.md"]);
   assert.equal(result.dirtyWorkingTree.includedInLocalImpact, false);
@@ -843,6 +848,30 @@ test("workflow impact gate audits unpushed committed phases without dirty files"
   const payload = JSON.parse(cli.stdout);
   assert.equal(payload.unpushed.commitCount, 1);
   assert.equal(payload.dirtyWorkingTree.includedInLocalImpact, false);
+});
+
+test("readability budget distinguishes review and split-sized changes", () => {
+  assert.deepEqual(parseGitNumstat("120\t80\tsrc/large.ts\n-\t-\tassets/logo.png"), {
+    fileCount: 2,
+    addedLines: 120,
+    deletedLines: 80,
+  });
+  assert.equal(
+    buildChangeBudget({ fileCount: 1, addedLines: 120, deletedLines: 80 }).status,
+    "review"
+  );
+  assert.equal(
+    buildChangeBudget({
+      fileCount: 1,
+      addedLines: READABILITY_BUDGET.splitLines,
+      deletedLines: 1,
+    }).status,
+    "split"
+  );
+  assert.equal(
+    buildChangeBudget({ fileCount: 1, addedLines: 199, deletedLines: 0 }).status,
+    "within_budget"
+  );
 });
 
 test("journal checkpoint helper formats workflow context without durable-memory fields", () => {

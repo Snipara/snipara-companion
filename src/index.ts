@@ -468,6 +468,11 @@ export {
   WORKFLOW_PLANS_RELATIVE_DIR,
   WORKFLOW_STATE_RELATIVE_PATH,
 } from "./commands/workflows";
+export {
+  buildChangeBudget,
+  parseGitNumstat,
+  READABILITY_BUDGET,
+} from "./readability/change-budget";
 export type {
   GeneratedWorkflowTaskDocument,
   ManagedWorkflowTask,

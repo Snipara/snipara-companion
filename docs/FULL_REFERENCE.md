@@ -330,7 +330,9 @@ snipara-companion workflow resume --include-session-context
   policy and receipts allow harder routing.
 - `workflow impact-gate` audits committed local workflow phases that are ahead
   of upstream but not pushed. It does not push, and dirty working-tree files are
-  reported separately from the committed diff.
+  reported separately from the committed diff. It also reports a readability
+  budget for the committed diff: fewer than 200 changed lines is the target,
+  200–400 asks for review, and more than 400 recommends splitting the change.
 - `workflow producer-triage` scans unreviewed Producer Loop artifacts and emits
   a batched Decision Request artifact under `.snipara/decisions/pending/`.
   It never marks samples reviewed by itself.
