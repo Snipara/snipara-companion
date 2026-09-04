@@ -112,6 +112,7 @@ These commands are useful without hosted Snipara:
 | `code callers` / `imports` / `neighbors` / `shortest-path`                            | Structural repo questions from local files                                   |
 | `workflow start` / `phase-start` / `phase-commit` / `resume`                          | Agent continuity that survives compaction                                    |
 | `workflow task-start` / `task-next` / `task-status` / `task-commit` / `task-retry`    | Fresh task context, DAG selection, bounded retries, and recovery             |
+| `workflow impact-gate`                                                               | Committed diff size and touched-function readability review                   |
 | `feature init` / `specify` / `plan` / `tasks` / `start`                               | Spec-driven feature artifacts bridged into the managed workflow              |
 | `workflow timeline` / `workflow session`                                              | Append-only local activity log and Session Snapshot V0                       |
 | `workflow decisions` / `workflow decide`                                              | Local human decision requests and response receipts                          |

@@ -76,6 +76,13 @@ import {
   type ChangeBudget,
 } from "../readability/change-budget";
 import {
+  buildFunctionComplexityReport,
+  isFunctionComplexityFile,
+  parseGitChangedLineRanges,
+  type FunctionComplexityInput,
+  type FunctionComplexityReport,
+} from "../readability/function-complexity";
+import {
   buildOutcomeIntelligenceReceipt,
   DECISION_RESPONSE_VERSION,
   buildDecisionRequest,
@@ -871,6 +878,7 @@ export interface WorkflowImpactGateResult {
     nonCodeChangedFiles: string[];
   };
   readability: ChangeBudget;
+  functionComplexity: FunctionComplexityReport;
   dirtyWorkingTree: {
     fileCount: number;
     statusLines: string[];
@@ -6270,6 +6278,58 @@ function isLocalImpactCodeFile(filePath: string): boolean {
   return [".ts", ".tsx", ".mts", ".cts", ".py", ".pyi", ".go"].includes(path.extname(filePath));
 }
 
+function readGitTextFileAtCommit(
+  repoRoot: string,
+  filePath: string,
+  commit: string
+): string | undefined {
+  try {
+    return execFileSync("git", ["show", `${commit}:${filePath}`], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5000,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+function buildFunctionComplexityForGate(
+  repoRoot: string,
+  baseRef: string,
+  changedFiles: string[]
+): FunctionComplexityReport {
+  const functionFiles = changedFiles.filter(isFunctionComplexityFile);
+  if (functionFiles.length === 0) {
+    return buildFunctionComplexityReport([]);
+  }
+
+  const diff =
+    runGitText(
+      [
+        "diff",
+        "--unified=0",
+        "--no-color",
+        "--no-renames",
+        `${baseRef}..HEAD`,
+        "--",
+        ...functionFiles,
+      ],
+      repoRoot,
+      5000
+    ) ?? "";
+  const changedRanges = parseGitChangedLineRanges(diff);
+  const inputs: FunctionComplexityInput[] = [];
+  for (const filePath of functionFiles) {
+    const source = readGitTextFileAtCommit(repoRoot, filePath, "HEAD");
+    if (source !== undefined) {
+      inputs.push({ filePath, source, changedLines: changedRanges.get(filePath) ?? [] });
+    }
+  }
+  return buildFunctionComplexityReport(inputs);
+}
+
 function completedWorkflowPhasesForImpact(
   state: ManagedWorkflowState | undefined,
   changedFiles: string[]
@@ -6367,6 +6427,7 @@ export function buildWorkflowImpactGate(
     5000
   );
   const readability = buildChangeBudget(parseGitNumstat(numstat ?? ""));
+  const functionComplexity = buildFunctionComplexityForGate(repoRoot, upstream, changedFiles);
   const codeChangedFiles = changedFiles.filter(isLocalImpactCodeFile);
   const nonCodeChangedFiles = changedFiles.filter((file) => !isLocalImpactCodeFile(file));
   const commits = readUnpushedCommits(repoRoot, upstream);
@@ -6397,6 +6458,8 @@ export function buildWorkflowImpactGate(
   const reasonCodes = [
     readability.status === "review" ? "change_budget_review" : undefined,
     readability.status === "split" ? "change_budget_exceeded" : undefined,
+    functionComplexity.status === "review" ? "function_complexity_review" : undefined,
+    functionComplexity.status === "split" ? "function_complexity_exceeded" : undefined,
     dirtyFiles.length > 0 ? "dirty_working_tree_not_included" : undefined,
     commits.length === 0 ? "no_unpushed_commits" : undefined,
     changedFilesWithoutPhase.length > 0 ? "changed_files_without_phase_commit" : undefined,
@@ -6408,6 +6471,12 @@ export function buildWorkflowImpactGate(
       : undefined,
     readability.status === "split"
       ? `Split this change before review; more than ${READABILITY_BUDGET.splitLines} changed lines requires explicit justification.`
+      : undefined,
+    functionComplexity.status === "review"
+      ? `Review touched functions above the readability budget: complexity > ${functionComplexity.budget.review.complexity}, depth > ${functionComplexity.budget.review.depth}, or ${functionComplexity.budget.review.lines} lines.`
+      : undefined,
+    functionComplexity.status === "split"
+      ? `Split touched functions above the hard readability budget: complexity > ${functionComplexity.budget.split.complexity}, depth > ${functionComplexity.budget.split.depth}, or ${functionComplexity.budget.split.lines} lines.`
       : undefined,
     dirtyFiles.length > 0
       ? "Review dirty working-tree files separately; they are not included in this committed-phase impact gate."
@@ -6445,6 +6514,7 @@ export function buildWorkflowImpactGate(
       nonCodeChangedFiles,
     },
     readability,
+    functionComplexity,
     dirtyWorkingTree: {
       fileCount: dirtyFiles.length,
       statusLines: dirtyStatusLines,
@@ -6494,6 +6564,19 @@ function printWorkflowImpactGate(result: WorkflowImpactGateResult): void {
   );
   printKeyValue("Target:", `<${result.readability.targetLines}`);
   printKeyValue("Status:", result.readability.status);
+  console.log("");
+
+  console.log(chalk.bold("Function Complexity"));
+  printKeyValue("Analyzed files:", result.functionComplexity.fileCount);
+  printKeyValue("Touched functions:", result.functionComplexity.functionCount);
+  printKeyValue("Status:", result.functionComplexity.status);
+  for (const item of result.functionComplexity.functions
+    .filter((functionItem) => functionItem.status !== "within_budget")
+    .slice(0, 12)) {
+    console.log(
+      `- ${item.filePath}:${item.line} ${item.name} (${item.lines} lines, complexity ${item.complexity}, depth ${item.maxDepth}, ${item.status})`
+    );
+  }
   console.log("");
 
   if (result.unpushed.commits.length > 0) {

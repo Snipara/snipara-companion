@@ -333,6 +333,11 @@ snipara-companion workflow resume --include-session-context
   reported separately from the committed diff. It also reports a readability
   budget for the committed diff: fewer than 200 changed lines is the target,
   200–400 asks for review, and more than 400 recommends splitting the change.
+  Touched TypeScript and JavaScript functions receive the same advisory review:
+  complexity above 10, nesting above 4, or more than 60 lines asks for review;
+  complexity above 15, nesting above 6, or more than 100 lines recommends
+  splitting the function. Historical functions are ignored unless a diff hunk
+  overlaps them.
 - `workflow producer-triage` scans unreviewed Producer Loop artifacts and emits
   a batched Decision Request artifact under `.snipara/decisions/pending/`.
   It never marks samples reviewed by itself.
@@ -1687,7 +1692,7 @@ Semantics:
 - `snipara-companion workflow producer-report` = scans local Producer Loop artifacts and reports adoption, producer kinds, workflow ids, latest artifact, reason-code counts, invalid artifacts, sample size, reviewed/rejected/unreviewed counts, and calibration caveats with `hardGateReady=false`
 - `snipara-companion workflow producer-review` = marks one local Producer Loop artifact as reviewed or rejected with optional outcome, reviewer, and notes; it does not make `hardGateReady` true
 - `snipara-companion workflow phase-commit` and `workflow final-commit` complete matching local Team Sync active work when the workflow is completed. Matching is conservative: exact workflow goal/summary text wins, and file overlap plus meaningful token overlap handles slug-like workflow goals without closing unrelated active work.
-- `snipara-companion workflow impact-gate` = local pre-push gate for completed workflow phases in `upstream..HEAD`; it keeps dirty files out of the committed impact analysis and reports phase/file coverage before hosted reindex catches up
+- `snipara-companion workflow impact-gate` = local pre-push gate for completed workflow phases in `upstream..HEAD`; it keeps dirty files out of the committed impact analysis, reports phase/file coverage before hosted reindex catches up, and gives advisory readability results for touched TypeScript/JavaScript functions
 - `snipara-companion workflow resume` = reloads local workflow state plus hosted durable memory after compaction or resume, optionally includes short-lived session context with `--include-session-context`, then appends the latest hosted Team Sync handoff/checkpoint context when available; runtime-bound phases also print a Snipara Sandbox reattach or rehydrate plan; rerun `workflow phase-start` before editing again
 - `snipara-companion workflow resume` does not snapshot or exactly restore a live Snipara Sandbox process; exact process restore remains a roadmap item
 - `snipara-companion team-sync start-work` = keeps the local session file, reports Start Work Brief status, and fetches the hosted brief when the workspace has project auth
