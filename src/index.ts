@@ -473,6 +473,12 @@ export {
   parseGitNumstat,
   READABILITY_BUDGET,
 } from "./readability/change-budget";
+export {
+  buildFunctionComplexityReport,
+  FUNCTION_COMPLEXITY_BUDGET,
+  isFunctionComplexityFile,
+  parseGitChangedLineRanges,
+} from "./readability/function-complexity";
 export type {
   GeneratedWorkflowTaskDocument,
   ManagedWorkflowTask,

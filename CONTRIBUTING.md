@@ -52,6 +52,10 @@ Keep changes easy to review: fewer than 200 changed lines is the target;
 200–400 lines needs an explicit review of the scope, and more than 400 lines
 should be split or justified. Run `snipara-companion workflow impact-gate`
 before pushing committed workflow phases to see this budget alongside the
-local impact report.
+local impact report. The gate also reports touched TypeScript and JavaScript
+functions: complexity above 10, nesting above 4, or more than 60 lines asks
+for review; complexity above 15, nesting above 6, or more than 100 lines
+recommends splitting the function. These checks are advisory and only inspect
+functions overlapping changed diff hunks.
 
 Run `pnpm pack:smoke` before opening a release-facing package change.

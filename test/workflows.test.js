@@ -830,6 +830,9 @@ test("workflow impact gate audits unpushed committed phases without dirty files"
   assert.equal(result.unpushed.commitCount, 1);
   assert.equal(result.readability.changedLines, 5);
   assert.equal(result.readability.status, "within_budget");
+  assert.equal(result.functionComplexity.status, "within_budget");
+  assert.equal(result.functionComplexity.fileCount, 2);
+  assert.equal(result.functionComplexity.functionCount, 0);
   assert.deepEqual(result.unpushed.codeChangedFiles.sort(), ["src/base.ts", "src/feature.ts"]);
   assert.deepEqual(result.unpushed.nonCodeChangedFiles, ["docs/note.md"]);
   assert.equal(result.dirtyWorkingTree.includedInLocalImpact, false);

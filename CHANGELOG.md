@@ -4,6 +4,9 @@ Release notes for `snipara-companion`, newest first.
 
 ## Unreleased
 
+- Adds advisory function-level readability metrics to `workflow impact-gate`,
+  scoped to TypeScript and JavaScript functions touched by committed diff hunks.
+
 ## New In 3.6.21 - 2026-08-31
 
 - Requires manual device-code entry and explicit all-project consent for the
