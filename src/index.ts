@@ -1282,9 +1282,31 @@ program
 // Session end command (called on Stop hook)
 program
   .command("session-end")
-  .description("Persist session context (Stop hook)")
-  .action(async () => {
-    await sessionEndCommand();
+  .description("Persist a session checkpoint with a verifiable journal receipt (Stop hook)")
+  .option("--summary <summary>", "Bounded session summary to preserve")
+  .option("--summary-stdin", "Read the session summary from stdin")
+  .option("--files <files...>", "Files represented by this checkpoint")
+  .option("--session-id <sessionId>", "Host session id; do not rotate the workspace session")
+  .option("--retry <receipt>", "Retry a retained local checkpoint receipt")
+  .option("--json", "Print the persistence receipt as JSON")
+  .action(async (options) => {
+    if (options.retry && (options.summary || options.summaryStdin || options.files)) {
+      throw new Error("--retry cannot be combined with new checkpoint content");
+    }
+    let summary = options.summary;
+    if (options.summaryStdin) {
+      if (summary !== undefined) throw new Error("Choose --summary or --summary-stdin");
+      const chunks: Buffer[] = [];
+      let bytes = 0;
+      for await (const chunk of process.stdin) {
+        const buffer = Buffer.from(chunk);
+        bytes += buffer.length;
+        if (bytes > 128000) throw new Error("Session summary exceeds 128000 bytes");
+        chunks.push(buffer);
+      }
+      summary = Buffer.concat(chunks).toString("utf8");
+    }
+    await sessionEndCommand({ ...options, summary });
   });
 
 // Session status command

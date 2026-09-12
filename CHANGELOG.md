@@ -4,6 +4,15 @@ Release notes for `snipara-companion`, newest first.
 
 ## Unreleased
 
+## New In 3.6.22 - 2026-09-12
+
+- Saves explicit session summaries and file checkpoints to the hosted journal,
+  requiring a journal entry id before reporting success or rotating the session.
+- Retains bounded, redacted local receipts and supports `session-end --retry`
+  after a failed write. Empty checkpoints are explicitly skipped.
+- Supports summary input through stdin and host session ids for Codex Stop hooks.
+  Reports telemetry delivery separately from journal persistence.
+
 ## New In 3.6.21 - 2026-08-31
 
 - Requires manual device-code entry and explicit all-project consent for the

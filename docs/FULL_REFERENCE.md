@@ -1059,11 +1059,21 @@ Use `status` to inspect the current session window. Use `check` from local scrip
 
 ### `snipara-companion session-end`
 
-Persist the current session.
+Save an explicit summary/file checkpoint to the hosted journal. Success requires
+a journal entry id. Empty input is skipped and does not rotate the session.
 
 ```bash
-snipara-companion session-end
+snipara-companion session-end --summary "Implemented and verified the fix" --files src/example.ts
+snipara-companion session-end --summary-stdin --session-id host-task-id --json < summary.txt
+snipara-companion session-end --retry .snipara/companion/session-closeouts/<receipt>.json
 ```
+
+Failed writes exit nonzero and retain a bounded, redacted local receipt for retry.
+Confirmed receipts are not sent again. A timeout can leave server acceptance
+unknown, so retrying an unconfirmed write can create a duplicate journal entry.
+The last receipt is also available at `.snipara/companion/session-closeout.json`.
+Automation event delivery is reported separately from the journal result.
+This command saves session context; it does not generate product documentation.
 
 ### `snipara-companion session status`
 

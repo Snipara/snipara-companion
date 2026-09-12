@@ -18,6 +18,7 @@ import type {
 } from "../contracts/project-intelligence";
 import { loadConfig, type ConfigResolutionOptions, type RLMConfig } from "../config/store";
 import { resolveProject } from "../project/resolver";
+import { normalizeSessionCheckpoint, type SessionCheckpoint } from "../session/checkpoint";
 
 export interface ContextQueryResult {
   sections: Array<{
@@ -346,6 +347,9 @@ export interface SessionPersistResult {
   success: boolean;
   session_id: string;
   files_tracked: number;
+  status: "saved" | "skipped";
+  entry_id?: string;
+  date?: string;
 }
 
 export type WhyCaptureSourceKind = "commit" | "phase_commit" | "final_commit" | "handoff";
@@ -410,6 +414,7 @@ export interface EndOfTaskCommitWhyInput {
 
 export interface JournalAppendResult {
   success?: boolean;
+  entry_id?: string;
   date?: string;
   message?: string;
 }
@@ -1868,13 +1873,47 @@ export class RLMClient {
   }
 
   /**
-   * Persist session context using snipara_remember
+   * Persist an explicit bounded checkpoint to the hosted journal. An event
+   * acknowledgement is not a persistence receipt.
    */
-  async persistSession(): Promise<SessionPersistResult> {
+  async persistSession(input: Partial<SessionCheckpoint> = {}): Promise<SessionPersistResult> {
+    const checkpoint = normalizeSessionCheckpoint({
+      ...input,
+      sessionId: input.sessionId ?? this.config.sessionId ?? "unknown",
+    });
+    if (!checkpoint.summary && checkpoint.files.length === 0) {
+      return {
+        success: false,
+        status: "skipped",
+        session_id: checkpoint.sessionId,
+        files_tracked: 0,
+      };
+    }
+    const receipt = await this.journalAppend(
+      [
+        "Checkpoint: session-end",
+        `Session: ${checkpoint.sessionId}`,
+        checkpoint.summary ? `Summary: ${checkpoint.summary}` : "Summary: Session file checkpoint",
+        checkpoint.files.length ? `Files: ${checkpoint.files.join(", ")}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      ["companion", "checkpoint", "session-end"]
+    );
+    if (
+      receipt.success === false ||
+      typeof receipt.entry_id !== "string" ||
+      !receipt.entry_id.trim()
+    ) {
+      throw new Error("Hosted journal did not confirm a persisted entry");
+    }
     return {
       success: true,
-      session_id: this.config.sessionId || "unknown",
-      files_tracked: 0,
+      status: "saved",
+      session_id: checkpoint.sessionId,
+      files_tracked: checkpoint.files.length,
+      entry_id: receipt.entry_id,
+      date: receipt.date,
     };
   }
 

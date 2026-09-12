@@ -664,6 +664,21 @@ Launch assets, demo scripts, and post drafts live in
 [docs/launch/LAUNCH_KIT.md](./docs/launch/LAUNCH_KIT.md).
 
 Release notes live in [CHANGELOG.md](./CHANGELOG.md).
+
+`session-end --summary "What was completed" --files src/example.ts` saves a
+session checkpoint to the hosted journal and prints a local receipt path.
+Hooks can pass the summary through `--summary-stdin` and use `--session-id` for
+the host task identity. Without a summary or files, the checkpoint is explicitly
+skipped. A failed write keeps the checkpoint and session id; retry the printed
+receipt with `session-end --retry <receipt.json>`. `session status` shows the last
+checkpoint status. Receipts live in `.snipara/companion/session-closeouts/` and
+contain a bounded, redacted summary; they are local artifacts, not source files.
+A journal entry id confirms persistence; automation event delivery is reported
+separately. A timeout can leave server acceptance uncertain, so a retry after an
+unconfirmed response may create a second journal entry. New Codex hook bundles
+forward the final assistant summary; older hooks need to be refreshed to do so.
+This checkpoint preserves session context; it does not generate product docs.
+
 When project auth is configured, `workflow phase-commit`, `final-commit`, and
 `team-sync handoff` also run reviewed Why Capture. The Companion first sends a
 read-only preview and confirms only when the server detects durable rationale.
