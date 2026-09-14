@@ -4,6 +4,15 @@ Release notes for `snipara-companion`, newest first.
 
 ## Unreleased
 
+## New In 3.6.23 - 2026-09-14
+
+- Adds opt-in strict closeout for `workflow task-commit` and
+  `workflow phase-commit`, requiring passed verification evidence before a
+  task commit and requiring all declared phase tasks to be completed or
+  skipped before hosted workflow writes.
+- Keeps the default workflow behavior backward-compatible while making strict
+  mode suitable for release, security, and multi-agent dogfooding.
+
 ## New In 3.6.22 - 2026-09-12
 
 - Saves explicit session summaries and file checkpoints to the hosted journal,
