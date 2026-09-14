@@ -635,6 +635,7 @@ test("workflow phase-commit help exposes structured Why Capture inputs", () => {
   assert.match(result.stdout, /--alternative/);
   assert.match(result.stdout, /--constraint/);
   assert.match(result.stdout, /--observed-outcome/);
+  assert.match(result.stdout, /--strict/);
 });
 
 test("workflow task commands expose bounded execution controls", () => {
@@ -652,11 +653,46 @@ test("workflow task commands expose bounded execution controls", () => {
   const taskCommit = runCli(["workflow", "task-commit", "--help"]);
   assert.equal(taskCommit.status, 0, taskCommit.stderr || taskCommit.stdout);
   assert.match(taskCommit.stdout, /--evidence/);
+  assert.match(taskCommit.stdout, /--strict/);
   assert.match(taskCommit.stdout, /partial\|blocked/);
 
   const taskRetry = runCli(["workflow", "task-retry", "--help"]);
   assert.equal(taskRetry.status, 0, taskRetry.stderr || taskRetry.stdout);
   assert.match(taskRetry.stdout, /--recovery-task/);
+});
+
+test("strict phase commit blocks incomplete tasks before any hosted write", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-strict-phase-"));
+  writeWorkflowState(dir);
+  const workflowPath = path.join(dir, ".snipara", "workflow", "current.json");
+  const workflow = JSON.parse(fs.readFileSync(workflowPath, "utf8"));
+  workflow.phases[1].tasks = [
+    {
+      id: "verify-task",
+      title: "Verify commands",
+      query: "Verify commands",
+      status: "pending",
+      attempt: 0,
+      maxAttempts: 1,
+    },
+  ];
+  fs.writeFileSync(workflowPath, `${JSON.stringify(workflow, null, 2)}\n`, "utf8");
+
+  const result = runCli(
+    [
+      "workflow",
+      "phase-commit",
+      "verify",
+      "--summary",
+      "done",
+      "--strict",
+      "--evidence",
+      "passed:node --test",
+    ],
+    { cwd: dir }
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stdout}\n${result.stderr}`, /incomplete tasks in strict mode/);
 });
 
 test("agentic status summarizes workflow, git, and Team Sync state", () => {

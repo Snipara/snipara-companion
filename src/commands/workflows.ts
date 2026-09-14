@@ -11050,6 +11050,38 @@ function workflowOutcomeEvidence(values: string[] | undefined): OutcomeIntellige
   });
 }
 
+function assertStrictVerificationEvidence(
+  values: string[] | undefined,
+  subject: string
+): OutcomeIntelligenceEvidence[] {
+  const evidence = workflowOutcomeEvidence(values);
+  if (evidence.length === 0) {
+    throw new Error(`${subject} requires at least one --evidence passed:<check> in strict mode.`);
+  }
+  const nonPassing = evidence.filter((item) => item.status !== "passed");
+  if (nonPassing.length > 0) {
+    throw new Error(
+      `${subject} has non-passing evidence in strict mode: ${nonPassing
+        .map((item) => `${item.status}:${item.label}`)
+        .join(" | ")}`
+    );
+  }
+  return evidence;
+}
+
+function assertStrictPhaseTasksCompleted(phase: ManagedWorkflowPhase): void {
+  const incomplete = workflowTasks(phase).filter(
+    (task) => !["completed", "skipped"].includes(task.status)
+  );
+  if (incomplete.length > 0) {
+    throw new Error(
+      `Phase '${phase.id}' has incomplete tasks in strict mode: ${incomplete
+        .map((task) => `${task.id} (${task.status})`)
+        .join(", ")}`
+    );
+  }
+}
+
 const MANAGED_WORKFLOW_JUDGMENT_AUTONOMY_VERSION = "snipara.workflow.judgment-autonomy.v1" as const;
 
 function isPolicyAutoEligibleRecommendation(
@@ -12695,6 +12727,7 @@ export async function workflowTaskCommitCommand(options: {
   outcome?: TaskCommitOutcome;
   files?: string[];
   evidence?: string[];
+  strict?: boolean;
   json?: boolean;
 }): Promise<void> {
   const state = readRequiredWorkflowState();
@@ -12723,6 +12756,10 @@ export async function workflowTaskCommitCommand(options: {
   const category = options.category ?? "workflow-task";
   const files =
     options.files && options.files.length > 0 ? options.files : (task.files ?? phase.files);
+
+  if (options.strict && outcome === "completed") {
+    assertStrictVerificationEvidence(options.evidence, `Task '${task.id}'`);
+  }
 
   await memoryGuardCheckCommand({
     trigger: "commit",
@@ -13523,6 +13560,7 @@ export async function workflowPhaseCommitCommand(options: {
   outcome?: TaskCommitOutcome;
   files?: string[];
   evidence?: string[];
+  strict?: boolean;
   json?: boolean;
 }): Promise<void> {
   const state = readRequiredWorkflowState();
@@ -13530,6 +13568,11 @@ export async function workflowPhaseCommitCommand(options: {
   const outcome = options.outcome ?? "completed";
   const category = options.category ?? "workflow-phase";
   const files = options.files && options.files.length > 0 ? options.files : phase.files;
+
+  if (options.strict && outcome === "completed") {
+    assertStrictPhaseTasksCompleted(phase);
+    assertStrictVerificationEvidence(options.evidence, `Phase '${phase.id}'`);
+  }
 
   if (outcome === "completed" && workflowTasks(phase).some((task) => task.status === "blocked")) {
     throw new Error(

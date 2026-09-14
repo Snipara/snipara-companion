@@ -484,6 +484,13 @@ npx -y snipara-companion workflow producer-review --latest --outcome useful --re
 npx -y snipara-companion handoff --summary "auth impact mapped" --next "run auth tests"
 ```
 
+For a stricter engineering workflow, add `--strict` to a completed
+`workflow task-commit` or `workflow phase-commit`. Strict phase closeout requires
+all declared tasks to be completed or skipped and requires every supplied
+verification item to be passed. The default remains backward-compatible for
+older workflows; strict mode is recommended for release, security, and
+multi-agent work.
+
 Managed workflow judgments use risk-based authority. `info` and `watch`
 recommendations are accepted locally by policy and remain auditable; `risk` and
 `block` recommendations still need `workflow judgment-respond`. The immutable

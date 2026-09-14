@@ -1180,6 +1180,15 @@ snipara-companion workflow run --mode full --no-runtime-hint --query "implement 
 snipara-companion workflow run --mode orchestrate --query "map production rollout risks"
 snipara-companion workflow final-commit --summary "Shipped auth hardening and tests" --why "Close the reported session replay gap" --evidence "passed:pnpm test auth" --risk "Monitor production auth errors" --next-step "Review the first 24 hours of telemetry" --files src/auth.ts tests/auth.test.ts
 snipara-companion workflow producer-report
+```
+
+Use `--strict` on a completed `workflow task-commit` or `workflow phase-commit`
+when the work needs a hard engineering closeout. Strict phase commit refuses
+pending or in-progress declared tasks and requires every supplied evidence item
+to be passed. Without the flag, legacy workflows retain their existing
+compatibility behavior.
+
+```
 snipara-companion workflow producer-review --artifact producer-abc123 --outcome useful --reviewer alice
 snipara-companion final-commit --summary "Shipped auth hardening and tests" --why "Close the reported session replay gap" --evidence "passed:pnpm test auth" --next-step "Review the first 24 hours of telemetry" --files src/auth.ts tests/auth.test.ts
 snipara-companion doctor

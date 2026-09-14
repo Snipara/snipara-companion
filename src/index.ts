@@ -3002,6 +3002,7 @@ workflow
     collectOption,
     []
   )
+  .option("--strict", "Require passed evidence before completing this task")
   .option("--json", "Print raw JSON")
   .action(async (phaseId, taskId, options) => {
     await workflowTaskCommitCommand({
@@ -3017,6 +3018,7 @@ workflow
       outcome: options.outcome,
       files: options.files,
       evidence: options.evidence,
+      strict: Boolean(options.strict),
       json: options.json,
     });
   });
@@ -3104,6 +3106,7 @@ workflow
     collectOption,
     []
   )
+  .option("--strict", "Require all tasks complete and passed evidence before completing this phase")
   .option("--json", "Print raw JSON")
   .action(async (phaseId, options) => {
     await workflowPhaseCommitCommand({
@@ -3118,6 +3121,7 @@ workflow
       outcome: options.outcome,
       files: options.files,
       evidence: options.evidence,
+      strict: Boolean(options.strict),
       json: options.json,
     });
   });
