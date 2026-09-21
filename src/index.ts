@@ -460,6 +460,7 @@ export {
   normalizeWorkflowPlanInput,
   deriveManagedWorkflowJudgmentResolution,
   resolveAutoWorkflowMode,
+  resolveAutomaticSetup,
   resolveFullWorkflowTokenBudget,
   validatePlanResult,
   PRODUCER_LOOP_ARTIFACT_VERSION,
@@ -469,6 +470,10 @@ export {
   WORKFLOW_STATE_RELATIVE_PATH,
 } from "./commands/workflows";
 export type {
+  AutomaticSetupSelection,
+  AutomaticMemorySetup,
+  AutomaticOrchestratorSetup,
+  AutomaticWorkerSetup,
   GeneratedWorkflowTaskDocument,
   ManagedWorkflowTask,
   ManagedWorkflowTaskContextEnvelope,
@@ -3169,7 +3174,11 @@ workflow
   .command("run")
   .description("Run a LITE/STANDARD/FULL/orchestrate workflow preset")
   .requiredOption("-q, --query <query>", "Workflow query")
-  .option("-M, --mode <mode>", "lite|standard|auto|full|orchestrate", "standard")
+  .option(
+    "-M, --mode <mode>",
+    "lite|standard|auto|full|orchestrate (auto selects the smallest effective setup)",
+    "auto"
+  )
   .option(
     "-m, --max-tokens <number>",
     "Maximum tokens; FULL mode splits this across workflow surfaces",

@@ -131,13 +131,13 @@ These commands are useful without hosted Snipara:
 
 Use the exact CLI value after `workflow run --mode`:
 
-| CLI value     | Guide label         | Meaning                                                               |
-| ------------- | ------------------- | --------------------------------------------------------------------- |
-| `lite`        | LITE                | Small, known-scope work with no mandatory hosted context call         |
-| `standard`    | STANDARD            | Normal work with context and code-graph follow-up when needed         |
-| `auto`        | AUTO                | Routes by task intent to `lite`, `standard`, `full`, or `orchestrate` |
-| `full`        | FULL                | Managed, phased work with durable context and plan support            |
-| `orchestrate` | FULL + ORCHESTRATED | Explicit deeper orchestration for multi-agent or proof-gate work      |
+| CLI value     | Guide label         | Meaning                                                                             |
+| ------------- | ------------------- | ----------------------------------------------------------------------------------- |
+| `lite`        | LITE                | Small, known-scope work with no mandatory hosted context call                       |
+| `standard`    | STANDARD            | Normal work with context and code-graph follow-up when needed                       |
+| `auto`        | AUTO                | Default mode; routes by task intent to `lite`, `standard`, `full`, or `orchestrate` |
+| `full`        | FULL                | Managed, phased work with durable context and plan support                          |
+| `orchestrate` | FULL + ORCHESTRATED | Explicit deeper orchestration for multi-agent or proof-gate work                    |
 
 The root `run` command is the Project Intelligence judgment/release flow.
 `workflow run` is the workflow-mode runner. They share a verb but are not
@@ -510,8 +510,11 @@ and file evidence when the Companion hook is installed. `workflow session` deriv
 Session Snapshot V0 includes latest activity, risk reasons, touched files, a
 next action, and advisory Intent Detection V0. Intent Detection V0 reports the
 inferred intent, confidence, reason-code signals, local evidence counts, and a
-suggested workflow mode. `workflow run --mode auto` uses that same Control Plane
-principle to choose lite, standard, full, or orchestrate. Lite runs with zero
+suggested workflow mode. `workflow run` uses AUTO by default and that same
+Control Plane principle to choose lite, standard, full, or orchestrate. It
+reports an automatic setup card for Companion, hosted memory, Orchestrator,
+and policy-gated workers. Standalone `snipara-memory` remains an explicit
+application choice. Lite runs with zero
 mandatory hosted context calls; recall/context/code-impact are on-demand
 escalations, not an entry toll.
 `workflow timeline --export md` prints a compact redacted Markdown timeline for

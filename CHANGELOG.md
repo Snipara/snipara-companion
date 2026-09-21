@@ -4,6 +4,14 @@ Release notes for `snipara-companion`, newest first.
 
 ## Unreleased
 
+## New In 3.6.24 - 2026-09-21
+
+- Makes `workflow run` use AUTO mode by default and adds French intent signals
+  for LITE, STANDARD, FULL, and ORCHESTRATED routing.
+- Reports an automatic setup card showing when Companion, hosted memory,
+  Orchestrator, and policy-gated workers are selected.
+- Keeps standalone `snipara-memory` opt-in and worker execution policy-gated.
+
 ## New In 3.6.23 - 2026-09-14
 
 - Adds opt-in strict closeout for `workflow task-commit` and

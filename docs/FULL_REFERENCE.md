@@ -1131,13 +1131,13 @@ where the specific command needs hosted context or memory:
 
 `workflow run --mode` accepts exactly these values:
 
-| CLI value     | Guide label         | Runtime behavior                                                      |
-| ------------- | ------------------- | --------------------------------------------------------------------- |
-| `lite`        | LITE                | Small, known-scope work with no mandatory hosted context call         |
-| `standard`    | STANDARD            | Normal work with context and code-graph follow-up when needed         |
-| `auto`        | AUTO                | Routes by task intent to `lite`, `standard`, `full`, or `orchestrate` |
-| `full`        | FULL                | Managed, phased work with durable context and plan support            |
-| `orchestrate` | FULL + ORCHESTRATED | Explicit deeper orchestration for multi-agent or proof-gate work      |
+| CLI value     | Guide label         | Runtime behavior                                                                    |
+| ------------- | ------------------- | ----------------------------------------------------------------------------------- |
+| `lite`        | LITE                | Small, known-scope work with no mandatory hosted context call                       |
+| `standard`    | STANDARD            | Normal work with context and code-graph follow-up when needed                       |
+| `auto`        | AUTO                | Default mode; routes by task intent to `lite`, `standard`, `full`, or `orchestrate` |
+| `full`        | FULL                | Managed, phased work with durable context and plan support                          |
+| `orchestrate` | FULL + ORCHESTRATED | Explicit deeper orchestration for multi-agent or proof-gate work                    |
 
 The root `run` command is the Project Intelligence judgment/release flow.
 `workflow run` is the workflow-mode runner; they are different commands.
@@ -1672,7 +1672,7 @@ Semantics:
 - `snipara-companion query --follow-recommendation` = execute the hosted recommended structural tool instead of only printing it; context retrieval defaults to a 30-second timeout and supports `--search-mode keyword|semantic|hybrid`, `--no-answer-pack`, `--no-auto-decompose`, and `--no-shared-context`
 - `snipara-companion workflow run --mode lite` = zero mandatory hosted calls for small known-file work
 - `snipara-companion workflow run --mode standard` = context query plus automatic `snipara_code_*` follow-up when Snipara recommends one
-- `snipara-companion workflow run --mode auto` = routes to lite, standard, full, or orchestrate from task intent
+- `snipara-companion workflow run` = AUTO by default; routes to lite, standard, full, or orchestrate from task intent and reports the selected Companion/memory/orchestrator setup
 - `snipara-companion workflow run --mode full` = budgeted durable bootstrap + optional session context + context query + automatic structural follow-up + hosted plan with quality diagnostics
 - `snipara-companion plan --write-plan-file ./plan.json` = convert hosted `snipara_plan` output into managed workflow JSON
 - `snipara-companion plan --start-workflow` or `workflow run --mode full --start-workflow-from-plan` = create local `.snipara/workflow/current.json` from a valid generated plan

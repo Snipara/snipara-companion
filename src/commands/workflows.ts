@@ -232,6 +232,21 @@ const REUPLOAD_REASONS = new Set([
 ]);
 
 export type WorkflowMode = "lite" | "standard" | "auto" | "full" | "orchestrate";
+export type AutomaticMemorySetup = "none" | "hosted";
+export type AutomaticOrchestratorSetup = "none" | "available" | "required";
+export type AutomaticWorkerSetup = "none" | "policy_gated";
+
+export interface AutomaticSetupSelection {
+  requestedMode: WorkflowMode;
+  effectiveMode: Exclude<WorkflowMode, "auto">;
+  companion: "active";
+  memory: AutomaticMemorySetup;
+  orchestrator: AutomaticOrchestratorSetup;
+  workers: AutomaticWorkerSetup;
+  standaloneMemory: "not_selected";
+  tokenStrategy: "minimal" | "budgeted";
+  reasons: string[];
+}
 export type OnboardFolderMode = "auto" | "business_context" | "code_project" | "mixed";
 export type DetectedOnboardFolderMode = "business_context" | "code_project" | "mixed" | "unknown";
 export type ManagedWorkflowStatus = "active" | "completed" | "blocked";
@@ -5652,7 +5667,7 @@ export function resolveAutoWorkflowMode(query: string): Exclude<WorkflowMode, "a
   const normalized = query.toLowerCase();
 
   if (
-    /\b(orchestrate|swarm|htask|handoff|multi-agent|multi agent|worker|proof gate|proof-gate|drift check|release gate|production gate)\b/.test(
+    /\b(orchestrate|orchestrat|swarm|essaim|htask|h[- ]?tache|handoff|passation|multi-agent|multi agent|multi-agent|sous-agent|sous agent|worker|travailleur|parall[eè]le|coordonn(?:er|ation)|proof gate|proof-gate|preuve|garde-fou|gate|drift check|d[eé]rive|release gate|production gate|mise en production|contr[oô]le de production)\b/.test(
       normalized
     )
   ) {
@@ -5660,7 +5675,7 @@ export function resolveAutoWorkflowMode(query: string): Exclude<WorkflowMode, "a
   }
 
   if (
-    /\b(deploy|deployment|release|merge|push|migration|schema|auth|billing|security|architecture|architectural|multi-phase|multiphase|phase commit|final commit|managed workflow|roadmap|plan)\b/.test(
+    /\b(deploy|deployment|d[eé]ployer|d[eé]ploiement|release|livraison|mise en production|merge|fusionner|push|pousser|migration|sch[eé]ma|auth|authentification|billing|facturation|security|s[eé]curit[eé]|architecture|architectural|multi-phase|multiphase|phase commit|commit de phase|final commit|commit final|managed workflow|workflow g[eé]r[eé]|roadmap|feuille de route|plan|chantier)\b/.test(
       normalized
     )
   ) {
@@ -5668,7 +5683,7 @@ export function resolveAutoWorkflowMode(query: string): Exclude<WorkflowMode, "a
   }
 
   if (
-    /\b(why|pourquoi|decision|décision|rationale|positioning|positionnement|strategy|stratégie|cross-session|previous decision|prior decision|historical context)\b/.test(
+    /\b(why|pourquoi|decision|d[eé]cision|rationale|positioning|positionnement|strategy|strat[eé]gie|contexte|pr[eé]f[eé]rence|cross-session|multi-session|previous decision|prior decision|historical context|contexte historique)\b/.test(
       normalized
     )
   ) {
@@ -5676,7 +5691,7 @@ export function resolveAutoWorkflowMode(query: string): Exclude<WorkflowMode, "a
   }
 
   if (
-    /\b(status|show|list|read|lookup|recall|brief|summarize|summary|what changed|question|docs?|documentation)\b/.test(
+    /\b(status|statut|show|montre|montrer|afficher|list|liste|lister|read|lire|lookup|chercher|retrouver|recall|rappel|brief|r[eé]sum[eé]|summarize|summary|what changed|ce qui a chang[eé]|question|docs?|documentation)\b/.test(
       normalized
     ) &&
     !/\b(implement|change|fix|ship|code|refactor|test|write|create|build)\b/.test(normalized)
@@ -5685,10 +5700,10 @@ export function resolveAutoWorkflowMode(query: string): Exclude<WorkflowMode, "a
   }
 
   if (
-    /\b(typo|copy edit|small diff|tiny diff|one-line|one line|known file|obvious fix|quick fix|format|formatting|rename)\b/.test(
+    /\b(typo|faute|correction de texte|copy edit|petite correction|petit diff|small diff|tiny diff|one-line|one line|une ligne|fichier connu|known file|obvious fix|quick fix|correction rapide|format|formatting|formatage|rename|renommer)\b/.test(
       normalized
     ) &&
-    !/\b(architecture|release|deploy|migration|schema|auth|billing|security|multi-file|many files|5\+ files|cross-session|decision|décision)\b/.test(
+    !/\b(architecture|release|deploy|d[eé]ploiement|migration|schema|sch[eé]ma|auth|billing|security|s[eé]curit[eé]|multi-file|multi-fichier|many files|plusieurs fichiers|5\+ files|cross-session|multi-session|decision|d[eé]cision)\b/.test(
       normalized
     )
   ) {
@@ -5696,6 +5711,53 @@ export function resolveAutoWorkflowMode(query: string): Exclude<WorkflowMode, "a
   }
 
   return "standard";
+}
+
+/**
+ * Describe the smallest effective Snipara setup selected for a task.
+ * This is deliberately a decision card: it never enables standalone memory
+ * or executes a worker by itself. Worker execution remains policy-gated and
+ * requires an explicit orchestrator path or project policy.
+ */
+export function resolveAutomaticSetup(
+  query: string,
+  requestedMode: WorkflowMode,
+  options: { hostedConfigured?: boolean } = {}
+): AutomaticSetupSelection {
+  const effectiveMode = effectiveWorkflowMode(requestedMode, query);
+  const hostedMemory = options.hostedConfigured !== false && effectiveMode !== "lite";
+  const orchestratorRequired = effectiveMode === "orchestrate";
+  const hasOrchestratorSignal = getOrchestratorRecommendation(query, effectiveMode) !== null;
+
+  return {
+    requestedMode,
+    effectiveMode,
+    companion: "active",
+    memory: hostedMemory ? "hosted" : "none",
+    orchestrator: orchestratorRequired ? "required" : hasOrchestratorSignal ? "available" : "none",
+    workers:
+      orchestratorRequired &&
+      /\b(worker|travailleur|sous-agent(?:s)?|sous agent(?:s)?|parall[eè]le(?:s)?|swarm|essaim)\b/i.test(
+        query
+      )
+        ? "policy_gated"
+        : "none",
+    standaloneMemory: "not_selected",
+    tokenStrategy:
+      effectiveMode === "full" || effectiveMode === "orchestrate" ? "budgeted" : "minimal",
+    reasons: [
+      `task intent selected ${effectiveMode.toUpperCase()}`,
+      hostedMemory
+        ? "hosted memory is used for this workflow depth"
+        : "no mandatory memory call for this workflow depth",
+      orchestratorRequired
+        ? "orchestrator capabilities are required for proof, coordination, or production gates"
+        : hasOrchestratorSignal
+          ? "orchestrator remains available if the task escalates"
+          : "orchestration is not needed for the detected task scope",
+      "standalone snipara-memory is reserved for applications that explicitly choose the autonomous memory package",
+    ],
+  };
 }
 
 function effectiveWorkflowMode(mode: WorkflowMode, query = ""): Exclude<WorkflowMode, "auto"> {
@@ -7220,6 +7282,31 @@ function printLiteWorkflowRun(query: string, requestedMode: WorkflowMode): void 
   console.log(
     "Escalate with recall, context_query, code impact, or task-commit only when the task creates that need."
   );
+  console.log("");
+}
+
+function printAutomaticSetup(selection: AutomaticSetupSelection): void {
+  console.log(chalk.bold("Automatic Snipara setup"));
+  printKeyValue("Companion:", "active router");
+  printKeyValue("Workflow:", `${selection.effectiveMode} (${selection.requestedMode} requested)`);
+  printKeyValue(
+    "Memory:",
+    selection.memory === "hosted" ? "hosted Snipara memory" : "none required"
+  );
+  printKeyValue(
+    "Orchestrator:",
+    selection.orchestrator === "required"
+      ? "required"
+      : selection.orchestrator === "available"
+        ? "available on escalation"
+        : "not selected"
+  );
+  printKeyValue(
+    "Workers:",
+    selection.workers === "policy_gated" ? "policy-gated recommendation" : "not selected"
+  );
+  printKeyValue("Standalone memory:", "not selected automatically");
+  printKeyValue("Token strategy:", selection.tokenStrategy);
   console.log("");
 }
 
@@ -10201,6 +10288,9 @@ export async function workflowRunCommand(options: {
 }): Promise<void> {
   const hostedConfigured = isConfigured();
   const effectiveMode = effectiveWorkflowMode(options.mode, options.query);
+  const automaticSetup = resolveAutomaticSetup(options.query, options.mode, {
+    hostedConfigured,
+  });
   const localAdaptiveRoutingPolicy = readLocalAdaptiveRoutingProjectPolicy();
   const localAdaptiveRoutingRequested = shouldBuildAdaptiveRouting(options);
   const canRunLocalAdaptiveRouting =
@@ -10256,7 +10346,9 @@ export async function workflowRunCommand(options: {
     adaptiveRoutingDryRun: Boolean(adaptiveRouting),
   });
   const shouldEmitOrchestratorHandoff =
-    options.emitOrchestratorHandoff || options.autoRouteOrchestrator;
+    options.emitOrchestratorHandoff ||
+    options.autoRouteOrchestrator ||
+    (options.mode === "auto" && effectiveMode === "orchestrate");
   const preparedHandoff =
     shouldEmitOrchestratorHandoff && orchestratorRecommendation
       ? writeOrchestratorHandoff({
@@ -10274,6 +10366,7 @@ export async function workflowRunCommand(options: {
     const payload = {
       mode: options.mode,
       effective_mode: effectiveMode,
+      automatic_setup: automaticSetup,
       local_only: true,
       local_policy_path: localAdaptiveRoutingPolicy ? ADAPTIVE_ROUTING_POLICY_RELATIVE_PATH : null,
       retrieval_policy:
@@ -10305,6 +10398,7 @@ export async function workflowRunCommand(options: {
     if (effectiveMode === "lite") {
       printLiteWorkflowRun(options.query, options.mode);
     } else {
+      printAutomaticSetup(automaticSetup);
       console.log(chalk.bold("Local Adaptive Work Routing"));
       console.log(
         "Hosted Snipara is not configured; no context query, hosted catalog, or planner call ran."
@@ -10323,6 +10417,7 @@ export async function workflowRunCommand(options: {
     const payload = {
       mode: options.mode,
       effective_mode: effectiveMode,
+      automatic_setup: automaticSetup,
       retrieval_policy: {
         mandatory_calls: [],
         escalation: "Run recall, context_query, or code impact only when the task needs them.",
@@ -10340,6 +10435,7 @@ export async function workflowRunCommand(options: {
     }
 
     printLiteWorkflowRun(options.query, options.mode);
+    printAutomaticSetup(automaticSetup);
     if (options.runtimeHint !== false) {
       printRuntimeHint(options.query, effectiveMode);
     }
@@ -10361,6 +10457,7 @@ export async function workflowRunCommand(options: {
     if (options.json) {
       printJson({
         mode: options.mode,
+        automatic_setup: automaticSetup,
         orchestrate: result,
         orchestrator_recommendation: orchestratorRecommendation,
         orchestrator_handoff: preparedHandoff,
@@ -10370,6 +10467,7 @@ export async function workflowRunCommand(options: {
       return;
     }
     printOrchestrateResult(result);
+    printAutomaticSetup(automaticSetup);
     if (options.runtimeHint !== false) {
       printRuntimeHint(options.query, effectiveMode);
       printOrchestratorHandoffHint(options.query, effectiveMode, orchestratorRecommendation);
@@ -10399,6 +10497,7 @@ export async function workflowRunCommand(options: {
   const payload: Record<string, unknown> = {
     mode: options.mode,
     effective_mode: effectiveMode,
+    automatic_setup: automaticSetup,
     orchestrator_recommendation: orchestratorRecommendation,
     orchestrator_handoff: preparedHandoff,
     adaptive_routing: adaptiveRouting,
@@ -10494,6 +10593,8 @@ export async function workflowRunCommand(options: {
     printJson(payload);
     return;
   }
+
+  printAutomaticSetup(automaticSetup);
 
   if (effectiveMode === "full" && payload.session_bootstrap) {
     const printedBootstrap = printSessionBootstrap(

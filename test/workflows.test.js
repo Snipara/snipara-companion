@@ -38,6 +38,7 @@ const {
   FINAL_COMMIT_REPORT_RELATIVE_PATH,
   FINAL_COMMIT_REPORT_VERSION,
   resolveAutoWorkflowMode,
+  resolveAutomaticSetup,
   resolveFullWorkflowTokenBudget,
   validatePlanResult,
   runMemoryGuardCheck,
@@ -4619,6 +4620,37 @@ test("workflow auto mode deterministically selects workflow depth", () => {
     resolveAutoWorkflowMode("coordinate production proof gate with workers"),
     "orchestrate"
   );
+  assert.equal(resolveAutoWorkflowMode("corriger une faute dans le README"), "lite");
+  assert.equal(resolveAutoWorkflowMode("préparer une migration de schéma en production"), "full");
+  assert.equal(
+    resolveAutoWorkflowMode("coordonner des sous-agents avec une preuve de déploiement"),
+    "orchestrate"
+  );
+});
+
+test("automatic setup selects Companion and hosted memory without silently enabling standalone memory", () => {
+  const lite = resolveAutomaticSetup("corriger une faute", "auto", { hostedConfigured: true });
+  assert.equal(lite.effectiveMode, "lite");
+  assert.equal(lite.companion, "active");
+  assert.equal(lite.memory, "none");
+  assert.equal(lite.standaloneMemory, "not_selected");
+
+  const full = resolveAutomaticSetup("préparer une migration de schéma", "auto", {
+    hostedConfigured: true,
+  });
+  assert.equal(full.effectiveMode, "full");
+  assert.equal(full.memory, "hosted");
+  assert.equal(full.tokenStrategy, "budgeted");
+  assert.equal(full.orchestrator, "none");
+
+  const orchestrated = resolveAutomaticSetup(
+    "coordonner des sous-agents avec une preuve de déploiement",
+    "auto",
+    { hostedConfigured: true }
+  );
+  assert.equal(orchestrated.effectiveMode, "orchestrate");
+  assert.equal(orchestrated.orchestrator, "required");
+  assert.equal(orchestrated.workers, "policy_gated");
 });
 
 test("workflow lite mode does not require hosted configuration", () => {
