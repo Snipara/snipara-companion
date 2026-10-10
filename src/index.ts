@@ -101,6 +101,12 @@ import {
 } from "./commands/automations";
 import { agentReadinessAuditCommand } from "./commands/agent-readiness";
 import { leadPlanCommand } from "./commands/lead-plan";
+import { controllerBridgeExportCommand } from "./commands/controller-bridge";
+import { controllerBridgeProjectCommand } from "./commands/controller-bridge-project";
+import { controllerCockpitCommand } from "./commands/controller-cockpit";
+export { buildControllerCockpit } from "./commands/controller-cockpit";
+export { exportControllerBridge } from "./commands/controller-bridge";
+export { projectControllerBridge } from "./commands/controller-bridge-project";
 import {
   featureInitCommand,
   featurePlanCommand,
@@ -900,6 +906,45 @@ program
   );
 
 program
+  .command("controller-cockpit")
+  .description("Inspect Controller evidence or invoke an explicit public Controller action")
+  .requiredOption("--dir <directory>")
+  .requiredOption("--controller-id <id>")
+  .option(
+    "--action <action>",
+    "inspect|show|stop|resume|candidate-show|review-show|review-attach|evaluate",
+    "inspect"
+  )
+  .option("--bridge-file <file>")
+  .option("--orchestrator-bin <file>")
+  .option("--candidate-id <id>")
+  .option("--receipt-file <file>")
+  .option("--cancel-active")
+  .option("--timeout-seconds <seconds>")
+  .option("--json")
+  .action(controllerCockpitCommand);
+
+const controllerBridge = program
+  .command("controller-bridge")
+  .description("Reviewed Companion to Controller bridge and evidence projection");
+controllerBridge
+  .command("export")
+  .requiredOption("--lead-plan-file <file>")
+  .requiredOption("--policy-file <file>")
+  .requiredOption("--reviewer-id <id>")
+  .requiredOption("--out-dir <directory>")
+  .option("--dir <directory>")
+  .option("--json")
+  .action(controllerBridgeExportCommand);
+controllerBridge
+  .command("project")
+  .requiredOption("--bridge-file <file>")
+  .requiredOption("--controller-file <file>")
+  .option("--dir <directory>")
+  .option("--json")
+  .action(controllerBridgeProjectCommand);
+
+program
   .command("lead-plan")
   .description("Create a fail-closed Companion Engineering Lead Plan")
   .option("--task <task>", "Current task or work package summary")
@@ -911,6 +956,10 @@ program
   .option("--risk <risks...>", "Known risks or caveats")
   .option("--from-cockpit <file>", "Read a Project Health cockpit JSON export")
   .option("--from-plan <file>", "Read a Companion or Project Health Engineering Lead Plan JSON")
+  .option(
+    "--from-controller <file>",
+    "Report a bounded local Controller state snapshot without granting authority"
+  )
   .option("--reconcile", "Reconcile an imported lead plan against current local Companion signals")
   .option("-d, --dir <directory>", "Project directory (default: current)")
   .option("-o, --output <file>", "Write Markdown or JSON report")
@@ -927,6 +976,7 @@ program
       risk: options.risk,
       fromCockpit: options.fromCockpit,
       fromPlan: options.fromPlan,
+      fromController: options.fromController,
       reconcile: Boolean(options.reconcile),
       dir: options.dir,
       output: options.output ?? options.out,

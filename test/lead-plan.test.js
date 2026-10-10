@@ -22,14 +22,7 @@ const {
 } = require("../dist/index.js");
 
 const cliPath = path.join(__dirname, "..", "dist", "index.js");
-const sharedContractsPath = path.resolve(
-  __dirname,
-  "..",
-  "..",
-  "project-intelligence-contracts",
-  "src",
-  "index.ts"
-);
+const sharedContractsPath = path.resolve(__dirname, "..", "src", "contracts", "project-intelligence", "index.ts");
 
 function readySignals() {
   return {

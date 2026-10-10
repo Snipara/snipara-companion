@@ -7,6 +7,7 @@
  */
 import * as fs from "fs";
 import * as path from "path";
+import { readControllerProgress, type ControllerProgress } from "./controller-progress";
 import {
   PROJECT_HEALTH_COCKPIT_STATUSES,
   PROJECT_INTELLIGENCE_ENGINEERING_LEAD_CONTRACT_VERSION,
@@ -119,6 +120,7 @@ export interface CompanionEngineeringLeadPlanReport {
   };
   localSignals: AgentReadinessLocalSignals;
   reconciliation?: CompanionEngineeringLeadReconciliation;
+  controllerProgress?: ControllerProgress;
   suggestedCommands: string[];
   caveats: string[];
 }
@@ -133,6 +135,7 @@ export interface LeadPlanCommandOptions {
   risk?: string[];
   fromCockpit?: string;
   fromPlan?: string;
+  fromController?: string;
   reconcile?: boolean;
   dir?: string;
   output?: string;
@@ -1787,6 +1790,9 @@ export function buildCompanionEngineeringLeadPlanReport(
   options: BuildCompanionEngineeringLeadPlanOptions = {}
 ): CompanionEngineeringLeadPlanReport {
   const cwd = options.cwd ?? process.cwd();
+  const controllerProgress = options.fromController
+    ? readControllerProgress(options.fromController, cwd, options.now)
+    : undefined;
   const target = normalizeTarget(options.target);
   const localSignals = options.localSignals ?? collectAgentReadinessLocalSignals(cwd);
   const task = normalizeTask(options.task);
@@ -1846,6 +1852,7 @@ export function buildCompanionEngineeringLeadPlanReport(
     },
     localSignals,
     ...(reconciliation ? { reconciliation } : {}),
+    ...(controllerProgress ? { controllerProgress } : {}),
     suggestedCommands: suggestedCommands({
       target,
       task,
@@ -1885,6 +1892,17 @@ export function formatCompanionEngineeringLeadPlanReport(
   lines.push(`Fallback: ${plan.failClosedFallback}`);
   lines.push(`Headline: ${plan.headline}`);
   lines.push(`Next action: ${plan.nextAction}`);
+  if (report.controllerProgress) {
+    const progress = report.controllerProgress;
+    lines.push("");
+    lines.push("Controller progress (unverified local snapshot)");
+    lines.push(`Controller: ${progress.controllerId} revision ${progress.revision}`);
+    lines.push(`Reported status: ${progress.reportedStatus} (${progress.freshness})`);
+    for (const task of progress.tasks) {
+      lines.push(`- ${task.taskId}: ${task.reportedStatus}; worker ${task.workerId ?? "none"}`);
+    }
+    lines.push(`Next check: ${progress.nextAction}`);
+  }
   lines.push("");
   lines.push("Supervision");
   lines.push(`Status: ${plan.supervision.status}`);

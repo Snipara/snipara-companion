@@ -469,6 +469,7 @@ npx -y snipara-companion workflow phase-start audit
 npx -y snipara-companion lead-plan --task "ship auth hardening" --changed-files src/auth/session.ts --proof "pnpm test auth" --acceptance "auth tests pass"
 npx -y snipara-companion lead-plan --from-plan ./project-health-lead-plan.json --reconcile --changed-files src/auth/session.ts
 npx -y snipara-companion lead-plan --from-plan ./project-health-lead-plan.json --json | jq '.engineeringLeadPlan.executionReceipts'
+npx -y snipara-companion lead-plan --task "review controller progress" --from-controller .snipara/orchestrator/project-controllers/<controller-id>/state.json --json
 npx -y snipara-companion workflow phase-commit audit --summary "mapped auth impact"
 npx -y snipara-companion workflow producer-triage
 npx -y snipara-companion workflow decisions
@@ -483,6 +484,14 @@ npx -y snipara-companion workflow producer-report
 npx -y snipara-companion workflow producer-review --latest --outcome useful --reviewer alice
 npx -y snipara-companion handoff --summary "auth impact mapped" --next "run auth tests"
 ```
+
+`lead-plan --from-controller <snapshot>` adds a read-only `controllerProgress`
+section with task IDs, dependencies, reported status and a hash of the source
+bytes. The snapshot must describe the current workspace and a valid bounded
+DAG. Snapshots older than 30 minutes are labeled stale. This section remains
+`unverified_local_snapshot`: it neither imports execution authority nor marks
+Companion tasks complete. Check actual host proofs, candidate review and
+integration receipts before accepting the reported progress.
 
 For a stricter engineering workflow, add `--strict` to a completed
 `workflow task-commit` or `workflow phase-commit`. Strict phase closeout requires

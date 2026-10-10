@@ -4,6 +4,15 @@ Release notes for `snipara-companion`, newest first.
 
 ## Unreleased
 
+## New In 3.7.0
+
+- Adds Controller progress and cockpit commands backed by Orchestrator receipts,
+  including candidate review, bounded repair and Feature acceptance status.
+- Adds an opt-in Controller bridge to managed workflows. Advisory progress
+  cannot complete a Companion phase or replace its verification evidence.
+- Keeps local candidate landing separate from repository promotion and package
+  publication, with explicit status for each gate.
+
 ## New In 3.6.24 - 2026-09-21
 
 - Makes `workflow run` use AUTO mode by default and adds French intent signals
