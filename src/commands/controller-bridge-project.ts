@@ -73,6 +73,12 @@ export interface ControllerBridgeProjection {
     combinedPatchSha256: string;
     reportedReviewVerdict: string | null;
   };
+  completionEvidence: {
+    taskProofs: "verified" | "pending";
+    objectiveAcceptance: "not_checked";
+    reportedObjectiveStatus: string;
+    authority: "source_bound_local_artifacts";
+  };
   authority: "source_bound_local_artifacts";
   identityAuthenticated: false;
   executionAllowed: false;
@@ -86,6 +92,8 @@ export function projectControllerBridge(
   const artifact = artifactRead.value;
   if (artifact.schemaVersion !== CONTROLLER_BRIDGE_VERSION || artifact.executionAllowed !== false)
     throw new Error("Unsupported bridge artifact schema or authority");
+  if (artifact.taskContextVersion != null && artifact.taskContextVersion !== "source-context-v1")
+    throw new Error("Unsupported task context version");
   const leadRef = object(artifact.sourceLeadPlan);
   const policyRef = object(artifact.sourcePolicy);
   const workflowRef = object(artifact.workflowPlan);
@@ -100,7 +108,8 @@ export function projectControllerBridge(
       ),
       dir: cwd,
     },
-    false
+    false,
+    artifact.taskContextVersion === "source-context-v1"
   );
   same(artifact, reconstructed, "reviewed source reconstruction");
   const lead = source(cwd, leadRef.path);
@@ -110,6 +119,7 @@ export function projectControllerBridge(
   same(policy.hash, policyRef.sha256, "policy source hash");
   same(workflow.hash, workflowRef.sha256, "workflow source hash");
   const identity = {
+    ...(artifact.taskContextVersion ? { taskContextVersion: artifact.taskContextVersion } : {}),
     sourceLeadPlan: leadRef,
     sourcePolicy: policyRef,
     controllerId: artifact.controllerId,
@@ -186,6 +196,7 @@ export function projectControllerBridge(
     if (!expected) throw new Error("Bridge maps an unknown Controller task");
     const actual = object(stateTasks[taskId]);
     for (const key of [
+      "query",
       "files",
       "verify",
       "acceptance",
@@ -229,8 +240,24 @@ export function projectControllerBridge(
         !/^host-run-[0-9a-f]{16}$/.test(native.runId)
       )
         throw new Error("Invalid native proof source");
+      same(
+        native.idempotencyKeyHash,
+        bridgeHash(`${controllerId}:${taskId}:${proposal.attempt}`),
+        "native task attempt identity"
+      );
+      if (typeof native.providerSessionId !== "string" || !native.providerSessionId.trim())
+        throw new Error("Native proof source requires a provider session identity");
       const evidence = object(native.evidence);
       const workPackage = object(native.workPackage);
+      const originalTask =
+        "Controller-owned isolated worktree. Do not commit, reset, merge, push, deploy, publish, or change branches. " +
+        String(expected.query);
+      if (
+        typeof workPackage.task !== "string" ||
+        (workPackage.task !== originalTask &&
+          !workPackage.task.startsWith(originalTask + "\nUntrusted verified "))
+      )
+        throw new Error("Native proof task differs from the bound source query");
       same(workPackage.writeScope, expected.files, "native dispatched scope");
       same(workPackage.acceptanceCriteria, expected.acceptance, "native acceptance contract");
       same(evidence.proofPassed, true, "native proof result");
@@ -404,6 +431,15 @@ export function projectControllerBridge(
     sourceHashes,
     tasks,
     candidate,
+    completionEvidence: {
+      taskProofs:
+        tasks.length > 0 && tasks.every((task) => task.nativeProofSourceVerified)
+          ? "verified"
+          : "pending",
+      objectiveAcceptance: "not_checked",
+      reportedObjectiveStatus: progress.reportedStatus,
+      authority: "source_bound_local_artifacts",
+    },
     authority: "source_bound_local_artifacts",
     identityAuthenticated: false,
     executionAllowed: false,

@@ -46,6 +46,11 @@ export interface ControllerProgress {
     dependsOn: string[];
     workerId: string | null;
   }>;
+  completionEvidence: {
+    taskProofs: "not_checked";
+    objectiveAcceptance: "not_checked";
+    reportedObjectiveStatus: string;
+  };
   authority: "unverified_local_snapshot";
   executionAllowed: false;
   reviewRequired: true;
@@ -168,6 +173,11 @@ export function readControllerProgress(
     updatedAt: state.updatedAt,
     freshness,
     tasks,
+    completionEvidence: {
+      taskProofs: "not_checked",
+      objectiveAcceptance: "not_checked",
+      reportedObjectiveStatus: String(state.status),
+    },
     authority: "unverified_local_snapshot",
     executionAllowed: false,
     reviewRequired: true,

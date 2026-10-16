@@ -4,6 +4,14 @@ Release notes for `snipara-companion`, newest first.
 
 ## Unreleased
 
+## New In 3.7.1
+
+- Preserves expected results and bounded source context in Controller task queries;
+  binds the projection version to the existing immutable bridge identity while retaining legacy exports.
+- Separates caller-declared completion, source-verified local task proofs and unchecked objective acceptance in reports.
+- Adds bugfix, feature and legacy presets to the existing workflow scaffold command.
+- Adds a replayable repository validation campaign for local checkpoint continuation across native hosts.
+
 ## New In 3.7.0
 
 - Adds Controller progress and cockpit commands backed by Orchestrator receipts,

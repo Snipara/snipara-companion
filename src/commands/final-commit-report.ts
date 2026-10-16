@@ -87,6 +87,12 @@ export interface FinalCommitReportV1 {
   generatedAt: string;
   workflowId?: string;
   outcome: FinalCommitOutcome;
+  completionEvidence: {
+    declaration: FinalCommitOutcome;
+    taskProofs: "not_checked";
+    objectiveAcceptance: "not_checked";
+    authority: "caller_declaration";
+  };
   changed: {
     summary: string;
     files: string[];
@@ -456,6 +462,12 @@ export function buildFinalCommitReport(input: BuildFinalCommitReportInput): Fina
     generatedAt: (input.now ?? new Date()).toISOString(),
     ...(input.state?.workflowId ? { workflowId: input.state.workflowId } : {}),
     outcome: input.outcome,
+    completionEvidence: {
+      declaration: input.outcome,
+      taskProofs: "not_checked",
+      objectiveAcceptance: "not_checked",
+      authority: "caller_declaration",
+    },
     changed: {
       summary: boundedText(input.summary) ?? "No final summary provided.",
       files,
@@ -552,6 +564,7 @@ export function formatFinalCommitReport(report: FinalCommitReportV1): string {
       : "- Not provided or detected.",
     "",
     "3. Evidence",
+    "- Completion is caller-declared; task proofs and objective acceptance were not independently checked by this report.",
   ];
   if (report.evidence.items.length === 0) {
     lines.push("- No verification evidence declared.");

@@ -48,6 +48,8 @@ test("Controller status round-trips IDs and dependencies without accepting autho
   const b = report();
   assert.deepEqual(a.controllerProgress, b.controllerProgress);
   assert.equal(a.controllerProgress.reportedStatus, "accepted");
+  assert.equal(a.controllerProgress.completionEvidence.objectiveAcceptance, "not_checked");
+  assert.equal(a.controllerProgress.completionEvidence.taskProofs, "not_checked");
   assert.equal(a.controllerProgress.authority, "unverified_local_snapshot");
   assert.equal(a.controllerProgress.executionAllowed, false);
   assert.equal(a.controllerProgress.reviewRequired, true);

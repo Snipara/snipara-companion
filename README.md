@@ -713,3 +713,12 @@ PostToolUse hook runs the same preview-then-confirm flow when no managed
 workflow is active. It submits the commit message, commit SHA, and changed-file
 evidence as `sourceKind=commit`; ordinary messages produce no candidate, and
 any captured rationale remains pending human review.
+
+### Portable workflow starting points
+
+Use `workflow scaffold --preset bugfix`, `--preset feature` or `--preset legacy`
+with a concrete `--goal`. Edit the generated plan, then use the existing
+`workflow start`, phase and resume commands. Completion declarations remain
+separate from checked Controller proof sources and Feature acceptance.
+See [portable workflows](docs/portable-methods.md) for context bounds, legacy
+compatibility and the native continuation validation procedure.

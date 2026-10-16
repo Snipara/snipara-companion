@@ -1843,6 +1843,13 @@ test("final report fails closed for legacy receipts and unverified evidence", ()
   assert.equal(report.changed.summary, "Closed the workflow with api_key=<redacted>");
   assert.equal(report.rationale.text, "Protect Bearer <redacted> from closeout output");
   assert.equal(report.evidence.items[0].status, "unknown");
+  assert.deepEqual(report.completionEvidence, {
+    declaration: "completed",
+    taskProofs: "not_checked",
+    objectiveAcceptance: "not_checked",
+    authority: "caller_declaration",
+  });
+  assert.match(formatFinalCommitReport(report), /caller-declared/);
   assert.equal(report.retainedDecisions.status, "unavailable");
   assert.equal(report.pendingDecisions.status, "unavailable");
   assert.ok(report.closeout.risks.some((risk) => /local fallback/i.test(risk)));
@@ -5407,3 +5414,47 @@ test("workflow sync-policy-ledger dry-run collects local policy receipts without
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("passed labels remain declarations rather than independently verified completion", () => {
+  const report = buildFinalCommitReport({
+    cwd: os.tmpdir(),
+    summary: "done",
+    outcome: "completed",
+    evidence: ["passed:all tests", "passed:objective accepted"],
+    whyCapture: {
+      status: "skipped",
+      sourceKind: "final_commit",
+      previewCandidates: [],
+      pendingMemories: [],
+      duplicates: [],
+      failed: [],
+    },
+    finalCommitResult: {},
+  });
+  assert.equal(report.evidence.counts.passed, 2);
+  assert.equal(report.completionEvidence.taskProofs, "not_checked");
+  assert.equal(report.completionEvidence.objectiveAcceptance, "not_checked");
+});
+for (const preset of ["bugfix", "feature", "legacy"]) {
+  test(`portable ${preset} scaffold round-trips through current loader and public CLI`, () => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-portable-preset-"));
+    try {
+      const result = runCli(
+        ["workflow", "scaffold", "--preset", preset, "--goal", "Bounded example", "--json"],
+        { cwd: d }
+      );
+      assert.equal(result.status, 0, result.stderr);
+      const output = JSON.parse(result.stdout);
+      const file = output.output_path;
+      const plan = JSON.parse(fs.readFileSync(file));
+      assert.equal(plan.goal, "Bounded example");
+      assert.equal(plan.mode, preset === "bugfix" ? "standard" : "full");
+      const phases = normalizeWorkflowPlanInput(plan, plan.goal);
+      assert.equal(phases.length, plan.steps.length);
+      assert.ok(phases.every((phase) => phase.acceptance && phase.query && phase.gates.length));
+      assert.ok(!JSON.stringify(plan).includes("orchestrator"));
+    } finally {
+      fs.rmSync(d, { recursive: true, force: true });
+    }
+  });
+}

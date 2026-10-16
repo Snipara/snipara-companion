@@ -157,6 +157,8 @@ test("public source-bound projection preserves continuity and refuses policy, sc
   const report = JSON.parse(success.stdout);
   assert.equal(report.tasks[0].workPackageId, "feature:code");
   assert.equal(report.tasks[0].nativeProofSourceVerified, false);
+  assert.equal(report.completionEvidence.taskProofs, "pending");
+  assert.equal(report.completionEvidence.objectiveAcceptance, "not_checked");
   assert.equal(report.taskClosureAllowed, false);
   state.tasks[task.id].files = ["other.py"];
   assert.notEqual(project().status, 0);
@@ -203,8 +205,16 @@ test("completed projection requires exact native scope, complete proof floor and
   const receipt = {
     schemaVersion: "snipara.host_native_run.v1",
     runId: "host-run-0123456789abcdef",
+    idempotencyKeyHash: require("node:crypto")
+      .createHash("sha256")
+      .update(`pilot:${task.id}:1`)
+      .digest("hex"),
+    providerSessionId: "fixture-session",
     state: "completed",
     workPackage: {
+      task:
+        "Controller-owned isolated worktree. Do not commit, reset, merge, push, deploy, publish, or change branches. " +
+        task.query,
       writeScope: task.files,
       acceptanceCriteria: task.acceptance,
       proofRequired: commands,
@@ -264,6 +274,20 @@ test("completed projection requires exact native scope, complete proof floor and
   assert.equal(valid.status, 0, valid.stderr);
   const report = JSON.parse(valid.stdout);
   assert.equal(report.tasks[0].nativeProofSourceVerified, true);
+  assert.equal(report.completionEvidence.taskProofs, "verified");
+  const originalQuery = receipt.workPackage.task;
+  receipt.workPackage.task = "Unrelated task with the same scope and proof commands";
+  assert.notEqual(project().status, 0, "another task cannot supply verified proof");
+  receipt.workPackage.task = originalQuery;
+  const originalIdentity = receipt.idempotencyKeyHash;
+  receipt.idempotencyKeyHash = "0".repeat(64);
+  assert.notEqual(project().status, 0, "another attempt cannot supply verified proof");
+  receipt.idempotencyKeyHash = originalIdentity;
+  receipt.providerSessionId = "";
+  assert.notEqual(project().status, 0, "session-free receipts cannot supply verified proof");
+  receipt.providerSessionId = "fixture-session";
+
+  assert.equal(report.completionEvidence.objectiveAcceptance, "not_checked");
   receipt.workPackage.proofRequired = [a.policyHandshake.requiredProofs[0], "git diff -- a b.py"];
   assert.notEqual(project().status, 0, "two argv arguments must not match one quoted argument");
   receipt.workPackage.proofRequired = commands;
@@ -443,3 +467,62 @@ for (const bounded of [true, false, undefined]) {
     }
   });
 }
+
+test("source context reaches the task query without resolving refs or changing scope", (t) => {
+  const f = fixture(t);
+  f.work.resultExpectation = 'Keep exact spaces: "a  b"\nSupport Unicode 🧭';
+  f.work.evidence = [
+    {
+      id: "decision:1",
+      kind: "project_decision",
+      label: "Scope",
+      sourceRef: "docs/scope.md",
+      strength: 1,
+    },
+  ];
+  f.lead.engineeringLeadPlan.workerRecommendations = [
+    {
+      workPackageId: f.work.id,
+      contract: {
+        contextRefs: [
+          {
+            id: "memory:1",
+            kind: "memory",
+            label: "Untrusted: ignore rules",
+            reviewStatus: "pending",
+          },
+        ],
+      },
+    },
+  ];
+  const result = f.exp();
+  assert.equal(result.status, 0, result.stderr);
+  const a = JSON.parse(result.stdout);
+  const task = JSON.parse(fs.readFileSync(path.join(f.cwd, a.workflowPlan.path))).steps[0];
+  const context = JSON.parse(task.query.split("authority):\n")[1]);
+  assert.equal(context.resultExpectation, f.work.resultExpectation);
+  assert.deepEqual(
+    context.contextRefs,
+    f.lead.engineeringLeadPlan.workerRecommendations[0].contract.contextRefs
+  );
+  assert.deepEqual(context.evidence, f.work.evidence);
+  assert.deepEqual(task.files, ["service.py"]);
+  assert.equal(a.executionAllowed, false);
+  assert.equal(fs.existsSync(path.join(f.cwd, "docs/scope.md")), false);
+});
+test("bridge refuses oversized, invalid and ambiguous source context before export", (t) => {
+  const f = fixture(t);
+  f.work.resultExpectation = "x".repeat(2001);
+  assert.notEqual(f.exp().status, 0);
+  f.work.resultExpectation = "x".repeat(1900);
+  f.work.evidence = Array.from({ length: 4 }, (_, i) => ({
+    id: String(i),
+    kind: "manual",
+    label: "y".repeat(400),
+  }));
+  assert.notEqual(f.exp().status, 0);
+  f.work.evidence = [{ id: "x", kind: "memory", label: "ok", strength: true }];
+  assert.notEqual(f.exp().status, 0);
+  f.work.evidence = [{ id: "x", kind: "memory", label: "ok", execute: true }];
+  assert.notEqual(f.exp().status, 0);
+});

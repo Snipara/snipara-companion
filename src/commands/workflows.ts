@@ -509,16 +509,22 @@ export interface ProducerLoopReport {
 }
 
 export type WorkflowPlanPreset =
+  | "bugfix"
+  | "feature"
+  | "legacy"
   | "memory-backend-unification"
   | "project-intelligence-continuity-layer";
 export const WORKFLOW_PLAN_PRESET_IDS: WorkflowPlanPreset[] = [
+  "bugfix",
+  "feature",
+  "legacy",
   "memory-backend-unification",
   "project-intelligence-continuity-layer",
 ];
 
 export interface WorkflowPlanScaffoldDocument {
   preset: WorkflowPlanPreset;
-  mode: "full";
+  mode: "standard" | "full";
   goal: string;
   steps: Array<{
     id: string;
@@ -2905,6 +2911,12 @@ export function normalizeWorkflowPlanInput(
 
 function defaultWorkflowPlanGoal(preset: WorkflowPlanPreset): string {
   switch (preset) {
+    case "bugfix":
+      return "Fix a reproduced defect with a bounded regression";
+    case "feature":
+      return "Deliver a scoped feature against explicit acceptance criteria";
+    case "legacy":
+      return "Change legacy behavior while preserving documented compatibility";
     case "memory-backend-unification":
       return "Unify backend memory on Memory V2 with four-phase delivery, sandbox checkpoints, and orchestrator-visible runtime gates";
     case "project-intelligence-continuity-layer":
@@ -2919,6 +2931,42 @@ function buildWorkflowPlanPresetDocument(
   const resolvedGoal = goal ?? defaultWorkflowPlanGoal(preset);
 
   switch (preset) {
+    case "bugfix":
+    case "feature":
+    case "legacy": {
+      const legacy = preset === "legacy";
+      const steps = [
+        {
+          id: "scope",
+          title: legacy ? "Characterize existing behavior" : "Define scope and acceptance",
+          query: legacy
+            ? "Read the affected code and callers. Record existing behavior, compatibility constraints, source references and characterization tests before edits. Bound the write scope."
+            : "Record the objective, relevant source references, allowed files and observable acceptance criteria. Reproduce the defect for a bugfix; inspect existing capabilities before adding a feature.",
+          acceptance:
+            "Scope, source references and acceptance criteria are explicit; selected checks are runnable in this repository.",
+          gates: [legacy ? "characterization tests" : "reproduction or acceptance example"],
+        },
+        {
+          id: "implement",
+          title: "Implement the smallest scoped change",
+          query:
+            "Use the approved sources and scope. Reuse existing contracts. Preserve unrelated behavior and record decisions, artifacts and the next action in the current workflow.",
+          acceptance:
+            "The change satisfies the scoped examples and preserves established compatibility.",
+          gates: ["selected regression tests"],
+        },
+        {
+          id: "verify",
+          title: "Verify the result and prepare handoff",
+          query:
+            "Run the selected regression and compatibility checks. Record exact commands, results, untested cases and artifact references. Distinguish declared completion from independently verified proofs and objective acceptance. Check affected package surfaces before release.",
+          acceptance:
+            "Acceptance examples and regressions pass, or blockers remain explicit; the handoff contains decisions, checks and remaining work.",
+          gates: ["acceptance examples", "compatibility checks", "package surface review"],
+        },
+      ];
+      return { preset, mode: preset === "bugfix" ? "standard" : "full", goal: resolvedGoal, steps };
+    }
     case "project-intelligence-continuity-layer":
       return {
         preset,

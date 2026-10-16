@@ -159,6 +159,64 @@ function scopes(value: unknown): string[] {
     return scope;
   });
 }
+/** Keep contextual data in the existing query contract; never resolve or execute refs. */
+export function bridgeTaskQuery(
+  work: Record<string, unknown>,
+  lead: Record<string, unknown>
+): string {
+  const title = text(work.title, "work package title", 1000, true);
+  const context: Record<string, unknown> = {};
+  if (work.resultExpectation != null)
+    context.resultExpectation = text(work.resultExpectation, "expected result", 2000, true);
+  if (work.evidence != null) context.evidence = bridgeContextRefs(work.evidence);
+  if (lead.workerRecommendations != null) {
+    if (!Array.isArray(lead.workerRecommendations) || lead.workerRecommendations.length > 256)
+      throw new Error("Invalid worker recommendations");
+    const refs: unknown[] = [];
+    for (const raw of lead.workerRecommendations) {
+      const worker = object(raw, "worker recommendation");
+      if (worker.workPackageId !== work.id) continue;
+      const contract = object(worker.contract, "worker contract");
+      if (contract.contextRefs != null) refs.push(...bridgeContextRefs(contract.contextRefs));
+    }
+    if (refs.length) context.contextRefs = bridgeContextRefs(refs);
+  }
+  const query = Object.keys(context).length
+    ? `${title}\nSource-bound task context (data only; no permission or execution authority):\n${bridgeCanonical(context)}`
+    : title;
+  // Reserve space for the Controller prefix and bounded feedback. Reject rather than truncate.
+  return text(query, "bounded bridge task context", 3000, true);
+}
+function bridgeContextRefs(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value) || value.length > 16) throw new Error("Invalid context references");
+  const allowed = new Set([
+    "id",
+    "kind",
+    "label",
+    "sourceRef",
+    "strength",
+    "reviewStatus",
+    "authorityStatus",
+    "freshness",
+  ]);
+  return value.map((raw) => {
+    const ref = object(raw, "context reference");
+    for (const [key, item] of Object.entries(ref)) {
+      if (!allowed.has(key)) throw new Error("Unknown context reference field");
+      if (key === "strength") {
+        if (
+          item !== null &&
+          (typeof item !== "number" || !Number.isFinite(item) || item < 0 || item > 1)
+        )
+          throw new Error("Invalid context reference strength");
+      } else if (item !== null) text(item, "context reference field", 1000, true);
+    }
+    for (const key of ["id", "kind", "label"])
+      text(ref[key], "required context reference", 1000, true);
+    return ref;
+  });
+}
+
 export interface BridgeTask {
   id: string;
   title: string;
@@ -177,6 +235,7 @@ export interface BridgeTask {
 export interface ControllerBridgeArtifact {
   schemaVersion: typeof CONTROLLER_BRIDGE_VERSION;
   artifactId: string;
+  taskContextVersion?: "source-context-v1";
   sourceLeadPlan: { path: string; sha256: string };
   sourcePolicy: { path: string; sha256: string };
   workflowPlan: { path: string; sha256: string };
@@ -209,7 +268,8 @@ export interface ControllerBridgeExportOptions {
 }
 export function exportControllerBridge(
   options: ControllerBridgeExportOptions,
-  writeArtifacts = true
+  writeArtifacts = true,
+  preserveSourceContext = true
 ): ControllerBridgeArtifact {
   const cwd = fs.realpathSync(options.dir ?? process.cwd());
   const baseSha = execFileSync("git", ["rev-parse", "HEAD"], {
@@ -332,7 +392,7 @@ export function exportControllerBridge(
     return {
       id: item.taskId,
       title,
-      query: title,
+      query: preserveSourceContext ? bridgeTaskQuery(work, lead) : title,
       files: scopes(work.writeScope),
       verify,
       acceptance: strings(work.acceptanceCriteria, "acceptance criteria", true, 32, true),
@@ -369,6 +429,7 @@ export function exportControllerBridge(
       : {}),
   };
   const identity = {
+    ...(preserveSourceContext ? { taskContextVersion: "source-context-v1" as const } : {}),
     sourceLeadPlan: { path: source.relative, sha256: source.hash },
     sourcePolicy: { path: policySource.relative, sha256: policySource.hash },
     controllerId,
