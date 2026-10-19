@@ -218,30 +218,27 @@ function ensureDir(dir: string, mode: number = 0o700): void {
   fs.mkdirSync(dir, { recursive: true, mode });
 }
 
-function maybeReadJsonFile<T>(filePath: string): T | null {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, "utf8")) as T;
-  } catch {
-    return null;
-  }
-}
-
 function writeJsonFile(filePath: string, value: unknown): void {
   ensureDir(path.dirname(filePath));
-  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
+  writePackFile(filePath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function writePackFile(filePath: string, content: string, exclusive = false): void {
+  const fd = fs.openSync(filePath, fs.constants.O_WRONLY | fs.constants.O_CREAT |
+    fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK |
+    (exclusive ? fs.constants.O_EXCL : 0), 0o600);
+  try {
+    if (!fs.fstatSync(fd).isFile()) throw new Error("Context pack output must be a regular file");
+    if (!exclusive) fs.ftruncateSync(fd, 0);
+    fs.writeFileSync(fd, content, "utf8");
+  } finally { fs.closeSync(fd); }
 }
 
 function ensureStorageGitignore(paths: ContextPackStoragePaths): void {
   ensureDir(paths.baseDir);
   const gitignorePath = path.join(paths.baseDir, ".gitignore");
   if (!fs.existsSync(gitignorePath)) {
-    fs.writeFileSync(gitignorePath, STORAGE_GITIGNORE_CONTENT, {
-      encoding: "utf8",
-      mode: 0o600,
-    });
+    writePackFile(gitignorePath, STORAGE_GITIGNORE_CONTENT, true);
   }
 }
 
@@ -299,7 +296,12 @@ function isContextPackRecord(value: unknown): value is ContextPackRecord {
 }
 
 function latestPointer(paths: ContextPackStoragePaths): ContextPackLatestPointer | null {
-  const pointer = maybeReadJsonFile<ContextPackLatestPointer>(paths.latestPath);
+  let pointer: ContextPackLatestPointer | null;
+  try {
+    pointer = JSON.parse(readBoundedPackFile(paths, paths.latestPath, 65536)) as ContextPackLatestPointer;
+  } catch {
+    return null;
+  }
   if (
     pointer?.version === "snipara.context_pack.latest.v1" &&
     typeof pointer.id === "string" &&
@@ -314,14 +316,67 @@ function readManifest(
   paths: ContextPackStoragePaths,
   manifestPath: string
 ): ContextPackRecord | null {
-  const record = maybeReadJsonFile<unknown>(manifestPath);
+  let record: unknown;
+  try {
+    record = JSON.parse(readBoundedPackFile(paths, manifestPath, 65536));
+  } catch {
+    return null;
+  }
   if (!isContextPackRecord(record)) {
+    return null;
+  }
+  if (!/^cpack_[a-f0-9]{16}$/.test(record.id) || !/^[a-f0-9]{64}$/.test(record.sha256) ||
+    record.id !== `cpack_${record.sha256.slice(0, 16)}` ||
+    path.resolve(manifestPath) !== recordManifestPath(paths, record.id) ||
+    record.storage.manifestRelativePath !== toRepoRelative(paths.repoRoot, manifestPath) ||
+    record.storage.blobRelativePath !== toRepoRelative(paths.repoRoot, recordBlobPath(paths, record.sha256))) {
     return null;
   }
   return {
     ...record,
     repoRoot: paths.repoRoot,
   };
+}
+
+/** Bound reads before opening a saved artifact; stored paths never grant authority. */
+function readBoundedPackFile(paths: ContextPackStoragePaths, filePath: string, maxBytes: number): string {
+  assertPackStoragePath(paths, filePath);
+  const root = fs.realpathSync(paths.repoRoot);
+  const relative = path.relative(paths.repoRoot, path.resolve(filePath));
+  if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
+    throw new Error("Context pack path escapes its workspace");
+  let current = root;
+  for (const component of relative.split(path.sep)) {
+    current = path.join(current, component);
+    if (fs.lstatSync(current).isSymbolicLink()) throw new Error("Context pack symlink is not allowed");
+  }
+  const fd = fs.openSync(current, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.size > maxBytes) throw new Error("Context pack file exceeds its read boundary");
+    const bytes = Buffer.alloc(stat.size + 1);
+    const count = fs.readSync(fd, bytes, 0, bytes.length, 0);
+    if (count > maxBytes || count !== stat.size) throw new Error("Context pack changed during read");
+    return bytes.subarray(0, count).toString("utf8");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function assertPackStoragePath(paths: ContextPackStoragePaths, filePath: string): void {
+  const root = fs.realpathSync(paths.repoRoot);
+  const relative = path.relative(path.resolve(paths.repoRoot), path.resolve(filePath));
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
+    throw new Error("Context pack path escapes its workspace");
+  let current = root;
+  for (const component of relative.split(path.sep)) {
+    current = path.join(current, component);
+    try {
+      if (fs.lstatSync(current).isSymbolicLink()) throw new Error("Context pack symlink is not allowed");
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    }
+  }
 }
 
 function listManifestPaths(paths: ContextPackStoragePaths): string[] {
@@ -403,6 +458,17 @@ export function packContext(options: PackContextOptions): PackContextResult {
   const id = `cpack_${digest.slice(0, 16)}`;
   const manifestPath = recordManifestPath(paths, id);
   const blobPath = recordBlobPath(paths, digest);
+  for (const target of [paths.baseDir, paths.blobsDir, paths.manifestsDir,
+    path.join(paths.baseDir, ".gitignore"), blobPath, manifestPath, paths.latestPath])
+    assertPackStoragePath(paths, target);
+  for (const target of [paths.baseDir, paths.blobsDir, paths.manifestsDir]) {
+    if (fs.existsSync(target) && !fs.lstatSync(target).isDirectory())
+      throw new Error("Context pack storage must be a directory");
+  }
+  for (const target of [path.join(paths.baseDir, ".gitignore"), blobPath, manifestPath, paths.latestPath]) {
+    if (fs.existsSync(target) && !fs.lstatSync(target).isFile())
+      throw new Error("Context pack output must be a regular file");
+  }
   const existing = readManifest(paths, manifestPath);
   const sensitive = hasSecretPattern(content);
   if (sensitive && !options.allowSensitive) {
@@ -451,7 +517,9 @@ export function packContext(options: PackContextOptions): PackContextResult {
   ensureDir(paths.blobsDir);
   ensureDir(paths.manifestsDir);
   if (!fs.existsSync(blobPath)) {
-    fs.writeFileSync(blobPath, content, { encoding: "utf8", mode: 0o600 });
+    writePackFile(blobPath, content, true);
+  } else if (readBoundedPackFile(paths, blobPath, maxBytes) !== content) {
+    throw new Error("Existing context pack blob differs from its immutable content");
   }
   writeJsonFile(manifestPath, record);
   writeLatestPointer(paths, record);
@@ -480,7 +548,10 @@ export function resolveContextPackRecord(
     if (!pointer) {
       throw new Error("No latest context pack is available.");
     }
-    const manifestPath = path.join(paths.repoRoot, pointer.manifestRelativePath);
+    if (!/^cpack_[a-f0-9]{16}$/.test(pointer.id) ||
+      pointer.manifestRelativePath !== toRepoRelative(paths.repoRoot, recordManifestPath(paths, pointer.id)))
+      throw new Error("Invalid latest context pack path");
+    const manifestPath = recordManifestPath(paths, pointer.id);
     const record = readManifest(paths, manifestPath);
     if (!record) {
       throw new Error(`Latest context pack manifest is missing or invalid: ${pointer.id}`);
@@ -489,6 +560,7 @@ export function resolveContextPackRecord(
   }
 
   const directId = query.startsWith("cpack_") ? query : `cpack_${query}`;
+  if (!/^(?:cpack_)?[a-f0-9]{1,64}$/.test(query)) throw new Error("Invalid context pack reference");
   const directManifestPath = recordManifestPath(paths, directId);
   const directRecord = readManifest(paths, directManifestPath);
   if (directRecord) {
@@ -516,14 +588,17 @@ export function retrieveContextPack(
   cwd: string = process.cwd()
 ): RetrieveContextPackResult {
   const { paths, record, manifestPath } = resolveContextPackRecord(idOrRef, cwd);
-  const blobPath = path.join(paths.repoRoot, record.storage.blobRelativePath);
+  const blobPath = recordBlobPath(paths, record.sha256);
   if (!fs.existsSync(blobPath)) {
     throw new Error(`Context pack blob is missing for ${record.id}`);
   }
 
+  const content = readBoundedPackFile(paths, blobPath, DEFAULT_MAX_BYTES);
+  if (sha256(content) !== record.sha256 || Buffer.byteLength(content, "utf8") !== record.bytes)
+    throw new Error("Context pack content no longer matches its receipt");
   return {
     record,
-    content: fs.readFileSync(blobPath, "utf8"),
+    content,
     baseDir: paths.baseDir,
     manifestPath,
     blobPath,

@@ -1564,7 +1564,7 @@ export class RLMClient {
   /**
    * Make an MCP JSON-RPC request
    */
-  private async mcpCall<T>(toolName: string, args: Record<string, unknown>): Promise<T> {
+  private async mcpCall<T>(toolName: string, args: Record<string, unknown>, timeoutMs = this.timeout): Promise<T> {
     if (!this.config.apiKey) {
       throw new Error("API key not configured. Run 'npx -y snipara-companion@latest init' first.");
     }
@@ -1587,7 +1587,7 @@ export class RLMClient {
     };
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       const response = await this.fetchWithApiKeyRetry(
@@ -1604,8 +1604,6 @@ export class RLMClient {
         identifier
       );
 
-      clearTimeout(timeoutId);
-
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
@@ -1614,6 +1612,9 @@ export class RLMClient {
 
       if (data.error) {
         throw new Error(data.error.message);
+      }
+      if (data.result && "isError" in data.result && data.result.isError === true) {
+        throw new Error(`MCP tool '${toolName}' returned an error result`);
       }
 
       if (!data.result?.content?.[0]?.text) {
@@ -1626,8 +1627,8 @@ export class RLMClient {
     }
   }
 
-  async callTool<T>(toolName: string, args: Record<string, unknown>): Promise<T> {
-    return this.mcpCall<T>(toolName, args);
+  async callTool<T>(toolName: string, args: Record<string, unknown>, timeoutMs?: number): Promise<T> {
+    return this.mcpCall<T>(toolName, args, timeoutMs);
   }
 
   /**

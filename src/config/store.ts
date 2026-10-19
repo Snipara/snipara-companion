@@ -219,6 +219,8 @@ function resolveConfigFile(options: ConfigResolutionOptions = {}): string {
  * Load configuration from disk
  */
 export function loadConfig(options: ConfigResolutionOptions = {}): RLMConfig {
+  // Explicit per-process offline admission. Do not inspect or rewrite saved credentials.
+  if (process.env.SNIPARA_LOCAL_ONLY === "1") return { ...DEFAULT_CONFIG };
   const cwd = options.cwd ?? defaultCwd();
   const globalConfig = readConfigFile(getGlobalConfigFile());
   const legacyGlobalConfig = readConfigFile(getLegacyGlobalConfigFile());

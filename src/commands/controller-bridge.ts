@@ -8,6 +8,7 @@ import {
   readBridgeSource,
   writeBridgeImmutable,
 } from "./controller-bridge-io";
+import { readRuntimeContextMap, validateRuntimeSourceContext, type RuntimeSourceContext } from "./runtime-source-context";
 
 export const CONTROLLER_BRIDGE_VERSION = "snipara.companion_controller_bridge.v1";
 export const CONTROLLER_BRIDGE_POLICY_VERSION = "snipara.companion_controller_bridge_policy.v1";
@@ -231,11 +232,14 @@ export interface BridgeTask {
   risk: string;
   maxAttempts: number;
   effectScope: "repo_only";
+  sourceContext?: RuntimeSourceContext;
 }
 export interface ControllerBridgeArtifact {
   schemaVersion: typeof CONTROLLER_BRIDGE_VERSION;
   artifactId: string;
   taskContextVersion?: "source-context-v1";
+  runtimeSourceContextVersion?: "runtime-source-context-v1";
+  sourceRuntimeContext?: { path: string; sha256: string };
   sourceLeadPlan: { path: string; sha256: string };
   sourcePolicy: { path: string; sha256: string };
   workflowPlan: { path: string; sha256: string };
@@ -265,6 +269,7 @@ export interface ControllerBridgeExportOptions {
   outDir: string;
   dir?: string;
   json?: boolean;
+  taskContextFile?: string;
 }
 export function exportControllerBridge(
   options: ControllerBridgeExportOptions,
@@ -281,6 +286,7 @@ export function exportControllerBridge(
     throw new Error("Bridge export requires a committed Git HEAD");
   const source = readBridgeSource(cwd, options.leadPlanFile);
   const policySource = readBridgeSource(cwd, options.policyFile);
+  const runtimeContexts = options.taskContextFile ? readRuntimeContextMap(cwd, options.taskContextFile) : undefined;
   const report = object(source.value, "Lead Plan report");
   if (report.version !== "snipara.companion_engineering_lead_plan.v1")
     throw new Error("Unsupported Lead Plan report schema");
@@ -365,6 +371,8 @@ export function exportControllerBridge(
     });
   }
   const ids = new Map(mapping.map((item) => [item.workPackageId, item.taskId]));
+  if (runtimeContexts && [...runtimeContexts.contexts.keys()].some((key) => !ids.has(key)))
+    throw new Error("Runtime context map contains an unknown work package");
   const steps: BridgeTask[] = mapping.map((item) => {
     const work = packages.get(item.workPackageId)!;
     const binding = bindings.get(item.workPackageId)!;
@@ -403,6 +411,9 @@ export function exportControllerBridge(
       risk: String(binding.risk),
       maxAttempts: Number(attempts),
       effectScope: "repo_only",
+      ...(runtimeContexts?.contexts.has(item.workPackageId) ? { sourceContext: validateRuntimeSourceContext({
+        ...runtimeContexts.contexts.get(item.workPackageId)!, targetTaskId: item.taskId,
+      }, item.taskId) } : {}),
     };
   });
   const byId = new Map(steps.map((task) => [task.id, task]));
@@ -430,6 +441,8 @@ export function exportControllerBridge(
   };
   const identity = {
     ...(preserveSourceContext ? { taskContextVersion: "source-context-v1" as const } : {}),
+    ...(runtimeContexts ? {runtimeSourceContextVersion: "runtime-source-context-v1" as const,
+      sourceRuntimeContext: runtimeContexts.source} : {}),
     sourceLeadPlan: { path: source.relative, sha256: source.hash },
     sourcePolicy: { path: policySource.relative, sha256: policySource.hash },
     controllerId,
@@ -454,6 +467,7 @@ export function exportControllerBridge(
       controllerId,
       sourceLeadPlanSha256: source.hash,
       sourcePolicySha256: policySource.hash,
+      ...(runtimeContexts ? {sourceRuntimeContextSha256:runtimeContexts.source.sha256} : {}),
       policyHandshake,
     },
   };

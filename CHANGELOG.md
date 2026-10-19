@@ -4,6 +4,41 @@ Release notes for `snipara-companion`, newest first.
 
 ## Unreleased
 
+## New In 3.7.2
+
+- Bundles the ESM-only runtime dependency graphs for the CommonJS Node 18
+  entry point, preserving the declared engine range. The public source mirror
+  carries the same build configuration.
+
+- Applies the canonical workflow version gate in the task facade before reading
+  or admitting a task. Unknown or missing versions refuse without creating a
+  partial task; existing workflow v1/v2 remain readable.
+
+- Documents exact local artifact installation, additive contract compatibility
+  and independently optional Companion/Orchestrator use. Public integration
+  suites can explicitly target an installed CLI and reject an invalid override
+  instead of silently testing the checkout build.
+
+- Adds a five-step local task facade and immutable local/GitHub intake, with no
+  required account, Orchestrator or implicit worker/network calls.
+- Exports exact task source bodies through the optional reviewed Controller
+  bridge while preserving legacy reference-only contracts and authority gates.
+
+- Adds local work-state checkpoints and revalidated resume briefs with decisions,
+  reasons, failed attempts, bound evidence, remaining checks and next actions.
+- Preserves initial dirty changes and detects HEAD, index, source and artifact
+  drift; keeps offline snapshots historical and Orchestrator optional.
+- Rejects unsafe context-pack paths, linked files and altered saved content before use.
+
+- Compiles numeric and explicit planner identities into one validated workflow graph,
+  retaining task-specific retrieval parameters and advisory operation metadata.
+- Loads required source chunks before starting context-bearing tasks, with bounded
+  context packs, per-attempt receipts, source identity checks and preparation deadlines.
+- Preserves context preparation through phase commands and restores verified local
+  snapshots when hosted session context is unavailable; snapshots do not imply freshness.
+- Rejects marked MCP error results and keeps task preparation failures separate from
+  executed attempts, task correctness and independent objective acceptance.
+
 ## New In 3.7.1
 
 - Preserves expected results and bounded source context in Controller task queries;

@@ -2,14 +2,24 @@
 
 [![npm version](https://img.shields.io/npm/v/snipara-companion.svg)](https://www.npmjs.com/package/snipara-companion)
 [![CI](https://github.com/Snipara/snipara-companion/actions/workflows/ci.yml/badge.svg)](https://github.com/Snipara/snipara-companion/actions/workflows/ci.yml)
-[![MIT License](https://img.shields.io/badge/license-MIT-yellow.svg)](./LICENSE)
+[![MIT License](https://img.shields.io/badge/license-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node >=18](https://img.shields.io/badge/node-%3E%3D18-339933.svg)](./package.json)
 
 **Ask your repo what breaks if you touch this.**
 
 No global install. No account. Your code stays on your machine.
 
-`create-snipara` is the canonical activation engine. Use it first when a repo
+Start one local task with `snipara-companion task start "Goal" --accept "Criterion"
+--file src/service.ts`, then use `task work`, `task verify`, `task decide` and
+`task resume`. The [five-step journey](./docs/TASK_JOURNEY.md) reuses existing
+workflow artifacts. Companion and Orchestrator are optional and independent;
+this local path needs neither Hosted activation nor Orchestrator.
+
+For prepared package files and supported optional combinations, see
+[distribution and compatibility](./docs/DISTRIBUTION.md). Installed artifact
+verification is separate from publication and from a completed human pilot.
+
+`create-snipara` is the canonical Hosted activation engine. Use it when a repo
 needs Hosted MCP config, editor/client files, a First Work Brief, and
 review-only memory candidates. Use `snipara-companion` after that first
 activation for local continuity: source refresh, impact checks, workflow phase
@@ -202,6 +212,10 @@ the same phase-shaped chunks, and `feature start` delegates to the existing
 impact, or handoff logic.
 
 #### Task-level execution
+
+Tasks can load their own cited source bodies before starting. See
+[task-local source context](docs/TASK_CONTEXT.md) for request fields, planner
+compatibility, bounded receipts, offline resume and evidence limits.
 
 Each managed phase now contains a normalized task contract. Existing
 phase-only plans are migrated in memory to one task per phase, so older
@@ -674,6 +688,11 @@ snipara-companion workflow resume
 ```
 
 ## Command Reference
+
+Resume work with decisions, failed attempts, evidence and remaining checks using
+`workflow resume`. Use `workflow checkpoint` to bind the current state explicitly.
+This works independently of Orchestrator. See [work continuity](./docs/WORK_CONTINUITY.md)
+for drift states, offline behavior and evidence limits.
 
 The previous long README has moved to [docs/FULL_REFERENCE.md](./docs/FULL_REFERENCE.md).
 Start there for the full command list, hook setup, hosted MCP bridge commands,

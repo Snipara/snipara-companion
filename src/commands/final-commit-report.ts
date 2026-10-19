@@ -246,7 +246,9 @@ export function buildWorkflowPhaseCommitReceipt(input: {
     capturedAt: input.capturedAt ?? new Date().toISOString(),
     category: input.category,
     outcome: input.outcome,
-    hostedStatus: hostedPhaseCommit?.status === "error" ? "local_fallback" : "processed",
+    hostedStatus: ["error", "not_requested"].includes(String(hostedPhaseCommit?.status))
+      ? "local_fallback"
+      : "processed",
     stored,
     skipped,
   };

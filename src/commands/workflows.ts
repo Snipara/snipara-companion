@@ -12,7 +12,24 @@
 import * as fs from "fs";
 import * as path from "path";
 import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  captureWorkflowContinuity,
+  resumeWorkflowContinuity,
+  formatWorkflowContinuity,
+  readWorkflowContinuityFile,
+  resolveWorkflowContinuityFile,
+  type WorkflowContinuityRef,
+} from "./workflow-continuity";
+import { checkpointText } from "../session/checkpoint";
+import {
+  materializeTaskContext,
+  normalizeTaskContextRequest,
+  readTaskContext,
+  type LoadedTaskContext,
+  type WorkflowTaskContextRequest,
+  type WorkflowTaskContextReceipt,
+} from "./workflow-task-context";
 import chalk from "chalk";
 import {
   createClient,
@@ -35,6 +52,7 @@ import {
   type SessionMemoryEntry,
   type SyncDocumentInput,
   type TeamSyncResumeResponse,
+  type TeamSyncChangesResponse,
 } from "../api/client";
 import { createLocalQueryCache } from "../cache/query-cache";
 import { findWorkspaceRoot, isConfigured, loadConfig } from "../config/store";
@@ -60,6 +78,7 @@ import {
 } from "./events";
 import {
   appendActivityEvent,
+  buildSessionSnapshot,
   readActivityTimeline,
   readSessionSnapshot,
   writeSessionSnapshot,
@@ -602,6 +621,7 @@ export interface ManagedWorkflowPhase {
   completedAt?: string;
   summary?: string;
   outcome?: TaskCommitOutcome;
+  commitHistory?: ManagedWorkflowAttemptRecord[];
 }
 
 export interface ManagedWorkflowTask {
@@ -624,7 +644,30 @@ export interface ManagedWorkflowTask {
   outcome?: TaskCommitOutcome;
   lastError?: string;
   evidence?: string[];
+  attemptHistory?: ManagedWorkflowAttemptRecord[];
   contextEnvelope?: ManagedWorkflowTaskContextEnvelope;
+  contextRequest?: WorkflowTaskContextRequest;
+  contextReceipt?: WorkflowTaskContextReceipt;
+  planStep?: { action: string; params: Record<string, unknown>; step?: number };
+}
+
+/** Declared outcomes retained locally, separately from independently observed proof. */
+export interface ManagedWorkflowAttemptRecord {
+  attempt: number;
+  capturedAt: string;
+  status: string;
+  summary?: string;
+  outcome?: string;
+  lastError?: string;
+  evidence?: string[];
+  decision?: string;
+  why?: string;
+  alternatives?: string[];
+  constraints?: string[];
+  observedOutcome?: string;
+  files?: string[];
+  contextReceipt?: WorkflowTaskContextReceipt;
+  recoveryReason?: string;
 }
 
 export interface ManagedWorkflowAgentContextConfig {
@@ -672,8 +715,10 @@ export interface ManagedWorkflowTaskContextEnvelope {
     verification: string[];
     dependencies: string[];
     parallelGroup?: string;
+    planStep?: ManagedWorkflowTask["planStep"];
   };
   agentContext?: ManagedWorkflowAgentContext;
+  materialization?: WorkflowTaskContextReceipt;
   commands: {
     bootstrap: string;
     resume: string;
@@ -765,6 +810,7 @@ export interface ManagedWorkflowState {
   judgmentHistory?: ManagedWorkflowJudgmentState[];
   phaseCommitReceipts?: WorkflowPhaseCommitReceipt[];
   finalReport?: FinalCommitReportArtifact;
+  continuity?: WorkflowContinuityRef;
   lastCommit?: {
     category: string;
     outcome: TaskCommitOutcome;
@@ -1389,6 +1435,8 @@ export interface GeneratedWorkflowPlanDocument {
     max_attempts?: number;
     recovery_task_id?: string;
     tasks?: GeneratedWorkflowTaskDocument[];
+    contextRequest?: WorkflowTaskContextRequest;
+    planStep?: ManagedWorkflowTask["planStep"];
   }>;
 }
 
@@ -1404,6 +1452,8 @@ export interface GeneratedWorkflowTaskDocument {
   parallel_group?: string;
   max_attempts?: number;
   recovery_task_id?: string;
+  contextRequest?: WorkflowTaskContextRequest;
+  planStep?: ManagedWorkflowTask["planStep"];
 }
 
 export interface WrittenGeneratedPlanFile {
@@ -2326,6 +2376,10 @@ function normalizeWorkflowTask(
     id: uniquePhaseId(candidateId, index, usedIds),
     title,
     query,
+    ...(record.contextRequest !== undefined
+      ? { contextRequest: normalizeTaskContextRequest(record.contextRequest) }
+      : {}),
+    ...(isRecord(record.planStep) ? { planStep: record.planStep as ManagedWorkflowTask["planStep"] } : {}),
     status: normalizeTaskStatus(record.status),
     ...(acceptance ? { acceptance } : {}),
     ...(files ? { files } : {}),
@@ -2413,6 +2467,10 @@ function planTaskToWorkflowTask(
     id,
     title,
     query,
+    ...(record.contextRequest !== undefined
+      ? { contextRequest: normalizeTaskContextRequest(record.contextRequest) }
+      : {}),
+    ...(isRecord(record.planStep) ? { planStep: record.planStep as ManagedWorkflowTask["planStep"] } : {}),
     ...(acceptance ? { acceptance } : {}),
     ...(files ? { files } : {}),
     ...(verify ? { verify } : {}),
@@ -2510,9 +2568,116 @@ export function buildGeneratedWorkflowPlanDocument(
   fallbackGoal: string
 ): GeneratedWorkflowPlanDocument {
   const goal = stringValue(plan.query) ?? fallbackGoal;
-  const steps = findWorkflowSteps(plan).map((step, index) =>
+  const rawSteps = findWorkflowSteps(plan);
+  const steps = rawSteps.map((step, index) =>
     planStepToWorkflowStep(step, index, goal)
   );
+  const usedIds = new Set<string>();
+  const aliases = new Map<string, string>();
+  const bindings: Record<string, string> = {};
+  const bind = (alias: string, id: string): void => {
+    if (aliases.has(alias) && aliases.get(alias) !== id)
+      throw new Error(`Ambiguous workflow plan identifier '${alias}'`);
+    aliases.set(alias, id);
+  };
+  // Resolve the complete graph before touching workflow state. Titles may repeat;
+  // numeric planner identities and explicit identifiers may not be ambiguous.
+  steps.forEach((step, index) => {
+    const raw = isRecord(rawSteps[index]) ? rawSteps[index] : {};
+    if (typeof raw.action === "string") {
+      step.planStep = { action: raw.action, params: isRecord(raw.params) ? raw.params : {},
+        ...(typeof raw.step === "number" ? { step: raw.step } : {}) };
+    }
+    step.id = uniquePhaseId(step.id, index, usedIds);
+    const number = raw.step ?? index + 1;
+    if (!Number.isSafeInteger(number) || Number(number) < 1)
+      throw new Error("Invalid workflow planner step number");
+    bind(String(number), step.id);
+    bind(step.id, step.id);
+    for (const value of [raw.id, raw.phase_id, raw.key]) {
+      if (typeof value === "string" && value.trim()) bind(value, step.id);
+    }
+    bindings[`step${number}`] = step.id;
+  });
+  const nested = new Set<string>();
+  steps.forEach((phase, index) => phase.tasks?.forEach((task, taskIndex) => {
+    if (nested.has(task.id) || aliases.has(task.id))
+      throw new Error(`Ambiguous workflow task identifier '${task.id}'`);
+    nested.add(task.id);
+    bind(task.id, task.id);
+    const rawPhase = rawSteps[index];
+    const rawTask = isRecord(rawPhase) && Array.isArray(rawPhase.tasks) ? rawPhase.tasks[taskIndex] : undefined;
+    if (isRecord(rawTask)) {
+      for (const value of [rawTask.id, rawTask.task_id, rawTask.key]) {
+        if (typeof value === "string" && value.trim()) bind(value, task.id);
+      }
+    }
+  }));
+  const dependencies = (values: string[] | undefined): string[] | undefined =>
+    values?.map((value) => {
+      const id = aliases.get(value);
+      if (!id) throw new Error(`Unknown workflow plan dependency '${value}'`);
+      return id;
+    });
+  steps.forEach((step, index) => {
+    step.depends_on = dependencies(step.depends_on);
+    step.tasks?.forEach((task) => { task.depends_on = dependencies(task.depends_on); });
+    const raw = isRecord(rawSteps[index]) ? rawSteps[index] : {};
+    if (["decompose", "context_query", "multi_query"].includes(String(raw.action))) {
+      if (step.tasks?.length) throw new Error("A retrieval step cannot also contain execution tasks");
+      if (!isRecord(raw.params)) throw new Error("A retrieval step requires preserved parameters");
+      const params = raw.params;
+      const refs = JSON.stringify(params).match(/\$step[1-9]\d*/g) ?? [];
+      const selected: Record<string, string> = {};
+      for (const ref of refs) {
+        const key = ref.slice(1);
+        const id = bindings[key];
+        if (!id || !step.depends_on?.includes(id))
+          throw new Error(`Task context binding '${ref}' is not a declared dependency`);
+        selected[key] = id;
+      }
+      step.contextRequest = normalizeTaskContextRequest({
+        maxTokens: typeof params.max_tokens === "number" ? Math.min(params.max_tokens, 16000) : 4000,
+        operation: { action: raw.action, params, bindings: selected },
+      });
+    } else if (raw.contextRequest !== undefined) {
+      step.contextRequest = normalizeTaskContextRequest(raw.contextRequest);
+    }
+  });
+  const validateBindings = (request: WorkflowTaskContextRequest | undefined, allowed: string[]): void => {
+    if (!request?.operation) return;
+    const op = request.operation;
+    for (const [key, rawId] of Object.entries(op.bindings)) {
+      const id = aliases.get(rawId);
+      if (!id || !allowed.includes(id))
+        throw new Error(`Task context binding '${key}' is not a declared dependency`);
+      op.bindings[key] = id;
+    }
+    for (const ref of JSON.stringify(op.params).match(/\$step[1-9]\d*/g) ?? []) {
+      if (!op.bindings[ref.slice(1)]) throw new Error(`Unresolved task context binding '${ref}'`);
+    }
+  };
+  for (const step of steps) {
+    validateBindings(step.contextRequest, step.depends_on ?? []);
+    step.tasks?.forEach((task) => validateBindings(task.contextRequest,
+      [...(task.depends_on ?? []), ...(step.depends_on ?? [])]));
+  }
+  const edges = new Map<string, string[]>();
+  for (const step of steps) {
+    edges.set(step.id, [...(step.depends_on ?? []), ...(step.tasks?.map((task) => task.id) ?? [])]);
+    step.tasks?.forEach((task) => edges.set(task.id, [...(task.depends_on ?? []), ...(step.depends_on ?? [])]));
+  }
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (id: string): void => {
+    if (visiting.has(id)) throw new Error("Cyclic workflow plan dependencies");
+    if (visited.has(id)) return;
+    visiting.add(id);
+    edges.get(id)?.forEach(visit);
+    visiting.delete(id);
+    visited.add(id);
+  };
+  edges.forEach((_, id) => visit(id));
 
   return {
     mode: "full",
@@ -2899,10 +3064,23 @@ export function normalizeWorkflowPlanInput(
   fallbackGoal: string
 ): ManagedWorkflowPhase[] {
   const usedIds = new Set<string>();
-  const steps =
+  const rawSteps =
     typeof input === "string"
       ? parseWorkflowPlanText(input, fallbackGoal)
       : findWorkflowSteps(input);
+  const compiled = typeof input !== "string" && rawSteps.some(isRecord)
+    ? buildGeneratedWorkflowPlanDocument({ query: fallbackGoal, steps: rawSteps }, fallbackGoal).steps
+    : undefined;
+  // Keep legacy task progress/annotations when importing a local plan, while all
+  // structured plans share the same identity, dependency and retrieval compiler.
+  const steps = compiled ? compiled.map((step, index) => {
+    const raw = isRecord(rawSteps[index]) ? rawSteps[index] : {};
+    const tasks = step.tasks?.map((task, taskIndex) => ({
+      ...(Array.isArray(raw.tasks) && isRecord(raw.tasks[taskIndex]) ? raw.tasks[taskIndex] : {}),
+      ...task,
+    }));
+    return { ...raw, ...step, ...(tasks ? { tasks } : {}) };
+  }) : rawSteps;
   const sourceSteps = steps.length > 0 ? steps : [fallbackGoal];
   return sourceSteps.map((step, index) =>
     normalizeWorkflowPhase(step, index, usedIds, fallbackGoal)
@@ -3177,10 +3355,6 @@ function inferWorkflowCoordinationMode(options: {
   return readWorkflowPlanMode(options.planFile) ?? (options.planFile ? "full" : "standard");
 }
 
-function getWorkflowStatePath(cwd: string = process.cwd()): string {
-  return path.join(cwd, WORKFLOW_STATE_RELATIVE_PATH);
-}
-
 function normalizeManagedWorkflowTaskState(
   task: Partial<ManagedWorkflowTask>,
   phase: ManagedWorkflowPhase,
@@ -3226,7 +3400,11 @@ function normalizeManagedWorkflowTaskState(
     ...(task.outcome ? { outcome: task.outcome } : {}),
     ...(stringValue(task.lastError) ? { lastError: stringValue(task.lastError) } : {}),
     ...(uniqueStringList(task.evidence) ? { evidence: uniqueStringList(task.evidence) } : {}),
+    ...(Array.isArray(task.attemptHistory) ? { attemptHistory: task.attemptHistory } : {}),
     ...(task.contextEnvelope ? { contextEnvelope: task.contextEnvelope } : {}),
+    ...(task.contextRequest ? { contextRequest: normalizeTaskContextRequest(task.contextRequest) } : {}),
+    ...(task.contextReceipt ? { contextReceipt: task.contextReceipt } : {}),
+    ...(task.planStep ? { planStep: task.planStep } : {}),
   };
 }
 
@@ -3264,13 +3442,19 @@ function normalizeManagedWorkflowPhaseTasks(phase: ManagedWorkflowPhase): Manage
   });
 }
 
-function normalizeManagedWorkflowState(state: ManagedWorkflowState): ManagedWorkflowState {
+export function assertManagedWorkflowSchemaVersion(
+  schemaVersion: unknown
+): asserts schemaVersion is ManagedWorkflowState["schemaVersion"] {
   if (
-    state.schemaVersion !== "snipara.workflow.v1" &&
-    state.schemaVersion !== "snipara.workflow.v2"
+    schemaVersion !== "snipara.workflow.v1" &&
+    schemaVersion !== "snipara.workflow.v2"
   ) {
     throw new Error(`${WORKFLOW_STATE_RELATIVE_PATH} is not a valid Snipara workflow state file`);
   }
+}
+
+function normalizeManagedWorkflowState(state: ManagedWorkflowState): ManagedWorkflowState {
+  assertManagedWorkflowSchemaVersion(state.schemaVersion);
 
   const judgment: ManagedWorkflowJudgmentState | undefined = state.judgment
     ? {
@@ -3364,11 +3548,12 @@ function normalizeManagedWorkflowRuntimeState(
 }
 
 function readWorkflowState(cwd: string = process.cwd()): ManagedWorkflowState | undefined {
-  const statePath = getWorkflowStatePath(cwd);
+  const statePath = resolveWorkflowContinuityFile({ cwd, path: WORKFLOW_STATE_RELATIVE_PATH });
   if (!fs.existsSync(statePath)) {
     return undefined;
   }
-  const parsed = JSON.parse(fs.readFileSync(statePath, "utf-8")) as ManagedWorkflowState;
+  const parsed = JSON.parse(readWorkflowContinuityFile({ cwd, path: WORKFLOW_STATE_RELATIVE_PATH,
+    maxBytes: 2 * 1024 * 1024 }).toString("utf8")) as ManagedWorkflowState;
   if (!Array.isArray(parsed.phases)) {
     throw new Error(`${WORKFLOW_STATE_RELATIVE_PATH} is not a valid Snipara workflow state file`);
   }
@@ -3386,7 +3571,7 @@ function readRequiredWorkflowState(): ManagedWorkflowState {
 }
 
 function writeWorkflowState(state: ManagedWorkflowState): void {
-  const statePath = getWorkflowStatePath();
+  const statePath = resolveWorkflowContinuityFile({ cwd: process.cwd(), path: WORKFLOW_STATE_RELATIVE_PATH });
   fs.mkdirSync(path.dirname(statePath), { recursive: true });
   const normalizedState = normalizeManagedWorkflowState(state);
   const normalized: ManagedWorkflowState = {
@@ -3394,7 +3579,21 @@ function writeWorkflowState(state: ManagedWorkflowState): void {
     schemaVersion: "snipara.workflow.v2",
     runtime: normalizeManagedWorkflowRuntimeState(normalizedState.runtime),
   };
-  fs.writeFileSync(statePath, `${JSON.stringify(normalized, null, 2)}\n`, "utf-8");
+  normalized.continuity = captureWorkflowContinuity({ state: normalized });
+  const content = `${JSON.stringify(normalized, null, 2)}\n`;
+  if (Buffer.byteLength(content, "utf8") > 2 * 1024 * 1024) throw new Error("Workflow state exceeds its byte limit");
+  const temporary = path.join(path.dirname(statePath), `.current-${randomUUID()}.tmp`);
+  try {
+    const fd = fs.openSync(temporary, fs.constants.O_WRONLY | fs.constants.O_CREAT |
+      fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+    try { fs.writeFileSync(fd, content, "utf8"); fs.fsyncSync(fd); }
+    finally { fs.closeSync(fd); }
+    resolveWorkflowContinuityFile({ cwd: process.cwd(), path: WORKFLOW_STATE_RELATIVE_PATH });
+    fs.renameSync(temporary, statePath);
+  } finally {
+    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+  }
+  state.continuity = normalized.continuity;
 }
 
 function sortJsonValue(value: unknown): unknown {
@@ -4898,7 +5097,7 @@ export async function workflowDecideCommand(options: {
       },
     });
   }
-  writeSessionSnapshot();
+  writeOptionalWorkflowSessionSnapshot();
   const payload = {
     version: DECISION_RESPONSE_VERSION,
     request: resolved.request,
@@ -5256,7 +5455,9 @@ function phaseDependenciesReady(
 ): { ready: boolean; blockedBy: string[] } {
   const blockedBy = (phase.dependsOn ?? []).filter((dependencyId) => {
     const dependency = state.phases.find((candidate) => candidate.id === dependencyId);
-    return !dependency || !["completed", "skipped"].includes(dependency.status);
+    if (dependency) return !["completed", "skipped"].includes(dependency.status);
+    const task = findWorkflowTaskAcrossPhases(state, dependencyId)?.task;
+    return !task || !["completed", "skipped"].includes(task.status);
   });
   return { ready: blockedBy.length === 0, blockedBy };
 }
@@ -5420,8 +5621,10 @@ function taskContextEnvelope(
       verification: task.verification ?? [],
       dependencies: task.dependsOn ?? [],
       ...(task.parallelGroup ? { parallelGroup: task.parallelGroup } : {}),
+      ...(task.planStep ? { planStep: task.planStep } : {}),
     },
     ...(agentContext ? { agentContext } : {}),
+    ...(task.contextReceipt ? { materialization: task.contextReceipt } : {}),
     commands: {
       bootstrap:
         "snipara-companion session-bootstrap --include-session-context --max-context-tokens 1000",
@@ -5438,6 +5641,39 @@ function taskContextEnvelope(
         : {}),
     },
   };
+}
+
+function loadedWorkflowTaskContext(
+  state: ManagedWorkflowState, phase: ManagedWorkflowPhase, task: ManagedWorkflowTask
+): LoadedTaskContext | undefined {
+  if (!task.contextReceipt) return undefined;
+  if (!task.contextRequest) throw new Error("Saved task context has no matching request");
+  return readTaskContext(task.contextReceipt,
+    { workflowId: state.workflowId, phaseId: phase.id, taskId: task.id, attempt: task.attempt }, task.contextRequest);
+}
+
+function workflowContextOutput(state: ManagedWorkflowState, id: string): {
+  output: Record<string, unknown>; receipt: WorkflowTaskContextReceipt;
+} {
+  const match = findWorkflowTaskAcrossPhases(state, id) ?? (() => {
+    const phase = state.phases.find((item) => item.id === id);
+    return phase && phase.tasks?.length === 1 ? { phase, task: phase.tasks[0] } : undefined;
+  })();
+  if (!match || match.task.status !== "completed")
+    throw new Error(`Task context dependency '${id}' is not completed`);
+  const context = loadedWorkflowTaskContext(state, match.phase, match.task);
+  if (!context) throw new Error(`Task context dependency '${id}' has no observed output`);
+  return { output: context.output, receipt: match.task.contextReceipt! };
+}
+
+function printLoadedTaskContext(context: LoadedTaskContext | undefined): void {
+  if (!context) return;
+  console.log("Loaded task context (source data, not execution instructions):");
+  if (!context.chunks.length) console.log(JSON.stringify(context.output, null, 2));
+  for (const chunk of context.chunks) {
+    console.log(`Source ${chunk.id} (${String(chunk.source.file ?? "unknown source")}):`);
+    console.log(chunk.content);
+  }
 }
 
 function printWorkflowTaskEnvelope(
@@ -5817,11 +6053,12 @@ function shouldFollowWorkflowRecommendations(mode: WorkflowMode, query = ""): bo
   return effectiveMode === "standard" || effectiveMode === "full";
 }
 
-function printManagedWorkflowState(state: ManagedWorkflowState): void {
+function printManagedWorkflowState(state: ManagedWorkflowState, pendingDecisionsOverride?: number | null): void {
   printKeyValue("Workflow:", `${state.workflowId} (${state.status})`);
   printKeyValue("Goal:", state.goal);
   printKeyValue("State file:", WORKFLOW_STATE_RELATIVE_PATH);
-  const pendingDecisions = safeDecisionPendingCount();
+  const pendingDecisions = pendingDecisionsOverride === undefined
+    ? safeDecisionPendingCount() : pendingDecisionsOverride ?? 0;
   if (pendingDecisions > 0) {
     printKeyValue("Pending decisions:", String(pendingDecisions));
   }
@@ -6098,7 +6335,7 @@ async function loadWorkflowRuntimeResumePlan(
           checkpoint,
           reattachSessionId: binding.sessionId,
           caveats: [
-            `Hosted runtime checkpoint lookup failed: ${error instanceof Error ? error.message : String(error)}`,
+            `Hosted runtime checkpoint lookup failed: ${checkpointText(error instanceof Error ? error.message : String(error))}`,
           ],
         },
       };
@@ -11724,7 +11961,7 @@ async function publishWorkflowStartCoordination(
     },
     timestamp: now,
   });
-  writeSessionSnapshot();
+  writeOptionalWorkflowSessionSnapshot();
   return state;
 }
 
@@ -11796,7 +12033,7 @@ export async function workflowStartCommand(options: {
     },
     timestamp: state.createdAt,
   });
-  writeSessionSnapshot();
+  writeOptionalWorkflowSessionSnapshot();
 
   if (options.json) {
     printJson(state);
@@ -11866,7 +12103,7 @@ export async function workflowJudgmentCommand(options: {
       identityStatus: state.judgment.brief.servedJudgmentId ? "linked" : "missing",
     },
   });
-  writeSessionSnapshot();
+  writeOptionalWorkflowSessionSnapshot();
 
   if (options.json) {
     printJson({ workflowId: state.workflowId, judgment: state.judgment });
@@ -11947,7 +12184,7 @@ export async function workflowJudgmentRespondCommand(options: {
       recordedCount: response.initialReceipt?.recordedCount ?? 0,
     },
   });
-  writeSessionSnapshot();
+  writeOptionalWorkflowSessionSnapshot();
 
   if (options.json) {
     printJson({ workflowId: state.workflowId, recommendation, response });
@@ -12618,6 +12855,23 @@ export async function workflowPhaseStartCommand(options: {
 }): Promise<void> {
   const state = readRequiredWorkflowState();
   const phase = findWorkflowPhase(state, options.phaseId);
+  const gate = phaseDependenciesReady(state, phase);
+  if (!gate.ready) throw new Error(`Phase '${phase.id}' is waiting on dependencies: ${gate.blockedBy.join(", ")}`);
+  if (workflowTasks(phase).some((task) => task.contextRequest)) {
+    const active = workflowTasks(phase).find((task) => task.status === "in_progress");
+    if (!active) {
+      const next = nextEligibleWorkflowTask(state, phase);
+      if (!next) throw new Error(`Phase '${phase.id}' has no eligible context task`);
+      return workflowTaskStartCommand({ phaseId: phase.id, taskId: next.id, json: options.json });
+    }
+    const context = loadedWorkflowTaskContext(state, phase, active);
+    if (active.contextRequest && !context) throw new Error("Active task context is not prepared");
+    const envelope = taskContextEnvelope(state, phase, active);
+    if (options.json) printJson({ workflow: state, current_phase: phase,
+      current_task: active, context_envelope: envelope, task_context: context });
+    else { printWorkflowTaskEnvelope(envelope, active); printLoadedTaskContext(context); }
+    return;
+  }
   const now = new Date().toISOString();
   phase.status = "in_progress";
   phase.startedAt = phase.startedAt ?? now;
@@ -12641,7 +12895,7 @@ export async function workflowPhaseStartCommand(options: {
       needsRuntime: Boolean(phase.needsRuntime),
     },
   });
-  writeSessionSnapshot();
+  writeOptionalWorkflowSessionSnapshot();
 
   if (options.json) {
     printJson({ workflow: state, current_phase: phase });
@@ -12729,6 +12983,21 @@ export async function workflowTaskStartCommand(options: {
     );
   }
 
+  let loadedContext: LoadedTaskContext | undefined;
+  if (task.contextRequest) {
+    const before = JSON.stringify(state);
+    const client = createClient(30000);
+    const materialized = await materializeTaskContext({
+      identity: { workflowId: state.workflowId, phaseId: phase.id, taskId: task.id, attempt: task.attempt + 1 },
+      request: task.contextRequest,
+      callTool: (name, args, timeoutMs) => client.callTool<unknown>(name, args, timeoutMs),
+      outputFor: (id) => workflowContextOutput(state, id),
+    });
+    if (JSON.stringify(readRequiredWorkflowState()) !== before)
+      throw new Error("Workflow changed while loading task context; retry against the current state");
+    task.contextReceipt = materialized.receipt;
+    loadedContext = materialized.context;
+  }
   const now = new Date().toISOString();
   phase.status = "in_progress";
   phase.startedAt = phase.startedAt ?? now;
@@ -12741,6 +13010,7 @@ export async function workflowTaskStartCommand(options: {
   task.lastError = undefined;
   const agentContext = resolveWorkflowAgentContext(state, task, options);
   const envelope = taskContextEnvelope(state, phase, task, agentContext);
+  if (phase.needsRuntime) ensureSandboxRuntimeBinding(state, phase, now);
   task.contextEnvelope = envelope;
   state.currentPhaseId = phase.id;
   state.status = "active";
@@ -12765,7 +13035,7 @@ export async function workflowTaskStartCommand(options: {
       contextPolicy: envelope.contextPolicy,
     },
   });
-  writeSessionSnapshot();
+  writeOptionalWorkflowSessionSnapshot();
 
   if (options.json) {
     printJson({
@@ -12773,11 +13043,13 @@ export async function workflowTaskStartCommand(options: {
       current_phase: phase,
       current_task: task,
       context_envelope: envelope,
+      task_context: loadedContext,
     });
     return;
   }
   printManagedWorkflowState(state);
   printWorkflowTaskEnvelope(envelope, task);
+  printLoadedTaskContext(loadedContext);
 }
 
 export async function workflowTaskStatusCommand(options: {
@@ -12902,6 +13174,8 @@ export async function workflowTaskCommitCommand(options: {
     );
   }
   const outcome = options.outcome ?? "completed";
+  if (outcome === "completed" && task.contextRequest && !loadedWorkflowTaskContext(state, phase, task))
+    throw new Error("Task completion requires its observed context preparation receipt");
   const category = options.category ?? "workflow-task";
   const files =
     options.files && options.files.length > 0 ? options.files : (task.files ?? phase.files);
@@ -12942,6 +13216,7 @@ export async function workflowTaskCommitCommand(options: {
     phase.status = "in_progress";
     state.status = "active";
   }
+  task.attemptHistory = [...(task.attemptHistory ?? []), workflowAttemptRecord(task, options, now)];
   const nextTask = nextEligibleWorkflowTask(state, phase);
   phase.currentTaskId = nextTask?.id;
   state.currentPhaseId = phase.id;
@@ -12980,7 +13255,7 @@ export async function workflowTaskCommitCommand(options: {
         : "processed",
     },
   });
-  writeSessionSnapshot();
+  writeOptionalWorkflowSessionSnapshot();
 
   const retryAvailable = task.status === "blocked" && task.attempt < task.maxAttempts;
   if (options.json) {
@@ -13022,6 +13297,37 @@ export async function workflowTaskCommitCommand(options: {
   console.log("");
 }
 
+function workflowAttemptRecord(
+  task: ManagedWorkflowTask,
+  options: {
+    decision?: string;
+    why?: string;
+    alternatives?: string[];
+    constraints?: string[];
+    observedOutcome?: string;
+  },
+  capturedAt: string
+): ManagedWorkflowAttemptRecord {
+  const clean = (value: string | undefined): string | undefined =>
+    value === undefined ? undefined : checkpointText(value);
+  return {
+    attempt: task.attempt,
+    capturedAt,
+    status: task.status,
+    summary: clean(task.summary),
+    outcome: task.outcome,
+    lastError: clean(task.lastError),
+    evidence: task.evidence?.map((value) => checkpointText(value)),
+    decision: clean(options.decision ?? (options.why ? task.summary : undefined)),
+    why: clean(options.why),
+    alternatives: options.alternatives?.map((value) => checkpointText(value)),
+    constraints: options.constraints?.map((value) => checkpointText(value)),
+    observedOutcome: clean(options.observedOutcome),
+    files: task.files,
+    contextReceipt: task.contextReceipt,
+  };
+}
+
 export async function workflowTaskRetryCommand(options: {
   phaseId: string;
   taskId: string;
@@ -13046,6 +13352,13 @@ export async function workflowTaskRetryCommand(options: {
     throw new Error(`Recovery task '${recoveryTask.id}' is already ${recoveryTask.status}.`);
   }
   const now = new Date().toISOString();
+  // Older workflows had only the last outcome. Preserve it before retry clears
+  // the status, and keep the missing earlier attempts explicitly incomplete.
+  if (!task.attemptHistory?.some((entry) => entry.attempt === task.attempt)) {
+    task.attemptHistory = [...(task.attemptHistory ?? []), workflowAttemptRecord(task, {}, now)];
+  }
+  const failedAttempt = task.attemptHistory[task.attemptHistory.length - 1];
+  failedAttempt.recoveryReason = checkpointText(options.reason);
   recoveryTask.status = "pending";
   recoveryTask.completedAt = undefined;
   recoveryTask.outcome = undefined;
@@ -13073,7 +13386,7 @@ export async function workflowTaskRetryCommand(options: {
       maxAttempts: recoveryTask.maxAttempts,
     },
   });
-  writeSessionSnapshot();
+  writeOptionalWorkflowSessionSnapshot();
 
   if (options.json) {
     printJson({
@@ -13236,7 +13549,7 @@ export async function workflowRuntimeCheckpointCommand(options: {
       artifactCount: checkpoint.artifacts?.length ?? 0,
     },
   });
-  writeSessionSnapshot();
+  writeOptionalWorkflowSessionSnapshot();
 
   if (options.json) {
     printJson({
@@ -13282,6 +13595,16 @@ export async function workflowRuntimeCheckpointCommand(options: {
   console.log(`Resume with: snipara-companion workflow resume --include-session-context`);
 }
 
+/** Presentation of work facts, excluding raw logs and credential-like values. */
+function projectWorkflowResumeMetadata<T>(value: T): T {
+  if (value === undefined) return value;
+  return JSON.parse(JSON.stringify(value, (key, item: unknown) => {
+    if (/^(?:stdout|stderr|rawLogs?|transcript|privateReasoning|password|secret|authorization|apiKey|api_key|accessToken)$/i.test(key))
+      return "[REDACTED]";
+    return typeof item === "string" ? checkpointText(item, 12000, false) : item;
+  })) as T;
+}
+
 export async function workflowResumeCommand(options: {
   maxCriticalTokens?: number;
   maxContextTokens?: number;
@@ -13289,7 +13612,25 @@ export async function workflowResumeCommand(options: {
   json?: boolean;
 }): Promise<void> {
   const state = readRequiredWorkflowState();
-  ensureConfigured();
+  const phase = state.phases.find((item) => item.id === state.currentPhaseId);
+  const continuity = resumeWorkflowContinuity({ state });
+  const taskContextErrors: Array<{ phaseId: string; taskId: string; error: string }> = [];
+  const taskContexts: LoadedTaskContext[] = [];
+  for (const task of (phase?.tasks ?? []).filter((item) =>
+    item.contextReceipt && item.status !== "completed" && item.status !== "skipped")) {
+    try {
+      const loaded = loadedWorkflowTaskContext(state, phase!, task);
+      if (loaded) taskContexts.push(loaded);
+    } catch (error) {
+      taskContextErrors.push({ phaseId: phase!.id, taskId: task.id,
+        error: checkpointText(error instanceof Error ? error.message : String(error)) });
+    }
+  }
+  if (taskContextErrors.length) {
+    continuity.status = "blocked";
+    continuity.reasons.push("Active task context could not be verified; repair the bound pack or task contract before continuing");
+    process.exitCode = 1;
+  }
 
   const resolvedContextTokens =
     options.maxContextTokens !== undefined
@@ -13297,27 +13638,55 @@ export async function workflowResumeCommand(options: {
       : options.includeSessionContext
         ? DEFAULT_SESSION_CONTEXT_TOKENS
         : 0;
-  const client = createClient(15000);
   const resolvedCriticalTokens = options.maxCriticalTokens ?? DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS;
-  const bootstrap = await client.getSessionMemories(resolvedCriticalTokens, resolvedContextTokens);
-  const bootstrapQuality = buildSessionBootstrapQuality(bootstrap, {
+  let bootstrap: SessionMemoriesResult | undefined;
+  let bootstrapError: string | undefined;
+  try {
+    ensureConfigured();
+    bootstrap = await createClient(15000).getSessionMemories(resolvedCriticalTokens, resolvedContextTokens);
+  } catch (error) {
+    bootstrapError = checkpointText(error instanceof Error ? error.message : String(error));
+  }
+  const bootstrapQuality = bootstrap ? buildSessionBootstrapQuality(bootstrap, {
     expectedMaxTokens: resolvedCriticalTokens + resolvedContextTokens,
-  });
-  const teamSyncResume = await loadWorkflowTeamSyncResume(state);
-  const runtimeResume = await loadWorkflowRuntimeResumePlan(state);
-  const localSessionSnapshot = writeSessionSnapshot({ limit: 8 });
+  }) : undefined;
+  const [teamSyncResume, whatChangedResume, runtimeResume] = await Promise.all([
+    loadWorkflowTeamSyncResume(state),
+    loadWorkflowWhatChangedResume(state),
+    loadWorkflowRuntimeResumePlan(state),
+  ]);
+  let localSessionSnapshot: SessionSnapshot | null = null;
+  let localSessionSnapshotError: string | undefined;
+  try {
+    const supplemental = buildSessionSnapshot({ limit: 8 });
+    // The work brief uses explicit continuity facts. Raw activity tool payloads
+    // are not part of this supplemental observation.
+    supplemental.activity.latestEvents = [];
+    supplemental.caveats.push("Raw activity event payloads are omitted from workflow resume");
+    localSessionSnapshot = JSON.parse(JSON.stringify(supplemental, (_key, value: unknown) =>
+      typeof value === "string" ? checkpointText(value, 4000, false) : value)) as SessionSnapshot;
+  } catch (error) {
+    localSessionSnapshotError = checkpointText(error instanceof Error ? error.message : String(error));
+  }
 
   if (options.json) {
     printJson({
-      workflow: state,
-      pending_decision_count: safeDecisionPendingCount(),
+      workflow: projectWorkflowResumeMetadata(state),
+      workflow_projection: { redacted: true, rawStateFile: false },
+      continuity,
+      task_contexts: taskContexts,
+      task_context_errors: taskContextErrors,
+      pending_decision_count: localSessionSnapshot?.decisions.pendingCount ?? null,
       local_session_snapshot: localSessionSnapshot,
-      session_bootstrap: bootstrap,
+      local_session_snapshot_error: localSessionSnapshotError,
+      session_bootstrap: projectWorkflowResumeMetadata(bootstrap),
       session_bootstrap_quality: bootstrapQuality,
-      team_sync_resume: teamSyncResume?.data ?? null,
+      session_bootstrap_error: bootstrapError,
+      team_sync_resume: projectWorkflowResumeMetadata(teamSyncResume?.data ?? null),
       team_sync_resume_error: teamSyncResume?.error,
-      runtime_resume: runtimeResume?.data ?? null,
-      runtime_resume_error: runtimeResume?.error,
+      what_changed_resume: projectWorkflowResumeMetadata(whatChangedResume),
+      runtime_resume: projectWorkflowResumeMetadata(runtimeResume?.data ?? null),
+      runtime_resume_error: projectWorkflowResumeMetadata(runtimeResume?.error),
       session_context: {
         included: resolvedContextTokens > 0,
         max_tokens: resolvedContextTokens,
@@ -13327,19 +13696,59 @@ export async function workflowResumeCommand(options: {
   }
 
   console.log(chalk.bold("Workflow Resume"));
-  printManagedWorkflowState(state);
-  const printedBootstrap = printSessionBootstrap(bootstrap, {
+  console.log(formatWorkflowContinuity(continuity));
+  printManagedWorkflowState(projectWorkflowResumeMetadata(state), localSessionSnapshot?.decisions.pendingCount ?? null);
+  const printedBootstrap = bootstrap ? printSessionBootstrap(projectWorkflowResumeMetadata(bootstrap), {
     includeSessionContext: resolvedContextTokens > 0,
     maxTokens: resolvedCriticalTokens + resolvedContextTokens,
-  });
+  }) : undefined;
+  if (bootstrapError) console.log(`Hosted session context unavailable: ${bootstrapError}`);
+  taskContexts.forEach(printLoadedTaskContext);
+  taskContextErrors.forEach((item) => console.log(`Task context ${item.phaseId}/${item.taskId}: ${item.error}`));
   if (printedBootstrap) {
     printSessionBootstrapQuality(buildPrintedBootstrapQuality(printedBootstrap));
   }
-  printWorkflowLocalSessionSnapshot(localSessionSnapshot);
-  printWorkflowTeamSyncResume(teamSyncResume);
-  printWorkflowRuntimeResumePlan(runtimeResume);
+  if (localSessionSnapshot) printWorkflowLocalSessionSnapshot(localSessionSnapshot);
+  if (localSessionSnapshotError) console.log(`Supplemental session observation unavailable: ${localSessionSnapshotError}`);
+  printWorkflowTeamSyncResume(projectWorkflowResumeMetadata(teamSyncResume));
+  if (whatChangedResume.error) console.log(`What Changed unavailable: ${whatChangedResume.error}`);
+  if (whatChangedResume.data) {
+    console.log("What Changed (separate hosted observation; empty changes do not prove no repository movement)");
+    whatChangedResume.data.whatChanged.recommendedActions.forEach((action) => console.log(`- ${checkpointText(action)}`));
+  }
+  printWorkflowRuntimeResumePlan(projectWorkflowResumeMetadata(runtimeResume));
   printManagedWorkflowResumeBoundary();
-  printManagedWorkflowNextCommands(state);
+}
+
+async function loadWorkflowWhatChangedResume(state: ManagedWorkflowState): Promise<{
+  data?: TeamSyncChangesResponse;
+  error?: string;
+  receipt: { observedAt: string; status: "received" | "unavailable"; sha256: string | null; historicalCheckpointRewritten: false };
+}> {
+  const observedAt = new Date().toISOString();
+  try {
+    ensureConfigured();
+    const phase = state.phases.find((item) => item.id === state.currentPhaseId) ?? nextOpenPhase(state);
+    const data = await createClient(15000).getTeamSyncWhatChanged({
+      branch: readCurrentGitBranch(), sessionId: loadConfig().sessionId,
+      since: state.continuity?.capturedAt, recentFiles: phase?.files?.slice(0, 12) ?? [], limit: 10,
+    });
+    return { data, receipt: { observedAt, status: "received",
+      sha256: createHash("sha256").update(JSON.stringify(data)).digest("hex"), historicalCheckpointRewritten: false } };
+  } catch (error) {
+    return { error: checkpointText(error instanceof Error ? error.message : String(error)),
+      receipt: { observedAt, status: "unavailable", sha256: null, historicalCheckpointRewritten: false } };
+  }
+}
+
+/** Explicitly bind the current files and work facts without changing task status. */
+export async function workflowCheckpointCommand(options: { json?: boolean }): Promise<void> {
+  const state = readRequiredWorkflowState();
+  state.updatedAt = new Date().toISOString();
+  writeWorkflowState(state);
+  const continuity = resumeWorkflowContinuity({ state });
+  if (options.json) printJson({ workflowId: state.workflowId, continuity });
+  else console.log(formatWorkflowContinuity(continuity));
 }
 
 async function loadWorkflowTeamSyncResume(
@@ -13365,7 +13774,7 @@ async function loadWorkflowTeamSyncResume(
     };
   } catch (error) {
     return {
-      error: error instanceof Error ? error.message : String(error),
+      error: checkpointText(error instanceof Error ? error.message : String(error)),
     };
   }
 }
@@ -13452,6 +13861,13 @@ async function commitTaskMemory(options: {
   outcome?: TaskCommitOutcome;
   files?: string[];
 }): Promise<Record<string, unknown>> {
+  if (process.env.SNIPARA_LOCAL_ONLY === "1") return {
+    stored_count: 0, skipped_count: 0, candidates: [], stored_candidates: [], skipped_candidates: [],
+    hosted_phase_commit: { status: "not_requested", reason: "explicit_local_only" },
+    local_phase_commit: { status: "local_only", category: options.category,
+      outcome: options.outcome, files: options.files ?? [] },
+    message: "Local workflow checkpoint only; hosted memory persistence was not requested",
+  };
   ensureConfigured();
 
   const client = createClient(TASK_COMMIT_TIMEOUT_MS);
@@ -13545,6 +13961,15 @@ async function commitFinalTaskMemory(options: {
   outcome: TaskCommitOutcome;
   files?: string[];
 }): Promise<Record<string, unknown>> {
+  if (process.env.SNIPARA_LOCAL_ONLY === "1") return {
+    stored_count: 0, skipped_count: 0, candidates: [], stored_candidates: [], skipped_candidates: [],
+    hosted_final_commit: { status: "not_requested", reason: "explicit_local_only" },
+    local_final_commit: { status: "local_only", category: options.category,
+      outcome: options.outcome, files: options.files ?? [] },
+    team_sync_handoff: recordLocalFinalCommitHandoff({ summary: options.summary, outcome: options.outcome,
+      files: options.files, error: "Hosted persistence not requested: explicit local-only workflow" }),
+    message: "Local workflow closeout only; hosted memory persistence was not requested",
+  };
   ensureConfigured();
 
   const category = normalizeFinalCommitCategory(options.category);
@@ -13670,6 +14095,13 @@ function printJournalWarning(result?: JournalWriteResult): void {
   }
 }
 
+function writeOptionalWorkflowSessionSnapshot(): void {
+  try { writeSessionSnapshot(); }
+  catch (error) {
+    console.error(`Supplemental session snapshot unavailable; workflow state was saved: ${checkpointText(error instanceof Error ? error.message : String(error))}`);
+  }
+}
+
 function printTeamSyncCompletionNotice(completedWork: TeamSyncWorkRecord[]): void {
   if (completedWork.length === 0) {
     return;
@@ -13715,6 +14147,12 @@ export async function workflowPhaseCommitCommand(options: {
   const state = readRequiredWorkflowState();
   const phase = findWorkflowPhase(state, options.phaseId);
   const outcome = options.outcome ?? "completed";
+  if (outcome === "completed") {
+    for (const task of workflowTasks(phase).filter((item) => item.contextRequest && item.status !== "skipped")) {
+      if (task.status === "pending" || !loadedWorkflowTaskContext(state, phase, task))
+        throw new Error(`Task '${task.id}' must load its required context before phase completion`);
+    }
+  }
   const category = options.category ?? "workflow-phase";
   const files = options.files && options.files.length > 0 ? options.files : phase.files;
 
@@ -13764,7 +14202,16 @@ export async function workflowPhaseCommitCommand(options: {
     task.summary = task.summary ?? options.summary;
     task.outcome = task.outcome ?? outcome;
     task.evidence = task.evidence ?? uniqueStringList(options.evidence) ?? [];
+    if (task.attempt > 0 && !task.attemptHistory?.some((entry) => entry.attempt === task.attempt)) {
+      task.attemptHistory = [...(task.attemptHistory ?? []), workflowAttemptRecord(task, options, now)];
+    }
   }
+  phase.commitHistory = [...(phase.commitHistory ?? []), workflowAttemptRecord({
+    id: phase.id, title: phase.title, query: phase.query, status: phase.status,
+    attempt: (phase.commitHistory?.length ?? 0) + 1, maxAttempts: 1,
+    summary: options.summary, outcome, files,
+    evidence: uniqueStringList(options.evidence) ?? [],
+  }, options, now)];
   phase.currentTaskId = undefined;
   if (files && files.length > 0) {
     phase.files = files;
@@ -13890,7 +14337,7 @@ export async function workflowPhaseCommitCommand(options: {
       },
     });
   }
-  writeSessionSnapshot();
+  writeOptionalWorkflowSessionSnapshot();
 
   if (options.json) {
     printJson({
@@ -13936,6 +14383,19 @@ export async function finalCommitCommand(options: {
 }): Promise<void> {
   const state = readWorkflowState();
   const outcome = options.outcome ?? "completed";
+  if (outcome === "completed" && state?.phases.some((phase) =>
+    workflowTasks(phase).some((task) => task.contextRequest))) {
+    for (const phase of state.phases) {
+      if (!["completed", "skipped"].includes(phase.status) ||
+        workflowTasks(phase).some((task) => !["completed", "skipped"].includes(task.status))) {
+        throw new Error(`Phase '${phase.id}' must complete its tasks before final completion`);
+      }
+      for (const task of workflowTasks(phase).filter((item) => item.contextRequest && item.status !== "skipped")) {
+        if (!loadedWorkflowTaskContext(state, phase, task))
+          throw new Error(`Task '${task.id}' must load its required context before final completion`);
+      }
+    }
+  }
   if (state?.judgment) {
     const evaluatedAt = new Date().toISOString();
     const resolution = updateManagedWorkflowJudgmentResolution(state.judgment, {
@@ -14091,7 +14551,7 @@ export async function finalCommitCommand(options: {
       },
     });
   }
-  writeSessionSnapshot();
+  writeOptionalWorkflowSessionSnapshot();
 
   if (options.json) {
     printJson({

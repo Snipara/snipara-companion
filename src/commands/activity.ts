@@ -5,12 +5,17 @@ import {
   buildIntentDetectionFromTimeline,
   type ProjectIntentDetectionResult,
 } from "../contracts/project-intelligence";
+import { listWorkflowContinuityDirectory, readWorkflowContinuityFile } from "./workflow-continuity";
 
 export const ACTIVITY_TIMELINE_VERSION = "snipara.activity_timeline.v0" as const;
 export const SESSION_SNAPSHOT_VERSION = "snipara.session_snapshot.v0" as const;
 export const ACTIVITY_RELATIVE_DIR = path.join(".snipara", "activity");
 export const ACTIVITY_TIMELINE_RELATIVE_PATH = path.join(ACTIVITY_RELATIVE_DIR, "timeline.jsonl");
 export const SESSION_SNAPSHOT_RELATIVE_PATH = path.join(ACTIVITY_RELATIVE_DIR, "session.json");
+const MAX_ACTIVITY_JSON_BYTES = 2 * 1024 * 1024;
+const MAX_ACTIVITY_TIMELINE_BYTES = 4 * 1024 * 1024;
+const MAX_ACTIVITY_DIRECTORY_BYTES = 4 * 1024 * 1024;
+const MAX_ACTIVITY_DIRECTORY_ENTRIES = 256;
 
 export type ActivityEventSource =
   | "workflow"
@@ -139,27 +144,53 @@ function hashEvent(input: Record<string, unknown>): string {
   return createHash("sha256").update(stableJson(input)).digest("hex").slice(0, 16);
 }
 
-function safeReadJson(filePath: string): Record<string, unknown> | null {
+function isMissing(error: unknown): boolean {
+  return !!error && typeof error === "object" && "code" in error && error.code === "ENOENT";
+}
+
+function readActivityArtifact(filePath: string, cwd: string, limit: number): Buffer | null {
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
+    return readWorkflowContinuityFile({ cwd, relativePath: path.relative(path.resolve(cwd), path.resolve(filePath)), maxBytes: limit });
+  } catch (error) {
+    if (isMissing(error)) return null;
+    throw new Error("Local activity artifact is unsafe, unavailable or exceeds its bounded read limit");
   }
 }
 
-function readJsonDir(dir: string): Record<string, unknown>[] {
+function jsonRecord(content: Buffer): Record<string, unknown> | null {
   try {
-    return fs
-      .readdirSync(dir)
-      .filter((fileName) => fileName.endsWith(".json"))
-      .map((fileName) => safeReadJson(path.join(dir, fileName)))
-      .filter((record): record is Record<string, unknown> => Boolean(record));
+    const parsed: unknown = JSON.parse(content.toString("utf8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+    throw new Error("Invalid local activity JSON object");
   } catch {
-    return [];
+    throw new Error("Local activity JSON artifact is invalid");
   }
+}
+
+function safeReadJson(filePath: string, cwd: string): Record<string, unknown> | null {
+  const content = readActivityArtifact(filePath, cwd, MAX_ACTIVITY_JSON_BYTES);
+  return content ? jsonRecord(content) : null;
+}
+
+function readJsonDir(dir: string, cwd: string): Record<string, unknown>[] {
+  let entries: string[];
+  try {
+    entries = listWorkflowContinuityDirectory({ cwd, relativePath: path.relative(path.resolve(cwd), path.resolve(dir)), maxEntries: MAX_ACTIVITY_DIRECTORY_ENTRIES });
+  } catch (error) {
+    if (isMissing(error)) return [];
+    throw new Error("Local activity directory is unsafe, unavailable or exceeds its bounded entry limit");
+  }
+  const result: Record<string, unknown>[] = [];
+  let bytes = 0;
+  for (const name of entries.filter((item) => item.endsWith(".json"))) {
+    const content = readActivityArtifact(path.join(dir, name), cwd, MAX_ACTIVITY_JSON_BYTES);
+    if (!content) continue;
+    bytes += content.length;
+    if (bytes > MAX_ACTIVITY_DIRECTORY_BYTES) throw new Error("Local activity directory exceeds its bounded byte limit");
+    const record = jsonRecord(content);
+    if (record) result.push(record);
+  }
+  return result;
 }
 
 function countBy<T>(items: T[], key: (item: T) => string): Record<string, number> {
@@ -221,27 +252,25 @@ export function readActivityTimeline(
 ): ActivityTimelineEvent[] {
   const timelinePath = getActivityTimelinePath(options.cwd);
   const limit = options.limit && options.limit > 0 ? options.limit : undefined;
-  let lines: string[];
-  try {
-    lines = fs.readFileSync(timelinePath, "utf8").split(/\r?\n/).filter(Boolean);
-  } catch {
-    return [];
-  }
+  const content = readActivityArtifact(timelinePath, options.cwd ?? process.cwd(), MAX_ACTIVITY_TIMELINE_BYTES);
+  const lines = content ? content.toString("utf8").split(/\r?\n/).filter(Boolean) : [];
   const events = lines
     .map((line) => {
       try {
-        return JSON.parse(line) as ActivityTimelineEvent;
+        const event: unknown = JSON.parse(line);
+        if (!event || typeof event !== "object" || !("timestamp" in event) || typeof event.timestamp !== "string")
+          throw new Error("Invalid local activity event");
+        return event as ActivityTimelineEvent;
       } catch {
-        return null;
+        throw new Error("Local activity timeline contains an invalid event");
       }
     })
-    .filter((event): event is ActivityTimelineEvent => Boolean(event?.timestamp))
     .sort((left, right) => String(right.timestamp).localeCompare(String(left.timestamp)));
   return limit ? events.slice(0, limit) : events;
 }
 
 function workflowSnapshot(cwd: string): SessionSnapshot["workflow"] {
-  const state = safeReadJson(path.join(cwd, ".snipara", "workflow", "current.json"));
+  const state = safeReadJson(path.join(cwd, ".snipara", "workflow", "current.json"), cwd);
   if (!state) {
     return null;
   }
@@ -268,7 +297,7 @@ function countDecisionFingerprintRepeats(records: Record<string, unknown>[]): nu
 }
 
 function producerLoopSummary(cwd: string): SessionSnapshot["producerLoop"] {
-  const records = readJsonDir(path.join(cwd, ".snipara", "producer-loop"));
+  const records = readJsonDir(path.join(cwd, ".snipara", "producer-loop"), cwd);
   let reviewedCount = 0;
   let rejectedCount = 0;
   let unreviewedCount = 0;
@@ -295,7 +324,7 @@ function producerLoopSummary(cwd: string): SessionSnapshot["producerLoop"] {
 }
 
 function teamSyncSnapshot(cwd: string): SessionSnapshot["teamSync"] {
-  const state = safeReadJson(path.join(cwd, ".snipara", "team-sync", "session.json"));
+  const state = safeReadJson(path.join(cwd, ".snipara", "team-sync", "session.json"), cwd);
   const work = Array.isArray(state?.work) ? (state?.work as Record<string, unknown>[]) : [];
   const handoffs = Array.isArray(state?.handoffs)
     ? (state?.handoffs as Record<string, unknown>[])
@@ -368,8 +397,8 @@ export function buildSessionSnapshot(
   const cwd = options.cwd ?? process.cwd();
   const events = readActivityTimeline({ cwd });
   const latestEvents = events.slice(0, options.limit && options.limit > 0 ? options.limit : 20);
-  const pendingDecisions = readJsonDir(path.join(cwd, ".snipara", "decisions", "pending"));
-  const resolvedDecisions = readJsonDir(path.join(cwd, ".snipara", "decisions", "resolved"));
+  const pendingDecisions = readJsonDir(path.join(cwd, ".snipara", "decisions", "pending"), cwd);
+  const resolvedDecisions = readJsonDir(path.join(cwd, ".snipara", "decisions", "resolved"), cwd);
   const workflow = workflowSnapshot(cwd);
   const producerLoop = producerLoopSummary(cwd);
   const teamSync = teamSyncSnapshot(cwd);
@@ -442,7 +471,7 @@ export function writeSessionSnapshot(
 }
 
 export function readSessionSnapshot(cwd: string = process.cwd()): SessionSnapshot | null {
-  const parsed = safeReadJson(getSessionSnapshotPath(cwd));
+  const parsed = safeReadJson(getSessionSnapshotPath(cwd), cwd);
   if (
     parsed?.schemaVersion === SESSION_SNAPSHOT_VERSION &&
     parsed.summary &&

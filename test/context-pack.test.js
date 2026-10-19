@@ -46,6 +46,47 @@ function fileMode(filePath) {
   return fs.statSync(filePath).mode & 0o777;
 }
 
+for (const kind of ["fifo", "oversized", "symlink", "parent-symlink"]) {
+  test(`retrieve latest refuses ${kind} pointer before reading it`, (t) => {
+    const repo = makeTempRepo();
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "context-pointer-outside-"));
+    t.after(() => { fs.rmSync(repo, {recursive:true,force:true}); fs.rmSync(outside, {recursive:true,force:true}); });
+    const packed = packContext({cwd:repo,content:"safe local value"});
+    const pointer = path.join(repo,".snipara/context-pack/latest.json");
+    if (kind === "oversized") fs.writeFileSync(pointer,"x".repeat(65537));
+    if (kind === "fifo") {
+      fs.unlinkSync(pointer);
+      const mk = spawnSync("mkfifo", [pointer]);
+      assert.equal(mk.status,0);
+    }
+    if (kind === "symlink") { fs.unlinkSync(pointer); fs.symlinkSync(path.join(outside,"private.json"),pointer); }
+    if (kind === "parent-symlink") {
+      const base = path.dirname(pointer), moved = path.join(outside,"packs");
+      fs.renameSync(base,moved); fs.symlinkSync(moved,base);
+    }
+    // A child timeout also proves FIFO handling cannot wait for a writer.
+    const result = spawnSync(process.execPath,[cliPath,"context-pack","retrieve","latest","--json"],
+      {cwd:repo,encoding:"utf8",timeout:2000,env:{...process.env,SNIPARA_COMPANION_SKIP_NPM_VERSION_CHECK:"1"}});
+    assert.notEqual(result.status,0);
+    assert.equal(result.error,undefined);
+    assert.match(result.stderr,/No latest context pack|invalid/i);
+    assert.ok(packed.record.id);
+  });
+}
+
+for (const relative of [".snipara", ".snipara/context-pack", ".snipara/context-pack/blobs", ".snipara/context-pack/items"]) {
+  test(`pack refuses linked storage at ${relative} without writing outside`, (t) => {
+    const repo = makeTempRepo();
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "pack-write-outside-"));
+    t.after(() => { fs.rmSync(repo,{recursive:true,force:true}); fs.rmSync(outside,{recursive:true,force:true}); });
+    const target = path.join(repo,relative);
+    fs.mkdirSync(path.dirname(target),{recursive:true});
+    fs.symlinkSync(outside,target);
+    assert.throws(() => packContext({cwd:repo,content:"Must stay within workspace"}), /symlink|workspace/i);
+    assert.deepEqual(fs.readdirSync(outside),[]);
+  });
+}
+
 test("packContext writes a deterministic local pack and retrieves exact content", () => {
   const repo = makeTempRepo();
   const content = "first line\nsecond line\n";

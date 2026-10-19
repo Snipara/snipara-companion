@@ -23,8 +23,8 @@ export interface SessionCloseout {
 
 // Only bounded session summaries and file names belong in a checkpoint, never
 // raw transcripts or command output. Redact common credentials before disk/network.
-export function checkpointText(value: string, limit = 12000): string {
-  return value
+export function checkpointText(value: string, limit = 12000, trim = true): string {
+  const redacted = value
     .replace(
       /-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g,
       "[REDACTED PRIVATE KEY]"
@@ -34,9 +34,8 @@ export function checkpointText(value: string, limit = 12000): string {
     .replace(
       /\b([\w-]*(?:api[_-]?key|token|password|passwd|secret)[\w-]*)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
       "$1=[REDACTED]"
-    )
-    .trim()
-    .slice(0, limit);
+    );
+  return (trim ? redacted.trim() : redacted).slice(0, limit);
 }
 
 export function normalizeSessionCheckpoint(input: {

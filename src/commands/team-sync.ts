@@ -21,6 +21,7 @@ import {
   type TeamSyncWorkBriefResponse,
 } from "../api/client";
 import { loadConfig } from "../config/store";
+import { checkpointText } from "../session/checkpoint";
 import {
   formatOrchestratorRecommendationReason,
   getOrchestratorRecommendation,
@@ -41,6 +42,13 @@ import {
 export const TEAM_SYNC_STATE_RELATIVE_PATH = path.join(".snipara", "team-sync", "session.json");
 const TEAM_SYNC_STALE_WORK_MS = 48 * 60 * 60 * 1000;
 const TEAM_SYNC_AUTO_ARCHIVE_WORK_MS = 14 * 24 * 60 * 60 * 1000;
+
+function writeOptionalTeamSyncSessionSnapshot(rootDir: string): void {
+  try { writeSessionSnapshot({ cwd: rootDir }); }
+  catch (error) {
+    console.error(`Supplemental session snapshot unavailable; Team Sync state was saved: ${checkpointText(error instanceof Error ? error.message : String(error))}`);
+  }
+}
 
 export type TeamSyncAttention = "note" | "watch" | "review" | "proof";
 export type TeamSyncWorkStatus = "active" | "completed" | "archived";
@@ -663,7 +671,7 @@ export async function createTeamSyncStartWorkPayload(
       orchestratorHandoffPath: orchestratorHandoff?.relativePath,
     },
   });
-  writeSessionSnapshot({ cwd: rootDir });
+  writeOptionalTeamSyncSessionSnapshot(rootDir);
 
   return {
     action: "start-work",
@@ -786,7 +794,7 @@ async function createTeamSyncHandoffPayload(
       orchestratorHandoffPath: orchestratorHandoff?.relativePath,
     },
   });
-  writeSessionSnapshot({ cwd: rootDir });
+  writeOptionalTeamSyncSessionSnapshot(rootDir);
 
   return {
     action: "handoff",
@@ -1497,7 +1505,7 @@ export async function teamSyncCompleteWorkCommand(options: TeamSyncCommandOption
       journalStatus: journal.status,
     },
   });
-  writeSessionSnapshot({ cwd: rootDir });
+  writeOptionalTeamSyncSessionSnapshot(rootDir);
 
   printTeamSyncResult(
     {

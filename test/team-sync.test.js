@@ -1347,7 +1347,9 @@ test("team-sync resume and workflow resume surface the hosted handoff context", 
     workflowResumeResult.stdout,
     /does not snapshot or exactly restore a live Snipara Sandbox process/
   );
-  assert.match(workflowResumeResult.stdout, /snipara-companion workflow phase-start phase-4/);
+  assert.match(workflowResumeResult.stdout, /Status: drift_revalidation_required/);
+  assert.match(workflowResumeResult.stdout, /Current next action: "snipara-companion" "workflow" "task-status" "--json"/);
+  assert.doesNotMatch(workflowResumeResult.stdout, /snipara-companion workflow phase-start phase-4/);
 
   const workflowResult = runCli(["workflow", "resume", "--json"], {
     cwd: dir,

@@ -104,8 +104,16 @@ import { leadPlanCommand } from "./commands/lead-plan";
 import { controllerBridgeExportCommand } from "./commands/controller-bridge";
 import { controllerBridgeProjectCommand } from "./commands/controller-bridge-project";
 import { controllerCockpitCommand } from "./commands/controller-cockpit";
+import { createTaskIntake, readTaskIntake, writeTaskIntake, revalidateTaskIntake } from "./commands/task-intake";
+import { executeTaskJourney, formatTaskJourneyCard, type TaskJourneyOptions } from "./commands/task-journey";
+import { normalizeTaskContextRequest } from "./commands/workflow-task-context";
+import { writeBridgeImmutable, writeBridgeImmutableBytes } from "./commands/controller-bridge-io";
+export { executeTaskJourney, buildTaskJourneyCard, formatTaskJourneyCard } from "./commands/task-journey";
 export { buildControllerCockpit } from "./commands/controller-cockpit";
 export { exportControllerBridge } from "./commands/controller-bridge";
+export { createTaskIntake, validateTaskIntake, readTaskIntake, writeTaskIntake, revalidateTaskIntake, taskIntakeHash } from "./commands/task-intake";
+import { exportWorkflowRuntimeContexts } from "./commands/runtime-source-context";
+export { exportWorkflowRuntimeContexts, readRuntimeContextMap, validateRuntimeSourceContext } from "./commands/runtime-source-context";
 export { projectControllerBridge } from "./commands/controller-bridge-project";
 import {
   featureInitCommand,
@@ -197,6 +205,7 @@ import {
   workflowProducerReviewCommand,
   workflowRuntimeCheckpointCommand,
   workflowResumeCommand,
+  workflowCheckpointCommand,
   workflowScaffoldCommand,
   workflowRunCommand,
   workflowSessionCommand,
@@ -222,6 +231,12 @@ import { swarmCreateCommand, swarmJoinCommand } from "./commands/swarm";
 import { loadConfig } from "./config/store";
 
 // Programmatic API: pure helpers re-exported for embedding and unit tests.
+export {
+  captureWorkflowContinuity,
+  captureWorkflowRepository,
+  resumeWorkflowContinuity,
+  formatWorkflowContinuity,
+} from "./commands/workflow-continuity";
 // These have no CLI side effects and are safe to import without running argv.
 export { resolveQueryFromToolInput } from "./commands/pre-tool";
 export { buildCommitResultMetadata, extractFilesFromToolInput } from "./commands/post-tool";
@@ -924,6 +939,100 @@ program
   .option("--json")
   .action(controllerCockpitCommand);
 
+const taskJourney = program.command("task")
+  .description("One task: frame, work, verify, decide and resume; each advanced engine remains optional");
+const taskList = (value: string, previous: string[]): string[] => [...previous, value];
+taskJourney.command("brief [goal]")
+  .description("Capture a local contract; selected GitHub issue text stays untrusted source material")
+  .option("--id <id>")
+  .option("--accept <criterion>", "Explicit acceptance criterion; repeatable", taskList, [])
+  .option("--file <scope>", "Declared repository scope; repeatable", taskList, [])
+  .option("--check <command>", "Required verification, never executed by intake", taskList, [])
+  .option("--issue <number-or-url>", "Read only the selected GitHub issue with existing gh authentication")
+  .option("--output <file>", "Save immutable brief inside the workspace")
+  .option("--dir <directory>")
+  .action((goal, options) => {
+    if (!goal) throw new Error("An explicit task goal is required");
+    const cwd = options.dir ?? process.cwd();
+    const { brief } = createTaskIntake({ workspaceRoot:cwd, goal, criteria:options.accept,
+      files:options.file, verification:options.check, githubIssue:options.issue, id:options.id });
+    if (options.output) writeTaskIntake(cwd, options.output, brief);
+    console.log(JSON.stringify(brief,null,2));
+  });
+taskJourney.command("start [goal]")
+  .description("Start a local task with existing feature/workflow artifacts; no account or Orchestrator required")
+  .option("--id <id>")
+  .option("--brief <file>")
+  .option("--accept <criterion>", "Explicit acceptance criterion; repeatable", taskList, [])
+  .option("--file <scope>", "Declared scope; repeatable", taskList, [])
+  .option("--check <command>", "Required verification; repeatable", taskList, [])
+  .option("--issue <number-or-url>")
+  .option("--context-query <query>", "Optional explicit Hosted retrieval for this task",taskList,[])
+  .option("--chunk-id <id>", "Optional exact Hosted chunk to load for this task",taskList,[])
+  .option("--dir <directory>")
+  .option("--json")
+  .action(async (goal, options) => {
+    const cwd = options.dir ?? process.cwd();
+    if (options.brief && (goal || options.issue || options.accept.length || options.file.length || options.check.length))
+      throw new Error("A saved brief cannot be silently overridden; prepare and review a new brief");
+    if (!options.brief && !goal) throw new Error("Provide a task goal or an explicit saved brief");
+    const intake = options.brief ? readTaskIntake(path.resolve(cwd, options.brief))
+      : options.issue ? createTaskIntake({ workspaceRoot:cwd, goal, criteria:options.accept,
+        files:options.file, verification:options.check, githubIssue:options.issue, id:options.id }).brief : undefined;
+    const contextRequest = options.contextQuery.length || options.chunkId.length
+      ? normalizeTaskContextRequest({queries:options.contextQuery,chunkIds:options.chunkId}) : undefined;
+    const card = await executeTaskJourney({action:"start",cwd,slug:options.id,intake,intakePath:options.brief,contextRequest,
+      input:intake ? undefined : {goal,criteria:options.accept,files:options.file,verification:options.check}});
+    console.log(options.json ? JSON.stringify(card,null,2) : formatTaskJourneyCard(card));
+  });
+for (const action of ["show","work","verify","decide","resume","close"] as const) {
+  taskJourney.command(`${action} [id]`)
+    .description({show:"Show one task card",work:"Prepare work or record an explicitly declared outcome",
+      verify:"Plan relevant checks; no proof commands are run",decide:"Review evidence and request a decision",
+      resume:"Read a revalidated continuation brief",close:"Close using an explicit outcome; this grants no integration authority"}[action])
+    .option("--dir <directory>")
+    .option("--summary <summary>")
+    .option("--outcome <outcome>", "completed|partial|blocked|abandoned")
+    .option("--why <reason>")
+    .option("--evidence <evidence>", "passed|failed|not-run|unknown:text; repeatable",taskList,[])
+    .option("--refresh-dossier", "Explicit read-only call to an existing selected Controller candidate")
+    .option("--controller-id <id>")
+    .option("--candidate-id <id>")
+    .option("--orchestrator-bin <file>")
+    .option("--json")
+    .action(async (id,options) => {
+      if (options.outcome && !["completed","partial","blocked","abandoned"].includes(options.outcome))
+        throw new Error("Invalid explicit task outcome");
+      const card = await executeTaskJourney({ action,cwd:options.dir,slug:id,summary:options.summary,
+        outcome:options.outcome as TaskJourneyOptions["outcome"],why:options.why,evidence:options.evidence,
+        refreshDossier:options.refreshDossier,controllerId:options.controllerId,candidateId:options.candidateId,
+        orchestratorBin:options.orchestratorBin });
+      console.log(options.json ? JSON.stringify(card,null,2) : formatTaskJourneyCard(card));
+    });
+}
+taskJourney.command("export [id]")
+  .description("Export the same read-only task card as JSON or readable text")
+  .option("--dir <directory>")
+  .option("--format <format>", "json|markdown","json")
+  .option("--output <file>")
+  .action(async (id,options) => {
+    if (!["json","markdown"].includes(options.format)) throw new Error("Unsupported task export format");
+    const cwd = options.dir ?? process.cwd(), card = await executeTaskJourney({action:"show",cwd,slug:id});
+    if (options.output) {
+      if (options.format === "json") writeBridgeImmutable(cwd,options.output,card);
+      else writeBridgeImmutableBytes(cwd,options.output,Buffer.from(formatTaskJourneyCard(card),"utf8"));
+    }
+    console.log(options.format === "json" ? JSON.stringify(card,null,2) : formatTaskJourneyCard(card));
+  });
+taskJourney.command("source-refresh <brief>")
+  .description("Explicitly re-read a selected issue and compare its historical snapshot without rewriting it")
+  .option("--dir <directory>")
+  .action((file,options) => {
+    const cwd=options.dir ?? process.cwd();
+    console.log(JSON.stringify(revalidateTaskIntake(readTaskIntake(path.resolve(cwd,file)),
+      {workspaceRoot:cwd,refreshSource:true}),null,2));
+  });
+
 const controllerBridge = program
   .command("controller-bridge")
   .description("Reviewed Companion to Controller bridge and evidence projection");
@@ -933,6 +1042,7 @@ controllerBridge
   .requiredOption("--policy-file <file>")
   .requiredOption("--reviewer-id <id>")
   .requiredOption("--out-dir <directory>")
+  .option("--task-context-file <file>", "Explicit immutable map of loaded task context bodies")
   .option("--dir <directory>")
   .option("--json")
   .action(controllerBridgeExportCommand);
@@ -2689,6 +2799,16 @@ const workflow = program
   .command("workflow")
   .description("Workflow presets and compaction-safe phase tracking");
 
+workflow.command("export-context")
+  .description("Export exact loaded task context using an explicit work-package mapping")
+  .requiredOption("--mapping-file <file>")
+  .requiredOption("--output <file>")
+  .option("--dir <directory>")
+  .option("--json")
+  .action((options) => console.log(JSON.stringify(exportWorkflowRuntimeContexts({
+    cwd: options.dir ?? process.cwd(), mappingFile: options.mappingFile, output: options.output,
+  }), null, 2)));
+
 workflow
   .command("scaffold")
   .description("Generate a reusable managed workflow plan file from a built-in preset")
@@ -2960,9 +3080,17 @@ workflow
   });
 
 workflow
+  .command("checkpoint")
+  .description("Capture a local work-state snapshot with decisions, attempts, evidence and repository fingerprints")
+  .option("--json", "Print the bound continuation snapshot")
+  .action(async (options) => {
+    await workflowCheckpointCommand({ json: options.json });
+  });
+
+workflow
   .command("resume")
   .description(
-    "Restore managed workflow state plus hosted memory after compaction or resume, including guided Sandbox reattach or rehydrate steps when a runtime checkpoint exists"
+    "Read historical work state, decisions, attempts and remaining work; revalidate files and guide runtime reattach without restoring a live process"
   )
   .option("--max-critical-tokens <number>", "Durable memory token budget")
   .option("--max-context-tokens <number>", "Short-lived session context token budget")
