@@ -4,7 +4,10 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFileSync, spawnSync } = require("node:child_process");
 const test = require("node:test");
-const cli = path.resolve(__dirname, "../dist/index.js");
+const cliOverride = process.env.SNIPARA_COMPANION_TEST_CLI;
+const cli = cliOverride ? path.resolve(cliOverride) : path.resolve(__dirname, "../dist/index.js");
+if (cliOverride !== undefined && (!cliOverride || !fs.existsSync(cli) || !fs.statSync(cli).isFile()))
+  throw new Error(`SNIPARA_COMPANION_TEST_CLI must name an existing CLI file: ${cliOverride}`);
 function fixture(t) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-bridge-"));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
@@ -526,3 +529,58 @@ test("bridge refuses oversized, invalid and ambiguous source context before expo
   f.work.evidence = [{ id: "x", kind: "memory", label: "ok", execute: true }];
   assert.notEqual(f.exp().status, 0);
 });
+
+// Exercise the public return path with the same exact-body contract as dispatch.
+function runtimeProjection(t) {
+  const f = fixture(t);
+  f.save();
+  const hash = value => require('node:crypto').createHash('sha256').update(value).digest('hex');
+  const receipt = {version:'snipara.workflow.task-context-receipt.v1',workflowId:'flow',phaseId:'phase',taskId:'task',attempt:1,requestHash:'a'.repeat(64),packId:'pack',loadedAt:'2026-10-23T00:00:00Z',chunkIds:['one'],authority:'local_client_observed',semanticUseVerified:false};
+  const content = JSON.stringify({version:'snipara.workflow.loaded-context.v1',workflowId:'flow',phaseId:'phase',taskId:'task',attempt:1,requestHash:receipt.requestHash,output:{},inputs:[],calls:[],chunks:[{id:'one',content:'é 🧭\n  exact bytes',sha256:hash('é 🧭\n  exact bytes'),source:{file:'source.md'}}]});
+  receipt.sha256 = hash(content);
+  const map = {schemaVersion:'snipara.workflow.runtime-context-map.v1',workflowId:'flow',bindings:[{workPackageId:f.work.id,receipt,content}]};
+  const contextFile = path.join(f.cwd,'runtime.json');
+  fs.writeFileSync(contextFile,JSON.stringify(map));
+  const result = f.run(['export','--lead-plan-file','lead.json','--policy-file','policy.json','--reviewer-id','operator','--out-dir','exports','--task-context-file','runtime.json']);
+  assert.equal(result.status,0,result.stderr);
+  const artifact = JSON.parse(result.stdout);
+  const workflow = JSON.parse(fs.readFileSync(path.join(f.cwd,artifact.workflowPlan.path)));
+  const root = '.snipara/orchestrator/project-controllers/pilot';
+  fs.mkdirSync(path.join(f.cwd,root),{recursive:true});
+  const stateFile = `${root}/state.json`;
+  const bridgeFile = `${path.dirname(artifact.workflowPlan.path)}/bridge.json`;
+  const task = workflow.steps[0];
+  const state = {schemaVersion:'snipara.project_controller.v1',controllerId:'pilot',workspaceRoot:f.cwd,baseSha:artifact.baseSha,revision:1,status:'active',updatedAt:new Date().toISOString(),sourcePlan:artifact.workflowPlan.path,policy:artifact.policyHandshake,tasks:{[task.id]:{...task,status:'ready'}}};
+  const project = () => {
+    fs.writeFileSync(path.join(f.cwd,stateFile),JSON.stringify(state));
+    return f.run(['project','--bridge-file',bridgeFile,'--controller-file',stateFile]);
+  };
+  return {...f,artifact,map,contextFile,bridgeFile,state,task,project};
+}
+test('exact runtime context survives public export and return without granting authority',t=>{
+  const f=runtimeProjection(t),result=f.project();
+  assert.equal(result.status,0,result.stderr);
+  const report=JSON.parse(result.stdout);
+  assert.equal(report.sourceHashes.find(x=>x.kind==='runtime_context').sha256,f.artifact.sourceRuntimeContext.sha256);
+  assert.equal(report.executionAllowed,false);
+  assert.equal(report.identityAuthenticated,false);
+  assert.equal(report.taskClosureAllowed,false);
+  assert.equal(report.completionEvidence.objectiveAcceptance,'not_checked');
+  f.state.tasks[f.task.id].sourceContext.targetAttempt = null;
+  assert.equal(f.project().status,0,'Python optional null must preserve exact source identity');
+});
+for (const mutation of ['body','hash','version','missing-reference','missing-version','identity','controller-context']) {
+  test(`runtime return refuses ${mutation} drift`,t=>{
+    const f=runtimeProjection(t);
+    if(mutation==='body') fs.appendFileSync(f.contextFile,' ');
+    if(mutation==='hash') f.artifact.sourceRuntimeContext.sha256='0'.repeat(64);
+    if(mutation==='version') f.artifact.runtimeSourceContextVersion='unknown';
+    if(mutation==='missing-reference') delete f.artifact.sourceRuntimeContext;
+    if(mutation==='missing-version') delete f.artifact.runtimeSourceContextVersion;
+    if(mutation==='identity') f.artifact.artifactId='bridge-'+'0'.repeat(64);
+    if(mutation==='controller-context') delete f.state.tasks[f.task.id].sourceContext;
+    fs.writeFileSync(path.join(f.cwd,f.bridgeFile),JSON.stringify(f.artifact));
+    const result=f.project();
+    assert.notEqual(result.status,0,result.stdout);
+  });
+}

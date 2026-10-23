@@ -4,6 +4,15 @@ Release notes for `snipara-companion`, newest first.
 
 ## Unreleased
 
+## New In 3.7.3
+
+- Restores source-bound Controller return projection for exact runtime context:
+  re-reads the bound context map, checks its hash and version, and reconstructs
+  the complete bridge identity. Verifies the Controller task context while
+  accepting Python's null representation of an omitted optional target attempt.
+  Regression qualification covers the corrected 3.7.2 candidate and the 3.7.3
+  release artifact; public round-trip tests assert the selected CLI version.
+
 ## New In 3.7.2
 
 - Bundles the ESM-only runtime dependency graphs for the CommonJS Node 18

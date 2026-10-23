@@ -94,6 +94,16 @@ export function projectControllerBridge(
     throw new Error("Unsupported bridge artifact schema or authority");
   if (artifact.taskContextVersion != null && artifact.taskContextVersion !== "source-context-v1")
     throw new Error("Unsupported task context version");
+  const hasRuntimeContext = "runtimeSourceContextVersion" in artifact || "sourceRuntimeContext" in artifact;
+  let runtimeRef: ObjectValue | undefined;
+  let runtimeSource: ReturnType<typeof source> | undefined;
+  if (hasRuntimeContext) {
+    if (artifact.runtimeSourceContextVersion !== "runtime-source-context-v1")
+      throw new Error("Unsupported runtime source context version");
+    runtimeRef = object(artifact.sourceRuntimeContext);
+    runtimeSource = source(cwd, runtimeRef.path);
+    same(runtimeSource.hash, runtimeRef.sha256, "runtime context source hash");
+  }
   const leadRef = object(artifact.sourceLeadPlan);
   const policyRef = object(artifact.sourcePolicy);
   const workflowRef = object(artifact.workflowPlan);
@@ -101,6 +111,7 @@ export function projectControllerBridge(
     {
       leadPlanFile: String(leadRef.path),
       policyFile: String(policyRef.path),
+      ...(runtimeRef ? { taskContextFile: String(runtimeRef.path) } : {}),
       reviewerId: bridgeId(object(artifact.review).reviewedBy),
       outDir: path.relative(
         cwd,
@@ -120,6 +131,10 @@ export function projectControllerBridge(
   same(workflow.hash, workflowRef.sha256, "workflow source hash");
   const identity = {
     ...(artifact.taskContextVersion ? { taskContextVersion: artifact.taskContextVersion } : {}),
+    ...(runtimeRef ? {
+      runtimeSourceContextVersion: artifact.runtimeSourceContextVersion,
+      sourceRuntimeContext: runtimeRef,
+    } : {}),
     sourceLeadPlan: leadRef,
     sourcePolicy: policyRef,
     controllerId: artifact.controllerId,
@@ -186,6 +201,8 @@ export function projectControllerBridge(
     { kind: "workflow_plan", id: String(workflowRef.path), sha256: workflow.hash },
     { kind: "controller", id: controllerId, sha256: stateRead.hash },
   ];
+  if (runtimeRef && runtimeSource)
+    sourceHashes.push({ kind: "runtime_context", id: String(runtimeRef.path), sha256: runtimeSource.hash });
   const acceptedProposals = new Map<
     string,
     { patchHash: string; producerId: string; attempt: number }
@@ -209,6 +226,14 @@ export function projectControllerBridge(
       "effectScope",
     ])
       same(actual[key], expected[key], `task ${key}`);
+    // Python serializes the optional targetAttempt as null; the bridge omits it.
+    if (expected.sourceContext != null || actual.sourceContext != null) {
+      const expectedContext = object(expected.sourceContext);
+      const actualContext = { ...object(actual.sourceContext) };
+      if (expectedContext.targetAttempt === undefined && actualContext.targetAttempt === null)
+        delete actualContext.targetAttempt;
+      same(actualContext, expectedContext, "task sourceContext");
+    }
     same(expected.runtimeProfileId, mapping.runtimeProfileId, "runtime profile binding");
     const reportedStatus = String(actual.status);
     let proposalId: string | null = null;
