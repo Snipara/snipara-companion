@@ -251,7 +251,7 @@ test("hosted state missing workflowSessions creates a workflow identity once", t
 // This child-process check qualifies the selected executable's reported version only.
 test("selected CLI reports the expected Companion version", t => {
   const f = fixture(t);
-  const expected = process.env.SNIPARA_COMPANION_TEST_EXPECTED_VERSION || "3.7.4";
+  const expected = process.env.SNIPARA_COMPANION_TEST_EXPECTED_VERSION || require("../package.json").version;
   assert.match(expected, /^\d+\.\d+\.\d+$/);
   const result = f.raw(f.workspace("version"), ["--version"]);
   assert.equal(result.status, 0, result.stderr || result.stdout);

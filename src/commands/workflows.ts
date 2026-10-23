@@ -7517,44 +7517,25 @@ function printRuntimeHint(query: string, mode: WorkflowMode): void {
 
   const report = detectRuntimeEnvironment();
   console.log("");
-  console.log(chalk.bold("Snipara Sandbox hint"));
+  console.log(chalk.bold("Snipara Sandbox validation gate"));
+  console.log("Before executable validation, run: snipara-companion validation gate --request <request.json> --scope <workflow-or-lot-id>");
+  console.log("If unavailable or incompatible, ask the user to choose another environment, install/configure Sandbox, or continue without Sandbox. Never run a local fallback silently. Record the real environment and proof limits; a choice cannot waive a required proof.");
 
   if (report.runtime.cliAvailable) {
     const runtimeLabel = runtimeHintVersionLabel(report);
     console.log(`Snipara Sandbox is installed${runtimeLabel}.`);
-    if (report.runtime.mcpConfigured) {
-      console.log("Use MCP execute_python from your AI client for sandboxed validation.");
-    } else {
-      console.log(
-        "For MCP execute_python, add Snipara Sandbox MCP config with: npx create-snipara repair --with-runtime"
-      );
-    }
-    console.log(`For standalone execution: snipara-sandbox run ${JSON.stringify(query)}`);
-    if (!report.providerKeys.any) {
-      console.log(
-        "Standalone snipara-sandbox run / snipara-sandbox agent needs OPENAI_API_KEY or ANTHROPIC_API_KEY."
-      );
-    } else if (
-      report.providerKeys.sources.openai === "env-file" ||
-      report.providerKeys.sources.anthropic === "env-file"
-    ) {
-      console.log(
-        "Provider key was found in a local .env file; export it first if standalone snipara-sandbox run does not load .env in your shell."
-      );
-    }
-    if (!report.docker.available) {
-      console.log(
-        "Docker was not detected; use local/sandbox mode or install Docker for isolation."
-      );
-    }
+    console.log("Run deterministic repository tests with: snipara-sandbox validation run --request <request.json> --store <proof-store>");
+    console.log("Before integration: snipara-sandbox validation verify --request <request.json> --run-id <run-id> --store <proof-store>");
+    console.log("Use native MCP validation_diagnose/run/status/verify for the same repository-validation contract. No LLM API key is required.");
+    console.log("Installation detection is not readiness. Follow the gate result and record an explicit scoped choice if Docker or the required image is unavailable.");
     return;
   }
 
-  console.log("Need sandboxed execution or autonomous Sandbox jobs?");
+  console.log("Sandbox is not installed; ask for an explicit environment choice before executable tests.");
   console.log("Existing project: npx create-snipara repair --with-runtime");
   console.log("Fresh setup: npx create-snipara --profile full-stack --advanced");
   console.log(
-    'Manual install: python -m pip install "snipara-sandbox[all]" (`[all]` is the pip extra, not a separate argument).'
+    'With installation approval: python -m pip install "snipara-sandbox[docker,mcp]". Repository validation needs no LLM API key.'
   );
 }
 

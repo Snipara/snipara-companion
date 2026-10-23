@@ -2,6 +2,12 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 3.8.0 — candidate
+
+- Add standalone Sandbox validation adapters with explicit scoped environment choices, preserved failure evidence and no silent host fallback.
+- Bound runtime output/process groups, stop owned children on completion/interruption, reject malformed/expired choice and run identities, and preserve mandatory proof gates across resume.
+- Repository validation qualifies macOS/Linux Docker; packages remain unpublished until release approval.
+
 ## 3.7.4
 
 - Fix hosted workflow session creation by separating logical workflow identity from the server-issued session ID. Reuse persisted IDs for claims and release, scope mappings by project, actor and worktree, and skip hosted claims when session creation fails.

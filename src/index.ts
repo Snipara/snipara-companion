@@ -27,6 +27,7 @@
 import fs from "fs";
 import path from "path";
 import { Command } from "commander";
+import { invokeSandboxValidation } from "./runtime/sandbox-validation";
 import { warnIfCompanionUpdateAvailable } from "./runtime/version-check";
 import { initCommand, showConfig } from "./commands/init";
 import { loginCommand } from "./commands/login";
@@ -704,6 +705,24 @@ program
   .action(() => {
     showConfig();
   });
+
+const validation = program.command("validation").description("Use standalone Sandbox validation; unavailable environments require an explicit user choice");
+for (const action of ["gate", "choose", "diagnose", "run", "verify", "status", "cancel"]) {
+  validation.command(action)
+    .option("--request <file>", "Standalone Sandbox validation request JSON")
+    .option("--scope <id>", "Authorized workflow or lot identity")
+    .option("--run-id <id>", "Sandbox run identity")
+    .option("--store <path>", "Durable Sandbox evidence directory")
+    .option("--choice <choice>", "Explicit user choice: alternative, install, local or skip")
+    .option("--environment <name>", "Name the chosen alternative environment")
+    .option("--acknowledge-user-choice", "Record an actual explicit user choice; never inferred")
+    .option("--sandbox-command <path>", "Explicit Sandbox executable; no shell interpolation")
+    .action(async (options) => {
+      const outcome = await invokeSandboxValidation(action, options);
+      console.log(JSON.stringify(outcome.result));
+      process.exitCode = outcome.exitCode;
+    });
+}
 
 program
   .command("doctor")

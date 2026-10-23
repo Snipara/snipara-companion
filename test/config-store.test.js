@@ -11,6 +11,8 @@ function withTempHome(fn) {
   const homeDir = path.join(tmpDir, "home");
   fs.mkdirSync(homeDir, { recursive: true });
 
+  const previousCwd = process.cwd();
+  process.chdir(tmpDir);
   const previousHome = process.env.HOME;
   const previousApiKey = process.env.SNIPARA_API_KEY;
   const previousProjectId = process.env.SNIPARA_PROJECT_ID;
@@ -64,6 +66,7 @@ function withTempHome(fn) {
     } else {
       process.env.SNIPARA_WORKSPACE_DIR = previousWorkspaceDir;
     }
+    process.chdir(previousCwd);
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 }
