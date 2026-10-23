@@ -2,6 +2,11 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 3.7.4
+
+- Fix hosted workflow session creation by separating logical workflow identity from the server-issued session ID. Reuse persisted IDs for claims and release, scope mappings by project, actor and worktree, and skip hosted claims when session creation fails.
+- Cover session creation, repeated starts, distinct workflows/actors, refusal and lease release.
+
 ## Unreleased
 
 ## New In 3.7.3

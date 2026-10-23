@@ -254,6 +254,7 @@ export interface CollaborationReviewOnlyAcknowledgement {
 }
 
 export interface CollaborationLocalState {
+  workflowSessions?: Record<string, string>;
   schemaVersion: "snipara.collaboration.v1";
   updatedAt: string;
   workSessionId?: string;
@@ -323,6 +324,9 @@ export function loadCollaborationState(rootDir = process.cwd()): CollaborationLo
     schemaVersion: "snipara.collaboration.v1",
     updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(),
     workSessionId: normalizeOptionalString(parsed.workSessionId),
+    workflowSessions: Object.fromEntries(Object.entries(parsed.workflowSessions ?? {}).filter(
+      ([key, value]) => /^[a-f0-9]{64}$/.test(key) && typeof value === "string" && value.length > 0
+    )),
     sessionId: normalizeOptionalString(parsed.sessionId),
     actorId: normalizeOptionalString(parsed.actorId),
     actorType: normalizeActorType(parsed.actorType),
@@ -608,28 +612,34 @@ export async function workflowCollaborationStart(
   options: WorkflowCollaborationStartOptions
 ): Promise<WorkflowCollaborationReceipt> {
   const rootDir = path.resolve(options.rootDir ?? process.cwd());
-  const workSessionId = workflowWorkSessionId(options.workflowId);
+  const logicalSessionId = workflowWorkSessionId(options.workflowId);
   const context = resolveCollaborationContext({
     dir: rootDir,
-    workSessionId,
     client: "snipara-companion:workflow",
   });
   const state = loadCollaborationState(rootDir);
+  const sessionKey = workflowSessionKey(context, options.workflowId);
+  const persistedSessionId = state.workflowSessions?.[sessionKey];
+  context.actor.sessionId = `${logicalSessionId}:${sessionKey}`;
   const files = normalizeCollaborationFiles(options.files);
   const resources = deriveLocalCollaborationResourcesFromFiles(files, rootDir);
   const hostedSession = await maybeStartHostedSession(context, {
-    workSessionId,
+    workSessionId: persistedSessionId,
     task: options.goal,
     files,
     resources,
   });
   const session = hostedSession.status === "ok" ? hostedSession.data?.session : undefined;
+  const workSessionId = session?.id ?? persistedSessionId ?? logicalSessionId;
+  if (session) {
+    state.workflowSessions = { ...state.workflowSessions, [sessionKey]: session.id };
+  }
   const effectiveResources =
     hostedSession.status === "ok" ? (hostedSession.data?.resources ?? resources) : resources;
   let hostedClaim: HostedAttempt<CollaborationLeaseResponse> = { status: "skipped" };
   const shouldClaim = options.mode === "full" || options.mode === "orchestrate";
 
-  if (shouldClaim && (files.length > 0 || effectiveResources.length > 0)) {
+  if (hostedSession.status === "ok" && shouldClaim && (files.length > 0 || effectiveResources.length > 0)) {
     hostedClaim = await maybeCreateHostedLeases(context, {
       workSessionId,
       files,
@@ -694,7 +704,7 @@ export async function workflowCollaborationRelease(
   });
   const state = loadCollaborationState(rootDir);
   const targetSessionId = options.workflowId
-    ? workflowWorkSessionId(options.workflowId)
+    ? state.workflowSessions?.[workflowSessionKey(context, options.workflowId)] ?? workflowWorkSessionId(options.workflowId)
     : state.workSessionId;
   const activeLeases = state.leases.filter(
     (lease) =>
@@ -1950,6 +1960,10 @@ function expireLocalLeases(state: CollaborationLocalState, now = new Date()): vo
   if (changed) {
     state.updatedAt = now.toISOString();
   }
+}
+
+function workflowSessionKey(context: ResolvedCollaborationContext, workflowId: string): string {
+  return createHash("sha256").update(JSON.stringify([context.config.apiUrl, context.config.projectId, context.actor.actorType, context.actor.actorId, context.worktree, workflowId])).digest("hex");
 }
 
 function workflowWorkSessionId(workflowId: string): string {

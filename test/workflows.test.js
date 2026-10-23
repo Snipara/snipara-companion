@@ -304,8 +304,9 @@ function writeWorkflowPreload(dir) {
       "  }",
       "  const project = { id: 'project_1', name: 'App', slug: 'app' };",
       "  if (pathname.endsWith('/collaboration/sessions') && init.method === 'POST') {",
+      "    if ((body.workSessionId?.startsWith('workflow:') || process.env.SNIPARA_TEST_SESSION_REFUSED)) return { ok: false, status: 404, statusText: 'Not Found', json: async () => ({error: 'Unknown session'}) };",
       "    const resources = [...(body.resources || []), ...(body.files || []).map((file) => ({ kind: 'FILE', id: file, sourcePath: file }))];",
-      "    return { ok: true, status: 201, statusText: 'Created', json: async () => ({ success: true, data: { project, session: { id: body.workSessionId || 'workflow:test', actorId: body.actorId || 'agent_1', actorType: body.actorType || 'AGENT', actorLabel: body.actorLabel || 'Codex', sessionId: body.sessionId || 'session_1', client: body.client || 'snipara-companion', repository: body.repository || 'acme/app', branch: body.branch || 'dev', task: body.task || null, status: 'ACTIVE', dirtyFiles: body.files || [], startedAt: '2026-06-09T12:00:00.000Z', lastHeartbeatAt: '2026-06-09T12:00:00.000Z' }, resources } }) };",
+      "    return { ok: true, status: 201, statusText: 'Created', json: async () => ({ success: true, data: { project, session: { id: body.workSessionId || 'hosted_' + body.sessionId + '_' + body.actorId, actorId: body.actorId || 'agent_1', actorType: body.actorType || 'AGENT', actorLabel: body.actorLabel || 'Codex', sessionId: body.sessionId || 'session_1', client: body.client || 'snipara-companion', repository: body.repository || 'acme/app', branch: body.branch || 'dev', task: body.task || null, status: 'ACTIVE', dirtyFiles: body.files || [], startedAt: '2026-06-09T12:00:00.000Z', lastHeartbeatAt: '2026-06-09T12:00:00.000Z' }, resources } }) };",
       "  }",
       "  if (pathname.endsWith('/collaboration/leases') && init.method === 'POST') {",
       "    const resources = [...(body.resources || []), ...(body.files || []).map((file) => ({ kind: 'FILE', id: file, sourcePath: file }))];",
@@ -5458,3 +5459,51 @@ for (const preset of ["bugfix", "feature", "legacy"]) {
     }
   });
 }
+
+
+test("workflow sessions separate logical identity from persisted IDs across resumes and actors", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-session-identity-"));
+  const planFile = path.join(dir, "plan.json");
+  fs.writeFileSync(planFile, JSON.stringify({ mode: "full", steps: [{id: "fix", title: "Fix", files: ["src/a.ts"]}] }));
+  const preloadPath = writeWorkflowPreload(dir);
+  const log = path.join(dir, "calls.jsonl");
+  const baseEnv = { SNIPARA_API_KEY: "test-key", SNIPARA_PROJECT_ID: "project_1", SNIPARA_API_URL: "https://api.example.test", SNIPARA_TEST_COLLAB_LOG: log };
+  const start = (id, actor) => {
+    const result = runCli(["workflow", "start", "--id", id, "--goal", "Verify identity", "--plan-file", planFile, "--skip-agent-context", "--force", "--json"], {cwd: dir, nodeArgs: ["--require", preloadPath], env: {...baseEnv, SNIPARA_AGENT_ID: actor}});
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const receipt = JSON.parse(result.stdout).coordination.startReceipt;
+    assert.equal(receipt.hostedSessionStatus, "ok");
+    assert.equal(receipt.hostedClaimStatus, "ok");
+    assert.ok(receipt.leaseCount > 0);
+    return receipt.workSessionId;
+  };
+  const a = start("alpha", "alice");
+  assert.equal(start("alpha", "alice"), a);
+  assert.notEqual(start("beta", "alice"), a);
+  assert.notEqual(start("alpha", "bob"), a);
+  assert.equal(start("alpha", "alice"), a);
+  const calls = fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
+  const sessions = calls.filter(c => c.pathname.endsWith("/collaboration/sessions"));
+  assert.equal(sessions[0].body.workSessionId, undefined);
+  assert.ok(sessions[0].body.sessionId.startsWith("workflow:alpha:"));
+  assert.equal(sessions[1].body.workSessionId, a);
+  assert.equal(sessions[2].body.workSessionId, undefined);
+  assert.equal(sessions[3].body.workSessionId, undefined);
+  for (const c of calls.filter(c => c.pathname.endsWith("/collaboration/leases"))) assert.ok(c.body.workSessionId.startsWith("hosted_"));
+});
+
+
+test("workflow does not claim hosted leases when session creation is refused", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-session-refused-"));
+  const plan = path.join(dir, "plan.json");
+  fs.writeFileSync(plan, JSON.stringify({mode: "full", steps: [{id: "edit", title: "Edit", files: ["src/a.ts"]}]}));
+  const preload = writeWorkflowPreload(dir);
+  const log = path.join(dir, "calls.jsonl");
+  const result = runCli(["workflow", "start", "--goal", "Refused session", "--plan-file", plan, "--skip-agent-context", "--json"], {cwd: dir, nodeArgs: ["--require", preload], env: {SNIPARA_API_KEY: "test-key", SNIPARA_PROJECT_ID: "project_1", SNIPARA_API_URL: "https://api.example.test", SNIPARA_TEST_COLLAB_LOG: log, SNIPARA_TEST_SESSION_REFUSED: "1"}});
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const receipt = JSON.parse(result.stdout).coordination.startReceipt;
+  assert.equal(receipt.hostedSessionStatus, "error");
+  assert.equal(receipt.hostedClaimStatus, "skipped");
+  const calls = fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(calls.filter(c => c.pathname.endsWith("/collaboration/leases")).length, 0);
+});
