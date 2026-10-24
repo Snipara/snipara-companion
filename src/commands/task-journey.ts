@@ -12,6 +12,7 @@ import { readTaskContext, normalizeTaskContextRequest, taskContextRequestHash, t
 import { createTaskIntake, readTaskIntake, revalidateTaskIntake, taskIntakeHash, validateTaskIntake, writeTaskIntake, type TaskIntake } from "./task-intake";
 import { checkpointText } from "../session/checkpoint";
 import { assertManagedWorkflowSchemaVersion, type ManagedWorkflowState, type ManagedWorkflowTask } from "./workflows";
+import { projectTaskSupervision, type TaskSupervision } from "./task-supervision";
 
 type Data = Record<string, unknown>;
 const record = (value: unknown): value is Data => !!value && typeof value === "object" && !Array.isArray(value);
@@ -50,6 +51,7 @@ export interface TaskJourneyCard {
   continuity: WorkflowContinuityResume | null;
   runtimeDelivery: { status: "not_observed" | "caller_output_observed"; semanticUseVerified: false };
   recommendation: { action: "integrate" | "correct" | "block" | "human_review"; source: string; fresh: boolean };
+  supervision: TaskSupervision;
   verificationPlan?: VerificationPlan;
   preparedContext?: { envelope?: unknown; context?: unknown };
   dossier?: unknown;
@@ -160,7 +162,7 @@ export function buildTaskJourneyCard(options: { cwd?: string; slug?: string } = 
   else if (status === "working" || status === "verification_required") next = action(slug, "verify", "Inspect required checks; commands are not executed by this action");
   else if (status === "closed") next = action(slug, "resume", "Read the recorded outcome and remaining verification without restarting work");
   if (unsupportedScope) next = action(slug, "show", "Clarify the scope with literal paths, root or directories, or supported *, ? and ** path-segment patterns before work");
-  return {
+  const card: Omit<TaskJourneyCard, "supervision"> = {
     schemaVersion: "snipara.task_journey.v1", generatedAt: new Date().toISOString(),
     task: { id: slug, goal, objective: goal, criteria, files, scope: files, verification,
       intakeSha256: intake?.contentSha256 ?? null, source: intake?.source ?? null,
@@ -170,7 +172,7 @@ export function buildTaskJourneyCard(options: { cwd?: string; slug?: string } = 
       { id: "frame", label: "Cadrer", status: goal && criteria.length ? "recorded" : "unverified", detail: "Explicit contract and historical source; source text grants no authority" },
       { id: "work", label: "Travailler", status: task?.status ?? "pending", detail: "Workflow lifecycle is a declaration; native agent execution remains unverified" },
       { id: "verify", label: "Vérifier", status: "unverified", detail: "Declared commands and task completion do not establish functional results" },
-      { id: "decide", label: "Décider", status: "unverified", detail: "Human review or a freshly bound Controller dossier is required before integration" },
+      { id: "decide", label: "Décider", status: "unverified", detail: "Required evidence and separate integration authority remain necessary; routine missing checks belong to the agent" },
       { id: "resume", label: "Reprendre / Clore", status: continuity?.status ?? "not_recorded", detail: "Decisions, failures, evidence and remaining work use the existing checkpoint" },
     ], evidence, blockers,
     capabilities: [
@@ -183,12 +185,31 @@ export function buildTaskJourneyCard(options: { cwd?: string; slug?: string } = 
       declarationsAreFunctionalProof: false, semanticContextUseVerified: false,
       issueBodyAuthority: "untrusted_source", semanticUseVerified: false },
     continuity, runtimeDelivery: { status: "not_observed", semanticUseVerified: false },
-    recommendation: { action: "human_review", source: "no_fresh_bound_controller_dossier", fresh: false },
+    recommendation: { action: "block", source: "verification_not_observed", fresh: false },
     notices: ["Inspection does not execute tests, dispatch agents, integrate code, publish or deploy",
       "Companion, Hosted MCP and Orchestrator remain independently optional; this façade does not install or enable them",
       "Scope admission supports literal paths, root/directories, and *, ? and ** path-segment patterns; bracket/brace patterns require explicit scope clarification",
       "The selected issue and initial dirty baseline remain historical; only explicit refresh may reread a remote source"],
   };
+  return applySupervision(card, task);
+}
+function applySupervision(input: Omit<TaskJourneyCard, "supervision">, task?: ManagedWorkflowTask,
+  requestedAction?: TaskJourneyOptions["action"]): TaskJourneyCard {
+  const card: TaskJourneyCard = { ...input, supervision: projectTaskSupervision(input, task, requestedAction) };
+  // Reuse the exact existing admission predicate. Do not adopt the changed snapshot here.
+  const scopedWorkChanges = !card.recommendation.fresh && !!task && canRecordScopedOutcome(card, task,
+    { action: "work", summary: "Scoped work in progress", outcome: "partial" });
+  card.supervision = projectTaskSupervision(card, task, requestedAction, scopedWorkChanges);
+  if (scopedWorkChanges) card.status = "working";
+  if (!card.supervision.humanRequired && card.supervision.disposition === "verify") {
+    if (!card.recommendation.fresh && card.status !== "closed") card.status = "verification_required";
+    card.nextAction = action(card.task.id, "verify", card.supervision.reason);
+  } else if (card.supervision.disposition === "continue") {
+    card.nextAction = action(card.task.id, "work", card.supervision.reason, ["local_workflow_state"]);
+  } else if (card.supervision.disposition === "repair") {
+    card.nextAction = action(card.task.id, "work", card.supervision.reason, ["local_workflow_state"]);
+  }
+  return card;
 }
 function selfCli(cwd: string, argv: string[], hosted = false): Data {
   const executable = fs.realpathSync(path.join(__dirname, "index.js"));
@@ -274,7 +295,7 @@ function start(options: TaskJourneyOptions, cwd: string): TaskJourneyCard {
     }
     revalidateAdmission(cwd, supplied, options.intakePath, lock);
     const paths = resolveFeatureArtifactPaths(slug, { cwd, outputDir: OUTPUT });
-    if (!supplied.criteria.length) {
+    if (!supplied.criteria.length || !supplied.files.length) {
       const incomplete = buildTaskJourneyCard({ cwd, slug });
       incomplete.task = { ...incomplete.task, goal: supplied.goal, objective: supplied.goal, criteria: supplied.criteria,
         files: supplied.files, scope: supplied.files, verification: supplied.verification, intake: supplied,
@@ -334,7 +355,7 @@ function canRecordScopedOutcome(card: TaskJourneyCard, task: ManagedWorkflowTask
   const changed = [...new Set([...oldFiles.keys(), ...newFiles.keys()])].filter((file) => oldFiles.get(file) !== newFiles.get(file));
   return changed.length > 0 && changed.every((file) => (task.files ?? []).some((scope) => scopeContains(file, scope)));
 }
-export async function executeTaskJourney(options: TaskJourneyOptions): Promise<TaskJourneyCard> {
+async function executeTaskJourneyAction(options: TaskJourneyOptions): Promise<TaskJourneyCard> {
   const cwd = fs.realpathSync(options.cwd ?? process.cwd());
   if (options.action === "start") return start(options, cwd);
   let card = buildTaskJourneyCard(options);
@@ -361,8 +382,10 @@ export async function executeTaskJourney(options: TaskJourneyOptions): Promise<T
   }
   if (options.action === "decide") {
     if (!options.refreshDossier) {
-      card.status = card.blockers.length ? "blocked" : "review_required";
-      card.nextAction = action(card.task.id, "show", "Inspect the evidence for human review or explicitly bind an existing Controller dossier");
+      if (!card.blockers.length) {
+        card.status = "verification_required";
+        card.nextAction = action(card.task.id, "verify", "Collect the missing evidence within the existing authorized task before integration");
+      }
       return card;
     }
     if (!options.orchestratorBin || !path.isAbsolute(options.orchestratorBin) ||
@@ -473,8 +496,16 @@ export async function executeTaskJourney(options: TaskJourneyOptions): Promise<T
     return buildTaskJourneyCard({ cwd, slug: bound.slug });
   });
 }
+export async function executeTaskJourney(options: TaskJourneyOptions): Promise<TaskJourneyCard> {
+  const card = await executeTaskJourneyAction(options);
+  const current = stateAt(fs.realpathSync(options.cwd ?? process.cwd()));
+  const task = current?.workflowId === card.task.workflowId ? taskOf(current)?.task : undefined;
+  return applySupervision(card, task, options.action);
+}
 export function formatTaskJourneyCard(card: TaskJourneyCard): string {
   return ["Snipara — tâche", `${card.task.goal || "Objectif à préciser"} [${card.status}]`,
+    `Responsable: ${card.supervision.owner} — ${card.supervision.disposition}`,
+    card.supervision.reason,
     ...card.steps.map((step) => `${step.label}: ${step.status} — ${step.detail}`),
     ...card.blockers.map((item) => `Blocage: ${item}`),
     `Décision: ${card.recommendation.action} (${card.recommendation.source})`,

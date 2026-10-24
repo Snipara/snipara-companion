@@ -103,12 +103,13 @@ test("same dirty status with changed source bytes blocks preparation and leaves 
   assert.equal(f.state().phases[0].tasks[0].attempt, 0); assert.equal(card.nextAction.kind, "resume");
 });
 
-test("verification and human decision inspect the same receipts without executing declared checks", async (t) => {
+test("verification and decision keep missing checks with the agent without executing declared checks", async (t) => {
   const f = fixture(t); f.input.verification = ["touch forbidden-proof-effect"];
   await f.run("start", { input: f.input }); await f.run("work");
   const verified = await f.run("verify"); assert.equal(verified.verificationPlan.version, "snipara.verification_plan.v1");
   assert.equal(fs.existsSync(path.join(f.cwd, "forbidden-proof-effect")), false);
-  const decision = await f.run("decide"); assert.equal(decision.recommendation.action, "human_review");
+  const decision = await f.run("decide"); assert.equal(decision.recommendation.action, "block");
+  assert.equal(decision.supervision.owner, "agent"); assert.equal(decision.supervision.disposition, "verify");
   assert.equal(decision.recommendation.fresh, false); assert.equal(decision.authority.integrationGranted, false);
   const shown = buildTaskJourneyCard({ cwd: f.cwd, slug: "known-task" });
   assert.equal(shown.task.intakeSha256, decision.task.intakeSha256);
@@ -124,7 +125,7 @@ test("declared completion and local closeout never become observed functional su
     assert.equal(result.steps.find((item) => item.id === "verify").status, "unverified");
     const closed = await f.run("close", { summary: "Handed to human review", outcome: "completed" });
     assert.equal(closed.status, "closed", JSON.stringify(closed.blockers));
-    assert.equal(closed.recommendation.action, "human_review"); assert.equal(closed.authority.declarationsAreFunctionalProof, false);
+    assert.equal(closed.recommendation.action, "block"); assert.equal(closed.authority.declarationsAreFunctionalProof, false);
     const saved = f.state(); assert.equal(saved.phaseCommitReceipts[0].hostedStatus, "local_fallback");
     assert.equal(fs.existsSync(transport.marker), false);
   });

@@ -3,7 +3,8 @@
 Use your existing coding agent. Companion adds a local task card; Orchestrator
 adds its own optional execution and integration controls. Neither requires the
 other. Hosted MCP context also works directly in your agent with neither CLI.
-No command in the simplified facade installs another engine or starts a worker.
+The Companion facade never starts a worker. Orchestrator has an explicit
+advancement command governed by its existing execution policy.
 
 ## Companion alone
 
@@ -24,8 +25,9 @@ snipara-companion task resume customer-input
 
 `verify` proposes checks from the existing verification planner; it does not run
 them. Evidence supplied on the command line is a declaration. Without an
-independently checked candidate, `decide` directs a human review and cannot turn
-that declaration into an integration recommendation. `close --summary ...
+independently checked candidate, `decide` assigns the missing verification to
+the agent and keeps integration blocked. It cannot turn that declaration into
+an integration recommendation. `close --summary ...
 --outcome completed` closes local workflow work; it does not merge or prove the
 functional objective. Failed and partial outcomes remain visible for resumption.
 
@@ -72,6 +74,24 @@ five-step card over the existing Controller state. These commands do not call
 Companion, dispatch an agent, execute proofs or restart a stopped Controller.
 The next action points to the existing explicit Controller procedures.
 
+An existing execution authorization can be selected explicitly at task start
+with `--policy-file /absolute/path/policy.json`. Without it, the task stays in
+observation mode. The policy uses the existing Controller schema, including
+autonomy level, task risk, required proofs and finite budget; the brief or this
+guide supplies no authorization. Prepare the policy before capturing intake so
+the repository snapshot remains stable.
+
+```sh
+snipara-orchestrator task advance --id customer-input
+snipara-orchestrator task advance --id customer-input --execute --catalog-file workers.json
+```
+
+The first command only previews. The second reconciles the active plan through
+the existing executor. It may observe a run, start admissible work, or retry a
+failed proof within the stored limits. It never raises autonomy, resets budget,
+resumes stopped work, integrates, publishes or deploys. Worker selection and
+review-repair successor plans retain their existing Controller procedures.
+
 ## Both tools, when useful
 
 The existing reviewed bridge remains the authority boundary. For tasks with
@@ -110,6 +130,14 @@ next action with its effects. `task export --format json|markdown --output
 .snipara/card.json` saves a bounded immutable local copy in the requested format.
 Use a new filename for a later observation. Catalog or binary presence alone
 does not prove the capability callable, a review passed or an agent ran.
+
+`supervision` names the next responsible actor (`agent`, `system`, `human`),
+the action and its reason. An agent continues framed work, collects missing
+checks and investigates declared check failures within the existing retry
+ceiling. The user is asked for missing objectives or scope, contract/repository
+drift, exhausted limits or authority beyond the agreed frame. Unknown failures
+stay blocked until their cause is established. Guidance grants no permissions:
+the surrounding coding agent still uses its host's authorization and controls.
 
 Runtime evidence distinguishes preparation, adapter submission, native
 acknowledgement and semantic use. Exact bodies are neither truncated nor moved

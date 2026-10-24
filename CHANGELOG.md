@@ -2,6 +2,10 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 3.9.0
+
+- Project routine task supervision into public task cards, identifying the agent or human responsible for the next bounded action. Keep proof, execution and integration authority explicit.
+
 ## 3.8.0 — candidate
 
 - Add standalone Sandbox validation adapters with explicit scoped environment choices, preserved failure evidence and no silent host fallback.
