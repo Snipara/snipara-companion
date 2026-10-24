@@ -20,4 +20,5 @@ export * from "./judgment-integrity";
 export * from "./judgment-evaluation";
 export * from "./agent-context";
 export * from "./agent-context-evidence";
+export * from "./agent-memory-pilot";
 export * from "./task-canvas";

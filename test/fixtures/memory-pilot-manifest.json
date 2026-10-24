@@ -1,0 +1,91 @@
+{
+  "schemaVersion": "snipara.agent_context_manifest.v0",
+  "organization": { "sourceIds": ["shared"], "memory": [] },
+  "project": {
+    "id": "pilot-fixture",
+    "sourceIds": ["config"],
+    "memory": [{ "scope": "project", "category": "project:fixture" }]
+  },
+  "sources": [
+    {
+      "id": "shared",
+      "path": "docs/shared.md",
+      "authority": "canonical",
+      "tier": "HOT"
+    },
+    {
+      "id": "config",
+      "path": "config.json",
+      "authority": "canonical",
+      "tier": "HOT"
+    },
+    {
+      "id": "code-private",
+      "path": "docs/code.md",
+      "authority": "supporting",
+      "tier": "WARM"
+    },
+    {
+      "id": "review-private",
+      "path": "docs/review.md",
+      "authority": "supporting",
+      "tier": "WARM"
+    }
+  ],
+  "roles": {
+    "code": {
+      "description": "Code",
+      "capabilities": [],
+      "boundaries": [],
+      "queryHints": [],
+      "sourceIds": ["code-private"],
+      "memory": []
+    },
+    "review": {
+      "description": "Review",
+      "capabilities": [],
+      "boundaries": [],
+      "queryHints": [],
+      "sourceIds": ["review-private"],
+      "memory": []
+    }
+  },
+  "agents": {
+    "code": {
+      "agentId": "code-agent",
+      "displayName": "Code",
+      "roles": ["code"],
+      "budget": {
+        "totalTokens": 5000,
+        "organizationTokens": 500,
+        "projectTokens": 1000,
+        "roleTokens": 2000,
+        "memoryTokens": 1000
+      },
+      "memory": {
+        "localCategory": "agent:code",
+        "defaultWriteScope": "agent",
+        "promotionRequiresReview": true,
+        "promotionTargets": [{ "scope": "project", "category": "project:fixture" }]
+      }
+    },
+    "review": {
+      "agentId": "review-agent",
+      "displayName": "Review",
+      "roles": ["review"],
+      "budget": {
+        "totalTokens": 5000,
+        "organizationTokens": 500,
+        "projectTokens": 1000,
+        "roleTokens": 2000,
+        "memoryTokens": 1000
+      },
+      "memory": {
+        "localCategory": "agent:review",
+        "defaultWriteScope": "agent",
+        "promotionRequiresReview": true,
+        "promotionTargets": [{ "scope": "project", "category": "project:fixture" }]
+      }
+    }
+  }
+}

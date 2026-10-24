@@ -2,6 +2,13 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 3.10.0 (unpublished)
+
+- Add opt-in `agent-context memory-pilot` for automatic exact-source observation
+  validation/invalidation and fresh code/review/resume receipts. Recoverable
+  evidence failures stay candidates; semantic judgments escalate only when the
+  deterministic verifier cannot decide safely. No hosted memory policy changes.
+
 ## 3.9.0
 
 - Project routine task supervision into public task cards, identifying the agent or human responsible for the next bounded action. Keep proof, execution and integration authority explicit.
