@@ -34,6 +34,33 @@ function runCli(args, options = {}) {
   });
 }
 
+function assertCompactAgentRules(content) {
+  assert.ok(Buffer.byteLength(content, "utf8") <= 2600, "fresh generated bootstrap must stay compact");
+  for (const rule of [
+    "SNIPARA_API_KEY", "never commit keys", "snipara_context_query", "snipara_get_chunk",
+    "snipara_recall only for relevant prior decisions", "LITE has no mandatory Snipara calls",
+    "Empty MCP resources do not prove an outage", "snipara_help", "Use FULL for risky, multi-file",
+    "current code-impact evidence for risky changes",
+    "visible JSON plan", "workflow start", "phase-commit", "final-commit",
+    "phase-start before phase edits, including after resume",
+    "Snipara Sandbox validation gate", "explicit scoped environment choice", "no silent host fallback",
+    "independent native Orchestrator review", "never execution permission or check-reuse proof",
+    "tenant/owner", "live effects require explicit approval", "SNIPARA_SESSION_ID",
+    "X-Snipara-Session-Id", "correlation_context.session_id", "telemetry, not authorization",
+    "never secrets, raw logs, transient output or unreviewed guesses",
+  ]) assert.ok(content.includes(rule), "missing essential rule: " + rule);
+  assert.doesNotMatch(content, /Available Tools|workflow scaffold|intelligence brief|At the start of substantial work/);
+}
+
+function assertCompactClientReference(content, slug) {
+  assert.ok(Buffer.byteLength(content, "utf8") <= 1000, "client adapter must not duplicate the operating manual");
+  assert.match(content, /Read AGENTS\.md/);
+  assert.ok(content.includes("mcp/" + slug));
+  assert.match(content, /SNIPARA_API_KEY/);
+  assert.match(content, /never commit keys/);
+  assert.doesNotMatch(content, /Available Tools|workflow scaffold|intelligence brief/);
+}
+
 function makeTempWorkspace(name, options = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${name}-`));
   const home = fs.mkdtempSync(path.join(os.tmpdir(), `${name}-home-`));
@@ -85,6 +112,9 @@ function writeAuthPreload(dir, options = {}) {
   const projectId = options.projectId ?? "proj_inmosuiza_001";
   const projectName = options.projectName ?? "InmoSuiza";
   const userCode = options.userCode ?? "TEST-CODE";
+  const automationFiles = options.automationFiles ?? [
+    { path: ".claude/hooks/snipara-pre-tool.sh", content: '#!/usr/bin/env bash\nAPI_KEY="snp-placeholder"\n' },
+  ];
 
   fs.writeFileSync(
     preloadPath,
@@ -150,9 +180,7 @@ function writeAuthPreload(dir, options = {}) {
       "      success: true,",
       "      data: {",
       "        client: 'claude-code',",
-      "        files: [",
-      "          { path: '.claude/hooks/snipara-pre-tool.sh', content: '#!/usr/bin/env bash\\nAPI_KEY=\"snp-placeholder\"\\n' },",
-      "        ],",
+      "        files: " + JSON.stringify(automationFiles) + ",",
       "      },",
       "    });",
       "  }",
@@ -284,17 +312,11 @@ for (const commandCase of projectAuthCommandCases) {
       const agentsMd = fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8");
       assert.match(agentsMd, /snipara:workflow AGENTS\.md:start/);
       assert.match(agentsMd, /Snipara Context Workflow/);
-      assert.match(agentsMd, /snipara-companion workflow start/);
-      assert.match(agentsMd, /plan_json_file/);
-      assert.match(agentsMd, /workflow resume[\s\S]*workflow phase-start/);
+      assertCompactAgentRules(agentsMd);
 
       const claudeMd = fs.readFileSync(path.join(dir, "CLAUDE.md"), "utf8");
       assert.match(claudeMd, /snipara:workflow CLAUDE\.md:start/);
-      assert.match(claudeMd, /Snipara Workflow/);
-      assert.match(claudeMd, /do not wait for the user to explicitly ask for Snipara/);
-      assert.match(claudeMd, /snipara-companion workflow start/);
-      assert.match(claudeMd, /plan in JSON/);
-      assert.match(claudeMd, /does not snapshot or exactly restore a live Snipara Sandbox/);
+      assertCompactClientReference(claudeMd, commandCase.projectSlug ?? "inmosuiza");
       assert.match(claudeMd, new RegExp(`mcp/${commandCase.projectSlug ?? "inmosuiza"}`));
     }
   });
@@ -327,8 +349,8 @@ test("init merges Claude workflow instructions without replacing existing CLAUDE
   const firstContent = fs.readFileSync(path.join(dir, "CLAUDE.md"), "utf8");
   assert.ok(firstContent.startsWith(existingClaudeGuide));
   assert.match(firstContent, /snipara:workflow CLAUDE\.md:start/);
-  assert.match(firstContent, /Bound Snipara project: `inmosuiza`/);
-  assert.match(firstContent, /snipara-companion workflow phase-commit/);
+  assert.match(firstContent, /Project: inmosuiza/);
+  assert.match(firstContent, /Read AGENTS\.md/);
   assert.equal((firstContent.match(/snipara:workflow CLAUDE\.md:start/g) || []).length, 1);
 
   const secondResult = runCli(args, {
@@ -386,9 +408,8 @@ test("init installs workflow instructions for each agent client surface", () => 
         content,
         new RegExp(`snipara:workflow ${relativePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:start`)
       );
-      assert.match(content, /snipara_recall/);
-      assert.match(content, /snipara-companion workflow start/);
-      assert.match(content, /plan_json_file/);
+      if (relativePath === "AGENTS.md") assertCompactAgentRules(content);
+      else assertCompactClientReference(content, "inmosuiza");
       assert.match(content, /mcp\/inmosuiza/);
     }
 
@@ -541,4 +562,71 @@ test("configured-only commands do not start hidden browser auth when auth is mis
       `${args.join(" ")} unexpectedly started browser auth`
     );
   }
+});
+
+
+test("init and automations converge legacy blocks without altering surrounding user bytes", () => {
+  const { dir, home } = makeTempWorkspace("snipara-instruction-sequencing");
+  const initial = writeAuthPreload(dir);
+  const initArgs = ["init", "--client", "codex", "--api-key", "snp-project-key", "--project", "inmosuiza", "--force"];
+  const run = (args, preloadPath) => {
+    const result = runCli(args, { cwd: dir, env: { HOME: home }, nodeArgs: ["-r", preloadPath] });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  };
+  run(initArgs, initial.preloadPath);
+  const target = path.join(dir, "AGENTS.md");
+  const initialBlock = fs.readFileSync(target, "utf8");
+  const body = initialBlock.slice(initialBlock.indexOf("\n") + 1, initialBlock.lastIndexOf("<!-- snipara:workflow"));
+  const prefix = "# User instructions  \r\nKeep exactly.\r\n";
+  const middle = "\r\nMiddle user paragraph.  \r\n";
+  const suffix = "\nUser tail without a newline";
+  fs.writeFileSync(target, prefix +
+    "<!-- snipara:automation AGENTS.md:start -->\nOld manual.\n<!-- snipara:automation AGENTS.md:end -->\n" +
+    middle + initialBlock + suffix);
+  const bundle = writeAuthPreload(dir, { automationFiles: [{ path: "AGENTS.md", content: body }] });
+  const expected = prefix + initialBlock + middle + suffix;
+  for (const args of [
+    ["automations", "install", "--client", "codex"],
+    initArgs,
+    ["automations", "update", "--client", "codex"],
+    initArgs,
+  ]) {
+    run(args, bundle.preloadPath);
+    const content = fs.readFileSync(target, "utf8");
+    assert.equal(content, expected);
+    assert.equal((content.match(/snipara:workflow AGENTS\.md:start/g) || []).length, 1);
+    assert.doesNotMatch(content, /snipara:automation/);
+  }
+});
+
+test("init refuses malformed markers under force without rewriting the affected instructions", () => {
+  const { dir, home } = makeTempWorkspace("snipara-init-marker-conflict");
+  const target = path.join(dir, "AGENTS.md");
+  const userContent = "# Keep me\r\n<!-- snipara:workflow AGENTS.md:start -->\nUnclosed";
+  fs.writeFileSync(target, userContent);
+  const { preloadPath } = writeAuthPreload(dir);
+  const result = runCli(
+    ["init", "--client", "claude-code", "--api-key", "snp-project-key", "--project", "inmosuiza", "--force"],
+    { cwd: dir, env: { HOME: home }, nodeArgs: ["-r", preloadPath] }
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr + result.stdout, /Invalid Snipara instruction markers/);
+  assert.equal(fs.readFileSync(target, "utf8"), userContent);
+  assert.equal(fs.existsSync(path.join(dir, "CLAUDE.md")), false);
+});
+
+test("init cannot swallow automation marker conflicts through legacy hook fallback", () => {
+  const { dir, home } = makeTempWorkspace("snipara-init-no-marker-fallback");
+  const target = path.join(dir, ".cursorrules");
+  const userContent = "<!-- snipara:automation .cursorrules:start -->\nUnclosed user file";
+  fs.writeFileSync(target, userContent);
+  const { preloadPath } = writeAuthPreload(dir, { automationFiles: [{ path: ".cursorrules", content: "Compact rules." }] });
+  const result = runCli(
+    ["init", "--client", "claude-code", "--api-key", "snp-project-key", "--project", "inmosuiza", "--with-hooks", "--force"],
+    { cwd: dir, env: { HOME: home, SNIPARA_COMPANION_LEGACY_HOOKS_FALLBACK: "1" }, nodeArgs: ["-r", preloadPath] }
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr + result.stdout, /marker conflicts/);
+  assert.equal(fs.readFileSync(target, "utf8"), userContent);
+  assert.equal(fs.existsSync(path.join(dir, ".claude", "hooks", "snipara-stuck-guard.sh")), false);
 });

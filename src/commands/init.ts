@@ -13,7 +13,7 @@ import * as path from "path";
 import { randomBytes } from "node:crypto";
 import { saveConfig, loadConfig, getConfigPath, isConfigured } from "../config/store";
 import { createClient, listProjectsForApiKey, type ApiKeyProjectSummary } from "../api/client";
-import { automationsInstallCommand } from "./automations";
+import { automationsInstallCommand, AutomationInstallConflictError, buildSniparaInstructionBlock, mergeMarkdownInstructionContent } from "./automations";
 import { codeHooksInstallCommand } from "./code";
 import {
   collectLocalProjectHints,
@@ -121,131 +121,28 @@ function formatClientName(client: SetupClient): string {
   return names[client];
 }
 
-function getWorkflowInstructionMarker(relativePath: string, type: "start" | "end"): string {
-  return `<!-- snipara:workflow ${relativePath}:${type} -->`;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function mergeWorkflowInstructionContent(
-  relativePath: string,
-  generatedContent: string,
-  currentContent: string | undefined
-): string {
-  const startMarker = getWorkflowInstructionMarker(relativePath, "start");
-  const endMarker = getWorkflowInstructionMarker(relativePath, "end");
-  const generatedBlock = `${startMarker}\n${generatedContent.trim()}\n${endMarker}\n`;
-
-  if (!currentContent || currentContent.trim() === "") {
-    return generatedBlock;
-  }
-
-  const existingBlockPattern = new RegExp(
-    `${escapeRegExp(startMarker)}[\\s\\S]*?${escapeRegExp(endMarker)}\\n?`,
-    "m"
-  );
-
-  if (existingBlockPattern.test(currentContent)) {
-    return currentContent.replace(existingBlockPattern, generatedBlock);
-  }
-
-  const separator = currentContent.endsWith("\n") ? "\n" : "\n\n";
-  return `${currentContent}${separator}${generatedBlock}`;
-}
-
 function buildHostedMcpEndpoint(projectSlug: string): string {
   return `https://api.snipara.com/mcp/${projectSlug}`;
 }
 
-function buildClaudeWorkflowInstructionBlock(projectSlug: string): string {
-  return `## Snipara Workflow
-
-Claude Code should apply this workflow automatically for project-specific work; do not wait for the user to explicitly ask for Snipara.
-
-- Bound Snipara project: \`${projectSlug}\`
-- Hosted MCP endpoint: \`${buildHostedMcpEndpoint(projectSlug)}\`
-- Keep \`SNIPARA_SESSION_ID\` equal to the active Companion session. Generated MCP configs send it as \`X-Snipara-Session-Id\`; when a client cannot send that header, pass the same value as \`correlation_context.session_id\` on retrieval tools.
-- At the start of substantial work, validate the hosted MCP surface with a tool-oriented call, then use \`snipara_recall\` and a targeted \`snipara_context_query\` before falling back to local search.
-- Do not treat empty MCP resources/templates as an outage. If the tool surface looks incomplete, call \`snipara_help(list_all=true)\` and compare exact tool names.
-- Use \`snipara_context_query\` for docs, business context, architecture notes, runbooks, and source truth. Use \`snipara_get_chunk\` for exact cited sections when references are returned.
-- For coding work, choose LITE or FULL before editing. Use FULL managed workflow for multi-file, risky, release/deploy, architectural, compaction-prone, or future-maintainer-sensitive work.
-- When a visible multi-phase plan exists, keep the machine plan in JSON and run \`snipara-companion workflow start --goal "<goal>" --plan-file <plan_json_file>\`. Use \`workflow phase-start\` / \`workflow phase-commit\` per phase, and after \`workflow resume\` rerun \`workflow phase-start\` before editing again.
-- Run \`snipara-companion code impact\` before risky multi-file changes, PR reviews, routes, services, jobs, auth, billing, deployment, schema, migrations, or explicit "what is missing" assessments; it auto-selects local overlay for dirty/ahead worktrees. Use hosted \`snipara_code_impact\` only when companion is unavailable or after push/reindex for canonical graph impact.
-- For Project Intelligence briefs, run \`snipara-companion intelligence brief --task "<task>" --changed-files <files...>\` to combine resume context, memory health, and code impact before risky work. For roadmap-sized delivery, start with \`snipara-companion workflow scaffold --preset project-intelligence-continuity-layer\`.
-- Use local file reads, \`rg\`, git commands, and tests for exact edits and current working-tree state.
-- Before executable repository tests, probe the required Snipara Sandbox capabilities using \`validation gate\` with an explicit request and workflow/lot scope. If absent, inaccessible or incompatible, ask the user to choose another test environment, install/configure Sandbox, or continue without Sandbox (local tests versus no tests). Never fall back silently or treat no response as approval; preserve the scoped choice and proof limits across resume. Static reads and documentation do not require a container. For runtime-bound phases, capture compact rehydratable state with \`workflow runtime-checkpoint <phase_id> --summary "<state>" --rehydrate-file <state.json>\`. Then \`workflow resume\` restores workflow/memory continuity plus the recorded Sandbox binding and prints a reattach or rehydrate plan. It does not snapshot or exactly restore a live Snipara Sandbox / REPL process.
-- If generated hooks are enabled, treat \`snipara-companion pre-tool\`, \`post-tool\`, and \`stuck-guard status\` output as high-priority runtime context.
-- End substantial work with \`snipara_end_of_task_commit\` when available. For managed workflows, commit each phase with \`snipara-companion workflow phase-commit\` and close with \`snipara-companion final-commit\`.
-- Store only durable decisions, learnings, preferences, and workflow context. Never store secrets, tokens, raw logs, one-off command output, or unreviewed guesses.`;
-}
-
-function buildSharedWorkflowInstructionBlock(projectSlug: string, client: SetupClient): string {
-  return `## Snipara Context Workflow
-
-This workspace is bound to Snipara project \`${projectSlug}\` for ${formatClientName(client)}. Agents should use Snipara automatically for project-specific context, decisions, and workflow state.
-
-- Hosted MCP endpoint: \`${buildHostedMcpEndpoint(projectSlug)}\`
-- Keep \`SNIPARA_SESSION_ID\` equal to the active Companion session. Generated MCP configs send it as \`X-Snipara-Session-Id\`; when a client cannot send that header, pass the same value as \`correlation_context.session_id\` on retrieval tools.
-- At the start of substantial work, validate the hosted MCP surface with a tool-oriented call, then use \`snipara_recall\` and a targeted \`snipara_context_query\` before falling back to local search.
-- Do not treat empty MCP resources/templates as an outage. If the tool surface looks incomplete, call \`snipara_help(list_all=true)\` and compare exact tool names.
-- Use \`snipara_context_query\` for docs, business context, architecture notes, runbooks, and source truth. Use \`snipara_get_chunk\` for exact cited sections when references are returned.
-- For coding work, choose LITE or FULL before editing. Use FULL managed workflow for multi-file, risky, release/deploy, architectural, compaction-prone, or future-maintainer-sensitive work.
-- When a visible multi-phase plan exists, keep the machine plan in JSON and run \`snipara-companion workflow start --goal "<goal>" --plan-file <plan_json_file>\`. Use \`workflow phase-start\` / \`workflow phase-commit\` per phase, and after \`workflow resume\` rerun \`workflow phase-start\` before editing again.
-- Run \`snipara-companion code impact\` before risky multi-file changes, PR reviews, routes, services, jobs, auth, billing, deployment, schema, migrations, or explicit "what is missing" assessments; it auto-selects local overlay for dirty/ahead worktrees. Use hosted \`snipara_code_impact\` only when companion is unavailable or after push/reindex for canonical graph impact.
-- For Project Intelligence briefs, run \`snipara-companion intelligence brief --task "<task>" --changed-files <files...>\` to combine resume context, memory health, and code impact before risky work. For roadmap-sized delivery, start with \`snipara-companion workflow scaffold --preset project-intelligence-continuity-layer\`.
-- Use local file reads, \`rg\`, git commands, and tests for exact edits and current working-tree state.
-- Before executable repository tests, probe the required Snipara Sandbox capabilities using \`validation gate\` with an explicit request and workflow/lot scope. If absent, inaccessible or incompatible, ask the user to choose another test environment, install/configure Sandbox, or continue without Sandbox (local tests versus no tests). Never fall back silently or treat no response as approval; preserve the scoped choice and proof limits across resume. Static reads and documentation do not require a container. For runtime-bound phases, capture compact rehydratable state with \`workflow runtime-checkpoint <phase_id> --summary "<state>" --rehydrate-file <state.json>\`. Then \`workflow resume\` restores workflow/memory continuity plus the recorded Sandbox binding and prints a reattach or rehydrate plan. It does not snapshot or exactly restore a live Snipara Sandbox / REPL process.
-- End substantial work with \`snipara_end_of_task_commit\` when available. For managed workflows, commit each phase with \`snipara-companion workflow phase-commit\` and close with \`snipara-companion final-commit\`.
-- Store only durable decisions, learnings, preferences, and workflow context. Never store secrets, tokens, raw logs, one-off command output, or unreviewed guesses.`;
+function buildSharedWorkflowInstructionBlock(projectSlug: string, _client: SetupClient): string {
+  return buildSniparaInstructionBlock(projectSlug, buildHostedMcpEndpoint(projectSlug));
 }
 
 function buildClientWorkflowInstructionBlock(projectSlug: string, client: SetupClient): string {
-  if (client === "claude-code") {
-    return buildClaudeWorkflowInstructionBlock(projectSlug);
-  }
-
-  if (client === "cursor") {
-    return `# Snipara Agent Workflow
-
-Cursor should apply this workflow automatically for project-specific work.
-
-${buildSharedWorkflowInstructionBlock(projectSlug, client)}`;
-  }
-
-  if (client === "gemini") {
-    return `# Gemini Snipara Workflow
-
-Gemini should apply this workflow automatically for project-specific work.
-
-${buildSharedWorkflowInstructionBlock(projectSlug, client)}`;
-  }
-
-  if (client === "vscode") {
-    return `# Snipara Copilot Workflow
-
-VS Code and Copilot-style agents should apply this workflow automatically for project-specific work.
-
-${buildSharedWorkflowInstructionBlock(projectSlug, client)}`;
-  }
-
-  if (client === "mistral") {
-    return `# Mistral Snipara Workflow
-
-Use this file with Mistral Vibe workspace instructions, Le Chat connector notes, or LangChain ChatMistralAI projects.
-
-${buildSharedWorkflowInstructionBlock(projectSlug, client)}
-
-## Mistral Integration Notes
-
-- Le Chat: add Snipara as a Custom MCP Connector pointed at \`${buildHostedMcpEndpoint(projectSlug)}\`.
-- Vibe: configure the generated streamable-http MCP server and restart Vibe after config changes.
-- LangChain JavaScript: bind \`snipara_recall\`, \`snipara_context_query\`, and \`snipara_settings\` with \`ChatMistralAI.bindTools\`.
-- Mistral request hooks such as \`beforeRequestHooks\`, \`requestErrorHooks\`, and \`responseHooks\` are model request hooks, not local agent lifecycle hooks.`;
-  }
-
-  return buildSharedWorkflowInstructionBlock(projectSlug, client);
+  const reference = [
+    "## Snipara",
+    "",
+    "Read AGENTS.md for the canonical project, LITE/FULL, source-authority and proof rules; do not duplicate the operating manual here.",
+    "- Project: " + projectSlug + "; Hosted MCP: " + buildHostedMcpEndpoint(projectSlug) + ".",
+    "- Auth: SNIPARA_API_KEY from the environment or client secret store; never commit keys.",
+  ].join("\n");
+  if (client !== "mistral") return reference;
+  return reference + [
+    "", "",
+    "Le Chat: use the Custom MCP Connector; Vibe: use the generated streamable-http configuration.",
+    "LangChain: use ChatMistralAI.bindTools. Mistral beforeRequestHooks, requestErrorHooks and responseHooks are model request hooks, not local agent lifecycle hooks.",
+  ].join("\n");
 }
 
 function getClientInstructionFiles(client: SetupClient): string[] {
@@ -272,25 +169,6 @@ function getClientInstructionFiles(client: SetupClient): string[] {
   return [];
 }
 
-function mergeCursorRuleInstructionContent(
-  relativePath: string,
-  generatedContent: string,
-  currentContent: string | undefined
-): string {
-  const body = mergeWorkflowInstructionContent(relativePath, generatedContent, currentContent);
-
-  if (currentContent !== undefined && currentContent.trim() !== "") {
-    return body;
-  }
-
-  return `---
-description: Use Snipara Hosted MCP for project context and workflow state.
-alwaysApply: true
----
-
-${body}`;
-}
-
 function ensureWorkflowInstructionFile(
   projectDir: string,
   relativePath: string,
@@ -301,10 +179,9 @@ function ensureWorkflowInstructionFile(
 } {
   const filePath = path.join(projectDir, relativePath);
   const currentContent = fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8") : undefined;
-  const nextContent =
-    relativePath === ".cursor/rules/snipara.mdc"
-      ? mergeCursorRuleInstructionContent(relativePath, generatedContent, currentContent)
-      : mergeWorkflowInstructionContent(relativePath, generatedContent, currentContent);
+  const nextContent = mergeMarkdownInstructionContent(
+    relativePath, generatedContent, currentContent ?? null
+  );
 
   if (currentContent === nextContent) {
     return { relativePath, action: "unchanged" };
@@ -1304,6 +1181,8 @@ export async function initCommand(options: {
       });
       installedAutomationFiles = true;
     } catch (error) {
+      // Local ownership conflicts must never become a legacy-hook fallback.
+      if (error instanceof AutomationInstallConflictError) throw error;
       if (!canInstallNativeHookClient(hookClient)) {
         const reason = getNativeHookBlockReason(hookClient);
         console.log(

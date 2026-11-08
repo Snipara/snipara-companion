@@ -1,0 +1,14 @@
+{
+  "schema_version": "snipara.sandbox.validation.v1",
+  "workspace": "/REPLACE_WITH_REVIEWED_ABSOLUTE_WORKSPACE",
+  "image": "sha256:REPLACE_WITH_REVIEWED_LOCAL_IMAGE_ID",
+  "profile": "python",
+  "argv": ["python", "-m", "pytest", "-q", "--junitxml=checks.xml"],
+  "requirements": {"python_modules": ["pytest"]},
+  "timeout_seconds": 120,
+  "cpus": 2,
+  "memory_mb": 1024,
+  "pids": 128,
+  "disk_mb": 512,
+  "artifacts": ["checks.xml"]
+}

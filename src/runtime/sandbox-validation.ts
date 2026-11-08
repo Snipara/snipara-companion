@@ -2,6 +2,34 @@
 import { spawn } from 'node:child_process';
 import {expectedSandboxScope} from './sandbox-identity';
 
+const DEFAULT_PROBE_TIMEOUT_SECONDS = 30;
+const MAX_PROBE_TIMEOUT_SECONDS = 60;
+const DIAGNOSTIC_CONTROL_GRACE_SECONDS = 30;
+const ADAPTER_STARTUP_ALLOWANCE_SECONDS = 10;
+
+function redactDiagnostic(value: string): string {
+  return value
+    .replace(/(authorization\s*:\s*bearer\s+)[^\s]+/gi, '$1[REDACTED]')
+    .replace(/((?:api[_-]?key|token|password|secret)\s*[=:]\s*)[^\s,;]+/gi, '$1[REDACTED]')
+    .replace(/\b(?:sk|rk|snipara)[-_][A-Za-z0-9_-]{16,}\b/g, '[REDACTED]')
+    .replaceAll('\0', '').slice(0, 2000);
+}
+
+function sanitizeDiagnostics(value: Record<string, unknown>): Record<string, unknown> {
+  const result = {...value};
+  for (const key of ['reason', 'error', 'stderr']) {
+    if (typeof result[key] === 'string') result[key] = redactDiagnostic(result[key]);
+  }
+  if (result.readiness && typeof result.readiness === 'object' && !Array.isArray(result.readiness)) {
+    const readiness = {...result.readiness as Record<string, unknown>};
+    for (const key of ['reason', 'error', 'stderr']) {
+      if (typeof readiness[key] === 'string') readiness[key] = redactDiagnostic(readiness[key] as string);
+    }
+    result.readiness = readiness;
+  }
+  return result;
+}
+
 export const sandboxUnavailable = {
   status: 'needs_user_choice',
   prompt: "Snipara Sandbox n'est pas disponible pour ces tests. Souhaitez-vous utiliser un autre environnement, installer/configurer Sandbox, ou continuer sans Sandbox ?",
@@ -18,10 +46,14 @@ function validChoice(value: unknown, scope: unknown): boolean {
 export async function invokeSandboxValidation(action: string, options: {
   request?: string; scope?: string; runId?: string; store?: string;
   choice?: string; environment?: string; acknowledgeUserChoice?: boolean;
-  sandboxCommand?: string;
+  sandboxCommand?: string; probeTimeoutSeconds?: number;
 }): Promise<{ exitCode: number; result: Record<string, unknown> }> {
   if (!['gate', 'choose', 'diagnose', 'run', 'verify', 'status', 'cancel'].includes(action)) {
     throw new Error('Unsupported Sandbox validation action');
+  }
+  const diagnostic = ['gate', 'diagnose'].includes(action);
+  if (options.probeTimeoutSeconds !== undefined && (!diagnostic || !Number.isInteger(options.probeTimeoutSeconds) || options.probeTimeoutSeconds < 1 || options.probeTimeoutSeconds > MAX_PROBE_TIMEOUT_SECONDS)) {
+    return {exitCode: 2, result: {...sandboxUnavailable, stage: 'adapter_input', reason_code: 'invalid_probe_timeout', reason: 'probeTimeoutSeconds is an integer from 1 to 60, supported only for diagnose and gate.'}};
   }
   if (process.platform === 'win32') return {exitCode: 2, result: {...sandboxUnavailable, reason: 'Repository validation currently qualifies macOS/Linux Docker only.'}};
   const requiresRequest = ['gate','choose','diagnose','run','verify'].includes(action);
@@ -35,15 +67,21 @@ export async function invokeSandboxValidation(action: string, options: {
     if (value !== undefined) args.push(`--${flag}`, value);
   }
   if (options.acknowledgeUserChoice) args.push('--acknowledge-user-choice');
+  // Omit the new option by default so older published Sandbox CLIs remain compatible.
+  if (options.probeTimeoutSeconds !== undefined) args.push('--probe-timeout-seconds', String(options.probeTimeoutSeconds));
   const env: Record<string, string | undefined> = {};
   for (const name of ['PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG']) {
     if (process.env[name]) env[name] = process.env[name];
   }
-  let child: {stdout: string; status: number | null};
+  let child: {stdout: string; stderr: string; status: number | null};
+  const timeoutMs = diagnostic
+    ? ((options.probeTimeoutSeconds ?? DEFAULT_PROBE_TIMEOUT_SECONDS) + DIAGNOSTIC_CONTROL_GRACE_SECONDS + ADAPTER_STARTUP_ALLOWANCE_SECONDS) * 1000
+    : action === 'run' ? 960_000 : 30_000;
   try {
-    child = await executeBounded(options.sandboxCommand || 'snipara-sandbox', args, env, action === 'run' ? 960_000 : 30_000);
-  } catch {
-    return {exitCode: 2, result: {...sandboxUnavailable, reason: 'Sandbox process exceeded its deadline/output budget or failed to start.'}};
+    child = await executeBounded(options.sandboxCommand || 'snipara-sandbox', args, env, timeoutMs);
+  } catch (error) {
+    const failure = error as Error & {code?: string};
+    return {exitCode: 2, result: {...sandboxUnavailable, stage: 'adapter_process', reason_code: failure.code === 'ETIMEDOUT' ? 'sandbox_process_timeout' : failure.code === 'EOUTPUT' ? 'sandbox_output_limit' : 'sandbox_process_failed', reason: redactDiagnostic(failure.message || 'Sandbox process failed to start.'), adapter_timeout_seconds: timeoutMs / 1000}};
   }
   try {
     const value: unknown = JSON.parse(child.stdout);
@@ -65,40 +103,43 @@ export async function invokeSandboxValidation(action: string, options: {
       : schema && typeof result.run_id === 'string' && /^[a-f0-9]{32}$/.test(result.run_id) && (!options.runId || result.run_id === options.runId) && typeof result.status === 'string' && ['preparing','running','passed','failed','timeout','cancelled','environment_incompatible','artifact_error','collection_error','cleanup_failed','error','interrupted'].includes(String(result.status)) && typeof result.cleanup_complete === 'boolean';
     if (!valid) throw new Error('Unsupported Sandbox response schema');
     const failed = result.status === 'needs_user_choice' || (action === 'verify' && result.valid !== true) || (action === 'diagnose' && result.ready !== true) || (action === 'run' && (result.status !== 'passed' || result.cleanup_complete !== true));
-    return {exitCode: failed ? 2 : child.status ?? 2, result};
+    return {exitCode: failed ? 2 : child.status ?? 2, result: sanitizeDiagnostics(result)};
   } catch {
-    return {exitCode: 2, result: {...sandboxUnavailable, reason: 'Sandbox returned an unsupported or malformed response; update/configure it or select an alternative.'}};
+    return {exitCode: 2, result: {...sandboxUnavailable, stage: 'adapter_response', reason_code: 'sandbox_response_invalid', reason: child.stderr ? redactDiagnostic(child.stderr) : 'Sandbox returned an unsupported or malformed response; update/configure it or select an alternative.'}};
   }
 }
 
 
 /** Drain bounded output and terminate the whole owned process group on failure. */
-export function executeBounded(command: string, args: string[], env: Record<string, string | undefined>, timeoutMs: number): Promise<{stdout: string; status: number | null}> {
+export function executeBounded(command: string, args: string[], env: Record<string, string | undefined>, timeoutMs: number): Promise<{stdout: string; stderr: string; status: number | null}> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {env, detached: true, stdio: ['ignore', 'pipe', 'ignore'], shell: false});
+    const child = spawn(command, args, {env, detached: true, stdio: ['ignore', 'pipe', 'pipe'], shell: false});
     const chunks: Buffer[] = [];
+    const errorChunks: Buffer[] = [];
     let bytes = 0;
     let failure: Error | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const kill = () => { if (child.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* The owned process group has already exited. */ } } };
     const cleanup = () => { clearTimeout(timer); process.removeListener('SIGINT', interrupt); process.removeListener('SIGTERM', interrupt); process.removeListener('exit', kill); };
-    const fail = (error: Error) => { failure = error; kill(); child.stdout.destroy(); child.unref(); cleanup(); reject(error); };
+    const fail = (error: Error) => { failure = error; kill(); child.stdout.destroy(); child.stderr.destroy(); child.unref(); cleanup(); reject(error); };
     const interrupt = () => fail(new Error('Sandbox parent interrupted'));
     process.once('SIGINT', interrupt);
     process.once('SIGTERM', interrupt);
     process.once('exit', kill);
-    timer = setTimeout(() => fail(new Error('Sandbox deadline exceeded')), timeoutMs);
+    timer = setTimeout(() => fail(Object.assign(new Error('Sandbox process exceeded its adapter deadline.'), {code: 'ETIMEDOUT'})), timeoutMs);
     child.on('error', error => { cleanup(); kill(); reject(error); });
-    child.stdout.on('data', (chunk: Buffer) => {
+    const collect = (chunks: Buffer[]) => (chunk: Buffer) => {
       bytes += chunk.length;
-      if (bytes > 8 * 1024 * 1024) fail(new Error('Sandbox output budget exceeded'));
+      if (bytes > 8 * 1024 * 1024) fail(Object.assign(new Error('Sandbox output budget exceeded'), {code: 'EOUTPUT'}));
       else chunks.push(chunk);
-    });
+    };
+    child.stdout.on('data', collect(chunks));
+    child.stderr.on('data', collect(errorChunks));
     child.on('close', status => {
       cleanup();
       kill();
       if (failure) { kill(); reject(failure); }
-      else resolve({stdout: Buffer.concat(chunks).toString('utf8'), status});
+      else resolve({stdout: Buffer.concat(chunks).toString('utf8'), stderr: Buffer.concat(errorChunks).toString('utf8'), status});
     });
   });
 }

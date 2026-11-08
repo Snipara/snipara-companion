@@ -5,7 +5,7 @@ import {
   buildIntentDetectionFromTimeline,
   type ProjectIntentDetectionResult,
 } from "../contracts/project-intelligence";
-import { listWorkflowContinuityDirectory, readWorkflowContinuityFile } from "./workflow-continuity";
+import { diagnoseWorkflowContinuityArtifact, listWorkflowContinuityDirectory, readWorkflowContinuityFile } from "./workflow-continuity";
 
 export const ACTIVITY_TIMELINE_VERSION = "snipara.activity_timeline.v0" as const;
 export const SESSION_SNAPSHOT_VERSION = "snipara.session_snapshot.v0" as const;
@@ -99,6 +99,7 @@ export interface SessionSnapshot {
   performance: {
     buildMs: number;
   };
+  observation: { status: "available" | "degraded"; reason?: "activity_timeline_missing" };
   caveats: string[];
 }
 
@@ -153,7 +154,8 @@ function readActivityArtifact(filePath: string, cwd: string, limit: number): Buf
     return readWorkflowContinuityFile({ cwd, relativePath: path.relative(path.resolve(cwd), path.resolve(filePath)), maxBytes: limit });
   } catch (error) {
     if (isMissing(error)) return null;
-    throw new Error("Local activity artifact is unsafe, unavailable or exceeds its bounded read limit");
+    const problem = diagnoseWorkflowContinuityArtifact(error, path.relative(path.resolve(cwd), path.resolve(filePath)));
+    throw new Error(`Local activity artifact is unsafe, unavailable or exceeds its bounded read limit (${problem.code}: ${problem.path}). ${problem.action}`);
   }
 }
 
@@ -396,6 +398,7 @@ export function buildSessionSnapshot(
   const startedAt = Date.now();
   const cwd = options.cwd ?? process.cwd();
   const events = readActivityTimeline({ cwd });
+  const timelineMissing = !fs.existsSync(getActivityTimelinePath(cwd));
   const latestEvents = events.slice(0, options.limit && options.limit > 0 ? options.limit : 20);
   const pendingDecisions = readJsonDir(path.join(cwd, ".snipara", "decisions", "pending"), cwd);
   const resolvedDecisions = readJsonDir(path.join(cwd, ".snipara", "decisions", "resolved"), cwd);
@@ -451,9 +454,11 @@ export function buildSessionSnapshot(
     performance: {
       buildMs: Date.now() - startedAt,
     },
+    observation: timelineMissing ? { status: "degraded", reason: "activity_timeline_missing" } : { status: "available" },
     caveats: [
       "Snapshot is derived from local artifacts and may not include hosted-only context.",
       "Append-only activity events are local evidence, not server-side attestation.",
+      ...(timelineMissing ? ["Optional activity timeline is missing; workflow receipts and mandatory evidence remain separate."] : []),
     ],
   };
   return snapshot;

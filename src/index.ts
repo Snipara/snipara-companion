@@ -112,6 +112,7 @@ import {
   revalidateTaskIntake,
 } from "./commands/task-intake";
 import {
+  buildTaskIntentGuide,
   executeTaskJourney,
   formatTaskJourneyCard,
   type TaskJourneyOptions,
@@ -119,6 +120,7 @@ import {
 import { normalizeTaskContextRequest } from "./commands/workflow-task-context";
 import { writeBridgeImmutable, writeBridgeImmutableBytes } from "./commands/controller-bridge-io";
 export {
+  buildTaskIntentGuide,
   executeTaskJourney,
   buildTaskJourneyCard,
   formatTaskJourneyCard,
@@ -256,13 +258,28 @@ import {
 import { swarmCreateCommand, swarmJoinCommand } from "./commands/swarm";
 import { loadConfig } from "./config/store";
 
+import { previewSandboxValidationRequest } from "./commands/sandbox-evidence-card";
+import { readWorkflowContinuityFile } from "./commands/workflow-continuity";
+import {
+  renderWorkflowEfficiency,
+  workflowEfficiencyCommand,
+} from "./commands/workflow-efficiency";
+
 // Programmatic API: pure helpers re-exported for embedding and unit tests.
 export {
   captureWorkflowContinuity,
   captureWorkflowRepository,
   resumeWorkflowContinuity,
+  previewWorkflowContinuityRepair,
+  refreshWorkflowContinuity,
   formatWorkflowContinuity,
 } from "./commands/workflow-continuity";
+export { buildWorkflowResumeOverview, renderWorkflowResumeOverview } from "./commands/workflow-resume-overview";
+export {
+  measureWorkflowEfficiency,
+  renderWorkflowEfficiency,
+  workflowEfficiencyCommand,
+} from "./commands/workflow-efficiency";
 // These have no CLI side effects and are safe to import without running argv.
 export { resolveQueryFromToolInput } from "./commands/pre-tool";
 export { buildCommitResultMetadata, extractFilesFromToolInput } from "./commands/post-tool";
@@ -736,8 +753,17 @@ const validation = program
   .description(
     "Use standalone Sandbox validation; unavailable environments require an explicit user choice"
   );
+validation
+  .command("preview")
+  .description("Read a bounded local request preview; no engine, validation or execution is performed")
+  .requiredOption("--request <file>", "In-workspace regular request JSON file")
+  .option("--dir <directory>")
+  .action((options) => {
+    const bytes = readWorkflowContinuityFile({ cwd: options.dir ?? process.cwd(), path: options.request, maxBytes: 65536 });
+    console.log(JSON.stringify(previewSandboxValidationRequest(bytes.toString("utf8")), null, 2));
+  });
 for (const action of ["gate", "choose", "diagnose", "run", "verify", "status", "cancel"]) {
-  validation
+  const validationCommand = validation
     .command(action)
     .option("--request <file>", "Standalone Sandbox validation request JSON")
     .option("--scope <id>", "Authorized workflow or lot identity")
@@ -746,12 +772,19 @@ for (const action of ["gate", "choose", "diagnose", "run", "verify", "status", "
     .option("--choice <choice>", "Explicit user choice: alternative, install, local or skip")
     .option("--environment <name>", "Name the chosen alternative environment")
     .option("--acknowledge-user-choice", "Record an actual explicit user choice; never inferred")
-    .option("--sandbox-command <path>", "Explicit Sandbox executable; no shell interpolation")
-    .action(async (options) => {
-      const outcome = await invokeSandboxValidation(action, options);
-      console.log(JSON.stringify(outcome.result));
-      process.exitCode = outcome.exitCode;
-    });
+    .option("--sandbox-command <path>", "Explicit Sandbox executable; no shell interpolation");
+  if (["gate", "diagnose"].includes(action)) {
+    validationCommand.option(
+      "--probe-timeout-seconds <seconds>",
+      "Capability probe budget (integer 1..60); separate from repository test timeout",
+      Number
+    );
+  }
+  validationCommand.action(async (options) => {
+    const outcome = await invokeSandboxValidation(action, options);
+    console.log(JSON.stringify(outcome.result));
+    process.exitCode = outcome.exitCode;
+  });
 }
 
 program
@@ -994,6 +1027,21 @@ const taskJourney = program
     "One task: frame, work, verify, decide and resume; each advanced engine remains optional"
   );
 const taskList = (value: string, previous: string[]): string[] => [...previous, value];
+taskJourney
+  .command("guide <intent>")
+  .description("Preview a decision, continuation, verification or small-edit entry point without calls or writes")
+  .option("--query <query>", "Decision question")
+  .option("--id <id>", "Exact saved task id")
+  .option("--file <path>", "Existing workspace file; repeatable", taskList, [])
+  .option("--multi-phase", "Choose the managed workflow for multiple phases")
+  .option("--dir <directory>")
+  .action((intent, options) => {
+    console.log(JSON.stringify(buildTaskIntentGuide({
+      intent, cwd: options.dir, query: options.query, id: options.id,
+      files: options.file, multiPhase: options.multiPhase,
+    }), null, 2));
+  });
+
 taskJourney
   .command("brief [goal]")
   .description(
@@ -2961,6 +3009,25 @@ const workflow = program
   .description("Workflow presets and compaction-safe phase tracking");
 
 workflow
+  .command("efficiency")
+  .description("Read aggregate local Codex task usage; advisory by default, no account or dispatch")
+  .option("--root-thread-id <id>", "Root Codex chat id; defaults to CODEX_THREAD_ID")
+  .option("--sessions-dir <directory>", "Local Codex session directory")
+  .option("--since <timestamp>", "Count since ISO timestamp; defaults to workflow start, then root session start")
+  .option("--profile <profile>", "Advisory thresholds: lite|standard|full", "standard")
+  .option("--max-responses <number>", "Override recorded response threshold", Number)
+  .option("--max-uncached-input-tokens <number>", "Override uncached-input threshold", Number)
+  .option("--max-output-tokens <number>", "Override output threshold", Number)
+  .option("--max-elapsed-minutes <number>", "Override elapsed-time threshold (includes waiting)", Number)
+  .option("--enforce", "Return nonzero for exceeded limits or incomplete measurement; does not terminate a host")
+  .option("--json", "Print compact aggregate JSON; never transcripts")
+  .action(async (options) => {
+    const result = await workflowEfficiencyCommand(options);
+    console.log(renderWorkflowEfficiency(result.report, Boolean(options.json)));
+    process.exitCode = result.exitCode;
+  });
+
+workflow
   .command("export-context")
   .description("Export exact loaded task context using an explicit work-package mapping")
   .requiredOption("--mapping-file <file>")
@@ -3257,8 +3324,11 @@ workflow
     "Capture a local work-state snapshot with decisions, attempts, evidence and repository fingerprints"
   )
   .option("--json", "Print the bound continuation snapshot")
+  .option("--repair", "Preview a linked checkpoint repair without writing state")
+  .option("--refresh", "Create a linked successor observation; never refresh historical proof")
+  .option("--reason <reason>", "Explicit recovery reason required by --refresh")
   .action(async (options) => {
-    await workflowCheckpointCommand({ json: options.json });
+    await workflowCheckpointCommand({ json: options.json, repair: options.repair, refresh: options.refresh, reason: options.reason });
   });
 
 workflow
@@ -3269,6 +3339,8 @@ workflow
   .option("--max-critical-tokens <number>", "Durable memory token budget")
   .option("--max-context-tokens <number>", "Short-lived session context token budget")
   .option("--include-session-context", "Include short-lived session carryover")
+  .option("--detail", "Print the complete compatible resume payload instead of the bounded overview")
+  .option("--max-overview-tokens <number>", "Overview estimate budget, integer 128-2000", value => Number(value))
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await workflowResumeCommand({
@@ -3279,6 +3351,8 @@ workflow
       maxContextTokens:
         options.maxContextTokens !== undefined ? parseInt(options.maxContextTokens, 10) : undefined,
       includeSessionContext: Boolean(options.includeSessionContext),
+      detail: Boolean(options.detail),
+      maxOverviewTokens: options.maxOverviewTokens,
       json: options.json,
     });
   });
@@ -5316,6 +5390,8 @@ program
   .option("--min-relevance <number>", "Minimum relevance threshold", "0.5")
   .option("--include-inactive", "Include invalidated or superseded memories in the main result set")
   .option("--warning-threshold <number>", "Threshold for lifecycle warnings", "0.72")
+  .option("--memory-view <view>", "current or retained history; history grants no current authority", "current")
+  .option("--as-of <timestamp>", "Past ISO timestamp with timezone; requires --memory-view history")
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await recallCommand({
@@ -5327,6 +5403,8 @@ program
       minRelevance: parseFloat(options.minRelevance),
       includeInactive: Boolean(options.includeInactive),
       warningThreshold: parseFloat(options.warningThreshold),
+      memoryView: options.memoryView,
+      asOf: options.asOf,
       json: options.json,
     });
   });

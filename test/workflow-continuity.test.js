@@ -111,6 +111,67 @@ test("new branch and HEAD are declared without refreshing old evidence", (t) => 
   assert.ok(result.changes.includes("HEAD")); assert.ok(result.changes.includes("branch"));
 });
 
+test("large continuity inventory retains tracked evidence and an explicit incomplete error", (t) => {
+  const f = fixture(t), vendor = path.join(f.cwd, "vendor", "a".repeat(120), "b".repeat(120));
+  fs.mkdirSync(vendor, { recursive: true });
+  for (let index = 0; index < 5000; index++) fs.writeFileSync(path.join(vendor, `${String(index).padStart(5, "0")}-${"c".repeat(180)}`), "");
+  fs.writeFileSync(path.join(f.cwd, "code.txt"), "tracked edit");
+  const result = captureWorkflowRepository(f.cwd);
+  assert.ok(result.dirty.some((entry) => entry.path === "code.txt" && entry.fingerprint.startsWith("file:")));
+  assert.ok(result.errors.some((reason) => reason.startsWith("repository_inventory_incomplete:")));
+  f.capture();
+  assert.equal(f.resume().status, "blocked", "incomplete global coverage never becomes exact proof");
+});
+
+test("continuity preserves both NUL-delimited rename paths", (t) => {
+  const f = fixture(t); f.git("mv", "code.txt", "renamed.txt");
+  const result = captureWorkflowRepository(f.cwd);
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(result.dirty.map((entry) => entry.path), ["code.txt", "renamed.txt"]);
+  assert.equal(result.dirty.find((entry) => entry.path === "code.txt").fingerprint, "missing");
+});
+
+test("an oversized dirty file keeps other observations and names the blocked fingerprint", (t) => {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(f.cwd, "code.txt"), "tracked edit\n");
+  const oversized = path.join(f.cwd, "oversized.bin");
+  fs.writeFileSync(oversized, "");
+  fs.truncateSync(oversized, 16 * 1024 * 1024 + 1);
+  const result = captureWorkflowRepository(f.cwd);
+  assert.ok(result.dirty.some((entry) => entry.path === "code.txt" && entry.fingerprint.startsWith("file:")));
+  assert.equal(result.dirty.find((entry) => entry.path === "oversized.bin").fingerprint, "unavailable:artifact_oversized");
+  assert.ok(result.errors.some((reason) => reason.includes("artifact_oversized") && reason.includes("oversized.bin")));
+  assert.ok(!result.errors.some((reason) => reason.startsWith("repository_observation_unavailable:")));
+  f.capture();
+  assert.equal(f.resume().status, "blocked", "an unavailable content hash cannot qualify an exact snapshot");
+});
+
+test("a dirty symlink stays unobserved while regular tracked edits remain visible", (t) => {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(f.cwd, "code.txt"), "tracked edit\n");
+  fs.symlinkSync("code.txt", path.join(f.cwd, "untrusted-link"));
+  const result = captureWorkflowRepository(f.cwd);
+  assert.ok(result.dirty.some((entry) => entry.path === "code.txt" && entry.fingerprint.startsWith("file:")));
+  assert.equal(result.dirty.find((entry) => entry.path === "untrusted-link").fingerprint, "unavailable:artifact_unsafe_path");
+  assert.ok(result.errors.some((reason) => reason.includes("artifact_unsafe_path") && reason.includes("untrusted-link")));
+  f.capture();
+  assert.equal(f.resume().status, "blocked");
+});
+
+test("many unobserved dirty paths produce a bounded checkpoint and retain the coverage gap", (t) => {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(f.cwd, "code.txt"), "tracked edit\n");
+  for (let index = 0; index < 256; index++) {
+    fs.symlinkSync("code.txt", path.join(f.cwd, `link-${String(index).padStart(3, "0")}`));
+  }
+  const result = captureWorkflowRepository(f.cwd);
+  assert.ok(result.dirty.some((entry) => entry.path === "code.txt" && entry.fingerprint.startsWith("file:")));
+  assert.ok(result.errors.length > 0 && result.errors.length <= 256);
+  assert.ok(result.errors.some((reason) => reason.startsWith("repository_inventory_incomplete:")));
+  f.capture();
+  assert.equal(f.resume().status, "blocked", "bounded diagnostics do not erase unobserved paths");
+});
+
 test("failed attempts, decisions, reasons, constraints and historical context survive a later active attempt", (t) => {
   const f = fixture(t); const receipt = context(f, 1);
   f.task.status = "in_progress"; f.task.attempt = 2;

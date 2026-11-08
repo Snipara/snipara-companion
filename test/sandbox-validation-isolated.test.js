@@ -197,3 +197,85 @@ test('saved choice is bound to supplied request, scope and environment', async t
     assert.equal(result.exitCode,code);
   }
 });
+
+test('diagnostic adapters preserve negative stage, reason and timings with bounded redaction', async t => {
+  const folder=fs.mkdtempSync(path.join(os.tmpdir(),'sandbox-diagnostic-'));
+  t.after(()=>fs.rmSync(folder,{recursive:true,force:true}));
+  const executable=path.join(folder,'runtime');
+  const readiness={schema_version:'snipara.sandbox.validation.v1',backend:'docker',ready:false,stage:'capability_probe',reason_code:'capability_probe_timeout',reason:'token=synthetic-secret',timings_ms:{capability_probe:30001},duration_ms:30002,probe_timeout_seconds:30};
+  for(const action of ['diagnose','gate']) {
+    const value=action==='diagnose'?readiness:{status:'needs_user_choice',sandbox_used:false,execution_authorized_by_gate:false,scope_sha256:vectors.cases[0].sha256,choices:['alternative'],readiness};
+    fs.writeFileSync(executable,`#!${process.execPath}\nconsole.log(${JSON.stringify(JSON.stringify(value))})`,{mode:0o755});
+    const outcome=await invokeSandboxValidation(action,{sandboxCommand:executable,request:scopeRequest(folder),scope:'lot'});
+    const report=action==='diagnose'?outcome.result:outcome.result.readiness;
+    assert.equal(outcome.exitCode,2);
+    assert.equal(report.stage,'capability_probe');assert.equal(report.reason_code,'capability_probe_timeout');
+    assert.deepEqual(report.timings_ms,{capability_probe:30001});assert.equal(report.duration_ms,30002);
+    assert.equal(report.reason,'token=[REDACTED]');
+  }
+});
+
+test('diagnostic budgets cover internal control deadline plus startup and preserve older CLI compatibility', async t => {
+  const folder=fs.mkdtempSync(path.join(os.tmpdir(),'sandbox-diagnostic-budget-'));
+  t.after(()=>fs.rmSync(folder,{recursive:true,force:true}));
+  const executable=path.join(folder,'runtime');
+  fs.writeFileSync(executable,`#!${process.execPath}\nconsole.log(JSON.stringify({schema_version:'snipara.sandbox.validation.v1',backend:'docker',ready:true,args:process.argv.slice(2)}))`,{mode:0o755});
+  for (const probeTimeoutSeconds of [undefined,1,60]) {
+    const delays=[];const original=global.setTimeout;
+    global.setTimeout=(callback,delay,...args)=>{delays.push(delay);return original(callback,delay,...args)};
+    let outcome;
+    try {outcome=await invokeSandboxValidation('diagnose',{sandboxCommand:executable,request:'request.json',probeTimeoutSeconds});}
+    finally {global.setTimeout=original;}
+    assert.equal(outcome.exitCode,0);assert.ok(delays.includes(((probeTimeoutSeconds??30)+40)*1000));
+    assert.equal(outcome.result.args.includes('--probe-timeout-seconds'),probeTimeoutSeconds!==undefined);
+    if(probeTimeoutSeconds!==undefined)assert.deepEqual(outcome.result.args.slice(-2),['--probe-timeout-seconds',String(probeTimeoutSeconds)]);
+  }
+});
+
+test('invalid and misplaced probe options never start the runtime', async () => {
+  for(const probeTimeoutSeconds of [0,61,1.5,NaN,true,'30',null]) {
+    const outcome=await invokeSandboxValidation('diagnose',{request:'request.json',sandboxCommand:'/nonexistent',probeTimeoutSeconds});
+    assert.equal(outcome.result.reason_code,'invalid_probe_timeout');assert.equal(outcome.result.stage,'adapter_input');
+  }
+  const outcome=await invokeSandboxValidation('run',{request:'request.json',probeTimeoutSeconds:30});
+  assert.equal(outcome.result.reason_code,'invalid_probe_timeout');
+});
+
+test('unsupported CLI stderr is preserved with bounded redaction and no proof authorization', async t => {
+  const folder=fs.mkdtempSync(path.join(os.tmpdir(),'sandbox-diagnostic-stderr-'));
+  t.after(()=>fs.rmSync(folder,{recursive:true,force:true}));
+  const executable=path.join(folder,'runtime');
+  fs.writeFileSync(executable,`#!${process.execPath}\nconsole.error('No such option: --probe-timeout-seconds token=synthetic-secret '+ 'x'.repeat(3000));process.exitCode=2`,{mode:0o755});
+  const outcome=await invokeSandboxValidation('diagnose',{request:'request.json',sandboxCommand:executable,probeTimeoutSeconds:30});
+  assert.equal(outcome.exitCode,2);assert.equal(outcome.result.reason_code,'sandbox_response_invalid');
+  assert.match(outcome.result.reason,/No such option/);assert.ok(!outcome.result.reason.includes('synthetic-secret'));assert.ok(outcome.result.reason.length<=2000);
+  assert.equal(outcome.result.execution_authorized_by_gate,false);
+});
+
+test('adapter removes every NUL and redacts bounded top-level, nested and stderr diagnostics', async t => {
+  const folder=fs.mkdtempSync(path.join(os.tmpdir(),'sandbox-diagnostic-controls-'));
+  t.after(()=>fs.rmSync(folder,{recursive:true,force:true}));
+  const executable=path.join(folder,'runtime');
+  const raw='pre\0fi\0x token=token-value api_key=key-value password=password-value secret=secret-value Authorization: Bearer bearer-value sk-'+'A'.repeat(20)+' '+'x'.repeat(2500)+'\0tail';
+  const prefix='prefix token=[REDACTED] api_key=[REDACTED] password=[REDACTED] secret=[REDACTED] Authorization: Bearer [REDACTED] [REDACTED] ';
+  const expected=prefix+'x'.repeat(2000-prefix.length);
+  const readiness={schema_version:'snipara.sandbox.validation.v1',backend:'docker',ready:false,reason:raw,error:raw,stderr:raw};
+  for(const action of ['diagnose','gate']) {
+    const value=action==='diagnose'?readiness:{status:'needs_user_choice',sandbox_used:false,execution_authorized_by_gate:false,scope_sha256:vectors.cases[0].sha256,choices:['alternative'],reason:raw,error:raw,stderr:raw,readiness};
+    fs.writeFileSync(executable,`#!${process.execPath}\nconsole.log(${JSON.stringify(JSON.stringify(value))});\n`,{mode:0o755});
+    const outcome=await invokeSandboxValidation(action,{sandboxCommand:executable,request:scopeRequest(folder),scope:'lot'});
+    assert.equal(outcome.exitCode,2);
+    for(const report of action==='gate'?[outcome.result,outcome.result.readiness]:[outcome.result]) {
+      for(const key of ['reason','error','stderr']) {
+        assert.equal(report[key],expected,`${action} ${key}`);
+        assert.equal(report[key].includes('\0'),false);
+      }
+    }
+    assert.notEqual(outcome.result.execution_authorized_by_gate,true);
+  }
+  fs.writeFileSync(executable,`#!${process.execPath}\nconsole.error(${JSON.stringify(raw)});console.log('{}');process.exitCode=2;\n`,{mode:0o755});
+  const outcome=await invokeSandboxValidation('diagnose',{sandboxCommand:executable,request:scopeRequest(folder)});
+  assert.equal(outcome.exitCode,2);assert.equal(outcome.result.reason_code,'sandbox_response_invalid');
+  assert.equal(outcome.result.reason,expected);assert.equal(outcome.result.reason.includes('\0'),false);
+  assert.equal(outcome.result.execution_authorized_by_gate,false);
+});

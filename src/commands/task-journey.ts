@@ -13,6 +13,8 @@ import { createTaskIntake, readTaskIntake, revalidateTaskIntake, taskIntakeHash,
 import { checkpointText } from "../session/checkpoint";
 import { assertManagedWorkflowSchemaVersion, type ManagedWorkflowState, type ManagedWorkflowTask } from "./workflows";
 import { projectTaskSupervision, type TaskSupervision } from "./task-supervision";
+import { projectSandboxEvidenceCard, type SandboxEvidenceCard } from "./sandbox-evidence-card";
+import { diagnoseWorkflowContinuityArtifact } from "./workflow-continuity";
 
 type Data = Record<string, unknown>;
 const record = (value: unknown): value is Data => !!value && typeof value === "object" && !Array.isArray(value);
@@ -56,6 +58,7 @@ export interface TaskJourneyCard {
   preparedContext?: { envelope?: unknown; context?: unknown };
   dossier?: unknown;
   notices: string[];
+  sandboxEvidence?: SandboxEvidenceCard & { observationPath: string; readDiagnostic?: { code: string; path: string; action: string } };
 }
 function localJson(cwd: string, relative: string): Data | null {
   try {
@@ -191,6 +194,21 @@ export function buildTaskJourneyCard(options: { cwd?: string; slug?: string } = 
       "Scope admission supports literal paths, root/directories, and *, ? and ** path-segment patterns; bracket/brace patterns require explicit scope clarification",
       "The selected issue and initial dirty baseline remain historical; only explicit refresh may reread a remote source"],
   };
+  const observationPath = `${OUTPUT}/${slug}/sandbox-verification.json`;
+  try {
+    const bytes = readWorkflowContinuityFile({ cwd, path: observationPath, maxBytes: 65536 });
+    const saved: unknown = JSON.parse(bytes.toString("utf8"));
+    card.sandboxEvidence = { ...projectSandboxEvidenceCard(saved), observationPath };
+    card.evidence.push({ kind: "saved_sandbox_verifier_claim", path: observationPath,
+      sha256: sha(bytes), authority: "editable_saved_observation", status: "historical_saved_claim" });
+  } catch (error) {
+    if (!(record(error) && error.code === "ENOENT")) {
+      const diagnostic = diagnoseWorkflowContinuityArtifact(error, observationPath);
+      card.sandboxEvidence = { ...projectSandboxEvidenceCard({}), observationPath,
+        readDiagnostic: { code: error instanceof SyntaxError ? "artifact_schema_invalid" : diagnostic.code,
+          path: observationPath, action: "Inspect or restore the optional saved observation; current proof remains unverified." } };
+    }
+  }
   return applySupervision(card, task);
 }
 function applySupervision(input: Omit<TaskJourneyCard, "supervision">, task?: ManagedWorkflowTask,
@@ -509,9 +527,105 @@ export function formatTaskJourneyCard(card: TaskJourneyCard): string {
     ...card.steps.map((step) => `${step.label}: ${step.status} — ${step.detail}`),
     ...card.blockers.map((item) => `Blocage: ${item}`),
     `Décision: ${card.recommendation.action} (${card.recommendation.source})`,
+    ...(card.sandboxEvidence ? [
+      `Sandbox: ${card.sandboxEvidence.savedVerifierClaim} (editable saved observation; fresh verification required)`,
+      ...card.sandboxEvidence.reuse.denialReasons.map((reason) => `Sandbox reuse: ${reason}`),
+      ...(card.sandboxEvidence.readDiagnostic ? [`Sandbox artifact: ${card.sandboxEvidence.readDiagnostic.code} — ${card.sandboxEvidence.observationPath}`] : []),
+    ] : []),
     ...card.evidence.map((item) => `Preuve: ${item.kind} — ${item.path ?? item.status}${item.sha256 ? ` (${item.sha256})` : ""}`),
     `Prochain geste: ${card.nextAction.argv.map((item) => JSON.stringify(item)).join(" ")}`,
     `Résultat attendu: ${card.nextAction.expectedResult}`,
     "Aucune exécution d’agent, intégration, publication ou mise en production n’est autorisée par cette carte.",
     ...card.notices].join("\n");
+}
+
+/** Preview the smallest existing entry point; resolving a path never grants execution. */
+export function buildTaskIntentGuide(options: {
+  intent: "decision" | "continue" | "verify" | "edit";
+  cwd?: string;
+  query?: string;
+  id?: string;
+  files?: string[];
+  multiPhase?: boolean;
+}): Record<string, unknown> {
+  const cwd = fs.realpathSync(options.cwd ?? process.cwd());
+  if (!["decision", "continue", "verify", "edit"].includes(options.intent)) {
+    throw new Error("Intent must be decision, continue, verify or edit");
+  }
+  const requested = [...new Set(options.files ?? [])];
+  if (requested.length > 32) throw new Error("Intent guide accepts at most 32 file targets");
+  const unresolved: Array<{ path: string; reason: string }> = [];
+  const files: string[] = [];
+  for (const file of requested) {
+    try {
+      if (!file || file.includes("\0")) throw new Error("invalid_path");
+      const candidate = path.resolve(cwd, file);
+      const relative = path.relative(cwd, candidate);
+      if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
+        throw new Error("outside_workspace");
+      const stat = fs.lstatSync(candidate);
+      if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("not_regular_file");
+      const resolved = path.relative(cwd, fs.realpathSync(candidate));
+      if (resolved === ".." || resolved.startsWith(`..${path.sep}`) || path.isAbsolute(resolved))
+        throw new Error("outside_workspace");
+      const normalized = relative.split(path.sep).join("/");
+      files.push(normalized.startsWith("-") ? `./${normalized}` : normalized);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "unresolved_path";
+      unresolved.push({ path: checkpointText(file, 240), reason: /^(outside_workspace|not_regular_file|invalid_path)$/.test(reason) ? reason : "file_unavailable" });
+    }
+  }
+  const query = options.query?.trim();
+  const id = options.id?.trim();
+  if (id && normalizeFeatureSlug(id) !== id) throw new Error("Task id must be a normalized feature slug");
+  let argv: string[] = [];
+  let effects: string[] = [];
+  let reason = "";
+  let mode = "read_only";
+  if (options.intent === "decision") {
+    if (query) {
+      argv = query.startsWith("-")
+        ? ["snipara-companion", "recall", `--query=${query}`]
+        : ["snipara-companion", "recall", "--query", query];
+      effects = ["Reads reviewed project memory using configured Hosted MCP authentication"];
+    } else reason = "Provide --query with the decision to retrieve";
+  } else if (options.intent === "continue") {
+    if (id) {
+      const manifestPath = path.relative(cwd, resolveFeatureArtifactPaths(id, { cwd, outputDir: OUTPUT }).manifest);
+      try {
+        if (!featureAt(cwd, id).manifest) {
+          unresolved.push({ path: manifestPath, reason: "task_not_found" });
+          reason = "The selected saved task does not exist; inspect the task id before continuation";
+        } else {
+          argv = ["snipara-companion", "task", "resume", id, "--dir", cwd, "--json"];
+          effects = ["Reads and revalidates the selected saved task; does not launch a worker"];
+        }
+      } catch {
+        unresolved.push({ path: manifestPath, reason: "task_manifest_unavailable" });
+        reason = "Inspect the selected task manifest; its identity could not be read safely";
+      }
+    } else reason = "Provide --id from the saved task; a free-text title is not a task identity";
+  } else if (!files.length || unresolved.length) {
+    reason = "Resolve the declared file targets before choosing local checks or work";
+  } else if (options.intent === "verify") {
+    argv = ["snipara-companion", "verify", "--skip-impact", "--changed-files", ...files, "--json"];
+    effects = ["Reads local package scripts and returns a verification plan; executes no tests"];
+  } else {
+    mode = options.multiPhase || files.length > 1 ? "full" : "lite";
+    argv = ["snipara-companion", "verify", "--skip-impact", "--changed-files", ...files, "--json"];
+    effects = ["Read the selected source and applicable instructions, make the authorized edit, then review the local verification plan", "Executable repository checks still require the applicable Sandbox validation gate"];
+    reason = mode === "lite"
+      ? "Single-file, single-phase entry: no mandatory Hosted call, Controller or phase-memory write. Escalate for risky or architectural work."
+      : "Multiple files or phases require the managed workflow before implementation";
+  }
+  return {
+    schemaVersion: "snipara.task_intent_guide.v1", intent: options.intent,
+    mode, status: argv.length && !unresolved.length ? "next_action_available" : "needs_input",
+    files, unresolvedTargets: unresolved,
+    nextAction: argv.length ? { argv, effects, executed: false } : null,
+    reason,
+    authority: { executionGranted: false, integrationGranted: false, deploymentGranted: false },
+    readiness: { projectAuthentication: "not_probed", sandboxExecution: "not_probed", proof: "not_observed" },
+    mutations: [],
+  };
 }

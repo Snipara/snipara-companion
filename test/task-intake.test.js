@@ -5,6 +5,7 @@ const path = require("node:path");
 const { execFileSync, spawnSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
 const test = require("node:test");
+const { resolveOrchestratorSourceFixture } = require("./support/source-fixtures.js");
 const { createTaskIntake, validateTaskIntake, readTaskIntake, writeTaskIntake,
   revalidateTaskIntake, taskIntakeHash } = require("../dist/index.js");
 const NOW = "2026-10-19T10:20:30.000Z";
@@ -147,19 +148,24 @@ test("credential redaction preserves original issue identity and explicit redact
   assert.equal(brief.source.bodySha256, createHash("sha256").update(f.issue.body).digest("hex"));
   assert.equal(brief.sourceContext.redacted, true); assert.doesNotMatch(JSON.stringify(brief), /private-value|abcdefghijklmnopqrstuvwxyz/);
 });
-function pythonConsumer(override) {
-  const modulePath = path.resolve(__dirname, "../../agentic-orchestrator/src/snipara_orchestrator/task_intake.py");
-  const consume = "b=json.loads(sys.stdin.read()); m.validate_task_intake(b); print(json.dumps({'hash':m.task_intake_hash({k:v for k,v in b.items() if k!='contentSha256'}),'origin':m.__file__,'inPrefix':os.path.commonpath([os.path.realpath(m.__file__),os.path.realpath(sys.prefix)])==os.path.realpath(sys.prefix)}))";
+function pythonConsumer(override, sourceOverride = process.env.SNIPARA_ORCHESTRATOR_TEST_SOURCE,
+  consume = "b=json.loads(sys.stdin.read()); m.validate_task_intake(b); print(json.dumps({'hash':m.task_intake_hash({k:v for k,v in b.items() if k!='contentSha256'}),'origin':m.__file__,'inPrefix':os.path.commonpath([os.path.realpath(m.__file__),os.path.realpath(sys.prefix)])==os.path.realpath(sys.prefix)}))") {
   if (override !== undefined) {
     assert.ok(override && fs.existsSync(override) && fs.statSync(override).isFile(), "SNIPARA_ORCHESTRATOR_TEST_PYTHON must name an existing interpreter");
-    return { command: override, args: ["-I", "-B", "-c", "import json,sys,os; import snipara_orchestrator.task_intake as m; " + consume] };
+    assert.equal(sourceOverride, undefined, "SNIPARA_ORCHESTRATOR_TEST_PYTHON cannot combine with SNIPARA_ORCHESTRATOR_TEST_SOURCE");
+    return { command: override, mode: "installed", args: ["-I", "-B", "-c", "import json,sys,os; import snipara_orchestrator.task_intake as m; assert os.path.commonpath([os.path.realpath(m.__file__),os.path.realpath(sys.prefix)])==os.path.realpath(sys.prefix), 'Consumer must be installed in the specified interpreter prefix'; " + consume] };
   }
-  if (!fs.existsSync(modulePath)) return null;
-  return { command: "python3", args: ["-c", "import importlib.util,json,sys,os; s=importlib.util.spec_from_file_location('intake',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); " + consume, modulePath] };
+  const modulePath = resolveOrchestratorSourceFixture(sourceOverride);
+  if (!modulePath) return null;
+  return { command: "python3", mode: "source_fixture", sourcePath: modulePath,
+    args: ["-I", "-S", "-B", "-c", "import importlib.util,json,sys,os; s=importlib.util.spec_from_file_location('intake',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); " + consume, modulePath] };
 }
 test("explicit Python consumer override never falls back to monorepo sources", () => {
   for (const invalid of ["", __dirname, path.join(__dirname, "absent-interpreter")])
     assert.throws(() => pythonConsumer(invalid), /SNIPARA_ORCHESTRATOR_TEST_PYTHON/);
+  for (const invalid of ["", __dirname, __filename, path.join(__dirname, "absent-source.py")])
+    assert.throws(() => pythonConsumer(undefined, invalid), /SNIPARA_ORCHESTRATOR_TEST_SOURCE/);
+  assert.throws(() => pythonConsumer(process.execPath, __filename), /cannot combine/);
 });
 test("canonical unicode intake matches Python consumer and writer hashes", (t) => {
   const override = process.env.SNIPARA_ORCHESTRATOR_TEST_PYTHON;
@@ -170,7 +176,7 @@ test("canonical unicode intake matches Python consumer and writer hashes", (t) =
   assert.equal(result.status, 0, result.stderr);
   const observed = JSON.parse(result.stdout); assert.equal(observed.hash, brief.contentSha256);
   if (override !== undefined) assert.equal(observed.inPrefix, true, "The consumer must be installed in the specified interpreter prefix");
-  t.diagnostic(`Python consumer under test: ${observed.origin}`);
+  t.diagnostic(`Python consumer under test (${consumer.mode}): ${observed.origin}`);
 });
 test("default adapter exercises installed gh subprocess boundary with read-only arguments", (t) => {
   const f = fixture(t); const bin = path.join(f.root, ".snipara/bin"); fs.mkdirSync(bin, { recursive: true });
@@ -181,4 +187,99 @@ test("default adapter exercises installed gh subprocess boundary with read-only 
   try { const result = createTaskIntake({ ...f.options, githubIssue: 7 }); assert.equal(result.capabilities.github.observed, true); }
   finally { process.env.PATH = previous; }
   const calls = fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse); assert.equal(calls.length, 2); calls.forEach((args) => assert.equal(args[3], "--method"));
+});
+
+test("oversized untracked inventory keeps tracked and scoped evidence without claiming an exact baseline", (t) => {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(f.root, "code.txt"), "task bytes");
+  fs.writeFileSync(path.join(f.root, "outside.txt"), "unrelated tracked bytes");
+  fs.mkdirSync(path.join(f.root, "vendor"));
+  const huge = "?? vendor/" + "x".repeat(2_000_001);
+  const runCommand = (program, args, cwd) => {
+    if (program === "git" && args.includes("status")) {
+      if (args.includes("--untracked-files=all") && !args.includes("--")) return { status: 0, stdout: huge };
+      if (args.includes("--untracked-files=no")) return { status: 0, stdout: " M outside.txt\0" };
+      if (args.includes("--untracked-files=normal")) return { status: 0, stdout: " M outside.txt\0?? vendor/\0" };
+      if (args.includes("--")) { assert.equal(args[0], "--literal-pathspecs"); return { status: 0, stdout: " M code.txt\0" }; }
+    }
+    return f.runner(program, args, cwd);
+  };
+  const result = createTaskIntake({ ...f.options, runCommand });
+  assert.equal(result.brief.repositorySnapshot.dirtyBaselineTruncated, true);
+  const paths = result.brief.repositorySnapshot.dirtyBaseline.map((entry) => entry.path);
+  assert.deepEqual(paths, ["code.txt", "outside.txt", "vendor"]);
+  assert.equal(result.brief.repositorySnapshot.dirtyBaseline.find((entry) => entry.path === "code.txt").sha256,
+    createHash("sha256").update("task bytes").digest("hex"));
+  assert.equal(result.brief.repositorySnapshot.dirtyBaseline.find((entry) => entry.path === "vendor").sha256, null);
+  assert.deepEqual(result.capabilities.local.reasonCodes, ["repository_dirty_baseline_incomplete"]);
+  const again = revalidateTaskIntake(result.brief, { workspaceRoot: f.root, runCommand });
+  assert.equal(again.status, "drift");
+  assert.ok(again.reasonCodes.includes("repository_dirty_baseline_incomplete"));
+  assert.equal(again.doesNotAuthorizeExecution, true);
+});
+
+for (const [errorCode, expected] of [["ETIMEDOUT", "repository_read_timeout"], ["EACCES", "repository_access_denied"]])
+  test(`Git ${errorCode} remains actionable instead of being mislabeled as a missing repo`, (t) => {
+    const f = fixture(t);
+    const runCommand = (program, args, cwd) => program === "git" && args.includes("status")
+      ? { status: null, stdout: "", stderr: "token=private-value", errorCode }
+      : f.runner(program, args, cwd);
+    assert.throws(() => createTaskIntake({ ...f.options, runCommand }), (error) => {
+      assert.equal(error.code, expected); assert.doesNotMatch(error.message, /private-value/); return true;
+    });
+  });
+
+test("default Git adapter frames a real large untracked tree as incomplete", (t) => {
+  const f = fixture(t), vendor = path.join(f.root, "vendor", "a".repeat(120), "b".repeat(120));
+  fs.mkdirSync(vendor, { recursive: true });
+  for (let index = 0; index < 5000; index++) fs.writeFileSync(path.join(vendor, `${String(index).padStart(5, "0")}-${"c".repeat(180)}`), "");
+  fs.writeFileSync(path.join(f.root, "code.txt"), "visible tracked edit");
+  const result = createTaskIntake(f.options);
+  assert.equal(result.brief.repositorySnapshot.dirtyBaselineTruncated, true);
+  assert.ok(result.brief.repositorySnapshot.dirtyBaseline.some((entry) => entry.path === "code.txt" && entry.sha256));
+  assert.ok(result.brief.repositorySnapshot.dirtyBaseline.some((entry) => entry.path === "vendor" && entry.sha256 === null));
+});
+
+test("entry bounds retain global tracked changes and prioritize explicit task files", (t) => {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(f.root, "z-task.txt"), "selected");
+  const runCommand = (program, args, cwd) => program === "git" && args.includes("status")
+    ? { status: 0, stdout: " M code.txt\0" + Array.from({ length: 260 }, (_, index) => `?? a${index}.txt\0`).join("") + "?? z-task.txt\0" }
+    : f.runner(program, args, cwd);
+  const { brief } = createTaskIntake({ ...f.options, files: ["z-task.txt"], runCommand });
+  assert.equal(brief.repositorySnapshot.dirtyBaseline.length, 256);
+  assert.equal(brief.repositorySnapshot.dirtyBaselineTruncated, true);
+  assert.ok(brief.repositorySnapshot.dirtyBaseline.some((entry) => entry.path === "code.txt"));
+  assert.ok(brief.repositorySnapshot.dirtyBaseline.some((entry) => entry.path === "z-task.txt" && entry.sha256));
+});
+
+test("root and root-glob fallback scopes do not become invalid empty Git pathspecs", (t) => {
+  const f = fixture(t);
+  const runCommand = (program, args, cwd) => {
+    if (program === "git" && args.includes("status")) {
+      assert.ok(!args.includes("--"));
+      return args.includes("--untracked-files=all")
+        ? { status: null, stdout: "", errorCode: "ENOBUFS" }
+        : { status: 0, stdout: " M code.txt\0" };
+    }
+    return f.runner(program, args, cwd);
+  };
+  assert.equal(createTaskIntake({ ...f.options, files: ["./", "*.txt"], runCommand }).brief.repositorySnapshot.dirtyBaselineTruncated, true);
+});
+
+test("NUL rename, Unicode and unobserved symlink bytes have identical Python writer identity", (t) => {
+  const script = "x=json.load(sys.stdin); print(json.dumps(m.create_task_intake(x.pop('workspaceRoot'), observed_at=x.pop('observedAt'), **x)['brief']))";
+  const consumer = pythonConsumer(process.env.SNIPARA_ORCHESTRATOR_TEST_PYTHON,
+    process.env.SNIPARA_ORCHESTRATOR_TEST_SOURCE, script);
+  if (!consumer) { t.skip("Optional Orchestrator writer absent; supply an installed interpreter or explicit source fixture"); return; }
+  const f = fixture(t);
+  f.git("mv", "code.txt", "é 🧪.txt");
+  fs.symlinkSync(os.tmpdir(), path.join(f.root, "escaping"));
+  const { brief } = createTaskIntake(f.options);
+  assert.equal(brief.repositorySnapshot.dirtyBaseline.find((entry) => entry.path === "escaping").sha256, null);
+  assert.ok(brief.repositorySnapshot.dirtyBaseline.some((entry) => entry.path === "é 🧪.txt" && entry.status.includes("R")));
+  const result = spawnSync(consumer.command, consumer.args, { input: JSON.stringify(f.options), encoding: "utf8", timeout: 30000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), brief);
+  t.diagnostic(`Python writer under test (${consumer.mode})${consumer.sourcePath ? `: ${consumer.sourcePath}` : ""}`);
 });

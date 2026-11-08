@@ -159,6 +159,10 @@ function writeWorkflowPreload(dir) {
       "      const result = { projectIntelligence: { servedJudgmentId: judgment.servedJudgmentId, judgment: { advisorRecommendations: judgment.advisorRecommendations } }, resumeContext: { recommendedActions: ['Respond to Advisor recommendations explicitly'], caveats: [] } };",
       "      return { ok: true, status: 200, statusText: 'OK', json: async () => ({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } }) };",
       "    }",
+      "    if (toolName === 'snipara_code_impact' && process.env.SNIPARA_TEST_COMPLETE_CODE_IMPACT === '1') {",
+      "      const result = { risk: { level: 'low', score: 0, status: 'assessed' }, coverage: { status: 'complete' }, index_freshness: { commit_match: true } };",
+      "      return { ok: true, status: 200, statusText: 'OK', json: async () => ({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } }) };",
+      "    }",
       "    if (toolName === 'snipara_journal_append') {",
       "      const logPath = process.env.SNIPARA_TEST_JOURNAL_LOG;",
       "      if (logPath) {",
@@ -423,7 +427,7 @@ function writeAgentContextFixture(dir, agentId = "code") {
   );
 }
 
-function writeWorkflowState(dir) {
+function writeWorkflowState(dir, { completed = false } = {}) {
   const workflowDir = path.join(dir, ".snipara", "workflow");
   fs.mkdirSync(workflowDir, { recursive: true });
   fs.writeFileSync(
@@ -433,8 +437,8 @@ function writeWorkflowState(dir) {
         schemaVersion: "snipara.workflow.v2",
         workflowId: "agentic-work",
         goal: "Ship companion continuity commands",
-        status: "active",
-        currentPhaseId: "verify",
+        status: completed ? "completed" : "active",
+        currentPhaseId: completed ? undefined : "verify",
         planSource: "inline",
         createdAt: "2026-05-31T10:00:00.000Z",
         updatedAt: "2026-05-31T10:30:00.000Z",
@@ -454,7 +458,7 @@ function writeWorkflowState(dir) {
             id: "verify",
             title: "Verify commands",
             query: "Verify commands",
-            status: "in_progress",
+            status: completed ? "completed" : "in_progress",
             startedAt: "2026-05-31T10:25:00.000Z",
             files: ["packages/cli/test/workflows.test.js"],
           },
@@ -2815,7 +2819,7 @@ test("managed workflow serves a judgment, allows an explicit override, and enric
     "recorded"
   );
 
-  const finalized = run([
+  const finalArgs = [
     "workflow",
     "final-commit",
     "--summary",
@@ -2827,6 +2831,45 @@ test("managed workflow serves a judgment, allows an explicit override, and enric
     "--files",
     "src/app.ts",
     "--json",
+  ];
+  const statePath = path.join(dir, ".snipara", "workflow", "current.json");
+  const beforeFinal = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  const refusedFinal = run(finalArgs);
+  assert.notEqual(refusedFinal.status, 0);
+  assert.match(refusedFinal.stderr || refusedFinal.stdout, /Resolve code impact applicability/);
+  const afterRefusal = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(afterRefusal.status, beforeFinal.status);
+  assert.deepEqual(afterRefusal.lastCommit, beforeFinal.lastCommit);
+  assert.ok(afterRefusal.judgment.resolution.evidence.unsatisfiedRequiredActions.includes("Resolve code impact applicability"));
+  assert.equal(fs.readFileSync(receiptLog, "utf8").trim().split("\n").length, 2);
+
+  for (const evidence of ["passed:code impact", "passed:code impact applicability inspection"]) {
+    const refusedLabel = run([...finalArgs, "--evidence", evidence]);
+    assert.notEqual(refusedLabel.status, 0, "Free-text impact evidence cannot repair the captured applicability gap");
+    const stillPending = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(stillPending.status, beforeFinal.status);
+    assert.deepEqual(stillPending.lastCommit, beforeFinal.lastCommit);
+    assert.ok(stillPending.judgment.resolution.evidence.unsatisfiedRequiredActions.includes("Resolve code impact applicability"));
+    assert.equal(fs.readFileSync(receiptLog, "utf8").trim().split("\n").length, 2);
+  }
+
+  // Repair the actual public producer, then refresh the immutable judgment.
+  env.SNIPARA_TEST_COMPLETE_CODE_IMPACT = "1";
+  const refreshed = run(["workflow", "judgment", "--refresh", "--json"]);
+  assert.equal(refreshed.status, 0, refreshed.stderr || refreshed.stdout);
+  assert.equal(JSON.parse(refreshed.stdout).judgment.card.requiredActions.some(
+    (action) => action.title === "Resolve code impact applicability"
+  ), false);
+  const respondedAfterRefresh = run([
+    "workflow", "judgment-respond", recommendationId, "--decision", "modified",
+    "--plan-before", "Implement\nClose", "--plan-after", "Implement\nRun workflow tests\nClose", "--json",
+  ]);
+  assert.equal(respondedAfterRefresh.status, 0, respondedAfterRefresh.stderr || respondedAfterRefresh.stdout);
+
+  const finalized = run([
+    ...finalArgs,
+    "--evidence",
+    "passed:code impact applicability inspection",
   ]);
   assert.equal(finalized.status, 0, finalized.stderr || finalized.stdout);
   const finalPayload = JSON.parse(finalized.stdout.slice(finalized.stdout.indexOf("{")));
@@ -2837,10 +2880,11 @@ test("managed workflow serves a judgment, allows an explicit override, and enric
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line));
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 4);
   assert.deepEqual(
     calls.map((call) => [call.recommendation.id, call.agentDecision]),
     [
+      [recommendationId, "modified"],
       [recommendationId, "modified"],
       [recommendationId, "modified"],
       [recommendationId, "modified"],
@@ -2848,7 +2892,7 @@ test("managed workflow serves a judgment, allows an explicit override, and enric
   );
   assert.deepEqual(
     calls.map((call) => call.metadata.advisorInfluenceLifecycle.state),
-    ["applied", "verified", "verified"]
+    ["applied", "verified", "applied", "verified"]
   );
   assert.equal(
     calls[0].metadata.receiptAutomation.trigger,
@@ -2860,10 +2904,14 @@ test("managed workflow serves a judgment, allows an explicit override, and enric
   );
   assert.equal(
     calls[2].metadata.receiptAutomation.trigger,
+    "snipara-companion workflow judgment-respond"
+  );
+  assert.equal(
+    calls[3].metadata.receiptAutomation.trigger,
     "snipara-companion workflow final-commit"
   );
-  assert.equal(calls[2].metadata.source, "snipara-companion:workflow");
-  assert.ok(calls[2].verificationExecuted.length >= 2);
+  assert.equal(calls[3].metadata.source, "snipara-companion:workflow");
+  assert.ok(calls[3].verificationExecuted.length >= 2);
 
   const current = JSON.parse(
     fs.readFileSync(path.join(dir, ".snipara", "workflow", "current.json"), "utf8")
@@ -2872,8 +2920,22 @@ test("managed workflow serves a judgment, allows an explicit override, and enric
   assert.equal(current.judgment.responses[0].decision, "modified");
   assert.equal(current.judgment.responses[0].source, "explicit");
   assert.equal(current.judgment.responseHistory[0].source, "policy_auto");
-  assert.equal(current.judgment.responses[0].outcomeReceipts.length, 2);
+  assert.equal(current.judgmentHistory.length, 1);
+  const originalJudgment = current.judgmentHistory[0];
+  assert.equal(originalJudgment.responses[0].decision, "modified");
+  assert.ok(originalJudgment.card.requiredActions.some((action) => action.title === "Resolve code impact applicability"));
+  assert.equal(originalJudgment.responses[0].outcomeReceipts.length, 1);
+  assert.equal(current.judgment.responses[0].outcomeReceipts.length, 1);
+  assert.equal(originalJudgment.responses[0].outcomeReceipts[0].verification.evidence.some(
+    (item) => item.status === "passed" && item.label === "pnpm --filter snipara-companion test"
+  ), true);
   assert.equal(current.judgment.responses[0].closeoutReceipt.status, "recorded");
+  const finalReceipt = current.judgment.responses[0].outcomeReceipts.find((receipt) =>
+    receipt.sourceRef.endsWith(":final")
+  );
+  const finalEvidence = finalReceipt.verification.evidence;
+  assert.ok(finalEvidence.some((item) => item.status === "passed" && item.label === "production workflow smoke"));
+  assert.ok(finalEvidence.some((item) => item.status === "passed" && item.source === "manual" && item.label === "code impact applicability inspection"));
 });
 
 test("managed workflow judgment refresh archives the prior immutable card and responses", () => {
@@ -2926,10 +2988,145 @@ test("managed workflow judgment refresh archives the prior immutable card and re
   assert.equal(current.judgment.responses[0].source, "policy_auto");
 });
 
+for (const [phaseStatus, taskStatus] of [
+  ["blocked", "completed"],
+  ["pending", "completed"],
+  ["in_progress", "completed"],
+  ["completed", "blocked"],
+  ["completed", "pending"],
+  ["completed", "in_progress"],
+]) {
+  test(`final-commit rejects ${phaseStatus} phase / ${taskStatus} task without context requests`, () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-final-incomplete-"));
+    fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+    writeWorkflowState(dir, { completed: true });
+    const statePath = path.join(dir, ".snipara", "workflow", "current.json");
+    const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    state.status = "active";
+    state.currentPhaseId = "verify";
+    state.phases[1].status = phaseStatus;
+    state.phases[1].tasks = [{
+      id: "verify-check",
+      title: "Verify check",
+      query: "Verify check",
+      status: taskStatus,
+      attempt: 2,
+      maxAttempts: 3,
+      attemptHistory: [{ attempt: 1, outcome: "blocked", summary: "Missing proof" }],
+    }];
+    const before = JSON.stringify(state, null, 2);
+    fs.writeFileSync(statePath, before, "utf8");
+    const commitLog = path.join(dir, "workflow-commit.jsonl");
+    const result = runCli(
+      ["workflow", "final-commit", "--summary", "Must remain unresolved", "--json"],
+      {
+        cwd: dir,
+        nodeArgs: ["-r", writeWorkflowPreload(dir)],
+        env: {
+          SNIPARA_API_KEY: "test-key",
+          SNIPARA_PROJECT_ID: "project_1",
+          SNIPARA_API_URL: "https://api.example.test",
+          SNIPARA_TEST_COMMIT_LOG: commitLog,
+        },
+      }
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Phase 'verify' must complete its tasks before final completion/);
+    assert.equal(fs.readFileSync(statePath, "utf8"), before);
+    assert.equal(fs.existsSync(commitLog), false);
+    assert.equal(fs.existsSync(path.join(dir, FINAL_COMMIT_REPORT_RELATIVE_PATH)), false);
+  });
+}
+
+test("final-commit accepts completed and explicitly skipped work without context requests", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-final-skipped-"));
+  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+  writeWorkflowState(dir, { completed: true });
+  const statePath = path.join(dir, ".snipara", "workflow", "current.json");
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  state.phases[1].status = "skipped";
+  state.phases[1].tasks = [{
+    id: "verify-check", title: "Verify check", query: "Verify check", status: "skipped",
+    attempt: 2, maxAttempts: 3,
+  }];
+  fs.writeFileSync(statePath, JSON.stringify(state, null, 2), "utf8");
+  const result = runCli(
+    ["workflow", "final-commit", "--summary", "All work resolved", "--json"],
+    {
+      cwd: dir,
+      nodeArgs: ["-r", writeWorkflowPreload(dir)],
+      env: {
+        SNIPARA_API_KEY: "test-key", SNIPARA_PROJECT_ID: "project_1",
+        SNIPARA_API_URL: "https://api.example.test",
+      },
+    }
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const current = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(current.status, "completed");
+  assert.equal(current.phases[1].tasks[0].status, "skipped");
+  assert.equal(current.phases[1].tasks[0].attempt, 2);
+});
+
+test("final-commit can record a partial outcome without erasing unresolved task history", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-final-partial-"));
+  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+  writeWorkflowState(dir);
+  const statePath = path.join(dir, ".snipara", "workflow", "current.json");
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  state.phases[1].status = "blocked";
+  state.phases[1].tasks = [{
+    id: "verify-check", title: "Verify check", query: "Verify check", status: "blocked",
+    attempt: 2, maxAttempts: 3, recoveryTaskId: "recover-proof", lastError: "Missing proof",
+    attemptHistory: [{ attempt: 1, outcome: "blocked", summary: "Missing proof" }],
+  }];
+  fs.writeFileSync(statePath, JSON.stringify(state, null, 2), "utf8");
+  const result = runCli(
+    ["workflow", "final-commit", "--summary", "Proof still missing", "--outcome", "partial", "--json"],
+    {
+      cwd: dir,
+      nodeArgs: ["-r", writeWorkflowPreload(dir)],
+      env: {
+        SNIPARA_API_KEY: "test-key", SNIPARA_PROJECT_ID: "project_1",
+        SNIPARA_API_URL: "https://api.example.test",
+      },
+    }
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const current = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(current.status, "blocked");
+  assert.equal(current.phases[1].status, "blocked");
+  assert.equal(current.phases[1].tasks[0].status, "blocked");
+  assert.equal(current.phases[1].tasks[0].attempt, 2);
+  assert.equal(current.phases[1].tasks[0].maxAttempts, 3);
+  assert.equal(current.phases[1].tasks[0].recoveryTaskId, "recover-proof");
+  assert.equal(current.phases[1].tasks[0].lastError, "Missing proof");
+  assert.deepEqual(current.phases[1].tasks[0].attemptHistory, state.phases[1].tasks[0].attemptHistory);
+});
+
+test("final-commit without managed state retains its standalone handoff behavior", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-final-unmanaged-"));
+  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+  const result = runCli(
+    ["final-commit", "--summary", "Completed standalone work", "--json"],
+    {
+      cwd: dir,
+      nodeArgs: ["-r", writeWorkflowPreload(dir)],
+      env: {
+        SNIPARA_API_KEY: "test-key", SNIPARA_PROJECT_ID: "project_1",
+        SNIPARA_API_URL: "https://api.example.test",
+      },
+    }
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(JSON.parse(result.stdout).commit.team_sync_handoff.status, "created");
+  assert.equal(fs.existsSync(path.join(dir, ".snipara", "workflow", "current.json")), false);
+});
+
 test("final-commit still requires explicit authority for a risk recommendation", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-judgment-required-"));
   fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "app" }), "utf8");
-  writeWorkflowState(dir);
+  writeWorkflowState(dir, { completed: true });
   const statePath = path.join(dir, ".snipara", "workflow", "current.json");
   const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
   state.judgment = {
@@ -2991,7 +3188,7 @@ test("final-commit still requires explicit authority for a risk recommendation",
 test("final-commit auto-handles a legacy watch recommendation and persists its audit source", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-judgment-auto-"));
   fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "app" }), "utf8");
-  writeWorkflowState(dir);
+  writeWorkflowState(dir, { completed: true });
   const statePath = path.join(dir, ".snipara", "workflow", "current.json");
   const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
   state.judgment = managedJudgmentFixture({
@@ -3041,7 +3238,7 @@ test("final-commit auto-handles a legacy watch recommendation and persists its a
 test("final-commit surfaces the backend Team Sync handoff invariant", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-final-commit-"));
   fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
-  writeWorkflowState(dir);
+  writeWorkflowState(dir, { completed: true });
   const preloadPath = writeWorkflowPreload(dir);
   const commitLog = path.join(dir, "workflow-commit.jsonl");
   const whyCaptureLog = path.join(dir, "workflow-final-why-capture.jsonl");
@@ -3107,7 +3304,6 @@ test("final-commit surfaces the backend Team Sync handoff invariant", () => {
   );
   assert.deepEqual(payload.report.closeout.risks, [
     "Published package still needs registry verification",
-    "Phase 'verify' is in_progress.",
     "1 verification item(s) were not run.",
   ]);
   assert.equal(payload.report.closeout.nextStep, "Publish and verify the package");
@@ -3167,7 +3363,7 @@ test("final-commit surfaces the backend Team Sync handoff invariant", () => {
 test("final-commit completes the matching local Team Sync work item", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-final-team-sync-"));
   fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
-  writeWorkflowState(dir);
+  writeWorkflowState(dir, { completed: true });
   const teamSyncState = createEmptyTeamSyncState(new Date("2026-05-31T10:00:00.000Z"));
   teamSyncState.work.push(
     buildTeamSyncStartWorkRecord({
@@ -3220,7 +3416,7 @@ test("final-commit completes the matching local Team Sync work item", () => {
 test("final-commit prints the seven closeout sections in stable order", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-final-report-text-"));
   fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
-  writeWorkflowState(dir);
+  writeWorkflowState(dir, { completed: true });
   const preloadPath = writeWorkflowPreload(dir);
 
   const result = runCli(
@@ -3270,7 +3466,7 @@ test("final-commit prints the seven closeout sections in stable order", () => {
 test("final-commit keeps custom categories on the final handoff-only path", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-final-category-"));
   fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
-  writeWorkflowState(dir);
+  writeWorkflowState(dir, { completed: true });
   const preloadPath = writeWorkflowPreload(dir);
   const commitLog = path.join(dir, "workflow-commit.jsonl");
 
@@ -3319,7 +3515,7 @@ test("final-commit keeps custom categories on the final handoff-only path", () =
 test("final-commit writes local workflow and handoff fallback when hosted commit times out", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-final-fallback-"));
   fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
-  writeWorkflowState(dir);
+  writeWorkflowState(dir, { completed: true });
   const preloadPath = writeWorkflowPreload(dir);
   const commitLog = path.join(dir, "workflow-commit.jsonl");
 
@@ -5011,7 +5207,7 @@ test("workflow resume includes the local session snapshot", () => {
     });
     const preloadPath = writeWorkflowPreload(dir);
 
-    const result = runCli(["workflow", "resume", "--include-session-context", "--json"], {
+    const result = runCli(["workflow", "resume", "--detail", "--include-session-context", "--json"], {
       cwd: dir,
       env: {
         SNIPARA_API_KEY: "test-key",

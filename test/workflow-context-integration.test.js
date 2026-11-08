@@ -151,7 +151,7 @@ test("legacy tasks perform no mandatory retrieval calls", (t) => {
 });
 test("offline resume restores exact task-bound content without pretending it is fresh", (t) => {
   const f=fixture(t,simple()); assert.equal(f.start("code").status,0);
-  const result=f.run(["workflow","resume","--json"],"offline");
+  const result=f.run(["workflow","resume","--detail","--json"],"offline");
   assert.equal(result.status,0,result.stderr);
   const body=JSON.parse(result.stdout);
   assert.equal(body.task_contexts[0].chunks[0].content,"BODY chunk_alpha");
@@ -163,11 +163,11 @@ test("resume rejects a modified context blob or changed task contract", (t) => {
   const manifest=JSON.parse(fs.readFileSync(path.join(f.dir,".snipara/context-pack/items",receipt.packId+".json")));
   const actual=path.join(f.dir,manifest.storage.blobRelativePath);
   const previous=fs.readFileSync(actual,"utf8"); fs.writeFileSync(actual,previous+"tampered");
-  assert.notEqual(f.run(["workflow","resume","--json"]).status,0);
+  assert.notEqual(f.run(["workflow","resume","--detail","--json"]).status,0);
   fs.writeFileSync(actual,previous);
   state.phases[0].tasks[0].contextRequest.queries=["changed"];
   fs.writeFileSync(path.join(f.dir,".snipara/workflow/current.json"),JSON.stringify(state));
-  assert.notEqual(f.run(["workflow","resume","--json"]).status,0);
+  assert.notEqual(f.run(["workflow","resume","--detail","--json"]).status,0);
 });
 test("planner mapping rejects unknown, ambiguous and cyclic dependencies", () => {
   for (const steps of [

@@ -16,12 +16,15 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   captureWorkflowContinuity,
   resumeWorkflowContinuity,
+  previewWorkflowContinuityRepair,
+  refreshWorkflowContinuity,
   formatWorkflowContinuity,
   readWorkflowContinuityFile,
   resolveWorkflowContinuityFile,
   type WorkflowContinuityRef,
 } from "./workflow-continuity";
 import { checkpointText } from "../session/checkpoint";
+import { buildWorkflowResumeOverview, renderWorkflowResumeOverview } from "./workflow-resume-overview";
 import {
   materializeTaskContext,
   normalizeTaskContextRequest,
@@ -3570,7 +3573,7 @@ function readRequiredWorkflowState(): ManagedWorkflowState {
   return state;
 }
 
-function writeWorkflowState(state: ManagedWorkflowState): void {
+function writeWorkflowState(state: ManagedWorkflowState, options: { continuity?: WorkflowContinuityRef; expectedState?: Buffer } = {}): void {
   const statePath = resolveWorkflowContinuityFile({ cwd: process.cwd(), path: WORKFLOW_STATE_RELATIVE_PATH });
   fs.mkdirSync(path.dirname(statePath), { recursive: true });
   const normalizedState = normalizeManagedWorkflowState(state);
@@ -3579,7 +3582,7 @@ function writeWorkflowState(state: ManagedWorkflowState): void {
     schemaVersion: "snipara.workflow.v2",
     runtime: normalizeManagedWorkflowRuntimeState(normalizedState.runtime),
   };
-  normalized.continuity = captureWorkflowContinuity({ state: normalized });
+  normalized.continuity = options.continuity ?? captureWorkflowContinuity({ state: normalized });
   const content = `${JSON.stringify(normalized, null, 2)}\n`;
   if (Buffer.byteLength(content, "utf8") > 2 * 1024 * 1024) throw new Error("Workflow state exceeds its byte limit");
   const temporary = path.join(path.dirname(statePath), `.current-${randomUUID()}.tmp`);
@@ -3589,6 +3592,8 @@ function writeWorkflowState(state: ManagedWorkflowState): void {
     try { fs.writeFileSync(fd, content, "utf8"); fs.fsyncSync(fd); }
     finally { fs.closeSync(fd); }
     resolveWorkflowContinuityFile({ cwd: process.cwd(), path: WORKFLOW_STATE_RELATIVE_PATH });
+    if (options.expectedState && !readWorkflowContinuityFile({ cwd: process.cwd(), path: WORKFLOW_STATE_RELATIVE_PATH,
+      maxBytes: 2 * 1024 * 1024 }).equals(options.expectedState)) throw new Error("Workflow changed during checkpoint refresh; preview again before applying");
     fs.renameSync(temporary, statePath);
   } finally {
     if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
@@ -11562,6 +11567,9 @@ function passedEvidenceSatisfiesAction(
   passedEvidence: OutcomeIntelligenceEvidence[]
 ): boolean {
   if (action.type === "resolve_blocker") return false;
+  // Applicability is a property of the captured analysis. A free-text passed
+  // receipt cannot repair it; refresh the judgment with applicable evidence.
+  if (action.title === "Resolve code impact applicability") return false;
   if (action.type === "acknowledge") {
     return passedEvidence.some((evidence) => evidence.source === "guard");
   }
@@ -11612,12 +11620,10 @@ function unresolvedJudgmentReasonCodes(
   return card.reasons.flatMap((reason): string[] => {
     if (reason.code.startsWith("surface_unavailable_")) return [reason.code];
     if (reason.code === "memory_health_low") return [reason.code];
-    if (
-      reason.code === "code_impact_degraded" &&
-      !/\b(local (read|inspection)|code impact)\b/.test(passedText)
-    ) {
-      return [reason.code];
-    }
+    // Older v1 cards also recorded degraded impact without an applicability
+    // action. They require a fresh applicable card, just like newer cards.
+    if (reason.code === "impact_applicability_incomplete" ||
+        reason.code === "code_impact_degraded") return [reason.code];
     if (
       reason.code === "code_graph_stale" &&
       !/\b(local (read|inspection)|code impact)\b/.test(passedText)
@@ -13591,6 +13597,8 @@ export async function workflowResumeCommand(options: {
   maxContextTokens?: number;
   includeSessionContext?: boolean;
   json?: boolean;
+  detail?: boolean;
+  maxOverviewTokens?: number;
 }): Promise<void> {
   const state = readRequiredWorkflowState();
   const phase = state.phases.find((item) => item.id === state.currentPhaseId);
@@ -13650,8 +13658,7 @@ export async function workflowResumeCommand(options: {
     localSessionSnapshotError = checkpointText(error instanceof Error ? error.message : String(error));
   }
 
-  if (options.json) {
-    printJson({
+  const payload = {
       workflow: projectWorkflowResumeMetadata(state),
       workflow_projection: { redacted: true, rawStateFile: false },
       continuity,
@@ -13660,6 +13667,7 @@ export async function workflowResumeCommand(options: {
       pending_decision_count: localSessionSnapshot?.decisions.pendingCount ?? null,
       local_session_snapshot: localSessionSnapshot,
       local_session_snapshot_error: localSessionSnapshotError,
+      local_session_snapshot_status: localSessionSnapshotError ? "degraded" : localSessionSnapshot?.observation.status ?? "degraded",
       session_bootstrap: projectWorkflowResumeMetadata(bootstrap),
       session_bootstrap_quality: bootstrapQuality,
       session_bootstrap_error: bootstrapError,
@@ -13672,9 +13680,14 @@ export async function workflowResumeCommand(options: {
         included: resolvedContextTokens > 0,
         max_tokens: resolvedContextTokens,
       },
-    });
+  };
+  if (!options.detail) {
+    const overview = buildWorkflowResumeOverview(payload, { maxTokens: options.maxOverviewTokens, json: options.json });
+    process.stdout.write(renderWorkflowResumeOverview(overview, options.json));
+    if (overview.status !== "overview") process.exitCode = 1;
     return;
   }
+  if (options.json) { printJson(payload); return; }
 
   console.log(chalk.bold("Workflow Resume"));
   console.log(formatWorkflowContinuity(continuity));
@@ -13723,8 +13736,25 @@ async function loadWorkflowWhatChangedResume(state: ManagedWorkflowState): Promi
 }
 
 /** Explicitly bind the current files and work facts without changing task status. */
-export async function workflowCheckpointCommand(options: { json?: boolean }): Promise<void> {
+export async function workflowCheckpointCommand(options: { json?: boolean; repair?: boolean; refresh?: boolean; reason?: string }): Promise<void> {
+  const expectedState = options.refresh ? readWorkflowContinuityFile({ cwd: process.cwd(), path: WORKFLOW_STATE_RELATIVE_PATH, maxBytes: 2 * 1024 * 1024 }) : undefined;
   const state = readRequiredWorkflowState();
+  if (options.reason && !options.refresh) throw new Error("--reason requires --refresh");
+  if (options.repair || options.refresh) {
+    const preview = previewWorkflowContinuityRepair({ state });
+    if (!options.refresh) {
+      if (options.json) printJson({ workflowId: state.workflowId, repair: { ...preview, applied: false } });
+      else console.log(`${formatWorkflowContinuity(preview.continuity)}\nRepair preview: ${preview.allowed ? "linked refresh available" : preview.reasons.join(" ")}\nApply explicitly with workflow checkpoint --refresh --reason <recovery reason>; no proof is refreshed.`);
+      return;
+    }
+    const predecessor = state.continuity;
+    const ref = refreshWorkflowContinuity({ state, reason: options.reason ?? "" });
+    writeWorkflowState(state, { continuity: ref, expectedState });
+    const continuity = resumeWorkflowContinuity({ state });
+    if (options.json) printJson({ workflowId: state.workflowId, continuity, repair: { applied: true, predecessor, proofRefreshed: false } });
+    else console.log(formatWorkflowContinuity(continuity));
+    return;
+  }
   state.updatedAt = new Date().toISOString();
   writeWorkflowState(state);
   const continuity = resumeWorkflowContinuity({ state });
@@ -14364,8 +14394,7 @@ export async function finalCommitCommand(options: {
 }): Promise<void> {
   const state = readWorkflowState();
   const outcome = options.outcome ?? "completed";
-  if (outcome === "completed" && state?.phases.some((phase) =>
-    workflowTasks(phase).some((task) => task.contextRequest))) {
+  if (outcome === "completed" && state) {
     for (const phase of state.phases) {
       if (!["completed", "skipped"].includes(phase.status) ||
         workflowTasks(phase).some((task) => !["completed", "skipped"].includes(task.status))) {
@@ -14901,6 +14930,8 @@ export async function recallCommand(options: {
   minRelevance?: number;
   includeInactive?: boolean;
   warningThreshold?: number;
+  memoryView?: "current" | "history";
+  asOf?: string;
   json?: boolean;
 }): Promise<void> {
   ensureConfigured();
@@ -14914,10 +14945,16 @@ export async function recallCommand(options: {
     minRelevance: options.minRelevance,
     includeInactive: options.includeInactive,
     warningThreshold: options.warningThreshold,
+    memoryView: options.memoryView,
+    asOf: options.asOf,
   });
   if (options.json) {
     printJson(result);
     return;
+  }
+  if (options.memoryView === "history") {
+    console.log("Retained historical evidence; no current source authority or check reuse.");
+    if (result.temporal_context?.as_of) console.log(`As of: ${result.temporal_context.as_of}`);
   }
   printRecallResult(result);
 }

@@ -61,6 +61,43 @@ test("buildProjectJudgmentCard requires proof for high-risk missing test coverag
   assert.ok(card.requiredActions.some((action) => action.type === "inspect"));
 });
 
+test("unknown or incomplete impact evidence requires proof without labeling code itself high risk", () => {
+  const variants = [
+    {},
+    { risk: {} },
+    { risk: { level: "unrecognized", score: 0 } },
+    { risk: { level: "unknown", status: "incomplete", score: null } },
+    ...["unknown", "partial", "unassessed", null].map((status) => ({ risk: { level: "low", score: 0, status } })),
+    ...["unknown", "partial", "unassessed", null].map((status) => ({ risk: { level: "low", score: 0 }, coverage: { status } })),
+    { risk: { level: "low", score: 0 }, coverage: { status: "incomplete", reasons: ["overlay_file_limit_reached"] } },
+    { risk: { level: "low", score: 0 }, missingTargetFiles: ["src/missing.ts"] },
+    { risk: { level: "low", score: 0 }, missing_target_files: ["src/missing.ts"] },
+    { risk: { level: "low", score: 0 }, degraded: true },
+    { risk: { level: "low", score: 0 }, mode: "hybrid_degraded_local", provenance: { canonicalBase: "unavailable" } },
+    { risk: { level: "low", score: 0 }, mode: "hybrid", provenance: { canonicalBase: "unavailable" } },
+  ];
+  for (const codeImpact of variants) {
+    const card = buildProjectJudgmentCard({ changedFiles: ["src/missing.ts"], codeImpact });
+    assert.equal(card.state, "proof_required");
+    assert.equal(card.canProceed, "review");
+    assert.ok(card.reasons.some((reason) => reason.severity === "high"));
+    assert.ok(card.requiredActions.some((action) => action.type === "inspect"));
+    assert.ok(card.caveats.some((caveat) => caveat.includes("does not assess the code as high risk")));
+    assert.equal(card.evidence.some((item) => item.source === "code_impact" && item.detail === "score 0"), false);
+  }
+});
+
+test("legacy complete low impact keeps its ready classification", () => {
+  const card = buildProjectJudgmentCard({
+    changedFiles: ["src/known.ts"],
+    codeImpact: { risk: { level: "low", score: 0 }, coverage: { status: "complete", reasons: [] } },
+  });
+  assert.equal(card.state, "ready");
+  assert.equal(card.canProceed, "yes");
+  assert.equal(card.score, 100);
+  assert.ok(card.evidence.some((item) => item.detail === "score 0"));
+});
+
 test("buildProjectJudgmentCard blocks when collaboration guard blocks", () => {
   const card = buildProjectJudgmentCard({
     task: "deploy production",

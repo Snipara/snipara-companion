@@ -151,3 +151,106 @@ test('repeated public start cannot silently substitute or add task retrieval',(t
   assert.equal(fs.readFileSync(file,'utf8'),before);
   assert.equal(fs.existsSync(f.networkLog),false);
 });
+
+test('intent guide offers three canonical entries without network or task writes', (t) => {
+  const f = fixture(t);
+  f.json(['start', 'Preserve service', '--id', 'saved-task', '--accept', 'Service remains correct', '--file', 'service.js']);
+  const before = fs.readdirSync(path.join(f.cwd, '.snipara')).sort();
+  const guide = (args) => {
+    const result = f.run(['guide', ...args]);
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  const decision = guide(['decision', '--query', 'Why was this chosen?']);
+  assert.deepEqual(decision.nextAction.argv.slice(0, 3), ['snipara-companion', 'recall', '--query']);
+  const continuation = guide(['continue', '--id', 'saved-task']);
+  assert.deepEqual(continuation.nextAction.argv.slice(0, 4), ['snipara-companion', 'task', 'resume', 'saved-task']);
+  const verification = guide(['verify', '--file', 'service.js']);
+  assert.ok(verification.nextAction.argv.includes('--skip-impact'));
+  assert.equal(verification.nextAction.executed, false);
+  assert.deepEqual(fs.readdirSync(path.join(f.cwd, '.snipara')).sort(), before);
+  assert.equal(fs.existsSync(f.networkLog), false);
+});
+
+test('single-file edit guide stays LITE and refuses unresolved identities', (t) => {
+  const f = fixture(t);
+  const result = f.run(['guide', 'edit', '--file', 'service.js']);
+  assert.equal(result.status, 0, result.stderr);
+  const card = JSON.parse(result.stdout);
+  assert.equal(card.mode, 'lite');
+  assert.deepEqual(card.mutations, []);
+  assert.equal(card.authority.executionGranted, false);
+  assert.equal(fs.existsSync(path.join(f.cwd, '.snipara/workflow')), false);
+  const missing = f.run(['guide', 'continue']);
+  assert.equal(JSON.parse(missing.stdout).status, 'needs_input');
+  const unknown = JSON.parse(f.run(['guide', 'continue', '--id', 'absent-task']).stdout);
+  assert.equal(unknown.nextAction, null);
+  assert.equal(unknown.unresolvedTargets[0].reason, 'task_not_found');
+  const unsafe = f.run(['guide', 'edit', '--file', '../outside.js']);
+  const denial = JSON.parse(unsafe.stdout);
+  assert.equal(denial.nextAction, null);
+  assert.equal(denial.unresolvedTargets[0].reason, 'outside_workspace');
+  assert.equal(fs.existsSync(f.networkLog), false);
+});
+
+
+test('intent guide preserves option-like file names as literal verification targets', (t) => {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(f.cwd, '--help'), 'literal source\n');
+  const result = f.run(['guide', 'verify', '--file=--help']);
+  assert.equal(result.status, 0, result.stderr);
+  const card = JSON.parse(result.stdout);
+  assert.ok(card.nextAction.argv.includes('./--help'));
+  const check = spawnSync(process.execPath, [cli, ...card.nextAction.argv.slice(1)], {
+    cwd: f.cwd, encoding: 'utf8', timeout: 30000,
+    env: {...process.env, SNIPARA_COMPANION_SKIP_NPM_VERSION_CHECK: '1'},
+  });
+  assert.equal(check.status, 0, check.stderr);
+  assert.doesNotThrow(() => JSON.parse(check.stdout));
+});
+
+test('optional saved Sandbox claim is visible without granting fresh proof or execution', (t) => {
+  const f = fixture(t);
+  f.json(['start', 'Preserve service', '--id', 'sandbox-task', '--accept', 'Service remains correct', '--file', 'service.js']);
+  const dir = path.join(f.cwd, '.snipara/tasks/sandbox-task');
+  fs.mkdirSync(dir, {recursive:true});
+  const target = path.join(dir, 'sandbox-verification.json');
+  fs.writeFileSync(target, JSON.stringify({schema_version:'snipara.sandbox.validation.v1', run_id:'a'.repeat(32), valid:true, reasons:[], continuity:'historical_proof_only', receipt:{schema_version:'snipara.sandbox.validation.v1', run_id:'a'.repeat(32), status:'passed', exit_code:0, cleanup_complete:true, backend:'docker', request_sha256:'b'.repeat(64), snapshot:{sha256:'c'.repeat(64)}, image_id:'sha256:'+'d'.repeat(64)}}));
+  const card = f.json(['show', 'sandbox-task']);
+  assert.equal(card.sandboxEvidence.savedVerifierClaim, 'valid');
+  assert.equal(card.sandboxEvidence.verificationFresh, false);
+  assert.equal(card.sandboxEvidence.reuse.eligible, false);
+  assert.equal(card.authority.executionGranted, false);
+  assert.notEqual(card.status, 'integration_possible');
+  assert.equal(fs.existsSync(f.networkLog), false);
+  fs.writeFileSync(target, '{invalid');
+  const degraded = f.json(['show', 'sandbox-task']);
+  assert.equal(degraded.sandboxEvidence.readDiagnostic.code, 'artifact_schema_invalid');
+  assert.equal(degraded.sandboxEvidence.reuse.eligible, false);
+});
+
+test('validation request preview stays local, bounded and distinct from a passing test', (t) => {
+  const f = fixture(t);
+  const request = path.join(f.cwd, 'request.json');
+  fs.writeFileSync(request, JSON.stringify({schema_version:'snipara.sandbox.validation.v1',workspace:'.',image:'sha256:'+'a'.repeat(64),profile:'node',argv:['node','--version'],timeout_seconds:30}));
+  const run = () => spawnSync(process.execPath, [cli,'validation','preview','--request','request.json','--dir',f.cwd], {cwd:f.cwd,encoding:'utf8',timeout:30000,env:{...process.env,SNIPARA_COMPANION_SKIP_NPM_VERSION_CHECK:'1'}});
+  const result = run();
+  assert.equal(result.status, 0, result.stderr);
+  const card = JSON.parse(result.stdout);
+  assert.equal(card.validatedBySandbox, false);
+  assert.equal(card.executionAuthorized, false);
+  assert.equal(card.canonicalRequestIdentity, false);
+  fs.unlinkSync(request);
+  fs.symlinkSync(path.join(f.cwd,'service.js'), request);
+  assert.notEqual(run().status, 0);
+});
+
+
+test('intent guidance preserves existing checkpoint repair and refresh entry points', () => {
+  const result = spawnSync(process.execPath, [cli, 'workflow', 'checkpoint', '--help'], {
+    encoding: 'utf8', timeout: 30000, env: {...process.env, SNIPARA_COMPANION_SKIP_NPM_VERSION_CHECK:'1'},
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /--repair/);
+  assert.match(result.stdout, /--refresh/);
+});

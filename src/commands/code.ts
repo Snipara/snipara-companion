@@ -19,6 +19,7 @@ import ts from "typescript";
 import { createClient, type MinimumChangeEvidence, type MinimumChangeMode } from "../api/client";
 import { findWorkspaceRoot, isConfigured, loadConfig } from "../config/store";
 import { emitCanonicalEvent } from "./events";
+import { codeImpactApplicabilityGap } from "./judgment-card";
 import {
   buildInstalledDependencyEvidence,
   buildSmallestSafeDiffEvidence,
@@ -33,6 +34,8 @@ export interface LocalCodeOverlayOptions {
   commit?: string;
   maxFiles?: number;
   maxFileBytes?: number;
+  /** Query targets are indexed before unrelated files within the same bounded root. */
+  priorityFiles?: string[];
 }
 
 export interface LocalCodeOverlayFile {
@@ -845,10 +848,45 @@ function readFileContent(
     return runGitBuffer(["show", `${commit}:${filePath}`], repoRoot);
   }
   try {
-    return fs.readFileSync(path.join(repoRoot, filePath));
+    const target = path.join(repoRoot, filePath);
+    if (!fs.lstatSync(target).isFile()) return null;
+    const relative = path.relative(fs.realpathSync(repoRoot), fs.realpathSync(target));
+    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      return null;
+    }
+    const descriptor = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    try {
+      return fs.readFileSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
   } catch {
     return null;
   }
+}
+
+function isNestedRepositoryFile(
+  repoRoot: string,
+  filePath: string,
+  mode: LocalCodeOverlayMode,
+  markers: Map<string, boolean>
+): boolean {
+  const parts = normalizeRepoPath(filePath).split("/");
+  if ([".claude", ".codex"].includes(parts[0]) && parts[1] === "worktrees") return true;
+  if (mode !== "working_tree") return false;
+  for (let depth = 1; depth < parts.length; depth++) {
+    const directory = parts.slice(0, depth).join("/");
+    if (!markers.has(directory)) {
+      try {
+        fs.lstatSync(path.join(repoRoot, directory, ".git"));
+        markers.set(directory, true);
+      } catch {
+        markers.set(directory, false);
+      }
+    }
+    if (markers.get(directory)) return true;
+  }
+  return false;
 }
 
 function lineNumberFromIndex(content: string, index: number): number {
@@ -1289,6 +1327,9 @@ export function buildLocalCodeOverlay(
   const sniparaIgnore = readSniparaIgnore(repoRoot);
   const candidateFiles =
     mode === "local_commit" ? listCommitFiles(repoRoot, commit) : listWorkingTreeFiles(repoRoot);
+  const priorityFiles = new Set((options.priorityFiles ?? []).map(normalizeRepoPath));
+  candidateFiles.sort((left, right) => Number(priorityFiles.has(right)) - Number(priorityFiles.has(left)));
+  const nestedRepositoryMarkers = new Map<string, boolean>();
   const previous = readLocalCodeOverlayCache(repoRoot);
   const previousFiles = new Map((previous?.files ?? []).map((file) => [file.path, file]));
   const files: LocalCodeOverlayFile[] = [];
@@ -1317,16 +1358,7 @@ export function buildLocalCodeOverlay(
   };
 
   for (const filePath of candidateFiles) {
-    if (files.length >= maxFiles) {
-      warnings.push({
-        code: "local_overlay_file_limit_reached",
-        severity: "warning",
-        message: `Stopped after ${maxFiles} included files. Increase --max-files for larger repos.`,
-      });
-      break;
-    }
-
-    if (isIgnored(filePath, sniparaIgnore)) {
+    if (isIgnored(filePath, sniparaIgnore) || isNestedRepositoryFile(repoRoot, filePath, mode, nestedRepositoryMarkers)) {
       addExcluded(filePath, "ignored");
       continue;
     }
@@ -1335,6 +1367,15 @@ export function buildLocalCodeOverlay(
     if (!language) {
       addExcluded(filePath, "unsupported_language");
       continue;
+    }
+
+    if (files.length >= maxFiles) {
+      warnings.push({
+        code: "local_overlay_file_limit_reached",
+        severity: "warning",
+        message: `Stopped after ${maxFiles} included files. Increase --max-files for larger repos.`,
+      });
+      break;
     }
 
     const contentBuffer = readFileContent(repoRoot, filePath, mode, commit);
@@ -1619,6 +1660,7 @@ function loadQueryManifest(options: LocalCodeQueryCommandOptions): LocalCodeOver
     mode: options.mode ?? "working_tree",
     commit: options.commit,
     maxFiles: options.maxFiles,
+    priorityFiles: [...(options.changedFiles ?? []), ...(options.filePath ? [options.filePath] : [])],
   });
 }
 
@@ -2837,7 +2879,7 @@ function missingTargetDetail(
 
   const remediationByReason: Record<LocalCodeOverlayExcludedFile["reason"], string> = {
     ignored:
-      "Remove or narrow the matching .sniparaignore/default ignore rule if this file should be indexed.",
+      "Check .sniparaignore/default exclusions. For a nested repository, select that repository explicitly with --dir and use paths relative to its root.",
     unsupported_language:
       "Local overlay impact currently indexes TypeScript, TSX, Python, and Go files.",
     too_large:
@@ -3210,6 +3252,19 @@ function hybridRisk(local: Record<string, unknown>, hosted: Record<string, unkno
     { source: "hosted_graph", value: asUnknownRecord(hosted.risk) },
   ].filter((candidate) => Object.keys(candidate.value).length > 0);
   if (candidates.length === 0) return undefined;
+  const incomplete = candidates.find(
+    (candidate) => candidate.value.level === "unknown" || candidate.value.status === "incomplete"
+  );
+  if (incomplete) {
+    return {
+      ...incomplete.value,
+      score: null,
+      level: "unknown",
+      status: "incomplete",
+      source: incomplete.source,
+      sourceScores: Object.fromEntries(candidates.map((candidate) => [candidate.source, candidate.value.score ?? null])),
+    };
+  }
   const rank = (candidate: (typeof candidates)[number]): number => {
     const score = candidate.value.score;
     if (typeof score === "number") return score;
@@ -3296,7 +3351,27 @@ export function mergeHybridCodeResults(
   const changedFiles = new Set<string>();
   collectStringValues(local, new Set(["changed_files", "changedFiles"]), changedFiles);
   collectStringValues(hosted, new Set(["changed_files", "changedFiles"]), changedFiles);
-  const risk = hybridRisk(local, hosted);
+  const assessedRisk = hybridRisk(local, hosted);
+  const inputApplicability = [local, hosted].map(codeImpactApplicabilityGap);
+  const hostedUnavailable = hostedError !== undefined ||
+    inputApplicability[1]?.reasons.includes("hosted_graph_unavailable") === true;
+  const incompleteReasons = [
+    ...(hostedUnavailable ? ["hosted_graph_unavailable"] : []),
+    ...([local, hosted].flatMap((result, index) => {
+      const coverage = asUnknownRecord(result.coverage);
+      const missing = [result.missingTargetFiles, result.missing_target_files,
+        coverage.missingTargetFiles, coverage.missing_target_files]
+        .some((value) => Array.isArray(value) && value.length > 0);
+      const applicability = inputApplicability[index];
+      const incompleteImpact = verb === "impact" && applicability !== undefined;
+      const unavailableHybrid = applicability?.reasons.includes("hosted_graph_unavailable") === true;
+      return coverage.status === "incomplete" || result.degraded === true || missing || incompleteImpact || unavailableHybrid
+        ? [index === 0 ? "local_coverage_incomplete" : "hosted_coverage_incomplete"] : [];
+    })),
+  ];
+  const risk = incompleteReasons.length
+    ? { ...asUnknownRecord(assessedRisk), level: "unknown", score: null, status: "incomplete", reasons: incompleteReasons }
+    : assessedRisk;
   const semantic = hybridSemantic(local, hosted);
   const recommendedTests = mergeResultArrays(
     [hosted, local],
@@ -3307,18 +3382,22 @@ export function mergeHybridCodeResults(
     ["recommended_actions", "recommendedActions"]
   );
   const coverageGaps = mergeResultArrays([hosted, local], ["coverage_gaps", "coverageGaps"]);
+  const missingTargetFiles = mergeResultArrays(
+    [local, hosted], ["missingTargetFiles", "missing_target_files"]
+  );
   const warnings = mergeResultArrays([hosted, local], ["warnings"]);
   const minimumSafeChange =
     hosted.minimum_safe_change ?? hosted.minimumSafeChange ?? local.minimum_safe_change;
   return {
     title: `Hybrid ${verb}`,
-    mode: hostedError ? "hybrid_degraded_local" : "hybrid",
+    mode: hostedUnavailable ? "hybrid_degraded_local" : "hybrid",
+    ...(incompleteReasons.length ? { degraded: true } : {}),
     provenance: {
-      canonicalBase: hostedError ? "unavailable" : "hosted_graph",
+      canonicalBase: hostedUnavailable ? "unavailable" : "hosted_graph",
       checkoutDelta: "local_overlay",
       mergeStrategy: "provenance_preserving_union",
       crossSourceEdgeSynthesis: false,
-      ...(hostedError ? { hostedError } : {}),
+      ...(hostedError !== undefined ? { hostedError } : {}),
     },
     merged: {
       affectedFiles: [...affectedFiles].sort(),
@@ -3326,6 +3405,14 @@ export function mergeHybridCodeResults(
     },
     changed_files: [...changedFiles].sort(),
     impactedFiles: [...affectedFiles].sort(),
+    missingTargetFiles,
+    coverage: {
+      status: asUnknownRecord(risk).status === "incomplete" || missingTargetFiles.length > 0
+        ? "incomplete" : "combined",
+      reasons: incompleteReasons,
+      local: local.coverage ?? null,
+      hosted: hosted.coverage ?? null,
+    },
     ...(risk ? { risk } : {}),
     ...(semantic ? { semantic } : {}),
     recommended_tests: recommendedTests,
@@ -3336,7 +3423,7 @@ export function mergeHybridCodeResults(
     ...(hosted.index_freshness !== undefined ? { index_freshness: hosted.index_freshness } : {}),
     ...(hosted.impact !== undefined ? { impact: hosted.impact } : {}),
     local: localResult,
-    hosted: hostedError ? null : hostedResult,
+    hosted: hostedError !== undefined ? null : hostedResult,
   };
 }
 
@@ -3703,12 +3790,18 @@ export async function resolveCodeGraphAutoSourceResult(
     writeLocalCodeOverlayCache(manifest);
     const localOptions = { ...effectiveOptions, cached: true };
     const rawResult = buildLocalResultForVerb(verb, localOptions);
+    const requestedHostedUnavailable = decision.reason === "hybrid_hosted_not_configured" ||
+      decision.reason === "fallback_hosted_not_configured";
     const localEvidence =
       options.minimumChangeMode === "review" && verb === "impact"
         ? buildSmallestSafeDiffEvidence(repoRoot, requestedChangedFiles, rawResult)
         : undefined;
     const result = {
       ...rawResult,
+      ...(requestedHostedUnavailable ? mergeHybridCodeResults(
+        verb, rawResult, null,
+        "Hosted enrichment was requested but this workspace is not configured"
+      ) : {}),
       ...(localEvidence ? { minimum_change_evidence: { smallest_safe_diff: localEvidence } } : {}),
     };
     autoResult = {
@@ -4147,6 +4240,17 @@ export function buildLocalImpactResult(
     ...(missingTargetsWarning ? [missingTargetsWarning] : []),
     ...impactOverlayWarnings(manifest.warnings, relevantWarningFiles),
   ];
+  const incompleteReasons = [
+    ...(requestedFiles.length === 0 ? ["no_matching_targets"] : []),
+    ...(missingTargetFiles.length ? ["requested_targets_missing"] : []),
+    ...(manifest.warnings.some((warning) => warning.code === "local_overlay_file_limit_reached")
+      ? ["overlay_file_limit_reached"] : []),
+    ...(traversal.truncated ? ["traversal_truncated"] : []),
+    ...(manifest.excluded.byReason.too_large > 0 ? ["supported_source_size_limit"] : []),
+    ...(manifest.excluded.byReason.read_error > 0 ? ["supported_source_read_error"] : []),
+  ];
+  const complete = incompleteReasons.length === 0;
+  const assessedRisk = buildLocalRisk(manifest, changedFiles, traversal, depth, semantic);
 
   return {
     title: "Local impact",
@@ -4157,6 +4261,17 @@ export function buildLocalImpactResult(
     changedFiles,
     missingTargetFiles,
     missingTargetDetails: missingTargetsWarning?.details ?? [],
+    coverage: {
+      status: complete ? "complete" : "incomplete",
+      requestedTargetCount: requestedFiles.length,
+      resolvedTargetCount: changedFiles.length,
+      missingTargetFiles,
+      reasons: incompleteReasons,
+      excludedSupportedSources: {
+        tooLarge: manifest.excluded.byReason.too_large,
+        readError: manifest.excluded.byReason.read_error,
+      },
+    },
     warnings,
     symbols: manifest.symbols.filter((item) => selectedFiles.has(item.filePath)).map(compactSymbol),
     incoming,
@@ -4177,7 +4292,9 @@ export function buildLocalImpactResult(
       maxNodes,
     },
     semantic,
-    risk: buildLocalRisk(manifest, changedFiles, traversal, depth, semantic),
+    risk: complete
+      ? { ...assessedRisk, status: "assessed" }
+      : { ...assessedRisk, score: null, level: "unknown", status: "incomplete", reasons: incompleteReasons },
   };
 }
 

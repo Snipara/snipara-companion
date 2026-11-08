@@ -121,7 +121,7 @@ test("installAutomationBundle appends CLAUDE.md instructions instead of overwrit
   const content = fs.readFileSync(path.join(dir, "CLAUDE.md"), "utf8");
   assert.equal(result.written, 1);
   assert.match(content, /Keep the project-specific instructions/);
-  assert.match(content, /snipara:automation CLAUDE\.md:start/);
+  assert.match(content, /snipara:workflow CLAUDE\.md:start/);
   assert.match(content, /Use Snipara Hosted MCP first/);
   assert.notEqual(content, generated);
 
@@ -150,7 +150,7 @@ test("installAutomationBundle updates AGENTS.md Snipara section without replacin
   assert.match(content, /Keep this/);
   assert.match(content, /New workflow/);
   assert.doesNotMatch(content, /Old workflow/);
-  assert.equal((content.match(/snipara:automation AGENTS\.md:start/g) || []).length, 1);
+  assert.equal((content.match(/snipara:workflow AGENTS\.md:start/g) || []).length, 1);
 });
 
 test("installAutomationBundle merges Claude hooks and project MCP separately", async () => {
@@ -318,10 +318,11 @@ test("installAutomationBundle allows MCP and rule files for Cursor", async () =>
   assert.equal(result.written, 2);
   assert.equal(fs.existsSync(path.join(dir, ".cursor", "hooks.json")), false);
   assert.equal(fs.existsSync(path.join(dir, ".cursor", "hooks")), false);
-  assert.equal(
-    fs.readFileSync(path.join(dir, ".cursor", "rules", "snipara.mdc"), "utf8"),
-    "# Snipara\n"
-  );
+  const rule = fs.readFileSync(path.join(dir, ".cursor", "rules", "snipara.mdc"), "utf8");
+  assert.ok(rule.startsWith("---\n"));
+  assert.match(rule, /alwaysApply: true/);
+  assert.match(rule, /snipara:workflow \.cursor\/rules\/snipara\.mdc:start/);
+  assert.match(rule, /# Snipara/);
 });
 
 test("installAutomationBundle allows native hook files for Cursor", async () => {
@@ -638,4 +639,102 @@ test("getAutomationStatus reports modified and missing files", async () => {
     status.files.map((file) => file.state),
     ["modified", "missing"]
   );
+});
+
+
+test("Markdown migration coalesces both complete legacy families and preserves every outside byte", async () => {
+  const dir = makeWorkspace();
+  const prefix = "# Équipe 🚀  \r\nKeep this exact spacing.\r\n\r\n";
+  const middle = "\r\nUser text between generated regions.  \r\n";
+  const suffix = "\nUser tail without a final newline";
+  fs.writeFileSync(path.join(dir, "AGENTS.md"), prefix +
+    "<!-- snipara:automation AGENTS.md:start -->\nOld automation manual.\n<!-- snipara:automation AGENTS.md:end -->\n" +
+    middle +
+    "<!-- snipara:workflow AGENTS.md:start -->\nOld workflow manual.\n<!-- snipara:workflow AGENTS.md:end -->\n" +
+    suffix);
+  const generated = "## Snipara\nCompact rules.\n";
+  const expected = prefix +
+    "<!-- snipara:workflow AGENTS.md:start -->\n## Snipara\nCompact rules.\n<!-- snipara:workflow AGENTS.md:end -->\n" +
+    middle + suffix;
+  await installAutomationBundle({ client: "codex", projectDir: dir, bundle: instructionBundle("AGENTS.md", generated) });
+  assert.equal(fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8"), expected);
+  const repeated = await installAutomationBundle({ client: "codex", projectDir: dir, bundle: instructionBundle("AGENTS.md", generated) });
+  assert.equal(repeated.written, 0);
+  assert.equal(fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8"), expected);
+});
+
+test("malformed instruction ownership conflicts before any write, even with force", async () => {
+  const malformed = [
+    "<!-- snipara:workflow AGENTS.md:start -->\nUnclosed",
+    "<!-- snipara:automation AGENTS.md:end -->\nOrphan end",
+    "<!-- snipara:workflow AGENTS.md:start -->\n<!-- snipara:automation AGENTS.md:start -->\nNested\n<!-- snipara:automation AGENTS.md:end -->\n<!-- snipara:workflow AGENTS.md:end -->\n",
+    "<!-- snipara:workflow AGENTS.md:start -->\nCrossed\n<!-- snipara:automation AGENTS.md:end -->\n",
+    "<!--snipara:workflow AGENTS.md:start -->\nMalformed spacing",
+    "User prefix <!-- snipara:workflow AGENTS.md:start -->\nInline marker",
+    "<!-- snipara:workflow CLAUDE.md:start -->\nWrong owner\n<!-- snipara:workflow CLAUDE.md:end -->\n",
+    "<!-- snipara:workflow AGENTS.md:start -->\nBad end\n<!-- snipara:workflow AGENTS.md:end\n",
+  ];
+  for (const content of malformed) {
+    for (const force of [false, true]) {
+      const dir = makeWorkspace();
+      const target = path.join(dir, "AGENTS.md");
+      fs.writeFileSync(target, content);
+      await assert.rejects(
+        installAutomationBundle({
+          client: "codex", projectDir: dir, force,
+          bundle: { files: [{ path: "notes.txt", content: "must not be written" }, { path: "AGENTS.md", content: "Compact rules." }], instructions: [] },
+        }),
+        (error) => error instanceof AutomationInstallConflictError &&
+          /manual repair/.test(error.message) && /force cannot/.test(error.message) &&
+          error.conflicts.some((item) => /Invalid Snipara instruction markers/.test(item.reason))
+      );
+      assert.equal(fs.readFileSync(target, "utf8"), content);
+      assert.equal(fs.existsSync(path.join(dir, "notes.txt")), false);
+      assert.equal(fs.existsSync(path.join(dir, AUTOMATION_MANIFEST_RELATIVE_PATH)), false);
+    }
+  }
+});
+
+test("modern Cursor updates preserve user frontmatter and outside text byte-for-byte", async () => {
+  const dir = makeWorkspace();
+  const relative = ".cursor/rules/snipara.mdc";
+  const target = path.join(dir, relative);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const prefix = "---\r\ndescription: My project rule\r\nalwaysApply: false\r\nglobs: src/**\r\n---\r\n\r\n# User rule  \r\n";
+  const suffix = "\r\nKeep this tail without a newline";
+  fs.writeFileSync(target, prefix + "<!-- snipara:workflow " + relative + ":start -->\nOld.\n<!-- snipara:workflow " + relative + ":end -->\n" + suffix);
+  const generated = "---\ndescription: Generated default\nalwaysApply: true\n---\n\nRead AGENTS.md.";
+  const expected = prefix + "<!-- snipara:workflow " + relative + ":start -->\nRead AGENTS.md.\n<!-- snipara:workflow " + relative + ":end -->\n" + suffix;
+  await installAutomationBundle({ client: "cursor", projectDir: dir, bundle: instructionBundle(relative, generated) });
+  assert.equal(fs.readFileSync(target, "utf8"), expected);
+  assert.equal((expected.match(/^---\r?$/gm) || []).length, 2);
+  const repeated = await installAutomationBundle({ client: "cursor", projectDir: dir, bundle: instructionBundle(relative, generated) });
+  assert.equal(repeated.written, 0);
+  assert.equal(fs.readFileSync(target, "utf8"), expected);
+});
+
+test("unclosed Cursor frontmatter and generated ownership markers cannot be forced", async () => {
+  for (const scenario of [
+    { path: ".cursor/rules/snipara.mdc", current: "---\nAlways preserve this unfinished user header", generated: "Read AGENTS.md." },
+    { path: "AGENTS.md", current: "User text", generated: "<!-- snipara:automation AGENTS.md:start -->\nNested managed payload" },
+  ]) {
+    const dir = makeWorkspace();
+    const target = path.join(dir, scenario.path);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, scenario.current);
+    await assert.rejects(
+      installAutomationBundle({ client: "cursor", projectDir: dir, force: true, bundle: instructionBundle(scenario.path, scenario.generated) }),
+      AutomationInstallConflictError
+    );
+    assert.equal(fs.readFileSync(target, "utf8"), scenario.current);
+  }
+});
+
+test("identical unmarked user text is not normalized or wrapped", async () => {
+  const dir = makeWorkspace();
+  const content = "## Snipara\r\nKeep this unmarked text exactly.  ";
+  fs.writeFileSync(path.join(dir, "AGENTS.md"), content);
+  const result = await installAutomationBundle({ client: "codex", projectDir: dir, bundle: instructionBundle("AGENTS.md", content) });
+  assert.equal(result.written, 0);
+  assert.equal(fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8"), content);
 });

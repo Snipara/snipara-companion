@@ -657,3 +657,52 @@ test("connection probe uses lightweight settings tool before stats", async () =>
     assert.deepEqual(seenTools, ["snipara_settings"]);
   });
 });
+
+
+test("recall history forwards explicit intent and refuses an older server's current fallback", async () => {
+  await withTempHome(async () => {
+    process.env.SNIPARA_API_KEY = "test-key";
+    process.env.SNIPARA_PROJECT_ID = "snipara";
+    let payload;
+    let data = { memories: [], warnings: [], total_searched: 0 };
+    global.fetch = async (_url, init) => {
+      payload = JSON.parse(init.body);
+      return { ok: true, status: 200, statusText: "OK", json: async () => ({ jsonrpc: "2.0", id: 1,
+        result: { content: [{ type: "text", text: JSON.stringify(data) }] } }) };
+    };
+    const client = createClient();
+    await client.recallMemories("decision");
+    assert.equal(payload.params.arguments.memory_view, undefined);
+    await assert.rejects(client.recallMemories("decision", { memoryView: "history" }), /did not confirm/);
+    assert.equal(payload.params.arguments.memory_view, "history");
+    data = { ...data, temporal_context: { contract: "snipara.memory-temporal.v1", view: "history", as_of: "2020-01-01T00:00:00+00:00" } };
+    await client.recallMemories("decision", { memoryView: "history", asOf: "2020-01-01T00:00:00Z" });
+    assert.equal(payload.params.arguments.as_of, "2020-01-01T00:00:00Z");
+    await assert.rejects(client.recallMemories("decision", { memoryView: "history", asOf: "2020-01-02T00:00:00Z" }), /did not confirm/);
+    await assert.rejects(client.recallMemories("decision", { asOf: "2020-01-01T00:00:00Z" }), /requires/);
+  });
+});
+
+for (const scenario of [
+  { name: "microsecond timezone equivalence", requested: "2020-01-01T01:00:00.123456+01:00", echoed: "2020-01-01T00:00:00.123456Z", accepted: true },
+  { name: "microsecond truncation refused", requested: "2020-01-01T00:00:00.123456Z", echoed: "2020-01-01T00:00:00.123000Z", accepted: false },
+  { name: "one microsecond mismatch refused", requested: "2020-01-01T00:00:00.123456Z", echoed: "2020-01-01T00:00:00.123457Z", accepted: false },
+  { name: "unsupported nonzero precision loss refused", requested: "2020-01-01T00:00:00.1234567Z", echoed: "2020-01-01T00:00:00.123456Z", accepted: false },
+  { name: "equivalent trailing precision zeros", requested: "2020-01-01T00:00:00.123456000Z", echoed: "2020-01-01T00:00:00.123456+00:00", accepted: true },
+  { name: "equivalent millisecond zero padding", requested: "2020-01-01T00:00:00.12Z", echoed: "2020-01-01T00:00:00.120000Z", accepted: true },
+  { name: "same wall time with different offset refused", requested: "2020-01-01T00:00:00.123456Z", echoed: "2020-01-01T00:00:00.123456+01:00", accepted: false },
+  { name: "echo without timezone refused", requested: "2020-01-01T00:00:00.123456Z", echoed: "2020-01-01T00:00:00.123456", accepted: false },
+]) test(`recall exact cutoff: ${scenario.name}`, async () => {
+  await withTempHome(async () => {
+    process.env.SNIPARA_API_KEY = "test-key";
+    process.env.SNIPARA_PROJECT_ID = "snipara";
+    global.fetch = async () => ({ ok: true, status: 200, statusText: "OK", json: async () => ({
+      jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({
+        memories: [], temporal_context: { contract: "snipara.memory-temporal.v1", view: "history", as_of: scenario.echoed },
+      }) }] },
+    }) });
+    const action = createClient().recallMemories("earlier decision", { memoryView: "history", asOf: scenario.requested });
+    if (scenario.accepted) assert.equal((await action).temporal_context.as_of, scenario.echoed);
+    else await assert.rejects(action, /did not confirm/);
+  });
+});

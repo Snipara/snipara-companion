@@ -463,6 +463,7 @@ export interface RecallResult {
   total_searched: number;
   query: string;
   timing_ms: number;
+  temporal_context?: { contract: string; view: "current" | "history"; as_of: string | null };
 }
 
 export interface SessionMemoryEntry extends Record<string, unknown> {
@@ -1319,6 +1320,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function exactMemoryCutoffKey(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > 64) return undefined;
+  const iso = /^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}(?::\d{2}(?:\.(\d+))?)?(?:Z|[+-]\d{2}:\d{2})$/i.exec(value);
+  const milliseconds = Date.parse(value);
+  if (!iso || !Number.isFinite(milliseconds)) return undefined;
+  // Date.parse handles the timezone but loses fractional digits after millis.
+  // Retain those digits exactly; trailing zeros do not change the instant.
+  const remainder = (iso[1] ?? "").slice(3).replace(/0+$/, "");
+  return `${milliseconds}:${remainder}`;
+}
+
 function getResolvedApiUrl(apiUrl?: string): string {
   const resolvedApiUrl = apiUrl || loadConfig().apiUrl;
   return resolvedApiUrl.replace(/\/+$/, "");
@@ -1931,9 +1943,18 @@ export class RLMClient {
       minRelevance?: number;
       includeInactive?: boolean;
       warningThreshold?: number;
+      memoryView?: "current" | "history";
+      asOf?: string;
     } = {}
   ): Promise<RecallResult> {
-    return this.mcpCall<RecallResult>("snipara_recall", {
+    const memoryView = options.memoryView ?? "current";
+    if (!["current", "history"].includes(memoryView)) throw new Error("memoryView must be current or history");
+    const requestedCutoff = options.asOf === undefined ? undefined : exactMemoryCutoffKey(options.asOf);
+    if (options.asOf !== undefined && (memoryView !== "history" || options.asOf.length > 64 ||
+        !requestedCutoff || Date.parse(options.asOf) > Date.now())) {
+      throw new Error("asOf requires memoryView=history and a past ISO timestamp with timezone");
+    }
+    const result = await this.mcpCall<RecallResult>("snipara_recall", {
       query,
       type: options.type,
       scope: options.scope,
@@ -1942,7 +1963,17 @@ export class RLMClient {
       min_relevance: options.minRelevance ?? 0.5,
       include_inactive: options.includeInactive ?? false,
       warning_threshold: options.warningThreshold ?? 0.72,
+      ...(memoryView !== "current" ? { memory_view: memoryView } : {}),
+      ...(options.asOf ? { as_of: options.asOf } : {}),
     });
+    if (memoryView !== "current" || options.asOf) {
+      const metadata = result.temporal_context;
+      if (metadata?.contract !== "snipara.memory-temporal.v1" || metadata.view !== memoryView ||
+          (options.asOf && exactMemoryCutoffKey(metadata.as_of) !== requestedCutoff)) {
+        throw new Error("Hosted server did not confirm the requested memory view/cutoff; refusing a silent current-view fallback");
+      }
+    }
+    return result;
   }
 
   async rememberMemory(args: {

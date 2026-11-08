@@ -12,3 +12,11 @@ test('missing Sandbox produces a structured user choice with no host test fallba
   assert.equal(value.execution_authorized_by_gate,false);
   assert.equal(value.choices.length,3);
 });
+
+test('only diagnose and gate expose the bounded probe CLI option', () => {
+  for(const action of ['diagnose','gate','run','verify','status','cancel','choose']) {
+    const result=spawnSync(process.execPath,[cli,'validation',action,'--help'],{encoding:'utf8',env:{...process.env,SNIPARA_COMPANION_SKIP_NPM_VERSION_CHECK:'1'}});
+    assert.equal(result.status,0,result.stderr);
+    assert.equal(result.stdout.includes('--probe-timeout-seconds'),['diagnose','gate'].includes(action));
+  }
+});

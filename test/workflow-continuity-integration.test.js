@@ -79,7 +79,7 @@ function fixture(t, { context = false } = {}) {
     "--decision", "Preserve generic empty input behavior", "--why", "Existing callers depend on empty input",
     "--constraint", "No unrelated changes", "--outcome", outcome,
     "--evidence", outcome === "completed" ? "passed:parser regression" : "failed:empty input assertion", "--json"]);
-  const resume = (offline = false) => okay(["workflow", "resume", "--json"], offline);
+  const resume = (offline = false) => okay(["workflow", "resume", "--detail", "--json"], offline);
   return { cwd, git, run, okay, state, stateFile, start, commit, resume };
 }
 
@@ -196,7 +196,7 @@ test("bound context cannot be loaded from a forged external blob path", (t) => {
   manifest.storage.blobRelativePath = "../../outside-secret.txt";
   fs.writeFileSync(file, JSON.stringify(manifest));
   assert.throws(() => retrieveContextPack(receipt.packId, f.cwd), /not found|invalid/i);
-  const result = f.run(["workflow", "resume", "--json"]);
+  const result = f.run(["workflow", "resume", "--detail", "--json"]);
   assert.notEqual(result.status, 0);
   assert.equal(JSON.parse(result.stdout).continuity.status, "blocked");
   const action=JSON.parse(result.stdout).continuity.nextAction;
@@ -224,7 +224,7 @@ test("offline retrieval errors are redacted in JSON and human resume output", (t
     boundAt:new Date().toISOString(),bootstrapQuery:"Parser context"}]}};
   fs.writeFileSync(f.stateFile,JSON.stringify(state));
   f.okay(["workflow","checkpoint","--json"]);
-  for (const args of [["workflow","resume","--json"],["workflow","resume"]]) {
+  for (const args of [["workflow","resume","--detail","--json"],["workflow","resume","--detail"]]) {
     const r=f.run(args,false,{CONTINUITY_SECRET_FAILURE:"1"});
     assert.equal(r.status,0,r.stderr);
     assert.doesNotMatch(r.stdout+r.stderr,/snp_testsecret12345678901234567890/);
@@ -241,7 +241,7 @@ for (const kind of ["fifo", "symlink", "parent-symlink", "oversized"]) {
       fs.renameSync(f.stateFile,outside); fs.symlinkSync(outside,f.stateFile); }
     if (kind === "parent-symlink") { const old=path.dirname(f.stateFile), outside=path.join(path.dirname(f.cwd),"external-workflow");
       fs.renameSync(old,outside); fs.symlinkSync(outside,old); }
-    const r=f.run(["workflow","resume","--json"]);
+    const r=f.run(["workflow","resume","--detail","--json"]);
     assert.notEqual(r.status,0);
     assert.equal(r.error,undefined);
     assert.match(r.stderr,/bounded regular|byte|limit|symlink/i);
@@ -265,14 +265,14 @@ for (const target of ["activity/timeline.jsonl", "decisions/pending/unsafe.json"
     fs.mkdirSync(path.dirname(file),{recursive:true});
     if (fs.existsSync(file)) fs.unlinkSync(file);
     assert.equal(spawnSync("mkfifo",[file]).status,0);
-    const r=f.run(["workflow","resume","--json"]);
+    const r=f.run(["workflow","resume","--detail","--json"]);
     assert.equal(r.status,0,r.stderr);
     const body=JSON.parse(r.stdout);
     assert.ok(body.continuity.checkpoint);
     assert.equal(body.local_session_snapshot,null);
     assert.match(body.local_session_snapshot_error,/bounded|regular|unsafe/i);
     // Human output follows the same bounded supplemental path.
-    const human=f.run(["workflow","resume"]);
+    const human=f.run(["workflow","resume","--detail"]);
     assert.equal(human.status,0,human.stderr);
     assert.match(human.stdout,/Supplemental session observation unavailable/);
   });
@@ -284,7 +284,7 @@ test("supplemental activity exposes a redacted summary and omits raw event paylo
   fs.appendFileSync(file,JSON.stringify({schemaVersion:"snipara.activity_timeline.v0",eventId:"fixture-secret",
     timestamp:"2099-01-01T00:00:00Z",source:"tool",kind:"command",title:`api_key=${redactionFixtureKey}`,
     files:[],refs:[],metadata:{stdout:"fake raw private transcript"}})+"\n");
-  const r=f.run(["workflow","resume","--json"]);
+  const r=f.run(["workflow","resume","--detail","--json"]);
   assert.equal(r.status,0,r.stderr);
   assert.doesNotMatch(r.stdout,new RegExp(`${redactionFixtureKey}|fake raw private transcript`));
   const body=JSON.parse(r.stdout);
@@ -301,7 +301,7 @@ test("legacy task state and runtime metadata cannot bypass resume redaction", (t
       capturedAt:new Date().toISOString(),rehydratableState:{stdout:"fake raw transcript",password:"fake-password-value"}}}]}};
   fs.writeFileSync(f.stateFile,JSON.stringify(state));
   f.okay(["workflow","checkpoint","--json"]);
-  for(const args of [["workflow","resume","--json"],["workflow","resume"]]) {
+  for(const args of [["workflow","resume","--detail","--json"],["workflow","resume","--detail"]]) {
     const r=f.run(args,true);
     assert.equal(r.status,0,r.stderr);
     assert.doesNotMatch(r.stdout,new RegExp(`${redactionFixtureKey}|fake raw transcript|fake-password-value`));
@@ -323,8 +323,84 @@ test("large optional history cannot turn a persisted task commit into a reported
 
 test("exact historical files with blocked work emit only the current inspection gesture", (t) => {
   const f=fixture(t); f.start(); f.commit("blocked","Repair still required");
-  const result=f.run(["workflow","resume"],true);
+  const result=f.run(["workflow","resume","--detail"],true);
   assert.equal(result.status,0,result.stderr);
   assert.match(result.stdout,/Current next action: "snipara-companion" "workflow" "task-status"/);
   assert.doesNotMatch(result.stdout,/snipara-companion workflow phase-start code/);
+});
+
+test("checkpoint repair previews without mutation and explicitly writes an atomic linked successor", t => {
+  const f = fixture(t); f.start(); f.commit("abandoned", "Stop before another attempt");
+  const original = fs.readFileSync(f.stateFile, "utf8"), before = f.state();
+  const originalBlob = path.join(f.cwd, ".snipara/context-pack/blobs", before.continuity.sha256 + ".txt");
+  const originalProof = fs.readFileSync(originalBlob);
+  const preview = f.okay(["workflow", "checkpoint", "--repair", "--json"]);
+  assert.equal(preview.repair.applied, false);
+  assert.equal(preview.repair.allowed, true);
+  assert.equal(fs.readFileSync(f.stateFile, "utf8"), original);
+  const noReason = f.run(["workflow", "checkpoint", "--refresh", "--json"]);
+  assert.notEqual(noReason.status, 0); assert.match(noReason.stderr, /explicit recovery reason/);
+  assert.equal(fs.readFileSync(f.stateFile, "utf8"), original);
+  const interrupted = f.run(["workflow", "checkpoint", "--refresh", "--reason", "Observe without retry", "--json"], false, { CONTINUITY_RENAME_FAIL: "1" });
+  assert.notEqual(interrupted.status, 0); assert.match(interrupted.stderr, /interruption before pointer rename/);
+  assert.equal(fs.readFileSync(f.stateFile, "utf8"), original);
+  assert.equal(fs.readdirSync(path.dirname(f.stateFile)).filter(x => x.endsWith(".tmp")).length, 0);
+  const refreshed = f.okay(["workflow", "checkpoint", "--refresh", "--reason", "Current session explicitly reviewed the checkpoint", "--json"]);
+  assert.equal(refreshed.repair.applied, true);
+  assert.deepEqual(refreshed.repair.predecessor, before.continuity);
+  assert.equal(refreshed.continuity.status, "drift_revalidation_required");
+  const after = f.state();
+  assert.deepEqual({ ...after, continuity: before.continuity }, before);
+  assert.deepEqual(fs.readFileSync(originalBlob), originalProof);
+  assert.equal(after.phases[0].tasks[0].outcome, "abandoned");
+  assert.equal(after.phases[0].tasks[0].attempt, before.phases[0].tasks[0].attempt);
+  assert.equal(after.phases[0].tasks[0].maxAttempts, before.phases[0].tasks[0].maxAttempts);
+});
+
+test("checkpoint refresh refuses a missing original pack and leaves the workflow pointer unchanged", t => {
+  const f = fixture(t); const before = fs.readFileSync(f.stateFile, "utf8"), state = f.state();
+  fs.unlinkSync(path.join(f.cwd, ".snipara/context-pack/blobs", state.continuity.sha256 + ".txt"));
+  const preview = f.okay(["workflow", "checkpoint", "--repair", "--json"]);
+  assert.equal(preview.repair.allowed, false);
+  assert.equal(preview.repair.continuity.diagnostics[0].code, "artifact_missing");
+  const result = f.run(["workflow", "checkpoint", "--refresh", "--reason", "Missing original", "--json"]);
+  assert.notEqual(result.status, 0); assert.match(result.stderr, /restore its exact pack/);
+  assert.equal(fs.readFileSync(f.stateFile, "utf8"), before);
+});
+
+for (const kind of ["missing", "oversized"]) test(`optional ${kind} activity is explicitly degraded while mandatory checkpoint remains usable`, t => {
+  const f = fixture(t);
+  const timeline = path.join(f.cwd, ".snipara/activity/timeline.jsonl");
+  if (kind === "missing") fs.unlinkSync(timeline);
+  else fs.writeFileSync(timeline, Buffer.alloc(4 * 1024 * 1024 + 1));
+  const before = fs.readFileSync(f.stateFile, "utf8");
+  const result = f.resume(true);
+  assert.equal(result.continuity.status, "exact_snapshot");
+  assert.equal(result.local_session_snapshot_status, "degraded");
+  if (kind === "missing") {
+    assert.equal(result.local_session_snapshot.observation.reason, "activity_timeline_missing");
+    assert.ok(result.local_session_snapshot.caveats.some(x => /Optional activity timeline is missing/.test(x)));
+  } else {
+    assert.equal(result.local_session_snapshot, null);
+    assert.match(result.local_session_snapshot_error, /artifact_oversized.*activity\/timeline.jsonl/);
+  }
+  assert.equal(fs.readFileSync(f.stateFile, "utf8"), before);
+});
+
+test("default resume is a bounded overview and detail retains the compatible full payload", t => {
+  const f = fixture(t); f.start(); f.commit("blocked", "Inspect current parser failure");
+  const before = fs.readFileSync(f.stateFile, "utf8");
+  const compact = f.run(["workflow", "resume", "--json"], true);
+  assert.equal(compact.status, 0, compact.stderr);
+  const overview = JSON.parse(compact.stdout);
+  assert.equal(overview.version, "snipara.workflow.resume-overview.v1");
+  assert.equal(overview.status, "overview");
+  assert.ok(Buffer.byteLength(compact.stdout) <= 16 * 1024);
+  assert.ok(Math.ceil(Buffer.byteLength(compact.stdout) / 4) <= 2000);
+  assert.equal(overview.task.status, "blocked");
+  assert.ok(overview.detail.argv.includes("--detail"));
+  const detail = f.resume(true);
+  assert.equal(detail.workflow.phases[0].tasks[0].status, "blocked");
+  assert.ok(detail.continuity.checkpoint.attempts.length);
+  assert.equal(fs.readFileSync(f.stateFile, "utf8"), before);
 });

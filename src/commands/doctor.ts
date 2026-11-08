@@ -12,6 +12,7 @@ import { execFileSync } from "node:child_process";
 import chalk from "chalk";
 import { createClient, type ConnectionProbeResult } from "../api/client";
 import { detectRuntimeEnvironment, type RuntimeDetectionReport } from "../runtime/detection";
+import { diagnosticProbeEnvironment, summarizeRuntimeCapabilities } from "../runtime/capability-status";
 
 export async function doctorCommand(options: { json?: boolean } = {}): Promise<void> {
   const report = detectRuntimeEnvironment();
@@ -20,7 +21,7 @@ export async function doctorCommand(options: { json?: boolean } = {}): Promise<v
   const toolCatalog = await probeToolCatalog(report, auth);
 
   if (options.json) {
-    console.log(JSON.stringify({ ...report, companionVersion, auth, toolCatalog }, null, 2));
+    console.log(JSON.stringify({ ...report, companionVersion, auth, toolCatalog, capabilities: summarizeRuntimeCapabilities(report) }, null, 2));
     return;
   }
 
@@ -147,6 +148,7 @@ function probeLatestNpmVersion(): { checked: boolean; version?: string; error?: 
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 3000,
+      env: diagnosticProbeEnvironment(),
     }).trim();
     return {
       checked: true,
@@ -383,7 +385,7 @@ function printDoctorReport(
   printCheck(
     "Docker",
     report.docker.available,
-    report.docker.available ? "available for isolated Sandbox execution" : "not found on PATH"
+    report.docker.available ? "CLI found; daemon, prepared image and validation readiness have not been checked" : "CLI not found on PATH"
   );
 
   console.log("");
@@ -402,6 +404,11 @@ function printDoctorReport(
 
   console.log("");
   console.log(chalk.bold("Snipara Sandbox guidance"));
+  console.log("- Restricted Python snippets, deterministic Docker validation and provider-native sandboxes are separate capabilities.");
+  console.log("- Deterministic validation needs no Snipara account or provider key. CLI or MCP configuration discovery proves no working engine or passing test.");
+  for (const capability of summarizeRuntimeCapabilities(report).surfaces) {
+    console.log(`- ${capability.id}: executable ${capability.executable}; task ${capability.task_qualification}. ${capability.next_action}`);
+  }
   if (report.runtime.cliAvailable) {
     console.log("- Use MCP execute_python for sandboxed code execution from your AI client.");
     console.log(

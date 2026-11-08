@@ -2,7 +2,19 @@
 
 Release notes for `snipara-companion`, newest first.
 
-## 3.10.0 (unpublished)
+## 4.0.0 — prepared candidate (unpublished)
+
+- Breaking CLI JSON contract: `workflow resume --json` returns a versioned compact overview by default. Existing full-payload consumers must add `--detail`; HTTP What Changed stays full by default. This migration requires a major Companion release.
+
+- Add explicit current/history/as-of recall controls; refuse silent current-view fallback when an older hosted server does not confirm historical intent. Retention and source access remain current constraints.
+- Make missing or capped local/hybrid impact applicability explicitly unknown; prioritize requested files and exclude nested repositories. Verification and judgment consumers require inspection for incomplete or unrecognized applicability instead of displaying ready; workflow closeout retains that requirement.
+- Preserve bounded dirty-repository observations and explain checkpoint failures; preview repairs and link explicit refreshes without refreshing proof or budgets.
+- Refuse final completion while any managed task or phase remains unresolved.
+- Provide compact resume output with an explicit detailed view, and read-only task intent guidance without mandatory hosted calls for a small local edit.
+- Distinguish discovered tools from qualified execution and preserve bounded Sandbox diagnostic causes/deadlines.
+- Keep editable saved evidence, observed execution and current proof eligibility distinct. Publication and activation require separate release authorization.
+
+## 3.10.0
 
 - Add opt-in `agent-context memory-pilot` for automatic exact-source observation
   validation/invalidation and fresh code/review/resume receipts. Recoverable

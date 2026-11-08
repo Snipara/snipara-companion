@@ -13,6 +13,7 @@ import chalk from "chalk";
 import { resolveCodeGraphAutoSourceResult, type CodeGraphSourceSelection } from "./code";
 import {
   buildProjectJudgmentCard,
+  codeImpactApplicabilityGap,
   formatProjectJudgmentCard,
   type ProjectIntelligenceJudgmentCard,
 } from "./judgment-card";
@@ -42,6 +43,8 @@ export interface VerificationGap {
   code: string;
   severity: "low" | "medium" | "high";
   message: string;
+  reasons?: string[];
+  missingTargetFiles?: string[];
 }
 
 export interface VerificationRisk {
@@ -483,19 +486,18 @@ function collectImpactedFiles(
 
 function buildRisk(impact: Record<string, unknown> | undefined): VerificationRisk {
   const risk = impact && isRecord(impact.risk) ? impact.risk : {};
+  const incomplete = codeImpactApplicabilityGap(impact);
   return {
-    level: stringValue(risk.level) ?? "unknown",
-    ...(numberValue(risk.score) !== undefined ? { score: numberValue(risk.score) } : {}),
+    level: incomplete ? "unknown" : stringValue(risk.level) ?? "unknown",
+    ...(!incomplete && numberValue(risk.score) !== undefined ? { score: numberValue(risk.score) } : {}),
     source: impact ? "code-impact" : "fallback",
   };
 }
 
 function collectCoverageGaps(impact: Record<string, unknown> | undefined): VerificationGap[] {
-  if (!impact || !Array.isArray(impact.coverage_gaps)) {
-    return [];
-  }
-
-  return impact.coverage_gaps.map((gap): VerificationGap => {
+  const strings = (value: unknown): string[] => Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && !!item.trim()) : [];
+  const gaps = (Array.isArray(impact?.coverage_gaps) ? impact.coverage_gaps : []).map((gap: unknown): VerificationGap => {
     if (!isRecord(gap)) {
       return {
         code: "coverage_gap",
@@ -505,12 +507,39 @@ function collectCoverageGaps(impact: Record<string, unknown> | undefined): Verif
     }
 
     const severity = stringValue(gap.severity);
+    const reasons = strings(gap.reasons);
+    const missingTargetFiles = [...new Set([
+      ...strings(gap.missingTargetFiles), ...strings(gap.missing_target_files),
+    ])];
     return {
       code: stringValue(gap.code) ?? "coverage_gap",
       severity: severity === "low" || severity === "high" ? severity : "medium",
       message: stringValue(gap.message) ?? stringValue(gap.reason) ?? preview(gap, 220),
+      ...(reasons.length ? { reasons } : {}),
+      ...(missingTargetFiles.length ? { missingTargetFiles } : {}),
     };
   });
+  const applicability = codeImpactApplicabilityGap(impact);
+  if (applicability) gaps.push(applicability);
+  const merged = new Map<string, VerificationGap>();
+  const messages = new Map<string, string[]>();
+  const rank = { low: 0, medium: 1, high: 2 };
+  for (const gap of gaps) {
+    const previous = merged.get(gap.code);
+    if (!previous) { merged.set(gap.code, gap); messages.set(gap.code, [gap.message]); continue; }
+    const reasons = [...new Set([...(previous.reasons ?? []), ...(gap.reasons ?? [])])];
+    const missingTargetFiles = [...new Set([...(previous.missingTargetFiles ?? []), ...(gap.missingTargetFiles ?? [])])];
+    const messageParts = [...new Set([...(messages.get(gap.code) ?? []), gap.message])];
+    messages.set(gap.code, messageParts);
+    merged.set(gap.code, {
+      code: gap.code,
+      severity: rank[previous.severity] >= rank[gap.severity] ? previous.severity : gap.severity,
+      message: messageParts.join(" "),
+      ...(reasons.length ? { reasons } : {}),
+      ...(missingTargetFiles.length ? { missingTargetFiles } : {}),
+    });
+  }
+  return [...merged.values()];
 }
 
 function collectCaveats(

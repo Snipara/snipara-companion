@@ -278,6 +278,55 @@ function codeImpactRisk(impact: Record<string, unknown> | undefined): {
   };
 }
 
+export interface CodeImpactApplicabilityGap {
+  code: "impact_applicability_incomplete";
+  severity: "high";
+  message: string;
+  reasons: string[];
+  missingTargetFiles: string[];
+}
+
+/** Evidence completeness is separate from the assessed risk of the code itself. */
+export function codeImpactApplicabilityGap(
+  impact: Record<string, unknown> | undefined
+): CodeImpactApplicabilityGap | undefined {
+  if (!impact) return undefined;
+  const risk = isRecord(impact.risk) ? impact.risk : {};
+  const coverage = isRecord(impact.coverage) ? impact.coverage : {};
+  const assessedLevel = typeof risk.level === "string" && ["low", "medium", "high", "critical"].includes(risk.level);
+  // Missing status fields are supported by the older assessed-risk contract.
+  // Explicit unknown/partial/unassessed states cannot inherit that exception.
+  const unassessedRiskStatus = Object.prototype.hasOwnProperty.call(risk, "status") && risk.status !== "assessed";
+  const unassessedCoverageStatus = Object.prototype.hasOwnProperty.call(coverage, "status") &&
+    coverage.status !== "complete" && coverage.status !== "combined";
+  const strings = (value: unknown): string[] =>
+    arrayValue(value).filter((item): item is string => typeof item === "string" && !!item.trim());
+  const missingTargetFiles = [...new Set([
+    ...strings(impact.missingTargetFiles), ...strings(impact.missing_target_files),
+    ...strings(coverage.missingTargetFiles), ...strings(coverage.missing_target_files),
+  ])];
+  const reasons = new Set([...strings(coverage.reasons), ...strings(risk.reasons)]);
+  if (!assessedLevel) reasons.add("risk_unknown");
+  if (risk.status === "incomplete") reasons.add("risk_incomplete");
+  else if (unassessedRiskStatus) reasons.add("risk_status_unassessed");
+  if (coverage.status === "incomplete") reasons.add("coverage_incomplete");
+  else if (unassessedCoverageStatus) reasons.add("coverage_status_unassessed");
+  if (missingTargetFiles.length) reasons.add("requested_targets_missing");
+  if (impact.degraded === true) reasons.add("impact_degraded");
+  const unavailableHybrid = impact.mode === "hybrid_degraded_local" ||
+    (impact.mode === "hybrid" && isRecord(impact.provenance) && impact.provenance.canonicalBase === "unavailable");
+  if (unavailableHybrid) reasons.add("hosted_graph_unavailable");
+  if (assessedLevel && !unassessedRiskStatus && !unassessedCoverageStatus &&
+      !missingTargetFiles.length && impact.degraded !== true && !unavailableHybrid) {
+    return undefined;
+  }
+  return {
+    code: "impact_applicability_incomplete", severity: "high",
+    message: "Code impact applicability is unknown or incomplete; inspect missing targets and graph coverage before relying on a risk assessment.",
+    reasons: [...reasons], missingTargetFiles,
+  };
+}
+
 function memoryHealthScore(memoryHealth: Record<string, unknown> | undefined): number | undefined {
   return (
     numberValue(memoryHealth?.health_score) ??
@@ -395,11 +444,12 @@ export function buildProjectJudgmentCard(
   const advisorRecommendations = advisorRecommendationsFromInput(input);
 
   const risk = codeImpactRisk(input.codeImpact);
+  const applicability = codeImpactApplicabilityGap(input.codeImpact);
   if (input.codeImpact) {
     evidence.push({
       source: "code_impact",
-      label: `Code impact risk ${risk.level ?? "unknown"}`,
-      ...(risk.score !== undefined ? { detail: `score ${risk.score}` } : {}),
+      label: applicability ? "Code impact applicability unknown/incomplete" : `Code impact risk ${risk.level ?? "unknown"}`,
+      ...(!applicability && risk.score !== undefined ? { detail: `score ${risk.score}` } : {}),
     });
   }
   if (risk.level === "critical" || risk.level === "high") {
@@ -430,15 +480,20 @@ export function buildProjectJudgmentCard(
     });
   }
 
-  if (input.codeImpact?.degraded === true) {
+  if (applicability) {
     addReason(reasons, {
-      code: "code_impact_degraded",
+      code: input.codeImpact?.degraded === true ? "code_impact_degraded" : applicability.code,
       severity: "high",
-      message: "Code impact returned degraded results.",
+      message: applicability.message,
       source: "code_impact",
     });
+    addAction(requiredActions, {
+      type: "inspect", title: "Resolve code impact applicability",
+      reason: `${applicability.reasons.join(", ")}${applicability.missingTargetFiles.length ? `; missing targets: ${applicability.missingTargetFiles.join(", ")}` : ""}`,
+      severity: "high",
+    });
     caveats.add(
-      "Code impact was degraded; local reads and broader checks should override confidence."
+      "High-severity proof is required because impact evidence is incomplete; this does not assess the code as high risk or establish a calibrated safety score."
     );
   }
 
@@ -475,6 +530,8 @@ export function buildProjectJudgmentCard(
   for (const gap of missingChecks) {
     const severity = normalizeSeverity(isRecord(gap) ? gap.severity : undefined);
     const code = gapCode(gap);
+    // The same source applicability gap is already represented above.
+    if (applicability && code === applicability.code) continue;
     addReason(reasons, {
       code,
       severity,

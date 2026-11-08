@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const { resolveCanonicalDocumentation } = require("./support/source-fixtures.js");
 
 const packageRoot = path.resolve(__dirname, "..");
 
@@ -24,13 +25,8 @@ test("Companion uses the canonical hosted MCP JSON-RPC endpoint", () => {
 });
 
 test("MCP reference documentation identifies the direct endpoint and route boundaries", () => {
-  // The sync script exports the canonical document verbatim into the public
-  // package. In the monorepo, read its original source instead.
-  const exportedReference = path.join(packageRoot, "docs/reference/api/mcp.md");
   const reference = fs.readFileSync(
-    fs.existsSync(exportedReference)
-      ? exportedReference
-      : path.resolve(packageRoot, "../../docs/reference/api/mcp.md"),
+    resolveCanonicalDocumentation("docs/reference/api/mcp.md"),
     "utf8"
   );
 

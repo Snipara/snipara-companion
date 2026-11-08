@@ -1,0 +1,10 @@
+# Preparation template only; supply an already present, digest-pinned Python base.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+WORKDIR /opt/reviewed-dependencies
+COPY requirements.lock ./requirements.lock
+COPY wheelhouse/ ./wheelhouse/
+RUN --network=none python -m pip install --no-index --require-hashes \
+    --find-links=./wheelhouse -r requirements.lock \
+    && python -m pip freeze --all > /opt/python-dependencies.freeze.txt
+WORKDIR /work

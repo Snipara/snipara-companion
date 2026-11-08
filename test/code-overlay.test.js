@@ -970,6 +970,11 @@ test("code local impact warns when requested targets are absent from the selecte
   const payload = JSON.parse(impact.stdout);
 
   assert.deepEqual(payload.changedFiles, []);
+  assert.equal(payload.risk.level, "unknown");
+  assert.equal(payload.risk.score, null);
+  assert.equal(payload.coverage.status, "incomplete");
+  assert.equal(payload.coverage.requestedTargetCount, 1);
+  assert.equal(payload.coverage.resolvedTargetCount, 0);
   assert.deepEqual(payload.missingTargetFiles, ["src/missing.ts"]);
   assert.equal(payload.warnings[0].code, "local_impact_targets_missing");
   assert.match(payload.warnings[0].message, /check the path, \.sniparaignore/);
@@ -1199,5 +1204,106 @@ test("code mcp exposes snipara_local_code tools over stdio JSON-RPC", async () =
     const exited = waitForExit(mcp);
     mcp.kill("SIGTERM");
     await exited;
+  }
+});
+
+
+test("requested impact target precedes unrelated files but a capped graph remains uncertain", () => {
+  const repo = makeTempRepo();
+  fs.writeFileSync(path.join(repo, "src", "zzz.ts"), "export const lateTarget = 1;\n");
+  const result = runCli(["code", "impact", "--source", "local", "--changed-files", "src/zzz.ts", "--max-files", "1", "--json"], { cwd: repo });
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout).result;
+  assert.deepEqual(payload.changedFiles, ["src/zzz.ts"]);
+  assert.deepEqual(payload.missingTargetFiles, []);
+  assert.equal(payload.risk.level, "unknown");
+  assert.equal(payload.risk.score, null);
+  assert.ok(payload.coverage.reasons.includes("overlay_file_limit_reached"));
+});
+
+test("nested worktrees do not consume the main repository overlay budget", () => {
+  const repo = makeTempRepo();
+  const nested = path.join(repo, ".claude", "worktrees", "other");
+  fs.mkdirSync(nested, { recursive: true });
+  fs.writeFileSync(path.join(nested, ".git"), "gitdir: /not-used\n");
+  for (let i = 0; i < 2000; i++) {
+    fs.writeFileSync(path.join(nested, `noise-${i}.ts`), `export const noise${i} = 1;\n`);
+  }
+  const manifest = buildLocalCodeOverlay({ cwd: repo, mode: "working_tree", maxFiles: 2 });
+  assert.deepEqual(manifest.files.map((file) => file.path).sort(), ["src/helper.ts", "src/index.ts"]);
+  assert.ok(!manifest.warnings.some((warning) => warning.code === "local_overlay_file_limit_reached"));
+});
+
+test("working tree overlay refuses a source symlink outside the repository", () => {
+  const repo = makeTempRepo();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-outside-"));
+  const target = path.join(outside, "outside.ts");
+  fs.writeFileSync(target, "export function mustNotLeak() {}\n");
+  fs.symlinkSync(target, path.join(repo, "src", "escape.ts"));
+  const manifest = buildLocalCodeOverlay({ cwd: repo, mode: "working_tree" });
+  assert.ok(!manifest.symbols.some((symbol) => symbol.name === "mustNotLeak"));
+  assert.ok(!manifest.files.some((file) => file.path === "src/escape.ts"));
+});
+
+test("hybrid impact retains unknown local applicability over a known hosted score", () => {
+  const merged = mergeHybridCodeResults("impact", {
+    missingTargetFiles: ["src/new.ts"],
+    coverage: { status: "incomplete" },
+    risk: { level: "unknown", score: null, status: "incomplete" },
+  }, { risk: { level: "low", score: 0 } });
+  assert.equal(merged.risk.level, "unknown");
+  assert.equal(merged.risk.score, null);
+  assert.equal(merged.coverage.status, "incomplete");
+  assert.deepEqual(merged.missingTargetFiles, ["src/new.ts"]);
+});
+
+
+test("hybrid impact refuses incomplete applicability from either input while preserving known complete scores", () => {
+  const complete = { risk: { level: "low", score: 0 }, coverage: { status: "complete" } };
+  const incompleteVariants = [
+    { risk: { level: "unknown", score: null } },
+    { risk: { level: "unrecognized", score: 0 } },
+    { risk: { level: "low", score: 0, status: "incomplete" } },
+    ...["unknown", "partial", "unassessed", null].map((status) => ({ risk: { level: "low", score: 0, status } })),
+    ...["unknown", "partial", "unassessed", null].map((status) => ({ risk: { level: "low", score: 0 }, coverage: { status } })),
+    { risk: { level: "low", score: 0 }, coverage: { status: "incomplete" } },
+    { risk: { level: "low", score: 0 }, coverage: { missingTargetFiles: ["src/missing.ts"] } },
+    { risk: { level: "low", score: 0 }, coverage: { missing_target_files: ["src/missing.ts"] } },
+    { risk: { level: "low", score: 0 }, missingTargetFiles: ["src/missing.ts"] },
+    { risk: { level: "low", score: 0 }, missing_target_files: ["src/missing.ts"] },
+    { risk: { level: "low", score: 0 }, degraded: true },
+    { risk: { level: "low", score: 0 }, mode: "hybrid_degraded_local", provenance: { canonicalBase: "unavailable" } },
+    { risk: { level: "low", score: 0 }, mode: "hybrid", provenance: { canonicalBase: "unavailable" } },
+    {},
+  ];
+  for (const incomplete of incompleteVariants) {
+    for (const inputs of [[complete, incomplete], [incomplete, complete]]) {
+      const merged = mergeHybridCodeResults("impact", ...inputs);
+      assert.equal(merged.risk.level, "unknown");
+      assert.equal(merged.risk.score, null);
+      assert.equal(merged.coverage.status, "incomplete");
+      assert.equal(merged.degraded, true);
+    }
+  }
+
+  for (const hostedError of ["Hosted request failed", ""]) {
+    const unavailable = mergeHybridCodeResults("impact", complete, null, hostedError);
+    assert.equal(unavailable.risk.level, "unknown");
+    assert.equal(unavailable.coverage.status, "incomplete");
+    assert.equal(unavailable.mode, "hybrid_degraded_local");
+    assert.equal(unavailable.provenance.canonicalBase, "unavailable");
+  }
+  const completeVariants = [
+    { risk: { level: "low", score: 0 } },
+    { risk: { level: "low", score: 0, status: "assessed" }, coverage: { status: "complete" } },
+    { risk: { level: "low", score: 0 }, coverage: { status: "combined" } },
+  ];
+  for (const local of completeVariants) {
+    for (const hosted of completeVariants) {
+      const compatible = mergeHybridCodeResults("impact", local, hosted);
+      assert.equal(compatible.risk.level, "low");
+      assert.equal(compatible.risk.score, 0);
+      assert.equal(compatible.coverage.status, "combined");
+    }
   }
 });

@@ -1,82 +1,92 @@
-# Distribution et versions compatibles
+<a id="distribution-et-versions-compatibles"></a>
 
-Cette documentation accompagne le candidat Companion **3.7.2** préparé pour
-le parcours vérifiable. Un artefact local construit et testé n'est pas une
-version publiée. Utiliser le fichier et l'empreinte indiqués dans le dossier
-de livraison ; `@latest` et les pins d'un plugin peuvent désigner une autre version.
+# Distribution and compatible versions
 
-## Installer un artefact préparé
+This documentation accompanies the Companion candidate **3.7.2** prepared for
+the verifiable path. A local artifact that is built and tested is not a
+published version. Use the file and the fingerprint indicated in the folder
+delivery folder; `@latest` and a plugin's pins may refer to another version.
 
-Dans un répertoire jetable, installer le tarball exact sans scripts de cycle
-de vie, puis invoquer son propre point d'entrée :
+<a id="installer-un-artefact-préparé"></a>
+
+## Install a prepared artifact
+
+In a disposable directory, install the exact tarball without lifecycle scripts, then invoke its own entry point:
+lifecycle scripts, then invoke its own entry point:
 
 ```sh
 npm install --prefix /chemin/installation --ignore-scripts /chemin/snipara-companion-3.7.2.tgz
 /chemin/installation/node_modules/.bin/snipara-companion --help
 ```
 
-Les dépendances npm doivent être disponibles dans le cache ou sur le registre.
-Cette installation ne publie rien, ne configure aucun compte Snipara et ne
-lance pas d'agent. Conserver le tarball avec son SHA-256. Une mise à jour du
-source demande de reconstruire, tester et revoir un nouvel artefact.
+The npm dependencies must be available in the cache or on the registry.
+This installation publishes nothing, configures no Snipara account, and does not
+launch an agent. Keep the tarball with its SHA-256. A source update requires
+rebuilding, testing, and reviewing a new artifact.
 
-Le build CommonJS embarque les graphes des dépendances runtime ESM pour rester
-chargeable sous Node 18. Le miroir source conserve la même configuration de
-construction. Vérifier le véritable point d'entrée installé sur le moteur
-minimal annoncé, y compris lecture/écriture de configuration, et pas seulement
-sur le Node du poste de développement.
+The CommonJS build bundles the runtime ESM dependency graphs to remain
+loadable under Node 18. The source mirror keeps the same build configuration.
+Verify the actual installed entry point on the minimal engine announced, including
+configuration read/write, and not only
+on the Node of the development workstation.
 
-## Choisir son parcours
+<a id="choisir-son-parcours"></a>
 
-| Outils choisis | Point d'entrée | Limite |
+## Choose your path
+
+| Chosen tools | Entry point | Limit |
 | --- | --- | --- |
-| Hosted MCP seul | Requêtes de contexte et mémoire via le client existant | Pas de suivi local Companion ni Controller implicite |
-| Companion seul | `task start`, `task work`, `task verify`, `task decide`, `task resume` | Aucun agent Orchestrator requis ; les preuves non observées restent inconnues |
-| Orchestrator seul | `task intake`, `task start`, `task show`, `task resume` | Utiliser son paquet et ses guides ; aucun Companion requis |
-| Les deux | Export du workflow, bridge revu puis Controller | Conserver identités, politiques, preuves et versions ; aucun lancement implicite |
+| Hosted MCP only | Context and memory queries via the existing client | No local Companion tracking nor implicit Controller |
+| Companion only | `task start`, `task work`, `task verify`, `task decide`, `task resume` | No Orchestrator agent required; unobserved proofs remain unknown |
+| Standalone Orchestrator | `task intake`, `task start`, `task show`, `task resume` | Use its package and guides; no Companion required |
+| Both | Workflow export, bridge revised then Controller | Preserve identities, policies, evidence, and versions; no implicit launch |
 
-Le [guide du parcours](TASK_JOURNEY.md), le [contexte par tâche](TASK_CONTEXT.md)
-et la [reprise](WORK_CONTINUITY.md) décrivent les commandes exactes. Les
-opérations de tâche locales n'exigent pas une activation Hosted. Une commande
-de mémoire ou de récupération distante conserve ses propres besoins d'accès.
+The [path guide](TASK_JOURNEY.md), the [per-task context](TASK_CONTEXT.md)
+and the [resume](WORK_CONTINUITY.md) describe the exact commands. The
+local task operations do not require a Hosted activation. A command
+for memory or remote retrieval keeps its own access requirements.
 
-## Contrats et reprise
+<a id="contrats-et-reprise"></a>
 
-Le couple préparé pour le parcours complet est Companion **3.7.2** et
-Orchestrator **1.10.0**. Cela ne déclare pas toute autre paire incompatible :
-les contrats effectivement présents déterminent ce que chaque lecteur accepte.
+## Contracts and resume
 
-- Les anciens exports sans contexte versionné gardent leur comportement de
-  référence ou de titre ; l'absence de source ne prouve pas son chargement.
-- `source-context-v1` conserve le contexte et ses références riches.
-  `runtime-source-context-v1` lie en plus les corps exacts du pack remis à
-  chaque tâche et leur consommateur. Une version inconnue ou une liaison
-  altérée doit être refusée avant création d'un Controller.
-- Charger un ancien workflow ne le migre pas silencieusement en nouveau
-  contrat. Garder l'original ; préparer/exporter une nouvelle copie avec les
-  commandes existantes si le parcours nécessite davantage de preuves.
-- Une reprise revalide dépôt, index et pièces. Un historique conservé ne
-  représente pas une preuve fraîche d'un runtime encore vivant.
+The pair prepared for the full path is Companion **3.7.2** and
+Orchestrator **1.10.0**. This does not declare any other incompatible pair:
+the contracts actually present determine what each reader accepts.
 
-Avant une combinaison différente, vérifier son export avec le consommateur
-exact ; un refus demande une mise à jour ou un nouvel export, sans retirer les
-champs de sécurité pour faire accepter le fichier. La validation d'un bridge
-ne prouve ni l'utilisation sémantique du contexte par un modèle, ni son succès.
+- Older exports without versioned context keep their behavior of
+  reference or title; the absence of a source does not prove it was loaded.
+- `source-context-v1` preserves the context and its rich references.
+  `runtime-source-context-v1` additionally links the exact pack bodies provided to
+  each task and its consumer. An unknown version or an altered
+  binding must be rejected before creating a Controller.
+- Loading an old workflow does not silently migrate it to a new
+  contract. Keep the original; prepare/export a new copy with the
+  existing commands if the path requires more evidence.
+- A resume revalidates repository, index, and components. A preserved
+  history does not represent fresh evidence from a runtime still alive.
 
-## Vérification de livraison
+Before a different combination, verify its export with the consumer
+exact ; a refusal requires an update or a new export, without removing the
+security fields to get the file accepted. The validation of a bridge
+does not prove either the semantic use of the context by a model, or its success.
 
-Les suites publiques du dépôt peuvent cibler ce point d'entrée par
+<a id="vérification-de-livraison"></a>
+
+## Delivery verification
+
+The public suites of the repository can target this entry point by
 `SNIPARA_COMPANION_TEST_CLI=/chemin/installation/node_modules/snipara-companion/dist/index.js`.
-Une valeur explicitement fournie mais vide, absente du disque ou invalide
-échoue ; elle ne doit pas retomber sur le build du checkout. Sans cette variable,
-les suites conservent leur chemin source habituel. Le reçu doit vérifier l'origine des
-imports Python du wheel installé lorsque le bridge est exercé.
+an explicitly provided but empty value, missing from disk, or invalid
+fails; it must not fall back to the checkout build. Without this variable,
+the suites keep their usual source path. The receipt must verify the origin of the
+Python imports of the installed wheel when the bridge is exercised.
 
-Les paquets create-snipara, MCP, OpenClaw et business restent indépendants.
-Leurs publications ne sont requises que si leur propre comportement change.
-Les pins d'un plugin et le miroir public Companion constituent des surfaces
-distinctes à revalider lors d'une livraison ultérieure autorisée.
+The create-snipara, MCP, OpenClaw, and business packages remain independent.
+Their publications are only required if their own behavior changes.
+The pins of a plugin and the public Companion mirror constitute separate
+surfaces to be revalidated during a later authorized delivery.
 
-Les démonstrations connues, la campagne publique exposée et le collecteur L7
-ne remplacent pas la qualification indépendante L6 ni les mesures humaines L7.
-Ni installation, ni reprise, ni dossier ne fusionne ou ne déploie du code.
+Known demonstrations, the exposed public campaign, and the L7 collector
+do not replace the independent L6 qualification nor the human measures L7.
+Neither installation, nor reinstallation, nor a folder merges or deploys code.

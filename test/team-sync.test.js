@@ -1324,7 +1324,33 @@ test("team-sync resume and workflow resume surface the hosted handoff context", 
   assert.match(resumeResult.stdout, /Latest hosted handoff: Moved project access check/);
   assert.match(resumeResult.stdout, /Checkpoints: 1/);
 
-  const workflowResumeResult = runCli(["workflow", "resume"], {
+  const overviewResult = runCli(["workflow", "resume"], {
+    cwd: dir,
+    env,
+    nodeArgs: ["-r", preloadPath],
+  });
+  assert.equal(overviewResult.status, 0, overviewResult.stderr || overviewResult.stdout);
+  assert.match(overviewResult.stdout, /snipara.workflow.resume-overview.v1/);
+  assert.match(overviewResult.stdout, /not proof of safety/);
+  assert.match(overviewResult.stdout, /does not reattach a runtime, restore a live process/);
+  assert.match(overviewResult.stdout, /--detail/);
+
+  const overviewJsonResult = runCli(["workflow", "resume", "--json"], {
+    cwd: dir,
+    env,
+    nodeArgs: ["-r", preloadPath],
+  });
+  assert.equal(overviewJsonResult.status, 0, overviewJsonResult.stderr || overviewJsonResult.stdout);
+  const overview = JSON.parse(overviewJsonResult.stdout);
+  assert.equal(overview.version, "snipara.workflow.resume-overview.v1");
+  assert.equal(overview.status, "overview");
+  assert.equal(overview.continuity.status, "drift_revalidation_required");
+  assert.equal(overview.nextAction.dispatchesWork, false);
+  assert.match(overview.required.runtimeBoundary.join(" "), /does not reattach a runtime, restore a live process/);
+  assert.deepEqual(overview.detail.argv, ["snipara-companion", "workflow", "resume", "--detail", "--json"]);
+  assert.equal(overview.runtime_resume, undefined);
+
+  const workflowResumeResult = runCli(["workflow", "resume", "--detail"], {
     cwd: dir,
     env,
     nodeArgs: ["-r", preloadPath],
@@ -1351,7 +1377,7 @@ test("team-sync resume and workflow resume surface the hosted handoff context", 
   assert.match(workflowResumeResult.stdout, /Current next action: "snipara-companion" "workflow" "task-status" "--json"/);
   assert.doesNotMatch(workflowResumeResult.stdout, /snipara-companion workflow phase-start phase-4/);
 
-  const workflowResult = runCli(["workflow", "resume", "--json"], {
+  const workflowResult = runCli(["workflow", "resume", "--detail", "--json"], {
     cwd: dir,
     env,
     nodeArgs: ["-r", preloadPath],

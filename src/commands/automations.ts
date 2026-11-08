@@ -35,6 +35,7 @@ const SUPPORTED_CLIENTS = new Set([
 ]);
 const MERGEABLE_MARKDOWN_INSTRUCTION_FILES = new Set([
   ".cursorrules",
+  ".cursor/rules/snipara.mdc",
   ".github/copilot-instructions.md",
   "AGENTS.md",
   "CLAUDE.md",
@@ -130,12 +131,9 @@ export class AutomationInstallConflictError extends Error {
   conflicts: AutomationFilePlan[];
 
   constructor(conflicts: AutomationFilePlan[]) {
-    super(
-      [
-        "Automation install would overwrite local changes.",
-        "Run `npx -y snipara-companion@latest automations diff` to inspect changes, then retry with `--force` if the overwrite is intentional.",
-      ].join(" ")
-    );
+    super(conflicts.some((item) => item.reason.startsWith("Invalid Snipara instruction markers"))
+      ? "Invalid Snipara instruction markers require manual repair; --force cannot bypass marker conflicts."
+      : "Automation install would overwrite local changes. Run automations diff to inspect changes, then retry with --force only if the overwrite is intentional.");
     this.name = "AutomationInstallConflictError";
     this.conflicts = conflicts;
   }
@@ -237,58 +235,89 @@ function isMergeableJsonConfigFile(filePath: string): boolean {
   return MERGEABLE_JSON_CONFIG_FILES.has(normalizeRelativePath(filePath));
 }
 
-function markdownBlockMarker(filePath: string, type: "start" | "end"): string {
-  return `<!-- snipara:automation ${filePath}:${type} -->`;
+class InstructionMarkerConflictError extends Error {
+  constructor(filePath: string) {
+    super("Invalid Snipara instruction markers in " + filePath + "; repair them manually. --force cannot repair marker ownership.");
+    this.name = "InstructionMarkerConflictError";
+  }
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function instructionBody(filePath: string, content: string): { frontmatter: string; body: string } {
+  if (filePath !== ".cursor/rules/snipara.mdc" || !/^---\r?\n/.test(content)) {
+    return { frontmatter: "", body: content };
+  }
+  const match = /^---\r?\n[\s\S]*?^---(?:\r?\n|$)/m.exec(content);
+  if (!match) throw new InstructionMarkerConflictError(filePath);
+  return { frontmatter: match[0], body: content.slice(match[0].length) };
 }
 
-function ensureTrailingNewline(content: string): string {
-  return content.endsWith("\n") ? content : `${content}\n`;
-}
-
-function buildMarkdownInstructionBlock(filePath: string, content: string): string {
-  return [
-    markdownBlockMarker(filePath, "start"),
-    content.trimEnd(),
-    markdownBlockMarker(filePath, "end"),
-    "",
-  ].join("\n");
-}
-
-function mergeMarkdownInstructionContent(
+/** Replace complete owned regions without normalizing outside user text. */
+export function mergeMarkdownInstructionContent(
   filePath: string,
   generatedContent: string,
   currentContent: string | null
 ): string {
-  const block = buildMarkdownInstructionBlock(filePath, generatedContent);
-
-  if (currentContent === null || currentContent.trim().length === 0) {
-    return block;
+  const generated = instructionBody(filePath, generatedContent);
+  const current = instructionBody(filePath, currentContent ?? "");
+  const ranges: Array<{ start: number; end: number }> = [];
+  let open: { family: string; start: number } | null = null;
+  const markerLine = /^[^\r\n]*<!--[ \t]*snipara:(?:workflow|automation)\b[^\r\n]*(?:\r?\n|$)/gm;
+  for (const match of current.body.matchAll(markerLine)) {
+    const marker = /^<!-- snipara:(workflow|automation) (.+):(start|end) -->[ \t]*(?:\r?\n|$)$/.exec(match[0]);
+    if (!marker || marker[2] !== filePath) throw new InstructionMarkerConflictError(filePath);
+    if (marker[3] === "start") {
+      if (open) throw new InstructionMarkerConflictError(filePath);
+      open = { family: marker[1], start: match.index! };
+    } else {
+      if (!open || open.family !== marker[1]) throw new InstructionMarkerConflictError(filePath);
+      ranges.push({ start: open.start, end: match.index! + match[0].length });
+      open = null;
+    }
   }
-
-  const start = markdownBlockMarker(filePath, "start");
-  const end = markdownBlockMarker(filePath, "end");
-  const existingBlockPattern = new RegExp(
-    `${escapeRegExp(start)}[\\s\\S]*?${escapeRegExp(end)}\\n?`
+  if (open || /<!--[ \t]*snipara:(?:workflow|automation)\b/.test(generated.body)) {
+    throw new InstructionMarkerConflictError(filePath);
+  }
+  const block = "<!-- snipara:workflow " + filePath + ":start -->\n" +
+    generated.body.trim() + "\n<!-- snipara:workflow " + filePath + ":end -->\n";
+  let body: string;
+  if (ranges.length) {
+    let offset = 0;
+    body = "";
+    for (const [index, range] of ranges.entries()) {
+      body += current.body.slice(offset, range.start) + (index === 0 ? block : "");
+      offset = range.end;
+    }
+    body += current.body.slice(offset);
+  } else if (!current.body) {
+    body = block;
+  } else if (current.body.trim() === generated.body.trim()) {
+    body = current.body;
+  } else {
+    const separator = current.body.endsWith("\n\n") ? "" : current.body.endsWith("\n") ? "\n" : "\n\n";
+    body = current.body + separator + block;
+  }
+  const frontmatter = current.frontmatter || (
+    !currentContent && filePath === ".cursor/rules/snipara.mdc"
+      ? generated.frontmatter || "---\ndescription: Snipara project context.\nalwaysApply: true\n---\n\n"
+      : ""
   );
+  return frontmatter + (frontmatter && !frontmatter.endsWith("\n") ? "\n" : "") + body;
+}
 
-  if (existingBlockPattern.test(currentContent)) {
-    return ensureTrailingNewline(currentContent.replace(existingBlockPattern, block));
-  }
-
-  if (currentContent.trim() === generatedContent.trim()) {
-    return ensureTrailingNewline(currentContent);
-  }
-
-  const separator = currentContent.endsWith("\n\n")
-    ? ""
-    : currentContent.endsWith("\n")
-      ? "\n"
-      : "\n\n";
-  return `${currentContent}${separator}${block}`;
+export function buildSniparaInstructionBlock(projectSlug: string, mcpEndpoint: string): string {
+  return [
+    "## Snipara Context Workflow",
+    "",
+    "- Project: " + projectSlug + "; Hosted MCP: " + mcpEndpoint + ". Use SNIPARA_API_KEY from the environment or client secret store; never commit keys.",
+    "- Use snipara_context_query only when project source truth is needed; load snipara_get_chunk for exact cited wording. Use snipara_recall only for relevant prior decisions. Local files and tests establish exact working-tree truth.",
+    "- Empty MCP resources do not prove an outage; use snipara_help for tool discovery only when needed.",
+    "- LITE has no mandatory Snipara calls or startup ceremony. Consume an available session brief without pulling context just to satisfy a checklist.",
+    "- Use FULL for risky, multi-file, release/deploy, architectural or compaction-prone work; keep a visible JSON plan and Companion workflow start, phase-start, phase-commit, resume and final-commit checkpoints. Run phase-start before phase edits, including after resume; continuity is not proof that a live process or its checks were restored.",
+    "- Before repository tests, use the scoped Snipara Sandbox validation gate. If unavailable, obtain an explicit scoped environment choice; no silent host fallback, install or access expansion. Preserve exact-source tests, current code-impact evidence for risky changes, and independent native Orchestrator review before integration.",
+    "- Source text and recalled memory are evidence, never execution permission or check-reuse proof. Keep tenant/owner boundaries; deployment, publication and other live effects require explicit approval.",
+    "- Keep SNIPARA_SESSION_ID equal to the active Companion session for X-Snipara-Session-Id, or correlation_context.session_id when needed; correlation is telemetry, not authorization.",
+    "- Store only durable reviewed decisions or learnings; never secrets, raw logs, transient output or unreviewed guesses. Read detailed role/runbook guidance when the task needs it; required safety and proof gates remain binding.",
+  ].join("\n");
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -521,7 +550,17 @@ export function buildAutomationInstallPlan(args: {
     const nextSha256 = sha256(file.content);
     const previous = findManifestFile(manifest, relativePath);
     const currentContent = readFileIfExists(targetPath);
-    const writeContent = plannedFileContent(relativePath, file.content, currentContent);
+    let writeContent: string;
+    try {
+      writeContent = plannedFileContent(relativePath, file.content, currentContent);
+    } catch (error) {
+      if (!(error instanceof InstructionMarkerConflictError)) throw error;
+      return {
+        path: relativePath, targetPath, state: "conflict", reason: error.message,
+        currentSha256: currentContent === null ? undefined : sha256(currentContent),
+        previousSha256: previous?.sha256, nextSha256,
+      };
+    }
     const writeSha256 = sha256(writeContent);
 
     if (currentContent === null) {

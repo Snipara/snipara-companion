@@ -5,11 +5,14 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { packContext } from "./context-pack";
 import { checkpointText } from "../session/checkpoint";
+import { readTaskRepositoryInventory, TaskIntakeError } from "./task-intake";
 
 type Data = Record<string, unknown>;
 const MAX_BYTES = 500_000;
 const MAX_FILE_BYTES = 16 * 1024 * 1024;
 const MAX_ENTRIES = 256;
+// Repository diagnostics are also carried into combined checkpoint summaries.
+const MAX_REPOSITORY_ERRORS = 32;
 const SHA = /^[a-f0-9]{64}$/;
 const PACK = /^cpack_[a-f0-9]{16}$/;
 const record = (value: unknown): value is Data => !!value && typeof value === "object" && !Array.isArray(value);
@@ -95,17 +98,45 @@ export interface WorkflowContinuityCheckpoint {
   budget: unknown;
   nextAction: WorkflowContinuityNextAction;
   runtime: unknown; runtimeBoundary: string[];
+  repair?: {
+    predecessor: WorkflowContinuityRef; reason: string; previousStatus: WorkflowContinuityResume["status"];
+    carriedForward: string[]; proofRefreshed: false;
+  };
+}
+export interface WorkflowContinuityDiagnostic {
+  code: string; path?: string; message: string; action: string; required: boolean;
 }
 export interface WorkflowContinuityResume {
   version: "snipara.workflow.continuity-resume.v1";
   status: "exact_snapshot" | "drift_revalidation_required" | "blocked";
   checkpoint: WorkflowContinuityCheckpoint | null; currentRepository: WorkflowContinuityRepository;
   relocated: boolean; changes: string[]; reasons: string[];
-  artifactChecks: Array<{ path: string; status: string; reason?: string }>;
+  artifactChecks: Array<{ path: string; status: string; code?: string; reason?: string }>;
+  diagnostics: WorkflowContinuityDiagnostic[];
   currentDecisions: Data[];
   nextAction: WorkflowContinuityNextAction;
   coordination: { historical: true; refreshed: false };
   runtimeBoundary: string[];
+}
+class ContinuityArtifactError extends Error {
+  constructor(readonly code: string, readonly artifactPath: string, message: string) { super(message); }
+}
+function diagnostic(error: unknown, artifactPath: string, required = true): WorkflowContinuityDiagnostic {
+  const code = error instanceof ContinuityArtifactError ? error.code
+    : record(error) && error.code === "ENOENT" ? "artifact_missing"
+    : record(error) && ["EACCES", "EPERM"].includes(String(error.code)) ? "artifact_permission_denied"
+    : "artifact_unreadable";
+  const file = text(error instanceof ContinuityArtifactError ? error.artifactPath : artifactPath, 1000);
+  const action = code === "artifact_missing" ? "Restore the exact artifact from its original receipt; do not regenerate it as passing proof."
+    : code.includes("hash") ? "Restore the recorded bytes or rerun the original verification under its existing proof gates."
+    : code.includes("unsafe") ? "Use an in-workspace regular file at the recorded path; symlinks and traversal are refused."
+    : code.includes("oversized") ? "Keep the original evidence intact and use a bounded artifact; do not raise limits implicitly."
+    : code.includes("schema") || code.includes("manifest") || code.includes("reference") ? "Restore the compatible original checkpoint/manifest; do not replace historical receipts with a new claim."
+    : "Check read permissions and file stability, then retry the read without changing historical evidence.";
+  return { code, path: file, required, message: `${code}: ${file}`, action };
+}
+export function diagnoseWorkflowContinuityArtifact(error: unknown, artifactPath: string): WorkflowContinuityDiagnostic {
+  return diagnostic(error, artifactPath, false);
 }
 const RUNTIME_BOUNDARY = [
   "Snapshot files and workflow facts are historical local observations, not proof of functional correctness.",
@@ -123,7 +154,7 @@ function relative(value: string): string {
   if (!normalized || normalized.length > 1000 || path.posix.isAbsolute(normalized) ||
     /^[A-Za-z]:/.test(normalized) || normalized.split("/").some((part) => part === ".." || !part) ||
     [...normalized].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127))
-    throw new Error("Unsafe continuity artifact path");
+    throw new ContinuityArtifactError("artifact_unsafe_path", value, "Unsafe continuity artifact path");
   return normalized.replace(/^\.\//, "");
 }
 /** Check every ancestor before reading: a local manifest must not redirect to another tree. */
@@ -133,7 +164,7 @@ function contained(cwd: string, value: string): string {
   let current = root;
   for (const part of rel.split("/")) {
     current = path.join(current, part);
-    try { if (fs.lstatSync(current).isSymbolicLink()) throw new Error("Symlink continuity artifacts are not accepted"); }
+    try { if (fs.lstatSync(current).isSymbolicLink()) throw new ContinuityArtifactError("artifact_unsafe_path", value, "Symlink continuity artifacts are not accepted"); }
     catch (error) { if (!(record(error) && error.code === "ENOENT")) throw error; }
   }
   if (path.relative(root, current).startsWith(`..${path.sep}`)) throw new Error("Continuity path escaped workspace");
@@ -144,7 +175,8 @@ function readBytes(cwd: string, value: string, limit = MAX_BYTES): Buffer {
   const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
   try {
     const stat = fs.fstatSync(fd);
-    if (!stat.isFile() || stat.size > limit) throw new Error("Continuity artifact is not a bounded regular file");
+    if (!stat.isFile() || stat.size > limit) throw new ContinuityArtifactError(
+      stat.size > limit ? "artifact_oversized" : "artifact_unsupported_type", value, "Continuity artifact is not a bounded regular file");
     contained(cwd, value);
     const chunks: Buffer[] = [];
     let bytes = 0;
@@ -154,7 +186,7 @@ function readBytes(cwd: string, value: string, limit = MAX_BYTES): Buffer {
       if (!length) break;
       chunks.push(chunk.subarray(0, length)); bytes += length;
     }
-    if (bytes > limit) throw new Error("Continuity artifact exceeds its read limit");
+    if (bytes > limit) throw new ContinuityArtifactError("artifact_oversized", value, "Continuity artifact exceeds its read limit");
     const after = fs.fstatSync(fd);
     if (stat.ino !== after.ino || stat.size !== after.size || stat.mtimeMs !== after.mtimeMs)
       throw new Error("Continuity artifact changed while being read");
@@ -217,24 +249,34 @@ export function captureWorkflowRepository(cwd = process.cwd()): WorkflowContinui
     result.indexHash = digest(git(root, ["ls-files", "--stage", "-z"]).split("\0")
       .filter((item) => !item.split("\t").slice(1).join("\t").startsWith(".snipara/"))
       .join("\0"));
-    const entries = git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).split("\0");
+    const inventory = readTaskRepositoryInventory(root, undefined, [], [".snipara"]);
     const dirty = new Map<string, string>();
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
-      if (!entry) continue;
-      const status = entry.slice(0, 2);
-      const file = entry.slice(3);
-      if (!file.startsWith(".snipara/")) dirty.set(relative(file), status);
-      if (/[RC]/.test(status) && entries[i + 1]) {
-        const old = entries[++i];
-        if (!old.startsWith(".snipara/")) dirty.set(relative(old), status);
-      }
+    for (const entry of inventory.entries) {
+      dirty.set(relative(entry.path), entry.status);
+      if (entry.originalPath && !entry.originalPath.startsWith(".snipara/")) dirty.set(relative(entry.originalPath), entry.status);
     }
-    if (dirty.size > MAX_ENTRIES) throw new Error("Dirty repository exceeds continuity file limit");
-    result.dirty = [...dirty].sort(([a], [b]) => a.localeCompare(b)).map(([file, status]) => ({
-      path: file, status, fingerprint: fingerprint(root, file),
-    }));
-  } catch { result.errors.push("Repository identity or bounded file observation unavailable"); }
+    if (inventory.incomplete || dirty.size > MAX_ENTRIES) result.errors.push("repository_inventory_incomplete: Only a bounded tracked/scoped inventory was observed; omitted untracked content is not clean. Reduce the unrelated inventory or review an explicit scoped task before relying on repository-wide proof.");
+    let omittedFileErrors = 0;
+    for (const [file, status] of [...dirty].sort(([a], [b]) => a.localeCompare(b)).slice(0, MAX_ENTRIES)) {
+      let observed: string;
+      try { observed = fingerprint(root, file); }
+      catch (error) {
+        const problem = diagnostic(error, file);
+        observed = `unavailable:${problem.code}`;
+        if (result.errors.length < MAX_REPOSITORY_ERRORS - 1) result.errors.push(
+          `repository_file_unobserved: ${problem.code}: ${problem.path ?? text(file, 1000)}; ${problem.message}`);
+        else omittedFileErrors++;
+      }
+      result.dirty.push({ path: file, status, fingerprint: observed });
+    }
+    if (omittedFileErrors) result.errors.push(
+      `repository_file_unobserved: ${omittedFileErrors} additional files could not be fingerprinted; repository-wide proof remains incomplete.`);
+  } catch (error) {
+    if (error instanceof TaskIntakeError) result.errors.push(`${error.code}: ${error.message}`);
+    else if (record(error) && error.code === "ENOBUFS") result.errors.push("repository_output_too_large: Git identity or index observation exceeded its output limit.");
+    else if (record(error) && error.code === "ETIMEDOUT") result.errors.push("repository_read_timeout: Git identity or index observation exceeded its ten-second deadline.");
+    else result.errors.push("repository_observation_unavailable: Repository identity or bounded file observation unavailable; check the workspace root and read permissions.");
+  }
   return result;
 }
 function projectedState(state: WorkflowContinuityState): unknown {
@@ -252,17 +294,30 @@ function contract(state: WorkflowContinuityState): unknown {
 }
 function readPack(cwd: string, ref: { packId: string; sha256: string }): { content: Buffer; manifest: Data; manifestPath: string; blobPath: string } {
   if (!PACK.test(ref.packId) || !SHA.test(ref.sha256) || ref.packId !== `cpack_${ref.sha256.slice(0, 16)}`)
-    throw new Error("Invalid continuity pack identity");
+    throw new ContinuityArtifactError("checkpoint_reference_invalid", ".snipara/workflow/current.json", "Invalid continuity pack identity");
   const manifestPath = `.snipara/context-pack/items/${ref.packId}.json`;
-  const manifest: unknown = JSON.parse(readBytes(cwd, manifestPath).toString("utf8"));
+  const packBytes = (file: string): Buffer => {
+    try { return readBytes(cwd, file); }
+    catch (error) {
+      if (error instanceof ContinuityArtifactError) throw error;
+      const problem = diagnostic(error, file);
+      throw new ContinuityArtifactError(problem.code, file, error instanceof Error ? error.message : problem.message);
+    }
+  };
+  let manifest: unknown;
+  try { manifest = JSON.parse(packBytes(manifestPath).toString("utf8")); }
+  catch (error) {
+    if (error instanceof SyntaxError) throw new ContinuityArtifactError("checkpoint_schema_invalid", manifestPath, "Invalid continuity pack manifest JSON");
+    throw error;
+  }
   const blobPath = `.snipara/context-pack/blobs/${ref.sha256}.txt`;
   if (!record(manifest) || manifest.version !== "snipara.context_pack.v1" || manifest.id !== ref.packId ||
     manifest.sha256 !== ref.sha256 || !record(manifest.storage) ||
     manifest.storage.manifestRelativePath !== manifestPath || manifest.storage.blobRelativePath !== blobPath)
-    throw new Error("Continuity pack manifest identity or path differs");
-  const content = readBytes(cwd, blobPath);
+    throw new ContinuityArtifactError("checkpoint_manifest_invalid", manifestPath, "Continuity pack manifest identity or path differs");
+  const content = packBytes(blobPath);
   if (digest(content) !== ref.sha256 || manifest.bytes !== content.length)
-    throw new Error("Continuity pack hash or byte length differs");
+    throw new ContinuityArtifactError("checkpoint_hash_mismatch", blobPath, "Continuity pack hash or byte length differs");
   return { content, manifest, manifestPath, blobPath };
 }
 /** Independent of Orchestrator; validates canonical paths before loading a local pack. */
@@ -272,13 +327,19 @@ export function readWorkflowContinuityPack(input: { cwd?: string; packId: string
 }
 function checkpoint(cwd: string, ref: WorkflowContinuityRef, workflowId: string): WorkflowContinuityCheckpoint {
   if (ref.version !== "snipara.workflow.continuity-ref.v1" || ref.workflowId !== workflowId)
-    throw new Error("Continuity reference does not belong to workflow");
-  const data: unknown = JSON.parse(readPack(cwd, ref).content.toString("utf8"));
+    throw new ContinuityArtifactError("checkpoint_reference_invalid", ".snipara/workflow/current.json", "Continuity reference does not belong to workflow");
+  let data: unknown;
+  try { data = JSON.parse(readPack(cwd, ref).content.toString("utf8")); }
+  catch (error) {
+    if (error instanceof SyntaxError) throw new ContinuityArtifactError("checkpoint_schema_invalid", `.snipara/context-pack/blobs/${ref.sha256}.txt`, "Invalid continuity checkpoint JSON");
+    throw error;
+  }
   if (!record(data) || data.version !== "snipara.workflow.continuity.v1" || data.workflowId !== workflowId ||
     data.capturedAt !== ref.capturedAt || !record(data.repository) || !record(data.baselineRepository) ||
     !SHA.test(String(data.stateHash)) || !SHA.test(String(data.contractHash)) ||
-    !Array.isArray(data.artifacts) || !Array.isArray(data.attempts) || !Array.isArray(data.remaining))
-    throw new Error("Invalid continuity checkpoint schema");
+    !Array.isArray(data.repository.errors) || !Array.isArray(data.baselineRepository.errors) ||
+    !Array.isArray(data.decisions) || !Array.isArray(data.artifacts) || !Array.isArray(data.attempts) || !Array.isArray(data.remaining))
+    throw new ContinuityArtifactError("checkpoint_schema_invalid", `.snipara/context-pack/blobs/${ref.sha256}.txt`, "Invalid continuity checkpoint schema");
   return data as unknown as WorkflowContinuityCheckpoint;
 }
 function artifact(cwd: string, value: string, kind: string, required = true): WorkflowContinuityArtifact {
@@ -512,7 +573,7 @@ export function resumeWorkflowContinuity(input: { cwd?: string; state: WorkflowC
   const currentRepository = captureWorkflowRepository(cwd);
   const result: WorkflowContinuityResume = {
     version: "snipara.workflow.continuity-resume.v1", status: "blocked", checkpoint: null,
-    currentRepository, relocated: false, changes: [], reasons: [], artifactChecks: [], currentDecisions: [],
+    currentRepository, relocated: false, changes: [], reasons: [], artifactChecks: [], diagnostics: [], currentDecisions: [],
     nextAction: {
       argv: ["snipara-companion", "workflow", "task-status", "--json"],
       expectedResult: "Inspect saved task state and the reported blockers or drift before preparing, retrying or continuing work",
@@ -525,7 +586,15 @@ export function resumeWorkflowContinuity(input: { cwd?: string; state: WorkflowC
     const value = checkpoint(cwd, state.continuity, state.workflowId);
     result.checkpoint = value;
     result.relocated = value.repository.root !== currentRepository.root;
-    if (currentRepository.errors.length || value.repository.errors.length) throw new Error("Repository observation unavailable");
+    for (const [origin, errors] of [["current", currentRepository.errors], ["historical", value.repository.errors]] as const) {
+      if (errors.length) {
+        const item = { code: `${origin}_repository_observation_incomplete`, required: true,
+          message: `${origin} repository observation is incomplete: ${errors.map((item) => text(item)).join("; ")}`,
+          action: origin === "current" ? "Resolve the reported inventory/root/permission limit before relying on repository-wide proof."
+            : "Preserve this historical gap; preview a linked checkpoint refresh after current repository observation succeeds." };
+        result.diagnostics.push(item); result.reasons.push(item.message);
+      }
+    }
     for (const [key, label] of [["head", "HEAD"], ["tree", "committed tree"], ["branch", "branch"],
       ["roots", "repository ancestry"], ["indexHash", "index"], ["dirty", "dirty file content"]] as const) {
       if (hash(value.repository[key]) !== hash(currentRepository[key])) result.changes.push(label);
@@ -533,16 +602,20 @@ export function resumeWorkflowContinuity(input: { cwd?: string; state: WorkflowC
     if (hash(contract(state)) !== value.contractHash) result.changes.push("workflow contract");
     if (hash(projectedState(state)) !== value.stateHash) result.changes.push("workflow state");
     for (const item of value.artifacts) {
-      if (!record(item) || typeof item.path !== "string" || typeof item.required !== "boolean") throw new Error("Invalid checkpoint artifact reference");
+      if (!record(item) || typeof item.path !== "string" || typeof item.required !== "boolean")
+        throw new ContinuityArtifactError("checkpoint_schema_invalid", `.snipara/context-pack/blobs/${state.continuity.sha256}.txt`, "Invalid checkpoint artifact reference");
       try {
         const actual = digest(readBytes(cwd, item.path, MAX_FILE_BYTES));
-        if (!item.sha256 || actual !== item.sha256) throw new Error("Artifact content differs from checkpoint");
+        if (!item.sha256 || actual !== item.sha256)
+          throw new ContinuityArtifactError("artifact_hash_mismatch", item.path, "Artifact content differs from checkpoint");
         const expired = typeof item.expiresAt === "string" && (!Number.isFinite(Date.parse(item.expiresAt)) || Date.parse(item.expiresAt) <= Date.now());
         result.artifactChecks.push({ path: item.path, status: expired ? "expired" : "matched" });
         if (expired) result.changes.push(`expired artifact: ${item.path}`);
-      } catch {
-        result.artifactChecks.push({ path: text(item.path, 1000), status: "unavailable_or_changed", reason: "Missing, changed, unsafe or unreadable artifact" });
-        if (item.required) result.reasons.push(`Required artifact cannot be verified: ${text(item.path, 1000)}`);
+      } catch (error) {
+        const problem = diagnostic(error, item.path, item.required);
+        result.diagnostics.push(problem);
+        result.artifactChecks.push({ path: text(item.path, 1000), status: "unavailable_or_changed", code: problem.code, reason: problem.action });
+        if (item.required) result.reasons.push(`Required artifact cannot be verified: ${problem.message}`);
         else result.changes.push(`Changed or unavailable snapshot file: ${text(item.path, 1000)}`);
       }
     }
@@ -559,16 +632,53 @@ export function resumeWorkflowContinuity(input: { cwd?: string; state: WorkflowC
       if (decision.blocking === true && (decision.status === "pending" || invalid)) result.reasons.push("A required decision is pending or invalidated");
     }
     if (value.historyCompleteness !== "complete") result.changes.push("incomplete historical attempt receipts");
+    if (value.repair) result.changes.push("Linked successor is a new local observation; historical proof was not refreshed",
+      ...strings(value.repair.carriedForward).map((item) => `Prior checkpoint requires revalidation: ${text(item)}`));
     result.status = result.reasons.length ? "blocked" : result.changes.length ? "drift_revalidation_required" : "exact_snapshot";
     if (result.status === "exact_snapshot") result.nextAction = value.nextAction;
-  } catch { result.reasons.push("Historical snapshot is missing, invalid, unsafe, or its hash no longer matches"); }
+  } catch (error) {
+    const problem = diagnostic(error, `.snipara/context-pack/items/${state.continuity.packId}.json`);
+    result.diagnostics.push(problem); result.reasons.push(`Historical checkpoint cannot be verified: ${problem.message}`);
+  }
   return result;
+}
+/** Preview is read-only. Refresh creates a linked observation, never replacement proof or execution. */
+export function previewWorkflowContinuityRepair(input: { cwd?: string; state: WorkflowContinuityState }): {
+  allowed: boolean; continuity: WorkflowContinuityResume; reasons: string[];
+} {
+  const continuity = resumeWorkflowContinuity(input);
+  const reasons: string[] = [];
+  if (!input.state.continuity || !continuity.checkpoint) reasons.push("The original checkpoint must be readable and verified before linking a successor; restore its exact pack first.");
+  if (continuity.currentRepository.errors.length) reasons.push("Current repository observation is incomplete; resolve its diagnosed limit or boundary first.");
+  if (continuity.diagnostics.some((item) => item.required && item.code !== "historical_repository_observation_incomplete"))
+    reasons.push("Mandatory checkpoint or evidence verification failed; restore the original artifact or rerun its proof gate.");
+  if (continuity.changes.some((item) => ["workflow contract", "workflow state", "local decision authority or membership"].includes(item)))
+    reasons.push("Workflow contract, state or decision authority changed; checkpoint repair cannot validate a changed request or authority.");
+  if (continuity.artifactChecks.some((item) => item.status === "expired") ||
+    continuity.reasons.some((item) => item.includes("decision"))) reasons.push("Expired evidence or unresolved decisions require their existing review gates.");
+  return { allowed: reasons.length === 0, continuity, reasons };
+}
+export function refreshWorkflowContinuity(input: { cwd?: string; state: WorkflowContinuityState; reason: string }): WorkflowContinuityRef {
+  const cwd = path.resolve(input.cwd ?? process.cwd());
+  const reason = text(input.reason);
+  if (!reason) throw new Error("Checkpoint refresh requires an explicit recovery reason");
+  const preview = previewWorkflowContinuityRepair({ cwd, state: input.state });
+  if (!preview.allowed) throw new Error(`Checkpoint refresh refused: ${preview.reasons.join(" ")}`);
+  const predecessor = input.state.continuity!;
+  const ref = captureWorkflowContinuity({ cwd, state: input.state });
+  const value = checkpoint(cwd, ref, input.state.workflowId);
+  value.repair = { predecessor, reason, previousStatus: preview.continuity.status,
+    carriedForward: [...preview.continuity.reasons, ...preview.continuity.changes], proofRefreshed: false };
+  const packed = packContext({ cwd, content: JSON.stringify(safe(value)), kind: "note", label: "Linked workflow continuity refresh",
+    source: "workflow_continuity", maxBytes: MAX_BYTES, tags: ["workflow-continuity", input.state.workflowId] });
+  return { ...ref, packId: packed.record.id, sha256: packed.record.sha256 };
 }
 export function formatWorkflowContinuity(report: WorkflowContinuityResume): string {
   const value = report.checkpoint;
   const lines = ["Work continuation", `Status: ${report.status}`,
     ...(report.relocated ? ["Workspace relocated; relative repository and artifact identities were compared."] : []),
     ...report.reasons.map((item) => `Blocked: ${item}`), ...report.changes.map((item) => `Revalidate: ${item}`)];
+  for (const item of report.diagnostics ?? []) lines.push(`Diagnosis: ${item.code}${item.path ? ` (${item.path})` : ""}; ${item.action}`);
   if (value) {
     lines.push(`Goal: ${value.goal}`, `Checkpoint: ${value.capturedAt} (historical)`,
       `History: ${value.historyCompleteness}`, "Decisions and reasons:",

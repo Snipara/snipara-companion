@@ -8,7 +8,7 @@ import { checkpointText } from "../session/checkpoint";
 
 type Data = Record<string, unknown>;
 export type IntakeCommandRunner = (program: "git" | "gh", args: string[], cwd: string) => {
-  status: number | null; stdout: string; stderr?: string;
+  status: number | null; stdout: string; stderr?: string; errorCode?: string;
 };
 export interface TaskIntakeSource {
   kind: "local" | "github"; repository: string | null; issueNumber?: number;
@@ -135,19 +135,30 @@ const defaultRunner: IntakeCommandRunner = (program, args, cwd) => {
   const result = spawnSync(program, args, { cwd, encoding: "utf8", timeout: 10_000,
     maxBuffer: MAX_OUTPUT, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0",
       GH_HOST: "github.com", GH_PROMPT_DISABLED: "1", GH_PAGER: "cat" }, stdio: ["ignore", "pipe", "pipe"] });
-  return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? (result.error ? String(result.error) : "") };
+  return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "",
+    ...(result.error && "code" in result.error ? { errorCode: String(result.error.code) } : {}) };
 };
 function command(runner: IntakeCommandRunner, program: "git" | "gh", args: string[], cwd: string): string {
   let result;
-  try { result = runner(program, args, cwd); } catch { fail(program === "gh" ? "github_unavailable" : "repository_unavailable", `${program} read could not complete.`); }
+  try { result = runner(program, args, cwd); } catch (error) {
+    if (error instanceof TaskIntakeError) throw error;
+    const code = record(error) ? error.code : undefined;
+    if (program === "git" && code === "ETIMEDOUT") fail("repository_read_timeout", "Git observation exceeded its ten-second deadline; retry with a narrower declared scope.");
+    if (program === "git" && code === "ENOBUFS") fail("repository_output_too_large", "Git observation exceeded its bounded output limit.");
+    if (program === "git" && ["EACCES", "EPERM"].includes(String(code))) fail("repository_access_denied", "Git observation was denied; check local repository read permissions.");
+    fail(program === "gh" ? "github_unavailable" : "repository_unavailable", `${program} read could not complete.`);
+  }
   if (result.status !== 0) {
     if (program === "gh") {
       const reason = /401|403|404|denied|authentication|not logged/i.test(result.stderr ?? "") ? "github_access_denied" : "github_unavailable";
       fail(reason, "Selected GitHub source could not be read. Check existing gh authentication and repository read access; no login or write was attempted.");
     }
-    fail("repository_unavailable", "Current repository identity could not be read.");
+    if (result.errorCode === "ETIMEDOUT") fail("repository_read_timeout", "Git observation exceeded its ten-second deadline; retry with a narrower declared scope.");
+    if (result.errorCode === "ENOBUFS") fail("repository_output_too_large", "Git observation exceeded its bounded output limit.");
+    if (["EACCES", "EPERM"].includes(result.errorCode ?? "") || /permission denied|access denied/i.test(result.stderr ?? "")) fail("repository_access_denied", "Git observation was denied; check local repository read permissions.");
+    fail("repository_unavailable", "Current repository identity could not be read; verify that the workspace is a readable Git repository.");
   }
-  if (Buffer.byteLength(result.stdout, "utf8") > MAX_OUTPUT) fail("output_too_large", "Source read exceeded its output limit.");
+  if (Buffer.byteLength(result.stdout, "utf8") > MAX_OUTPUT) fail(program === "git" ? "repository_output_too_large" : "output_too_large", "Source read exceeded its output limit.");
   return result.stdout;
 }
 function repoIdentity(remote: string): string | null {
@@ -159,23 +170,74 @@ function currentRemote(root: string, runner: IntakeCommandRunner): string | null
   try { return repoIdentity(command(runner, "git", ["remote", "get-url", "origin"], root)); }
   catch { return null; }
 }
-function repositorySnapshot(root: string, runner: IntakeCommandRunner, observedAt: string): TaskIntakeRepositorySnapshot {
+interface RepositoryInventoryEntry { path: string; status: string; originalPath?: string }
+/** Bounded observations, not an assertion that omitted repository state is clean. */
+export function readTaskRepositoryInventory(
+  root: string, runner: IntakeCommandRunner = defaultRunner, scopes: string[] = [], excludePrefixes: string[] = []
+): { entries: RepositoryInventoryEntry[]; incomplete: boolean } {
+  const statusArgs = ["-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z"];
+  const prefixes = [...new Set(scopes.map((scope) => {
+    const value = scope.replace(/^\.\//, "").replace(/\/$/, "");
+    if (value === ".") return "";
+    const parts: string[] = [];
+    for (const part of value.split("/")) {
+      if (/[*?[{]/.test(part)) break;
+      parts.push(part);
+    }
+    return parts.join("/");
+  }).filter(Boolean))];
+  const parse = (output: string): RepositoryInventoryEntry[] => {
+    const result: RepositoryInventoryEntry[] = [], records = output.split("\0");
+    for (let index = 0; index < records.length; index++) {
+      const entry = records[index];
+      if (!entry) continue;
+      if (entry.length < 4 || entry[2] !== " ") fail("repository_unavailable", "Git returned an invalid status record.");
+      const status = entry.slice(0, 2), file = scopedPath(entry.slice(3).replace(/\/$/, ""));
+      let originalPath: string | undefined;
+      if (/[RC]/.test(status)) {
+        const original = records[++index];
+        if (!original) fail("repository_unavailable", "Git returned an incomplete rename record.");
+        originalPath = scopedPath(original);
+      }
+      if (!excludePrefixes.some((prefix) => file === prefix || file.startsWith(`${prefix}/`))) result.push({ path: file, status, ...(originalPath ? { originalPath } : {}) });
+    }
+    return result;
+  };
+  let entries: RepositoryInventoryEntry[], incomplete = false;
+  try { entries = parse(command(runner, "git", [...statusArgs, "--untracked-files=all"], root)); }
+  catch (error) {
+    if (!(error instanceof TaskIntakeError) || error.code !== "repository_output_too_large") throw error;
+    // Always retain global tracked-change awareness before observing task scope.
+    const tracked = parse(command(runner, "git", [...statusArgs, "--untracked-files=no"], root));
+    let compact: RepositoryInventoryEntry[] = [];
+    try { compact = parse(command(runner, "git", [...statusArgs, "--untracked-files=normal"], root)); }
+    catch (failure) { if (!(failure instanceof TaskIntakeError) || failure.code !== "repository_output_too_large") throw failure; }
+    let selected: RepositoryInventoryEntry[] = [];
+    if (prefixes.length) {
+      try { selected = parse(command(runner, "git", ["--literal-pathspecs", ...statusArgs, "--untracked-files=all", "--", ...prefixes], root)); }
+      catch (failure) { if (!(failure instanceof TaskIntakeError) || failure.code !== "repository_output_too_large") throw failure; }
+    }
+    const unique = new Map<string, RepositoryInventoryEntry>();
+    for (const entry of [...tracked, ...selected, ...compact]) if (!unique.has(entry.path)) unique.set(entry.path, entry);
+    entries = [...unique.values()];
+    // A compact directory or an omitted stream is never a complete baseline.
+    incomplete = true;
+  }
+  const selected = (file: string) => prefixes.some((prefix) => file === prefix || file.startsWith(`${prefix}/`));
+  entries.sort((a, b) => Number(a.status === "??") - Number(b.status === "??")
+    || Number(!selected(a.path)) - Number(!selected(b.path)) || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  incomplete ||= entries.length > 256;
+  return { entries: entries.slice(0, 256).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0), incomplete };
+}
+function repositorySnapshot(root: string, runner: IntakeCommandRunner, observedAt: string, files: string[] = []): TaskIntakeRepositorySnapshot {
   let headSha: string | null = null;
   let branch: string | null = null;
   try { headSha = command(runner, "git", ["rev-parse", "HEAD"], root).trim(); } catch { /* Unborn repository. */ }
   try { branch = command(runner, "git", ["symbolic-ref", "--short", "HEAD"], root).trim(); } catch { /* Detached HEAD. */ }
-  let output: string;
-  try { output = command(runner, "git", ["-c", "core.fsmonitor=false", "status", "--porcelain=v1", "-z", "--untracked-files=all"], root); }
-  catch { fail("repository_unavailable", "Intake needs a readable local Git repository; GitHub and authentication are optional."); }
+  const inventory = readTaskRepositoryInventory(root, runner, files);
   const dirty: TaskIntakeRepositorySnapshot["dirtyBaseline"] = [];
-  const records = output.split("\0");
-  for (let index = 0; index < records.length; index++) {
-    const entry = records[index];
-    if (!entry) continue;
-    if (entry.length < 4 || entry[2] !== " ") fail("repository_unavailable", "Git returned an invalid status record.");
-    const status = entry.slice(0, 2);
-    const file = scopedPath(entry.slice(3));
-    if (/[RC]/.test(status)) index++; // -z emits destination, then original path.
+  for (const entry of inventory.entries) {
+    const status = entry.status, file = entry.path;
     let sha256: string | null = null;
     const absolute = path.join(root, file);
     try {
@@ -186,7 +248,7 @@ function repositorySnapshot(root: string, runner: IntakeCommandRunner, observedA
   }
   dirty.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   const indexSha256 = digest(command(runner, "git", ["ls-files", "--stage", "-z"], root));
-  return { headSha, branch, indexSha256, dirtyBaseline: dirty.slice(0, 256), dirtyBaselineTruncated: dirty.length > 256, observedAt };
+  return { headSha, branch, indexSha256, dirtyBaseline: dirty, dirtyBaselineTruncated: inventory.incomplete, observedAt };
 }
 function selectedIssue(selection: string | number, repository: string | null): number {
   if (!repository) fail("github_repository_mismatch", "Selected GitHub issue needs the current repository's GitHub origin.");
@@ -265,7 +327,7 @@ export function createTaskIntake(options: TaskIntakeOptions) {
   const files = texts(options.files ?? [], "Files", 1000).map(scopePath);
   files.forEach((file) => scopeLocalPath(root, file));
   const verification = texts(options.verification ?? [], "Verification");
-  const repository = repositorySnapshot(root, runner, observedAt);
+  const repository = repositorySnapshot(root, runner, observedAt, files);
   const selected = options.githubIssue === undefined ? null : githubSource(root, options.githubIssue, runner, observedAt);
   const source: TaskIntakeSource = selected?.source ?? { kind: "local", repository: currentRemote(root, runner),
     bodySha256: digest(goal), observedAt, authority: "untrusted_source" };
@@ -277,7 +339,7 @@ export function createTaskIntake(options: TaskIntakeOptions) {
   const brief: TaskIntake = { ...content, contentSha256: taskIntakeHash(content) };
   validateTaskIntake(brief);
   return { brief, normalizedInput, capabilities: {
-    local: { available: true, observed: true },
+    local: { available: true, observed: true, reasonCodes: repository.dirtyBaselineTruncated ? ["repository_dirty_baseline_incomplete"] : [] },
     github: selected?.capability ?? { available: false, observed: false, readOnly: true, reasonCodes: ["not_requested"] },
   } };
 }
@@ -338,7 +400,7 @@ export function revalidateTaskIntake(brief: TaskIntake, options: Pick<TaskIntake
   const root = fs.realpathSync(options.workspaceRoot);
   const runner = options.runCommand ?? defaultRunner;
   const observedAt = timestamp(options.observedAt);
-  const current = repositorySnapshot(root, runner, observedAt);
+  const current = repositorySnapshot(root, runner, observedAt, brief.files);
   const reasons: string[] = [];
   if (current.headSha !== brief.repositorySnapshot.headSha) reasons.push("repository_head_changed");
   if (current.branch !== brief.repositorySnapshot.branch) reasons.push("repository_branch_changed");

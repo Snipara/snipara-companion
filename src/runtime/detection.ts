@@ -15,6 +15,7 @@ import * as path from "path";
 import { execFileSync } from "child_process";
 import { findWorkspaceRoot, getConfigPath, isConfigured } from "../config/store";
 import type { WorkflowMode } from "../commands/workflows";
+import { diagnosticProbeEnvironment } from "./capability-status";
 
 type RuntimeEnvironment = Record<string, string | undefined>;
 type ProviderKeyName = "OPENAI_API_KEY" | "ANTHROPIC_API_KEY";
@@ -102,12 +103,13 @@ const SANDBOX_COMMANDS = ["snipara-sandbox", "rlm"] as const;
 const SANDBOX_MCP_SERVER_NAMES = new Set(["snipara-sandbox", "rlm-runtime", "rlm"]);
 const ORCHESTRATOR_COMMAND = "snipara-orchestrator";
 
-export function commandExists(command: string): boolean {
+export function commandExists(command: string, env: RuntimeEnvironment = process.env): boolean {
   try {
     execFileSync(command, ["--version"], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 2000,
+      env: diagnosticProbeEnvironment(env),
     });
     return true;
   } catch {
@@ -116,6 +118,7 @@ export function commandExists(command: string): boolean {
         encoding: "utf-8",
         stdio: ["ignore", "pipe", "ignore"],
         timeout: 2000,
+        env: diagnosticProbeEnvironment(env),
       });
       return true;
     } catch {
@@ -130,8 +133,8 @@ export function detectRuntimeEnvironment(
 ): RuntimeDetectionReport {
   const workspaceRoot = findWorkspaceRoot(cwd);
   const mcpConfigPaths = findRuntimeMcpConfigPaths(cwd, workspaceRoot);
-  const sandboxCli = detectSandboxCli();
-  const orchestratorCli = detectOrchestratorCli(cwd, workspaceRoot);
+  const sandboxCli = detectSandboxCli(env);
+  const orchestratorCli = detectOrchestratorCli(cwd, workspaceRoot, env);
   const workspaceOrchestratorVersion = findWorkspaceOrchestratorVersion(cwd, workspaceRoot);
   const orchestratorCliVersion = parseOrchestratorVersion(orchestratorCli.version);
   const parsedVersion = parseRuntimeVersion(sandboxCli.version);
@@ -169,7 +172,7 @@ export function detectRuntimeEnvironment(
     },
     providerKeys,
     docker: {
-      available: commandExists("docker"),
+      available: commandExists("docker", env),
     },
   };
 }
@@ -294,12 +297,13 @@ export function shouldSuggestOrchestratorForWorkflow(query: string, mode: Workfl
   return getOrchestratorRecommendation(query, mode) !== null;
 }
 
-function getCommandVersion(command: string): string | undefined {
+function getCommandVersion(command: string, env: RuntimeEnvironment = process.env): string | undefined {
   try {
     const output = execFileSync(command, ["--version"], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 2000,
+      env: diagnosticProbeEnvironment(env),
     })
       .trim()
       .replace(/\s+/g, " ");
@@ -325,10 +329,10 @@ function executableExists(filePath: string): boolean {
   }
 }
 
-function detectSandboxCli(): { command?: string; legacyCommand?: boolean; version?: string } {
+function detectSandboxCli(env: RuntimeEnvironment): { command?: string; legacyCommand?: boolean; version?: string } {
   for (const command of SANDBOX_COMMANDS) {
-    const version = getCommandVersion(command);
-    if (version || commandExists(command)) {
+    const version = getCommandVersion(command, env);
+    if (version || commandExists(command, env)) {
       return {
         command,
         legacyCommand: command === "rlm",
@@ -342,10 +346,11 @@ function detectSandboxCli(): { command?: string; legacyCommand?: boolean; versio
 
 function detectOrchestratorCli(
   cwd: string,
-  workspaceRoot: string | null
+  workspaceRoot: string | null,
+  env: RuntimeEnvironment
 ): { command?: string; version?: string; source?: "path" | "workspace_venv" } {
-  const version = getCommandVersion(ORCHESTRATOR_COMMAND);
-  if (version || commandExists(ORCHESTRATOR_COMMAND)) {
+  const version = getCommandVersion(ORCHESTRATOR_COMMAND, env);
+  if (version || commandExists(ORCHESTRATOR_COMMAND, env)) {
     return {
       command: ORCHESTRATOR_COMMAND,
       version,
@@ -363,7 +368,7 @@ function detectOrchestratorCli(
     }
     return {
       command: candidate,
-      version: getCommandVersion(candidate),
+      version: getCommandVersion(candidate, env),
       source: "workspace_venv",
     };
   }
