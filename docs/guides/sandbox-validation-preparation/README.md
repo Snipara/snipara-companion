@@ -7,6 +7,35 @@ It needs no Snipara account or provider key and currently qualifies macOS/Linux
 with a local Docker daemon. CLI discovery, MCP configuration and gate readiness
 are separate observations; none establishes a passing repository test.
 
+## Complete CI profiles
+
+Sandbox 2.5 adds `validation profiles`, `validation inspect --request FILE` and
+`validation prepare --profile python-ci|node-ci --workspace DIRECTORY --image DIGEST`.
+Companion 4.1 exposes the same commands. These operations describe tools or print
+a request; they never install dependencies or execute the request. `--output FILE`
+creates a new request without replacing an existing file. An explicit command
+can follow `--`; otherwise Python selects pytest and Node selects npm test.
+
+The Python image contract includes pytest, mypy, Ruff, build and hatchling. The
+Node image uses project-locked TypeScript, ESLint and tsup dependencies. The
+recipes below check those tools while deliberately preparing the image. Supply
+all transitive dependencies with pinned hashes/local caches; the catalog is not
+a dependency installer or a claim that an arbitrary image contains those tools.
+
+After reviewing the prepared request, use the same explicit lot for CLI and MCP:
+
+```sh
+snipara-companion validation gate --request request.json --scope feature-tests
+snipara-companion validation run --request request.json --scope feature-tests
+```
+
+MCP `validation_run` accepts that request object plus `scope`. It uses Orchestrator
+1.15 coordination inside its operator-approved root. Match that root with CLI
+`--coordination-root` when working from a different repository subdirectory.
+Omitting scope remains legacy raw execution outside coordination. Pure request
+inspection normalizes defaults/formatting; fresh verification still determines
+whether the current source and evidence can actually be reused.
+
 ## Review a dependency image before building or testing
 
 The two adjacent Dockerfiles are **offline recipe templates**, reviewed for
@@ -16,6 +45,16 @@ image, a project-owned lockfile and a local wheelhouse or npm cache. Missing
 inputs fail preparation. Dependency installation uses only the supplied local
 artifacts. No workstation installation is performed. Preparing those inputs or
 enabling network access is a separate explicit operator decision.
+
+The 2.5 candidate profile requests were qualified against two reviewed local
+images, composed offline from existing prepared layers without dependency
+downloads: Python image
+`sha256:7ee8be762486e7c9095b784041c9c11fb74ef9684a9dfa6aa55ec140c9716a01`
+and Node image
+`sha256:d9271366691cc6aedc4547c014d2d28471e770e386b03ee8d15c97aa90fd2754`.
+Both passed the actual profile requirements and a bounded execution with fresh
+receipt verification. These are workstation-local image identities, not public
+image references or qualification of the adjacent recipe templates.
 
 The build flag `--network=none` controls **RUN instructions**, not every Docker
 daemon or builder operation. Use an already seeded builder and independently

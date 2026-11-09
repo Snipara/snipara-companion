@@ -2,6 +2,11 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 4.1.0
+
+- Add metadata-only validation profiles, canonical request inspection and reviewed request preparation through Sandbox 2.5.
+- Expose a shared coordination root for CLI/MCP runs and retain structured environment-choice causes.
+
 ## 4.0.2
 
 - Match the public Sandbox command contract: pass evidence stores only to run, verify, status and cancel; keep gate, choose and diagnose compatible.

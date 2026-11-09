@@ -47,7 +47,7 @@ export async function invokeSandboxValidation(action: string, options: {
   request?: string; scope?: string; runId?: string; store?: string;
   choice?: string; environment?: string; acknowledgeUserChoice?: boolean;
   sandboxCommand?: string; probeTimeoutSeconds?: number;
-  noReuse?: boolean; orchestratorCommand?: string;
+  noReuse?: boolean; orchestratorCommand?: string; coordinationRoot?: string;
 }): Promise<{ exitCode: number; result: Record<string, unknown> }> {
   if (!['gate', 'choose', 'diagnose', 'run', 'verify', 'status', 'cancel'].includes(action)) {
     throw new Error('Unsupported Sandbox validation action');
@@ -56,7 +56,7 @@ export async function invokeSandboxValidation(action: string, options: {
   if (options.probeTimeoutSeconds !== undefined && (!diagnostic || !Number.isInteger(options.probeTimeoutSeconds) || options.probeTimeoutSeconds < 1 || options.probeTimeoutSeconds > MAX_PROBE_TIMEOUT_SECONDS)) {
     return {exitCode: 2, result: {...sandboxUnavailable, stage: 'adapter_input', reason_code: 'invalid_probe_timeout', reason: 'probeTimeoutSeconds is an integer from 1 to 60, supported only for diagnose and gate.'}};
   }
-  if (((options.noReuse || options.orchestratorCommand !== undefined) && (action !== 'run' || !options.scope?.trim())) || (action === 'run' && options.scope !== undefined && !options.scope.trim())) {
+  if (((options.noReuse || options.orchestratorCommand !== undefined || options.coordinationRoot !== undefined) && (action !== 'run' || !options.scope?.trim())) || (action === 'run' && options.scope !== undefined && !options.scope.trim())) {
     return {exitCode: 2, result: {...sandboxUnavailable, stage: 'adapter_input', reason_code: 'explicit_scope_required', reason: 'Coordinated run controls require validation run with an explicit workflow or lot scope.'}};
   }
   if (process.platform === 'win32') return {exitCode: 2, result: {...sandboxUnavailable, reason: 'Repository validation currently qualifies macOS/Linux Docker only.'}};
@@ -69,7 +69,7 @@ export async function invokeSandboxValidation(action: string, options: {
   const delegated = action === 'run' && !!options.scope;
   const args = ['validation', action];
   const parameters = delegated
-    ? {request: options.request, scope: options.scope, store: options.store, 'sandbox-command': options.sandboxCommand}
+    ? {request: options.request, scope: options.scope, store: options.store, 'sandbox-command': options.sandboxCommand, 'coordination-root': options.coordinationRoot}
     : {request: options.request, scope: action === 'run' ? undefined : options.scope, 'run-id': options.runId, store: ['run', 'verify', 'status', 'cancel'].includes(action) ? options.store : undefined, choice: options.choice, environment: options.environment};
   for (const [flag, value] of Object.entries(parameters)) {
     if (value !== undefined) args.push(`--${flag}`, value);
@@ -112,8 +112,9 @@ export async function invokeSandboxValidation(action: string, options: {
       const scope = result.scope_sha256 === undefined ? undefined : expectedSandboxScope(options.request!, options.scope!);
       if (result.scope_sha256 !== scope) throw new Error('Invalid gate scope binding');
       if (result.status === 'needs_user_choice') {
-        const allowed = ['alternative', 'install', 'continue_without_sandbox'];
-        if (typeof result.prompt !== 'string' || !result.prompt.trim() || result.prompt.length > 2000 || !Array.isArray(result.choices) || result.choices.length < 1 || result.choices.length > allowed.length || new Set(result.choices).size !== result.choices.length || !result.choices.every(value => typeof value === 'string' && allowed.includes(value))) throw new Error('Invalid unavailable gate choices');
+        const allowed = ['alternative', 'install', 'continue_without_sandbox', 'local', 'skip'];
+        const choices = Array.isArray(result.choices) ? result.choices.map(value => typeof value === 'string' ? value : value && typeof value === 'object' && !Array.isArray(value) && typeof value.label === 'string' && value.label.length <= 256 ? value.id : undefined) : [];
+        if (typeof result.prompt !== 'string' || !result.prompt.trim() || result.prompt.length > 2000 || choices.length < 1 || choices.length > allowed.length || new Set(choices).size !== choices.length || !choices.every(value => typeof value === 'string' && allowed.includes(value))) throw new Error('Invalid unavailable gate choices');
         return {exitCode: 2, result: sanitizeDiagnostics({...result, prompt: redactDiagnostic(result.prompt)})};
       }
       const choice = result.choice as Record<string, unknown> | undefined;

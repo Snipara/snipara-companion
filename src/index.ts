@@ -28,6 +28,7 @@ import fs from "fs";
 import path from "path";
 import { Command } from "commander";
 import { invokeSandboxValidation } from "./runtime/sandbox-validation";
+import { validationMetadata } from "./commands/validation-profile";
 import { warnIfCompanionUpdateAvailable } from "./runtime/version-check";
 import { initCommand, showConfig } from "./commands/init";
 import { loginCommand } from "./commands/login";
@@ -753,6 +754,36 @@ const validation = program
   .description(
     "Use standalone Sandbox validation; unavailable environments require an explicit user choice"
   );
+validation.command("profiles")
+  .description("List prepared dependency profiles without Docker execution or installation")
+  .option("--sandbox-command <path>")
+  .action(async (options) => {
+    const outcome = await validationMetadata("profiles", options);
+    console.log(JSON.stringify(outcome.result));
+    process.exitCode = outcome.exitCode;
+  });
+validation.command("inspect")
+  .description("Inspect authoritative request identity without execution")
+  .requiredOption("--request <file>")
+  .option("--sandbox-command <path>")
+  .action(async (options) => {
+    const outcome = await validationMetadata("inspect", options);
+    console.log(JSON.stringify(outcome.result));
+    process.exitCode = outcome.exitCode;
+  });
+validation.command("prepare")
+  .description("Prepare a reviewable request using an already prepared immutable image; never execute it")
+  .requiredOption("--profile <name>", "python-ci or node-ci")
+  .requiredOption("--workspace <directory>")
+  .requiredOption("--image <digest>")
+  .option("--output <file>", "Create a new request file; an existing file is never replaced")
+  .option("--sandbox-command <path>")
+  .argument("[command...]", "Optional explicit command after --")
+  .action(async (command, options) => {
+    const outcome = await validationMetadata("prepare", {...options, command});
+    console.log(JSON.stringify(outcome.result));
+    process.exitCode = outcome.exitCode;
+  });
 validation
   .command("preview")
   .description("Read a bounded local request preview; no engine, validation or execution is performed")
@@ -776,6 +807,7 @@ for (const action of ["gate", "choose", "diagnose", "run", "verify", "status", "
   if (action === "run") {
     validationCommand
       .option("--no-reuse", "Request a fresh scoped run while retaining the shared validation lock")
+      .option("--coordination-root <directory>", "Use the same operator-approved coordination root as the MCP server")
       .option("--orchestrator-command <path>", "Compatible Orchestrator executable for scoped validation");
   }
   if (["gate", "diagnose"].includes(action)) {

@@ -6,5 +6,6 @@ COPY requirements.lock ./requirements.lock
 COPY wheelhouse/ ./wheelhouse/
 RUN --network=none python -m pip install --no-index --require-hashes \
     --find-links=./wheelhouse -r requirements.lock \
+    && python -c "import pytest, mypy, ruff, build, hatchling" \
     && python -m pip freeze --all > /opt/python-dependencies.freeze.txt
 WORKDIR /work

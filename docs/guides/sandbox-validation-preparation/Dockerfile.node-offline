@@ -6,6 +6,7 @@ COPY package.json package-lock.json ./
 COPY npm-cache/ /opt/reviewed-npm-cache/
 RUN --network=none npm ci --offline --ignore-scripts --no-audit --no-fund \
     --cache /opt/reviewed-npm-cache \
+    && node -e "for (const name of ['typescript','eslint','tsup']) require.resolve(name)" \
     && npm ls --all --json > /opt/node-dependencies.freeze.json \
     && ln -s /opt/reviewed-node-workspace/node_modules /node_modules
 WORKDIR /work
