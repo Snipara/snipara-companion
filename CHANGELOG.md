@@ -2,6 +2,10 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 4.2.1
+
+- Forward validation scope only to Sandbox commands that accept it, while preserving scoped coordinator runs.
+
 ## 4.2.0
 
 - Present shared immutable task references and conservative evidence-derived progress.

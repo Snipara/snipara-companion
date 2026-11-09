@@ -8,12 +8,12 @@ Registry state, plugin pins and the installed executable are separate observatio
 
 ## Choose an installation
 
-| Need | Installation |
-| --- | --- |
-| One local task or impact check | `npx -y snipara-companion@latest` followed by the command |
-| Daily standalone use | `npm install -g snipara-companion` |
+| Need                                           | Installation                                                            |
+| ---------------------------------------------- | ----------------------------------------------------------------------- |
+| One local task or impact check                 | `npx -y snipara-companion@latest` followed by the command               |
+| Daily standalone use                           | `npm install -g snipara-companion`                                      |
 | Compatible local tools and native client setup | `npx -y create-snipara@latest init --profile local-work --client codex` |
-| Reproduce an exact candidate | Install its reviewed tarball and retain its hash |
+| Reproduce an exact candidate                   | Install its reviewed tarball and retain its hash                        |
 
 Standalone Companion requires Node.js 18+. Managed local work also requires
 the Python runtime supported by the installer. It prepares Companion,
@@ -41,17 +41,17 @@ configuration access. A local source build is not proof of a published package.
 
 ## Choose your path
 
-| Tools | Entry point | Boundary |
-| --- | --- | --- |
-| Hosted MCP only | Source and memory queries in the existing client | No local task tracking or implicit Controller |
-| Companion only | `task start/work/verify/decide/resume` | No account or Orchestrator required; missing checks stay visible |
-| Orchestrator only | `task intake/start/show/resume` | Independent Controller and proof controls |
-| Managed local work | `create-snipara init --profile local-work` | Compatible tools; no automatic test or worker launch |
-| Explicit combined workflow | Context export and reviewed Controller bridge | Exact identities, policy, evidence and consumer compatibility |
+| Tools                      | Entry point                                      | Boundary                                                         |
+| -------------------------- | ------------------------------------------------ | ---------------------------------------------------------------- |
+| Hosted MCP only            | Source and memory queries in the existing client | No local task tracking or implicit Controller                    |
+| Companion only             | `task start/work/verify/decide/resume`           | No account or Orchestrator required; missing checks stay visible |
+| Orchestrator only          | `task intake/start/show/resume`                  | Independent Controller and proof controls                        |
+| Managed local work         | `create-snipara init --profile local-work`       | Compatible tools; no automatic test or worker launch             |
+| Explicit combined workflow | Context export and reviewed Controller bridge    | Exact identities, policy, evidence and consumer compatibility    |
 
 See [task journey](TASK_JOURNEY.md), [task context](TASK_CONTEXT.md) and
 [continuity](WORK_CONTINUITY.md). Repository checks require a prepared
-[Sandbox validation request](guides/sandbox-validation-preparation/README.md).
+[Sandbox validation request](https://github.com/Snipara/snipara-companion/blob/main/docs/guides/sandbox-validation-preparation/README.md).
 
 <a id="contrats-et-reprise"></a>
 
@@ -63,8 +63,9 @@ See [task journey](TASK_JOURNEY.md), [task context](TASK_CONTEXT.md) and
   `toolchain status`; do not infer compatibility by mixing arbitrary latest
   releases. Plugin pins have their own delivery lifecycle.
 - **Scoped validation:** needs a compatible Orchestrator and Sandbox contract.
-  Scope, request, source, image and artifacts remain bound to the receipt.
-  Reuse requires fresh verification. A missing coordinator cannot silently
+  The gate and coordinator establish scope; the Sandbox receipt binds the
+  request, source, image and artifacts. Reuse requires fresh verification. A
+  missing coordinator cannot silently
   fall back to uncoordinated execution.
 - **Task context:** `source-context-v1` retains references and context;
   `runtime-source-context-v1` additionally binds exact task bodies. Older

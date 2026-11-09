@@ -29,7 +29,11 @@ function createDocsSmokeRepo() {
   runGit(dir, ["init", "-b", "dev"]);
   fs.mkdirSync(path.join(dir, "docs"), { recursive: true });
   fs.writeFileSync(path.join(dir, "README.md"), "# Fixture\n", "utf8");
-  fs.writeFileSync(path.join(dir, "docs", "architecture.md"), "# Architecture\n", "utf8");
+  fs.writeFileSync(
+    path.join(dir, "docs", "architecture.md"),
+    "# Architecture\n",
+    "utf8",
+  );
   fs.writeFileSync(
     path.join(dir, "snipara.project-context.json"),
     JSON.stringify(
@@ -41,24 +45,31 @@ function createDocsSmokeRepo() {
             authority: "canonical",
             tier: "HOT",
             required: true,
-            description: "Architecture context that agents should treat as canonical.",
+            description:
+              "Architecture context that agents should treat as canonical.",
           },
         ],
         policies: [
           {
             id: "review-context-changes",
             scope: "memory.canonical",
-            requirement: "Human review required before changing canonical context.",
+            requirement:
+              "Human review required before changing canonical context.",
             reviewRequired: true,
           },
         ],
       },
       null,
-      2
+      2,
     ),
-    "utf8"
+    "utf8",
   );
-  runGit(dir, ["add", "README.md", "docs/architecture.md", "snipara.project-context.json"]);
+  runGit(dir, [
+    "add",
+    "README.md",
+    "docs/architecture.md",
+    "snipara.project-context.json",
+  ]);
   runGit(dir, ["commit", "-m", "initial docs smoke fixture"]);
   return dir;
 }
@@ -94,7 +105,7 @@ stdout:
 ${result.stdout}
 
 stderr:
-${result.stderr}`
+${result.stderr}`,
   );
 }
 
@@ -117,7 +128,10 @@ function extractMarkdownSection(markdown, heading) {
 
 function extractFencedBlocks(markdown, language) {
   const blocks = [];
-  const fencePattern = new RegExp("```" + language + "\\n([\\s\\S]*?)\\n```", "g");
+  const fencePattern = new RegExp(
+    "```" + language + "\\n([\\s\\S]*?)\\n```",
+    "g",
+  );
   for (const match of markdown.matchAll(fencePattern)) {
     blocks.push(match[1]);
   }
@@ -161,16 +175,19 @@ function splitBashCommands(block) {
   return commands;
 }
 
-function readmeContextControlCommands() {
-  const readme = fs.readFileSync(path.join(packageRoot, "README.md"), "utf8");
-  const section = extractMarkdownSection(readme, "### Context Control");
+function advancedReferenceContextControlCommands() {
+  const reference = fs.readFileSync(
+    path.join(packageRoot, "docs", "ADVANCED_REFERENCE.md"),
+    "utf8",
+  );
+  const section = extractMarkdownSection(reference, "### Context Control");
   return extractFencedBlocks(section, "bash").flatMap(splitBashCommands);
 }
 
 function fullReferenceContextControlCommands() {
   const fullReference = fs.readFileSync(
     path.join(packageRoot, "docs", "FULL_REFERENCE.md"),
-    "utf8"
+    "utf8",
   );
   return fullReference
     .split(/\r?\n/)
@@ -178,8 +195,8 @@ function fullReferenceContextControlCommands() {
     .filter((line) => /^snipara-companion context-control\b/.test(line));
 }
 
-test("README context-control bash examples execute against the local CLI", () => {
-  const commands = readmeContextControlCommands();
+test("Advanced reference context-control bash examples execute against the local CLI", () => {
+  const commands = advancedReferenceContextControlCommands();
   assert.deepEqual(commands, [
     'npx -y snipara-companion context-control plan --summary "record reviewed context state" --output .snipara/context-control/plans/demo.json',
     "npx -y snipara-companion context-control apply --plan .snipara/context-control/plans/demo.json --approve",

@@ -104,7 +104,7 @@ See [create-snipara](https://www.npmjs.com/package/create-snipara).
 Companion delegates repository checks to Snipara Sandbox. Use an immutable
 source snapshot, an already prepared dependency image and a reviewed request.
 The preparation guide includes an example request and offline image recipes:
-[prepare validation](docs/guides/sandbox-validation-preparation/README.md).
+[prepare validation](https://github.com/Snipara/snipara-companion/blob/main/docs/guides/sandbox-validation-preparation/README.md).
 
 ```bash
 snipara-companion validation profiles
@@ -151,16 +151,16 @@ approved project decision.
 
 ## Choose the command for the job
 
-| Need | Commands | Guide |
-| --- | --- | --- |
-| One scoped task | `task start/work/verify/decide/resume` | [Task journey](docs/TASK_JOURNEY.md) |
-| Code impact and source snapshots | `code impact`, `source init/sync/status` | [Advanced reference](docs/ADVANCED_REFERENCE.md) |
-| A phased plan | `workflow start`, `phase-start`, `phase-commit`, `final-commit` | [Portable workflows](docs/portable-methods.md) |
-| Per-task source context | `workflow task-start`, `workflow export-context` | [Task context](docs/TASK_CONTEXT.md) |
-| Checkpoints and handoffs | `workflow checkpoint/resume`, `team-sync` | [Continuity](docs/WORK_CONTINUITY.md) |
-| Environment diagnostics | `doctor`, `toolchain status`, `validation inspect/gate` | [Distribution](docs/DISTRIBUTION.md) |
-| Local usage visibility | `workflow efficiency --json` | CLI `workflow efficiency --help` |
-| Detailed integrations, policy and workers | `agent-context`, `context-control`, `workers`, `context-pack` | [Advanced reference](docs/ADVANCED_REFERENCE.md) |
+| Need                                      | Commands                                                        | Guide                                            |
+| ----------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------ |
+| One scoped task                           | `task start/work/verify/decide/resume`                          | [Task journey](docs/TASK_JOURNEY.md)             |
+| Code impact and source snapshots          | `code impact`, `source init/sync/status`                        | [Advanced reference](docs/ADVANCED_REFERENCE.md) |
+| A phased plan                             | `workflow start`, `phase-start`, `phase-commit`, `final-commit` | [Portable workflows](docs/portable-methods.md)   |
+| Per-task source context                   | `workflow task-start`, `workflow export-context`                | [Task context](docs/TASK_CONTEXT.md)             |
+| Checkpoints and handoffs                  | `workflow checkpoint/resume`, `team-sync`                       | [Continuity](docs/WORK_CONTINUITY.md)            |
+| Environment diagnostics                   | `doctor`, `toolchain status`, `validation inspect/gate`         | [Distribution](docs/DISTRIBUTION.md)             |
+| Local usage visibility                    | `workflow efficiency --json`                                    | CLI `workflow efficiency --help`                 |
+| Detailed integrations, policy and workers | `agent-context`, `context-control`, `workers`, `context-pack`   | [Advanced reference](docs/ADVANCED_REFERENCE.md) |
 
 `workflow run` chooses a workflow mode; root `run` is the separate Project
 Intelligence flow. `final-commit` records workflow closure, not a Git commit.
