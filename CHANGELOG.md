@@ -2,6 +2,12 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 4.2.0
+
+- Present shared immutable task references and conservative evidence-derived progress.
+- Resolve compatible managed local-work peers and derive coordinated validation lots automatically.
+- Add lightweight diagnostics and a pinned native MCP launcher; preserve standalone compatibility.
+
 ## 4.1.0
 
 - Add metadata-only validation profiles, canonical request inspection and reviewed request preparation through Sandbox 2.5.

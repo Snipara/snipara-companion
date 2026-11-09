@@ -2802,7 +2802,7 @@ test("workflow phase-start prints code impact and symbol-card gates", () => {
   assert.match(result.stdout, /execution\/test\/debug\/finalization/);
 });
 
-test("doctor json reports runtime readiness", () => {
+test("deep doctor json reports runtime readiness", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-doctor-ok-"));
   fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
   fs.mkdirSync(path.join(dir, ".snipara", "companion"), { recursive: true });
@@ -2846,7 +2846,7 @@ test("doctor json reports runtime readiness", () => {
     "utf8"
   );
 
-  const result = runCli(["doctor", "--json"], { cwd: dir, nodeArgs: ["-r", preloadPath] });
+  const result = runCli(["doctor", "--deep", "--json"], { cwd: dir, nodeArgs: ["-r", preloadPath] });
   assert.equal(result.status, 0);
   const report = JSON.parse(result.stdout);
   assert.equal(typeof report.companion.configured, "boolean");
@@ -2870,7 +2870,7 @@ test("doctor json reports runtime readiness", () => {
   assert.match(report.toolCatalog.detail, /snipara_help\(list_all=true\) returned 0 tools/);
 });
 
-test("doctor json detects venv-installed orchestrator", () => {
+test("deep doctor json detects venv-installed orchestrator", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-doctor-venv-"));
   fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
   const binDir = path.join(dir, "packages", "agentic-orchestrator", ".venv", "bin");
@@ -2883,7 +2883,7 @@ test("doctor json detects venv-installed orchestrator", () => {
   );
   fs.chmodSync(orchestratorPath, 0o755);
 
-  const result = runCli(["doctor", "--json"], {
+  const result = runCli(["doctor", "--deep", "--json"], {
     cwd: dir,
     env: {
       PATH: path.dirname(process.execPath),
@@ -2897,7 +2897,7 @@ test("doctor json detects venv-installed orchestrator", () => {
   assert.equal(report.orchestrator.version, "snipara-orchestrator 1.2.3");
 });
 
-test("doctor json detects workspace companion version newer than running CLI", () => {
+test("deep doctor json detects workspace companion version newer than running CLI", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-doctor-version-"));
   fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
   fs.mkdirSync(path.join(dir, "packages", "cli"), { recursive: true });
@@ -2907,7 +2907,7 @@ test("doctor json detects workspace companion version newer than running CLI", (
     "utf8"
   );
 
-  const result = runCli(["doctor", "--json"], { cwd: dir });
+  const result = runCli(["doctor", "--deep", "--json"], { cwd: dir });
   assert.equal(result.status, 0);
   const report = JSON.parse(result.stdout);
   assert.equal(report.companionVersion.workspacePackageVersion, "99.0.0");
@@ -2919,12 +2919,12 @@ test("doctor json detects workspace companion version newer than running CLI", (
   );
 });
 
-test("doctor json detects provider keys from workspace dotenv files", () => {
+test("deep doctor json detects provider keys from workspace dotenv files", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-doctor-"));
   fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
   fs.writeFileSync(path.join(dir, ".env"), "OPENAI_API_KEY=sk-test-dotenv\n", "utf8");
 
-  const result = runCli(["doctor", "--json"], { cwd: dir });
+  const result = runCli(["doctor", "--deep", "--json"], { cwd: dir });
   assert.equal(result.status, 0);
   const report = JSON.parse(result.stdout);
   assert.equal(report.providerKeys.openai, true);
@@ -2934,7 +2934,7 @@ test("doctor json detects provider keys from workspace dotenv files", () => {
   assert.doesNotMatch(result.stdout, /sk-test-dotenv/);
 });
 
-test("doctor json detects Snipara Sandbox MCP in Codex TOML config", () => {
+test("deep doctor json detects Snipara Sandbox MCP in Codex TOML config", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-codex-runtime-"));
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-home-"));
   fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
@@ -2950,7 +2950,7 @@ test("doctor json detects Snipara Sandbox MCP in Codex TOML config", () => {
     "utf8"
   );
 
-  const result = runCli(["doctor", "--json"], {
+  const result = runCli(["doctor", "--deep", "--json"], {
     cwd: dir,
     env: {
       HOME: home,
@@ -2966,7 +2966,7 @@ test("doctor json detects Snipara Sandbox MCP in Codex TOML config", () => {
   );
 });
 
-test("doctor json keeps legacy rlm-runtime MCP detection", () => {
+test("deep doctor json keeps legacy rlm-runtime MCP detection", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-legacy-runtime-"));
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-home-"));
   fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
@@ -2977,7 +2977,7 @@ test("doctor json keeps legacy rlm-runtime MCP detection", () => {
     "utf8"
   );
 
-  const result = runCli(["doctor", "--json"], {
+  const result = runCli(["doctor", "--deep", "--json"], {
     cwd: dir,
     env: {
       HOME: home,
@@ -2988,7 +2988,7 @@ test("doctor json keeps legacy rlm-runtime MCP detection", () => {
   assert.equal(report.runtime.mcpConfigured, true);
 });
 
-test("doctor json flags unauthorized snipara auth explicitly", () => {
+test("deep doctor json flags unauthorized snipara auth explicitly", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-doctor-401-"));
   fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
   fs.mkdirSync(path.join(dir, ".snipara", "companion"), { recursive: true });
@@ -3020,7 +3020,7 @@ test("doctor json flags unauthorized snipara auth explicitly", () => {
     "utf8"
   );
 
-  const result = runCli(["doctor", "--json"], { cwd: dir, nodeArgs: ["-r", preloadPath] });
+  const result = runCli(["doctor", "--deep", "--json"], { cwd: dir, nodeArgs: ["-r", preloadPath] });
   assert.equal(result.status, 0);
   const report = JSON.parse(result.stdout);
   assert.equal(report.auth.checked, true);

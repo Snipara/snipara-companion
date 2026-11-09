@@ -3,22 +3,10 @@ const test = require('node:test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const Module = require('node:module');
-const ts = require('typescript');
 const sourcePath = path.resolve(__dirname, '../src/runtime/sandbox-validation.ts');
-const compiled = ts.transpileModule(fs.readFileSync(sourcePath, 'utf8'), {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022}});
-const adapter = new Module(sourcePath, module);
-adapter.filename = sourcePath;
-adapter.paths = module.paths;
-const identityPath = path.resolve(__dirname, '../src/runtime/sandbox-identity.ts');
-const identityModule = new Module(identityPath, module);
-identityModule.filename=identityPath;
-identityModule.paths=module.paths;
-identityModule._compile(ts.transpileModule(fs.readFileSync(identityPath,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,identityPath);
-const originalRequire=adapter.require.bind(adapter);
-adapter.require=name=>name==='./sandbox-identity' ? identityModule.exports : originalRequire(name);
-adapter._compile(compiled.outputText, sourcePath);
-const {invokeSandboxValidation, executeBounded} = adapter.exports;
+const {loadRuntimeSource} = require('./helpers/runtime-source.cjs');
+const {invokeSandboxValidation, executeBounded} = loadRuntimeSource(sourcePath);
+const {expectedSandboxScope} = loadRuntimeSource(path.resolve(__dirname, '../src/runtime/sandbox-identity.ts'));
 const vectors=require('./fixtures/sandbox-scope-v2.json');
 function scopeRequest(folder){ const request=path.join(folder,'request.json');fs.writeFileSync(request,JSON.stringify(vectors.cases[0].request));return request; }
 
@@ -119,13 +107,10 @@ test('parent SIGTERM stops its detached runtime', async t => {
   const {once}=require('node:events');
   const folder=fs.mkdtempSync(path.join(os.tmpdir(),'sandbox-interrupt-'));
   t.after(()=>fs.rmSync(folder,{recursive:true,force:true}));
-  const adapterPath=path.join(folder,'adapter.cjs');
-  fs.writeFileSync(adapterPath,compiled.outputText);
-  fs.writeFileSync(path.join(folder,'sandbox-identity.js'),ts.transpileModule(fs.readFileSync(identityPath,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText);
   const ready=path.join(folder,'ready');
   const alive=path.join(folder,'alive');
   const runtime=`process.on('SIGTERM',()=>{}); require('fs').writeFileSync(${JSON.stringify(ready)},String(process.pid)); setTimeout(()=>require('fs').writeFileSync(${JSON.stringify(alive)},'alive'),700); setInterval(()=>{},100);`;
-  const script=`require(${JSON.stringify(adapterPath)}).executeBounded(process.execPath,['-e',${JSON.stringify(runtime)}],process.env,30000).catch(()=>{process.exitCode=2});`;
+  const script=`require(${JSON.stringify(require.resolve('./helpers/runtime-source.cjs'))}).loadRuntimeSource(${JSON.stringify(sourcePath)}).executeBounded(process.execPath,['-e',${JSON.stringify(runtime)}],process.env,30000).catch(()=>{process.exitCode=2});`;
   const parent=spawn(process.execPath,['-e',script],{stdio:'ignore'});
   t.after(()=>{try{parent.kill('SIGKILL')}catch{};if(fs.existsSync(ready)){try{process.kill(Number(fs.readFileSync(ready,'utf8')),'SIGKILL')}catch{}}});
   const deadline=Date.now()+3000;
@@ -181,7 +166,7 @@ test('portable scope identity matches independent public vectors', t => {
   t.after(()=>fs.rmSync(folder,{recursive:true,force:true}));
   for(const vector of vectors.cases){
     const request=path.join(folder,'request.json');fs.writeFileSync(request,JSON.stringify(vector.request));
-    assert.equal(identityModule.exports.expectedSandboxScope(request,vector.scope),vector.sha256);
+    assert.equal(expectedSandboxScope(request,vector.scope),vector.sha256);
   }
 });
 

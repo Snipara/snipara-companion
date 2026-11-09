@@ -37,6 +37,24 @@ process (`SNIPARA_LOCAL_ONLY=1`), even if a Hosted account is configured. Saved
 credentials remain unchanged. Existing advanced commands retain their behavior.
 Another active workflow is preserved and prevents accidental replacement.
 
+The additive `task.reference` (`snipara.task_reference.v1`) binds the immutable
+intake, canonical local repository/worktree, owner file revision and effective
+verification contract. `identitySha256` is shared across owners observing the
+same intake in the same worktree; `referenceSha256` also includes owner revision
+and artifact paths. Neither hash grants authority or identifies a trusted hosted
+project. A mismatched legacy task stays readable with a null reference and a
+`task.referenceReason`; there is no new task store or migration.
+
+Managed views use `managedProgress` (`snipara.task_progress.v1`) while preserving
+the legacy `status`. Saved running markers and recorded closure are historical,
+not observed execution or verified completion. A closure remains visible through
+`recordedClosure`. Static review, no runtime checks and missing runtime proof have
+distinct reasons, without changing proof policy. A Controller dossier can supply
+managed proof only when its task reference matches the intake/worktree identity
+and effective verification contract; matching a title or objective alone is
+insufficient. Standalone consumers can use the exported pure `buildTaskReference`
+and `projectManagedProgress` helpers without creating a Controller.
+
 ## Select a GitHub issue, or stay local
 
 Local tasks need no GitHub authentication. For a selected issue, existing `gh`

@@ -41,10 +41,19 @@ test("local framing and preparation reuse feature/workflow without GitHub, accou
   await environment({ NODE_OPTIONS: `--require=${transport.preload}`, SNIPARA_API_KEY: "configured-fixture-key", SNIPARA_PROJECT_ID: "fixture" }, async () => {
     const card = await f.run("start", { input: f.input });
     assert.equal(card.schemaVersion, "snipara.task_journey.v1"); assert.equal(card.status, "ready", JSON.stringify(card.blockers));
+    assert.equal(card.task.reference.taskId, card.task.intake.id);
+    assert.equal(card.task.reference.intake.contentSha256, card.task.intakeSha256);
+    assert.equal(card.task.reference.lifecycle.ownerKind, "companion_workflow");
+    assert.equal(card.task.reference.projectBinding, null);
+    assert.equal(card.managedProgress.state, "ready");
     assert.equal(f.state().goal, f.input.goal); assert.equal(f.state().coordination.mode, "standard");
     assert.equal(fs.existsSync(path.join(f.cwd, ".snipara/tasks/known-task/feature.json")), true);
     assert.deepEqual(card.steps.map((item) => item.id), ["frame", "work", "verify", "decide", "resume"]);
     const working = await f.run("work"); assert.equal(working.status, "working");
+    assert.equal(working.task.reference.identitySha256, card.task.reference.identitySha256);
+    assert.notEqual(working.task.reference.referenceSha256, card.task.reference.referenceSha256);
+    assert.equal(working.managedProgress.executionObserved, false);
+    assert.equal(working.managedProgress.state, "ready", "a saved in-progress marker is not observed source work");
     assert.equal(working.runtimeDelivery.status, "caller_output_observed");
     assert.equal(working.authority.executionGranted, false); assert.equal(working.authority.semanticUseVerified, false);
     assert.equal(fs.existsSync(transport.marker), false, "local-only opt-in must suppress account/global configuration calls");
@@ -125,6 +134,10 @@ test("declared completion and local closeout never become observed functional su
     assert.equal(result.steps.find((item) => item.id === "verify").status, "unverified");
     const closed = await f.run("close", { summary: "Handed to human review", outcome: "completed" });
     assert.equal(closed.status, "closed", JSON.stringify(closed.blockers));
+    assert.equal(closed.managedProgress.state, "verification_required");
+    assert.equal(closed.managedProgress.recordedClosure, true);
+    assert.equal(closed.managedProgress.evidence, "not_observed");
+    assert.equal(closed.managedProgress.integrationObserved, false);
     assert.equal(closed.recommendation.action, "block"); assert.equal(closed.authority.declarationsAreFunctionalProof, false);
     const saved = f.state(); assert.equal(saved.phaseCommitReceipts[0].hostedStatus, "local_fallback");
     assert.equal(fs.existsSync(transport.marker), false);
@@ -161,6 +174,21 @@ test("fresh dossier requires explicit existing Controller binding and preserves 
   assert.equal(card.status, "integration_possible"); assert.equal(card.recommendation.fresh, true);
   assert.equal(card.authority.integrationGranted, false); assert.equal(card.nextAction.kind, "show");
   assert.deepEqual(card.dossier, dossier);
+  assert.equal(card.managedProgress.state, "blocked", "same-title dossier lacks exact intake identity");
+  assert.equal(card.managedProgress.evidence, "not_observed");
+  assert.ok(card.managedProgress.reasonCodes.includes("task_proof_identity_not_observed"));
+});
+
+test("changed owner contract cannot keep a shared task reference", async (t) => {
+  const f = fixture(t); await f.run("start", { input: f.input });
+  const target = path.join(f.cwd, ".snipara/workflow/current.json"), state = f.state();
+  state.phases[0].tasks[0].verification = ["node different-check.js"];
+  fs.writeFileSync(target, JSON.stringify(state));
+  const shown = buildTaskJourneyCard({ cwd: f.cwd, slug: "known-task" });
+  assert.equal(shown.task.reference, null);
+  assert.equal(shown.task.referenceReason, "task_contract_mismatch");
+  assert.equal(shown.managedProgress.state, "blocked");
+  assert.equal(shown.managedProgress.executionObserved, false);
 });
 
 test("an unrelated Controller dossier or an unknown mandatory gate cannot produce integration_possible", async (t) => {

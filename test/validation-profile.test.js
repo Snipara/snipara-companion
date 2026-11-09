@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const Module = require('node:module');
 const ts = require('typescript');
+const {loadRuntimeSource} = require('./helpers/runtime-source.cjs');
 
 function subject(response, calls) {
   const file = path.resolve(__dirname, '../src/commands/validation-profile.ts');
@@ -17,7 +18,9 @@ function subject(response, calls) {
       if (response instanceof Error) throw response;
       return {status: 0, stdout: JSON.stringify(response), stderr: ''};
     },
-  } : original(name);
+  } : name === '../runtime/managed-toolchain'
+    ? loadRuntimeSource(path.resolve(__dirname, '../src/runtime/managed-toolchain.ts'))
+    : original(name);
   loaded._compile(ts.transpileModule(fs.readFileSync(file, 'utf8'), {
     compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true},
   }).outputText, file);

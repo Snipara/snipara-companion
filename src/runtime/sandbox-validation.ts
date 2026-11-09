@@ -1,6 +1,13 @@
 /** Public Sandbox CLI adapter. No account, provider credentials or local fallback. */
 import { spawn } from 'node:child_process';
 import {expectedSandboxScope} from './sandbox-identity';
+import {managedValidationScope} from '../contracts/project-intelligence';
+import {
+  resolveManagedToolchain, managedToolchainEnvironment, managedCoordinationRoot,
+  assertManagedToolchainCompatibility, ManagedToolchainError, type ResolvedManagedToolchain,
+} from './managed-toolchain';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 const DEFAULT_PROBE_TIMEOUT_SECONDS = 30;
 const MAX_PROBE_TIMEOUT_SECONDS = 60;
@@ -48,9 +55,51 @@ export async function invokeSandboxValidation(action: string, options: {
   choice?: string; environment?: string; acknowledgeUserChoice?: boolean;
   sandboxCommand?: string; probeTimeoutSeconds?: number;
   noReuse?: boolean; orchestratorCommand?: string; coordinationRoot?: string;
+  toolchainManifest?: string;
 }): Promise<{ exitCode: number; result: Record<string, unknown> }> {
   if (!['gate', 'choose', 'diagnose', 'run', 'verify', 'status', 'cancel'].includes(action)) {
     throw new Error('Unsupported Sandbox validation action');
+  }
+  let managed: ResolvedManagedToolchain | null;
+  try {
+    managed = resolveManagedToolchain({manifestPath: options.toolchainManifest});
+    if (managed) {
+      assertManagedToolchainCompatibility(managed);
+      for (const [supplied, selected] of [
+        [options.sandboxCommand, managed.components.sandbox.command],
+        [options.orchestratorCommand, managed.components.orchestrator.command],
+      ]) {
+        if (supplied !== undefined && fs.realpathSync(supplied) !== selected) {
+          throw new ManagedToolchainError('toolchain_override_conflict', 'Explicit commands conflict with the selected managed toolchain');
+        }
+      }
+      options = {...options, sandboxCommand: managed.components.sandbox.command,
+        orchestratorCommand: action === 'run' ? managed.components.orchestrator.command : undefined};
+      if (options.request) {
+        const inspected = await executeBounded(managed.components.sandbox.command,
+          ['validation', 'inspect', '--request', options.request], managedToolchainEnvironment(managed), 15_000);
+        const value: unknown = JSON.parse(inspected.stdout);
+        if (inspected.status !== 0 || !value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid canonical inspection');
+        const inspection = value as Record<string, unknown>;
+        const canonical = inspection.canonical_request;
+        if (inspection.schema_version !== 'snipara.validation.inspection.v1' || inspection.execution_authorized !== false ||
+            inspection.requirements_qualified !== false || typeof inspection.request_sha256 !== 'string' ||
+            !canonical || typeof canonical !== 'object' || Array.isArray(canonical) ||
+            typeof (canonical as Record<string, unknown>).workspace !== 'string') throw new Error('Unsupported canonical inspection');
+        const root = managedCoordinationRoot((canonical as Record<string, string>).workspace, options.coordinationRoot);
+        options = {...options, scope: options.scope ?? managedValidationScope(inspection.request_sha256),
+          store: options.store ?? path.join(root, '.snipara', 'validation'),
+          coordinationRoot: action === 'run' ? root : undefined};
+      } else if (['status', 'cancel'].includes(action)) {
+        const root = managedCoordinationRoot(fs.realpathSync(process.cwd()), options.coordinationRoot);
+        options = {...options, store: options.store ?? path.join(root, '.snipara', 'validation')};
+      }
+    }
+  } catch (error) {
+    return {exitCode: 2, result: {status: 'managed_toolchain_needs_attention', stage: 'managed_resolution',
+      reason_code: error instanceof ManagedToolchainError ? error.code : 'managed_request_invalid',
+      reason: redactDiagnostic((error as Error).message), execution_authorized_by_gate: false,
+      next_action: 'create-snipara repair --profile local-work'}};
   }
   const diagnostic = ['gate', 'diagnose'].includes(action);
   if (options.probeTimeoutSeconds !== undefined && (!diagnostic || !Number.isInteger(options.probeTimeoutSeconds) || options.probeTimeoutSeconds < 1 || options.probeTimeoutSeconds > MAX_PROBE_TIMEOUT_SECONDS)) {
@@ -78,7 +127,7 @@ export async function invokeSandboxValidation(action: string, options: {
   if (!delegated && options.acknowledgeUserChoice) args.push('--acknowledge-user-choice');
   // Omit the new option by default so older published Sandbox CLIs remain compatible.
   if (options.probeTimeoutSeconds !== undefined) args.push('--probe-timeout-seconds', String(options.probeTimeoutSeconds));
-  const env: Record<string, string | undefined> = {};
+  const env: Record<string, string | undefined> = managed ? managedToolchainEnvironment(managed) : {};
   for (const name of ['PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG']) {
     if (process.env[name]) env[name] = process.env[name];
   }

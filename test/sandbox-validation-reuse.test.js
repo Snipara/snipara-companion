@@ -3,23 +3,8 @@ const test = require('node:test');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const Module = require('node:module');
 const {spawnSync} = require('node:child_process');
-const ts = require('typescript');
-
-function loadSource(file) {
-  const loaded = new Module(file, module);
-  loaded.filename = file;
-  loaded.paths = module.paths;
-  const originalRequire = loaded.require.bind(loaded);
-  loaded.require = name => name === './sandbox-identity'
-    ? loadSource(path.join(path.dirname(file), 'sandbox-identity.ts'))
-    : originalRequire(name);
-  loaded._compile(ts.transpileModule(fs.readFileSync(file, 'utf8'), {
-    compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022},
-  }).outputText, file);
-  return loaded.exports;
-}
+const {loadRuntimeSource: loadSource} = require('./helpers/runtime-source.cjs');
 const {invokeSandboxValidation} = loadSource(path.resolve(__dirname, '../src/runtime/sandbox-validation.ts'));
 const {expectedSandboxScope} = loadSource(path.resolve(__dirname, '../src/runtime/sandbox-identity.ts'));
 

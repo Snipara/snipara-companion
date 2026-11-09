@@ -29,6 +29,8 @@ import path from "path";
 import { Command } from "commander";
 import { invokeSandboxValidation } from "./runtime/sandbox-validation";
 import { validationMetadata } from "./commands/validation-profile";
+import {inspectManagedToolchain, managedTaskRuntime} from "./runtime/managed-toolchain";
+import {launchManagedMcp} from "./runtime/managed-mcp";
 import { warnIfCompanionUpdateAvailable } from "./runtime/version-check";
 import { initCommand, showConfig } from "./commands/init";
 import { loginCommand } from "./commands/login";
@@ -116,6 +118,7 @@ import {
   buildTaskIntentGuide,
   executeTaskJourney,
   formatTaskJourneyCard,
+  formatManagedTaskJourneyCard,
   type TaskJourneyOptions,
 } from "./commands/task-journey";
 import { normalizeTaskContextRequest } from "./commands/workflow-task-context";
@@ -125,7 +128,28 @@ export {
   executeTaskJourney,
   buildTaskJourneyCard,
   formatTaskJourneyCard,
+  formatManagedTaskJourneyCard,
 } from "./commands/task-journey";
+export {
+  buildTaskReference, observeTaskWorkspace, projectManagedProgress, taskVerificationKind,
+} from "./commands/task-reference";
+export type {TaskReferenceV1, TaskReferenceInput, ManagedProgressV1, ManagedProgressInput} from "./commands/task-reference";
+export {
+  resolveManagedToolchain, inspectManagedToolchain, defaultManagedToolchainPath,
+  managedCoordinationRoot, managedToolchainEnvironment, ManagedToolchainError,
+  managedTaskRuntime, assertManagedToolchainCompatibility,
+} from "./runtime/managed-toolchain";
+export {prepareManagedMcpLaunch, launchManagedMcp} from "./runtime/managed-mcp";
+export {parseManagedToolchainManifest, managedValidationScope} from "./contracts/project-intelligence";
+let taskPresentationToolchain: ReturnType<typeof inspectManagedToolchain> | undefined;
+function formatSelectedTaskJourney(card: Parameters<typeof formatTaskJourneyCard>[0]): string {
+  taskPresentationToolchain ??= inspectManagedToolchain();
+  if (taskPresentationToolchain.status === "not_configured") return formatTaskJourneyCard(card);
+  const text = formatManagedTaskJourneyCard(card);
+  return taskPresentationToolchain.status === "needs_attention"
+    ? `${String(taskPresentationToolchain.detail)}\nNext: ${String(taskPresentationToolchain.nextAction)}\n\n${text}`
+    : text;
+}
 export { buildControllerCockpit } from "./commands/controller-cockpit";
 export { exportControllerBridge } from "./commands/controller-bridge";
 export {
@@ -644,7 +668,10 @@ function readCliVersion(): string {
 const program = new Command();
 program.showSuggestionAfterError(true);
 program.showHelpAfterError("\nRun the command with --help to see valid options and examples.");
-program.hook("preAction", () => {
+program.hook("preAction", (_thisCommand, actionCommand) => {
+  if (actionCommand.parent?.name() === "toolchain") return;
+  if (actionCommand.name() === "doctor" &&
+      (!actionCommand.opts().deep || inspectManagedToolchain().status !== "not_configured")) return;
   warnIfCompanionUpdateAvailable(readCliVersion());
 });
 
@@ -754,9 +781,33 @@ const validation = program
   .description(
     "Use standalone Sandbox validation; unavailable environments require an explicit user choice"
   );
+const toolchain = program.command("toolchain")
+  .description("Inspect the selected local-work installation without running tests or installing tools");
+toolchain.command("mcp")
+  .description("Connect the native client to the selected private local-work server over stdio")
+  .requiredOption("--workspace-root <directory>", "Canonical workspace supplied by the native client")
+  .option("--manifest <file>", "Explicit operator-owned managed manifest")
+  .action(async (options) => {
+    try { process.exitCode = await launchManagedMcp({workspaceRoot: options.workspaceRoot, manifestPath: options.manifest}); }
+    catch { console.error("The managed local-work connection could not start. Run create-snipara repair --profile local-work, then reconnect the client."); process.exitCode = 2; }
+  });
+for (const action of ["status", "doctor"]) {
+  toolchain.command(action).option("--json", "Print the bounded metadata report")
+    .option("--manifest <file>", "Explicit operator-owned managed manifest")
+    .action((options) => {
+      const report = inspectManagedToolchain({manifestPath: options.manifest});
+      if (options.json) console.log(JSON.stringify(report, null, 2));
+      else {
+        console.log(String(report.detail));
+        if (report.nextAction) console.log(`Next: ${String(report.nextAction)}`);
+      }
+      if (report.status === "needs_attention") process.exitCode = 2;
+    });
+}
 validation.command("profiles")
   .description("List prepared dependency profiles without Docker execution or installation")
   .option("--sandbox-command <path>")
+  .option("--toolchain-manifest <file>", "Explicit operator-owned managed manifest")
   .action(async (options) => {
     const outcome = await validationMetadata("profiles", options);
     console.log(JSON.stringify(outcome.result));
@@ -766,6 +817,7 @@ validation.command("inspect")
   .description("Inspect authoritative request identity without execution")
   .requiredOption("--request <file>")
   .option("--sandbox-command <path>")
+  .option("--toolchain-manifest <file>", "Explicit operator-owned managed manifest")
   .action(async (options) => {
     const outcome = await validationMetadata("inspect", options);
     console.log(JSON.stringify(outcome.result));
@@ -778,6 +830,7 @@ validation.command("prepare")
   .requiredOption("--image <digest>")
   .option("--output <file>", "Create a new request file; an existing file is never replaced")
   .option("--sandbox-command <path>")
+  .option("--toolchain-manifest <file>", "Explicit operator-owned managed manifest")
   .argument("[command...]", "Optional explicit command after --")
   .action(async (command, options) => {
     const outcome = await validationMetadata("prepare", {...options, command});
@@ -803,7 +856,8 @@ for (const action of ["gate", "choose", "diagnose", "run", "verify", "status", "
     .option("--choice <choice>", "Explicit user choice: alternative, install, local or skip")
     .option("--environment <name>", "Name the chosen alternative environment")
     .option("--acknowledge-user-choice", "Record an actual explicit user choice; never inferred")
-    .option("--sandbox-command <path>", "Explicit Sandbox executable; no shell interpolation");
+    .option("--sandbox-command <path>", "Explicit Sandbox executable; no shell interpolation")
+    .option("--toolchain-manifest <file>", "Explicit operator-owned managed manifest");
   if (action === "run") {
     validationCommand
       .option("--no-reuse", "Request a fresh scoped run while retaining the shared validation lock")
@@ -830,8 +884,9 @@ program
     "Diagnose Snipara companion, Snipara Sandbox, optional Orchestrator, provider keys, and Docker"
   )
   .option("--json", "Print raw JSON")
+  .option("--deep", "Explicitly include legacy runtime, registry and Hosted connection probes")
   .action(async (options) => {
-    await doctorCommand({ json: options.json });
+    await doctorCommand({ json: options.json, deep: options.deep });
   });
 
 program
@@ -1162,6 +1217,7 @@ taskJourney
         : undefined;
     const card = await executeTaskJourney({
       action: "start",
+      ...managedTaskRuntime(),
       cwd,
       slug: options.id,
       intake,
@@ -1171,7 +1227,7 @@ taskJourney
         ? undefined
         : { goal, criteria: options.accept, files: options.file, verification: options.check },
     });
-    console.log(options.json ? JSON.stringify(card, null, 2) : formatTaskJourneyCard(card));
+    console.log(options.json ? JSON.stringify(card, null, 2) : formatSelectedTaskJourney(card));
   });
 for (const action of ["show", "work", "verify", "decide", "resume", "close"] as const) {
   taskJourney
@@ -1216,9 +1272,9 @@ for (const action of ["show", "work", "verify", "decide", "resume", "close"] as 
         refreshDossier: options.refreshDossier,
         controllerId: options.controllerId,
         candidateId: options.candidateId,
-        orchestratorBin: options.orchestratorBin,
+        ...managedTaskRuntime(options.orchestratorBin),
       });
-      console.log(options.json ? JSON.stringify(card, null, 2) : formatTaskJourneyCard(card));
+      console.log(options.json ? JSON.stringify(card, null, 2) : formatSelectedTaskJourney(card));
     });
 }
 taskJourney
@@ -1231,18 +1287,18 @@ taskJourney
     if (!["json", "markdown"].includes(options.format))
       throw new Error("Unsupported task export format");
     const cwd = options.dir ?? process.cwd(),
-      card = await executeTaskJourney({ action: "show", cwd, slug: id });
+      card = await executeTaskJourney({ action: "show", cwd, slug: id, ...managedTaskRuntime() });
     if (options.output) {
       if (options.format === "json") writeBridgeImmutable(cwd, options.output, card);
       else
         writeBridgeImmutableBytes(
           cwd,
           options.output,
-          Buffer.from(formatTaskJourneyCard(card), "utf8")
+          Buffer.from(formatSelectedTaskJourney(card), "utf8")
         );
     }
     console.log(
-      options.format === "json" ? JSON.stringify(card, null, 2) : formatTaskJourneyCard(card)
+      options.format === "json" ? JSON.stringify(card, null, 2) : formatSelectedTaskJourney(card)
     );
   });
 taskJourney

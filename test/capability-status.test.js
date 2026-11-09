@@ -58,9 +58,9 @@ test('discovery probes receive only non-secret environment settings including PA
   for(const call of calls)assert.deepEqual(call.options.env,{PATH:'/usr/bin',HOME:'/tmp/example',LANG:'C.UTF-8'});
 });
 
-test('doctor retains existing JSON fields and adds honest capability states without configured auth',t=>{
+test('deep doctor retains existing JSON fields and adds honest capability states without configured auth',t=>{
   const folder=fs.mkdtempSync(path.join(os.tmpdir(),'doctor-capability-'));t.after(()=>fs.rmSync(folder,{recursive:true,force:true}));
-  const result=spawnSync(process.execPath,[path.resolve(__dirname,'../dist/index.js'),'doctor','--json'],{cwd:folder,encoding:'utf8',env:{PATH:process.env.PATH,HOME:folder,SNIPARA_COMPANION_SKIP_NPM_VERSION_CHECK:'1'},timeout:30000});
+  const result=spawnSync(process.execPath,[path.resolve(__dirname,'../dist/index.js'),'doctor','--deep','--json'],{cwd:folder,encoding:'utf8',env:{PATH:process.env.PATH,HOME:folder,SNIPARA_COMPANION_SKIP_NPM_VERSION_CHECK:'1'},timeout:30000});
   assert.equal(result.status,0,result.stderr);
   const report=JSON.parse(result.stdout);
   for(const key of ['runtime','orchestrator','docker','companionVersion','auth','toolCatalog'])assert.ok(Object.hasOwn(report,key));
@@ -70,17 +70,17 @@ test('doctor retains existing JSON fields and adds honest capability states with
 });
 
 
-test('public npm version discovery also strips provider credentials and injected Node options',async t=>{
+test('deep doctor public npm version discovery also strips provider credentials and injected Node options',async t=>{
   const folder=fs.mkdtempSync(path.join(os.tmpdir(),'doctor-npm-environment-'));t.after(()=>fs.rmSync(folder,{recursive:true,force:true}));
   const report={...fixture(),cwd:folder,workspaceRoot:null,companion:{configured:false,configPath:path.join(folder,'config.json')}};
   const calls=[];
-  const doctor=loadSource('../commands/doctor',{'chalk':{},'../runtime/capability-status':capability,'../runtime/detection':{detectRuntimeEnvironment:()=>report},'../api/client':{createClient:()=>{throw new Error('No auth probe expected')}},'node:child_process':{execFileSync:(command,args,options)=>{calls.push({command,args,options});return '3.10.0';}}});
+  const doctor=loadSource('../commands/doctor',{'chalk':{},'../runtime/capability-status':capability,'../runtime/detection':{detectRuntimeEnvironment:()=>report},'../runtime/managed-toolchain':{inspectManagedToolchain:()=>({status:'not_configured'})},'../api/client':{createClient:()=>{throw new Error('No auth probe expected')}},'node:child_process':{execFileSync:(command,args,options)=>{calls.push({command,args,options});return '3.10.0';}}});
   const previous={skip:process.env.SNIPARA_COMPANION_SKIP_NPM_VERSION_CHECK,key:process.env.OPENAI_API_KEY,nodeOptions:process.env.NODE_OPTIONS};
   const original=console.log;
   try {
     delete process.env.SNIPARA_COMPANION_SKIP_NPM_VERSION_CHECK;
     process.env.OPENAI_API_KEY='provider-secret';process.env.NODE_OPTIONS='--require unsafe.js';console.log=()=>{};
-    await doctor.doctorCommand({json:true});
+    await doctor.doctorCommand({json:true,deep:true});
   } finally {
     console.log=original;
     for(const [name,value] of [['SNIPARA_COMPANION_SKIP_NPM_VERSION_CHECK',previous.skip],['OPENAI_API_KEY',previous.key],['NODE_OPTIONS',previous.nodeOptions]]) {if(value===undefined)delete process.env[name];else process.env[name]=value;}

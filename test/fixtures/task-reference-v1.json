@@ -1,0 +1,119 @@
+{
+  "schemaVersion": "snipara.task_reference.fixtures.v1",
+  "intake": {
+    "version": "snipara.task_intake.v1",
+    "id": "task-unicode-20261109",
+    "goal": "Préserver l’accès 🧪 et les caractères é",
+    "criteria": ["Le résultat reste exact 🧪", "Aucun accès supplémentaire"],
+    "files": ["src/café.ts"],
+    "verification": ["git diff --check"],
+    "source": {
+      "kind": "local",
+      "repository": null,
+      "bodySha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "observedAt": "2026-11-09T10:00:00.000Z",
+      "authority": "untrusted_source"
+    },
+    "repositorySnapshot": {
+      "headSha": null,
+      "branch": null,
+      "indexSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "dirtyBaseline": [],
+      "dirtyBaselineTruncated": false,
+      "observedAt": "2026-11-09T10:00:00.000Z"
+    }
+  },
+  "references": [
+    {
+      "name": "companion",
+      "intakePath": ".snipara/tasks/example/task-intake.json",
+      "workspaceRoot": "/workspace/projet-é🧪",
+      "gitCommonDir": "/workspace/shared.git",
+      "lifecycle": {
+        "ownerKind": "companion_workflow",
+        "ownerId": "feature-example",
+        "statePath": ".snipara/workflow/current.json",
+        "revisionSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "effectiveVerification": ["git diff --check"]
+    },
+    {
+      "name": "controller-copy",
+      "intakePath": ".snipara/orchestrator/task-journeys/example/intake.json",
+      "workspaceRoot": "/workspace/projet-é🧪",
+      "gitCommonDir": "/workspace/shared.git",
+      "lifecycle": {
+        "ownerKind": "orchestrator_controller",
+        "ownerId": "example",
+        "statePath": ".snipara/orchestrator/project-controllers/example/state.json",
+        "revisionSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "effectiveVerification": ["git diff --check"]
+    },
+    {
+      "name": "other-worktree",
+      "intakePath": ".snipara/tasks/example/task-intake.json",
+      "workspaceRoot": "/workspace/other-worktree",
+      "gitCommonDir": "/workspace/shared.git",
+      "lifecycle": {
+        "ownerKind": "companion_workflow",
+        "ownerId": "feature-example",
+        "statePath": ".snipara/workflow/current.json",
+        "revisionSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "effectiveVerification": ["git diff --check"]
+    },
+    {
+      "name": "other-repository",
+      "intakePath": ".snipara/tasks/example/task-intake.json",
+      "workspaceRoot": "/workspace/projet-é🧪",
+      "gitCommonDir": "/workspace/foreign.git",
+      "lifecycle": {
+        "ownerKind": "companion_workflow",
+        "ownerId": "feature-example",
+        "statePath": ".snipara/workflow/current.json",
+        "revisionSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "effectiveVerification": ["git diff --check"]
+    },
+    {
+      "name": "additional-policy-proof",
+      "intakePath": ".snipara/tasks/example/task-intake.json",
+      "workspaceRoot": "/workspace/projet-é🧪",
+      "gitCommonDir": "/workspace/shared.git",
+      "lifecycle": {
+        "ownerKind": "companion_workflow",
+        "ownerId": "feature-example",
+        "statePath": ".snipara/workflow/current.json",
+        "revisionSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "effectiveVerification": ["git diff --check", "python -m pytest"]
+    }
+  ],
+  "progressDefaults": {
+    "referenceAvailable": true,
+    "contractComplete": true,
+    "blockingReasons": [],
+    "localChangesObserved": false,
+    "workDeclared": false,
+    "recordedClosure": false,
+    "verificationKind": "runtime",
+    "freshRecommendation": null,
+    "requiredChecksPassed": false
+  },
+  "progress": [
+    {"name": "ready-is-not-executing", "input": {}, "state": "ready", "evidence": "not_observed"},
+    {"name": "recorded-running-cannot-be-verified", "input": {"requiredChecksPassed": true}, "state": "ready", "evidence": "not_observed"},
+    {"name": "incomplete", "input": {"contractComplete": false}, "state": "needs_clarification", "evidence": "not_observed"},
+    {"name": "no-identity", "input": {"referenceAvailable": false}, "state": "blocked", "evidence": "not_observed"},
+    {"name": "blocker-wins-over-green", "input": {"blockingReasons": ["scope_changed"], "freshRecommendation": "integrate", "requiredChecksPassed": true}, "state": "blocked", "evidence": "not_observed"},
+    {"name": "scoped-changes", "input": {"localChangesObserved": true}, "state": "working", "evidence": "not_observed"},
+    {"name": "declared-finished", "input": {"workDeclared": true}, "state": "verification_required", "evidence": "not_observed"},
+    {"name": "historical-closure", "input": {"recordedClosure": true}, "state": "verification_required", "evidence": "not_observed"},
+    {"name": "static-review", "input": {"recordedClosure": true, "verificationKind": "static"}, "state": "review_required", "evidence": "not_observed"},
+    {"name": "no-runtime-checks", "input": {"recordedClosure": true, "verificationKind": "none"}, "state": "review_required", "evidence": "not_observed"},
+    {"name": "fresh-proofs-not-landed", "input": {"freshRecommendation": "integrate", "requiredChecksPassed": true}, "state": "integration_possible", "evidence": "fresh_required_checks"},
+    {"name": "candidate-correction", "input": {"freshRecommendation": "correct"}, "state": "blocked", "evidence": "not_observed"},
+    {"name": "candidate-blocked", "input": {"freshRecommendation": "block"}, "state": "blocked", "evidence": "not_observed"}
+  ]
+}

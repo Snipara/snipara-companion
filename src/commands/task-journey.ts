@@ -15,6 +15,8 @@ import { assertManagedWorkflowSchemaVersion, type ManagedWorkflowState, type Man
 import { projectTaskSupervision, type TaskSupervision } from "./task-supervision";
 import { projectSandboxEvidenceCard, type SandboxEvidenceCard } from "./sandbox-evidence-card";
 import { diagnoseWorkflowContinuityArtifact } from "./workflow-continuity";
+import { buildTaskReference, observeTaskWorkspace, projectManagedProgress, taskVerificationKind,
+  type ManagedProgressV1, type TaskReferenceV1 } from "./task-reference";
 
 type Data = Record<string, unknown>;
 const record = (value: unknown): value is Data => !!value && typeof value === "object" && !Array.isArray(value);
@@ -32,13 +34,15 @@ export interface TaskJourneyOptions {
   summary?: string; outcome?: "completed" | "partial" | "blocked" | "abandoned";
   why?: string; evidence?: string[]; contextRequest?: WorkflowTaskContextRequest;
   refreshDossier?: boolean; controllerId?: string; candidateId?: string; orchestratorBin?: string;
+  orchestratorEnv?: Record<string, string | undefined>;
 }
 export interface TaskJourneyCard {
   schemaVersion: "snipara.task_journey.v1";
   generatedAt: string;
   task: { id: string; goal: string; objective: string; criteria: string[]; files: string[]; scope: string[];
     verification: string[]; intakeSha256: string | null; source: unknown;
-    featurePath: string | null; workflowId: string | null; intake: TaskIntake | null };
+    featurePath: string | null; workflowId: string | null; intake: TaskIntake | null;
+    reference?: TaskReferenceV1 | null; referenceReason?: string | null };
   status: "needs_clarification" | "ready" | "working" | "verification_required" | "review_required" |
     "correction_required" | "blocked" | "integration_possible" | "integrated" | "closed";
   steps: Array<{ id: "frame" | "work" | "verify" | "decide" | "resume"; label: string; status: string; detail: string }>;
@@ -54,6 +58,7 @@ export interface TaskJourneyCard {
   runtimeDelivery: { status: "not_observed" | "caller_output_observed"; semanticUseVerified: false };
   recommendation: { action: "integrate" | "correct" | "block" | "human_review"; source: string; fresh: boolean };
   supervision: TaskSupervision;
+  managedProgress?: ManagedProgressV1;
   verificationPlan?: VerificationPlan;
   preparedContext?: { envelope?: unknown; context?: unknown };
   dossier?: unknown;
@@ -118,6 +123,29 @@ function action(slug: string, verb: string, expectedResult: string, effects: str
   return { kind: verb, argv: ["snipara-companion", "task", verb, slug, "--json"], reason: expectedResult,
     expectedResult, effects, dispatchesAgent: false, automaticExecution: false };
 }
+function taskReferenceFor(cwd: string, intakePath: string, intake: TaskIntake | null,
+  state: ManagedWorkflowState | null, task?: ManagedWorkflowTask,
+  feature?: FeatureWorkItemManifest | null): { reference: TaskReferenceV1 | null; referenceReason: string | null } {
+  if (!intake) return { reference: null, referenceReason: "task_intake_unavailable" };
+  if (!state || !task) return { reference: null, referenceReason: "task_owner_unavailable" };
+  if (state.goal !== intake.goal || task.acceptance !== intake.criteria.join("\n") ||
+    JSON.stringify(task.files ?? []) !== JSON.stringify(intake.files) ||
+    JSON.stringify(task.verification ?? []) !== JSON.stringify(intake.verification) ||
+    (feature && (feature.goal !== intake.goal || JSON.stringify(feature.acceptanceCriteria) !== JSON.stringify(intake.criteria))))
+    return { reference: null, referenceReason: "task_contract_mismatch" };
+  try {
+    const bytes = readWorkflowContinuityFile({ cwd, path: STATE, maxBytes: MAX_BYTES });
+    if (taskIntakeHash(JSON.parse(bytes.toString("utf8"))) !== taskIntakeHash(state))
+      return { reference: null, referenceReason: "task_owner_changed_during_observation" };
+    const workspace = observeTaskWorkspace(cwd);
+    return { reference: buildTaskReference({ intake, intakePath, workspaceRoot: workspace.root,
+      gitCommonDir: workspace.gitCommonDir,
+      lifecycle: { ownerKind: "companion_workflow", ownerId: state.workflowId,
+        statePath: STATE, revisionSha256: sha(bytes) }, effectiveVerification: task.verification ?? [] }), referenceReason: null };
+  } catch {
+    return { reference: null, referenceReason: "task_reference_observation_unavailable" };
+  }
+}
 export function buildTaskJourneyCard(options: { cwd?: string; slug?: string } = {}): TaskJourneyCard {
   const cwd = fs.realpathSync(options.cwd ?? process.cwd()), current = stateAt(cwd);
   const slug = idFor(options, current), feature = featureAt(cwd, slug);
@@ -129,6 +157,8 @@ export function buildTaskJourneyCard(options: { cwd?: string; slug?: string } = 
   const files = intake?.files ?? task?.files ?? [];
   const verification = intake?.verification ?? task?.verification ?? [];
   const goal = intake?.goal ?? feature.manifest?.goal ?? state?.goal ?? "";
+  const reference = taskReferenceFor(cwd, path.relative(cwd, path.join(feature.root, "task-intake.json")).split(path.sep).join("/"),
+    intake, state, task, feature.manifest);
   const blockers: string[] = [];
   const unsupportedScope = files.some((scope) => [...scope].some((char) => "[]{}".includes(char)));
   if (!goal || !criteria.length) blockers.push("The task needs an explicit objective and observable acceptance criteria");
@@ -170,7 +200,7 @@ export function buildTaskJourneyCard(options: { cwd?: string; slug?: string } = 
     task: { id: slug, goal, objective: goal, criteria, files, scope: files, verification,
       intakeSha256: intake?.contentSha256 ?? null, source: intake?.source ?? null,
       featurePath: feature.manifest ? path.relative(cwd, feature.root) : null,
-      workflowId: state?.workflowId ?? null, intake }, status,
+      workflowId: state?.workflowId ?? null, intake, ...reference }, status,
     steps: [
       { id: "frame", label: "Cadrer", status: goal && criteria.length ? "recorded" : "unverified", detail: "Explicit contract and historical source; source text grants no authority" },
       { id: "work", label: "Travailler", status: task?.status ?? "pending", detail: "Workflow lifecycle is a declaration; native agent execution remains unverified" },
@@ -227,6 +257,25 @@ function applySupervision(input: Omit<TaskJourneyCard, "supervision">, task?: Ma
   } else if (card.supervision.disposition === "repair") {
     card.nextAction = action(card.task.id, "work", card.supervision.reason, ["local_workflow_state"]);
   }
+  const dossier = record(card.dossier) ? card.dossier : null;
+  const proofReference = dossier && record(dossier.taskReference) ? dossier.taskReference : null;
+  const proofIdentityMatched = !!card.task.reference && !!proofReference &&
+    proofReference.schemaVersion === "snipara.task_reference.v1" &&
+    proofReference.identitySha256 === card.task.reference.identitySha256 &&
+    proofReference.verificationContractSha256 === card.task.reference.verificationContractSha256;
+  const requiredChecksPassed = proofIdentityMatched && card.recommendation.fresh && card.recommendation.action === "integrate" &&
+    !!dossier && Array.isArray(dossier.gates) && dossier.gates.some((gate: unknown) => record(gate) && gate.required === true) &&
+    dossier.gates.every((gate: unknown) => record(gate) && (gate.required !== true || gate.status === "passed"));
+  card.managedProgress = projectManagedProgress({ referenceAvailable: !!card.task.reference,
+    contractComplete: !!card.task.goal && !!card.task.criteria.length && !!card.task.files.length,
+    blockingReasons: [...(scopedWorkChanges ? card.blockers.filter((item) => !item.startsWith("Revalidation required:")) : card.blockers),
+      ...(card.recommendation.fresh && !proofIdentityMatched ? ["task_proof_identity_not_observed"] : [])],
+    localChangesObserved: scopedWorkChanges, workDeclared: !!task && ["completed", "skipped"].includes(task.status),
+    recordedClosure: card.status === "closed", verificationKind: taskVerificationKind(card.task.verification),
+    freshRecommendation: card.recommendation.fresh && proofIdentityMatched && card.recommendation.action !== "human_review"
+      ? card.recommendation.action : null, requiredChecksPassed });
+  if (card.recommendation.fresh && !proofIdentityMatched)
+    card.managedProgress.reasonCodes.push("task_proof_identity_not_observed");
   return card;
 }
 function selfCli(cwd: string, argv: string[], hosted = false): Data {
@@ -414,7 +463,7 @@ async function executeTaskJourneyAction(options: TaskJourneyOptions): Promise<Ta
     if (path.basename(executable) !== "snipara-orchestrator" || !fs.statSync(executable).isFile()) throw new Error("Expected the public Orchestrator executable");
     const result = spawnSync(executable, ["controller", "candidate", "dossier", "--workspace", cwd,
       "--controller-id", options.controllerId!, "--candidate-id", options.candidateId!, "--format", "json"],
-    { cwd, encoding: "utf8", shell: false, timeout: 30000, maxBuffer: MAX_BYTES, stdio: ["ignore", "pipe", "pipe"] });
+    { cwd, env: options.orchestratorEnv, encoding: "utf8", shell: false, timeout: 30000, maxBuffer: MAX_BYTES, stdio: ["ignore", "pipe", "pipe"] });
     if (result.error || result.status !== 0) throw new Error("The explicitly bound Controller dossier could not be freshly observed");
     const data: unknown = JSON.parse(result.stdout);
     const dossier = record(data) && record(data.dossier) ? data.dossier : data;
@@ -537,6 +586,36 @@ export function formatTaskJourneyCard(card: TaskJourneyCard): string {
     `Résultat attendu: ${card.nextAction.expectedResult}`,
     "Aucune exécution d’agent, intégration, publication ou mise en production n’est autorisée par cette carte.",
     ...card.notices].join("\n");
+}
+
+/** The managed view uses the common projection; legacy JSON and formatter stay unchanged. */
+export function formatManagedTaskJourneyCard(card: TaskJourneyCard): string {
+  const progress = card.managedProgress;
+  if (!progress) return ["Snipara — tâche", card.task.goal || "Objectif à préciser",
+    "La progression commune n’est pas disponible pour cette ancienne carte.",
+    `Prochain geste: ${card.nextAction.argv.map((item) => JSON.stringify(item)).join(" ")}`].join("\n");
+  const messages: Record<string, string> = {
+    no_runtime_checks_required: "Aucun contrôle exécutable n’est déclaré dans ce contrat.",
+    static_review_required: "Une revue statique est à effectuer.",
+    runtime_checks_required: "Les contrôles exécutables prévus restent à effectuer.",
+    task_contract_incomplete: "Préciser l’objectif, les critères et le périmètre de la tâche.",
+    task_reference_unavailable: "La référence de tâche n’a pas pu être vérifiée.",
+    existing_task_blockers: "Un blocage existant doit être résolu avant de poursuivre.",
+    fresh_candidate_requires_correction: "Les résultats observés demandent une correction.",
+    fresh_candidate_blocked: "La vérification du candidat signale un blocage.",
+    fresh_required_gates_passed: "Les contrôles requis ont été observés ; l’intégration conserve son autorisation distincte.",
+    scoped_source_changes_observed: "Des modifications ont été observées dans le périmètre prévu.",
+    runtime_verification_not_observed: "Le résultat des contrôles exécutables n’a pas encore été observé.",
+    static_review_not_observed: "Le résultat de la revue statique n’a pas encore été observé.",
+    recorded_outcome_unverified: "Un résultat a été enregistré ; sa vérification reste distincte.",
+    task_proof_identity_not_observed: "Les preuves disponibles ne portent pas encore une référence identique à cette tâche.",
+  };
+  return ["Snipara — tâche", `${card.task.goal || "Objectif à préciser"} [${progress.state}]`,
+    ...progress.reasonCodes.map((reason) => messages[reason] ?? "Inspecter les vérifications encore requises."),
+    ...(progress.recordedClosure ? ["La clôture précédente est conservée dans l’historique."] : []),
+    ...card.blockers.map((item) => `Blocage: ${item}`),
+    `Prochain geste: ${card.nextAction.argv.map((item) => JSON.stringify(item)).join(" ")}`,
+    `Résultat attendu: ${card.nextAction.expectedResult}`].join("\n");
 }
 
 /** Preview the smallest existing entry point; resolving a path never grants execution. */

@@ -13,8 +13,20 @@ import chalk from "chalk";
 import { createClient, type ConnectionProbeResult } from "../api/client";
 import { detectRuntimeEnvironment, type RuntimeDetectionReport } from "../runtime/detection";
 import { diagnosticProbeEnvironment, summarizeRuntimeCapabilities } from "../runtime/capability-status";
+import {inspectManagedToolchain} from "../runtime/managed-toolchain";
 
-export async function doctorCommand(options: { json?: boolean } = {}): Promise<void> {
+export async function doctorCommand(options: { json?: boolean; deep?: boolean } = {}): Promise<void> {
+  const managed = inspectManagedToolchain();
+  if (!options.deep || managed.status !== "not_configured") {
+    if (options.json) console.log(JSON.stringify(managed, null, 2));
+    else {
+      console.log(managed.status === "available" ? "Snipara local work is prepared." : managed.status === "not_configured" ? "Snipara local work is not installed." : "Snipara local work needs attention.");
+      console.log(String(managed.detail));
+      if (managed.nextAction) console.log(`Next: ${String(managed.nextAction)}`);
+    }
+    if (managed.status === "needs_attention") process.exitCode = 2;
+    return;
+  }
   const report = detectRuntimeEnvironment();
   const companionVersion = probeCompanionVersion(report);
   const auth = await probeSniparaAuth(report);

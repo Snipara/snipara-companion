@@ -22,3 +22,4 @@ export * from "./agent-context";
 export * from "./agent-context-evidence";
 export * from "./agent-memory-pilot";
 export * from "./task-canvas";
+export * from "./managed-toolchain";
