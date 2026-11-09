@@ -2,91 +2,92 @@
 
 # Distribution and compatible versions
 
-This documentation accompanies the Companion candidate **3.7.2** prepared for
-the verifiable path. A local artifact that is built and tested is not a
-published version. Use the file and the fingerprint indicated in the folder
-delivery folder; `@latest` and a plugin's pins may refer to another version.
+Use [package.json](../package.json) and [CHANGELOG.md](../CHANGELOG.md)
+for this source tree's Companion version and release changes.
+Registry state, plugin pins and the installed executable are separate observations.
+
+## Choose an installation
+
+| Need | Installation |
+| --- | --- |
+| One local task or impact check | `npx -y snipara-companion@latest` followed by the command |
+| Daily standalone use | `npm install -g snipara-companion` |
+| Compatible local tools and native client setup | `npx -y create-snipara@latest init --profile local-work --client codex` |
+| Reproduce an exact candidate | Install its reviewed tarball and retain its hash |
+
+Standalone Companion requires Node.js 18+. Managed local work also requires
+the Python runtime supported by the installer. It prepares Companion,
+Orchestrator and Sandbox; it does not install Docker, dependency images or a
+model, and does not execute repository checks. Hosted context remains optional.
 
 <a id="installer-un-artefact-préparé"></a>
 
 ## Install a prepared artifact
 
-In a disposable directory, install the exact tarball without lifecycle scripts, then invoke its own entry point:
-lifecycle scripts, then invoke its own entry point:
+Use the exact filename from the delivery record. For a reviewed 4.2.0 candidate:
 
 ```sh
-npm install --prefix /chemin/installation --ignore-scripts /chemin/snipara-companion-3.7.2.tgz
-/chemin/installation/node_modules/.bin/snipara-companion --help
+npm install --prefix /path/to/install --ignore-scripts /path/to/snipara-companion-4.2.0.tgz
+/path/to/install/node_modules/.bin/snipara-companion --help
 ```
 
-The npm dependencies must be available in the cache or on the registry.
-This installation publishes nothing, configures no Snipara account, and does not
-launch an agent. Keep the tarball with its SHA-256. A source update requires
-rebuilding, testing, and reviewing a new artifact.
-
-The CommonJS build bundles the runtime ESM dependency graphs to remain
-loadable under Node 18. The source mirror keeps the same build configuration.
-Verify the actual installed entry point on the minimal engine announced, including
-configuration read/write, and not only
-on the Node of the development workstation.
+Dependencies must already be cached or available from the registry. Add
+`--offline` when verifying a prepared offline installation. Keep the tarball
+and SHA-256 together; `@latest` is not a reproducible candidate identity.
+Verify the installed entry point on the supported Node.js version, including
+configuration access. A local source build is not proof of a published package.
 
 <a id="choisir-son-parcours"></a>
 
 ## Choose your path
 
-| Chosen tools | Entry point | Limit |
+| Tools | Entry point | Boundary |
 | --- | --- | --- |
-| Hosted MCP only | Context and memory queries via the existing client | No local Companion tracking nor implicit Controller |
-| Companion only | `task start`, `task work`, `task verify`, `task decide`, `task resume` | No Orchestrator agent required; unobserved proofs remain unknown |
-| Standalone Orchestrator | `task intake`, `task start`, `task show`, `task resume` | Use its package and guides; no Companion required |
-| Both | Workflow export, bridge revised then Controller | Preserve identities, policies, evidence, and versions; no implicit launch |
+| Hosted MCP only | Source and memory queries in the existing client | No local task tracking or implicit Controller |
+| Companion only | `task start/work/verify/decide/resume` | No account or Orchestrator required; missing checks stay visible |
+| Orchestrator only | `task intake/start/show/resume` | Independent Controller and proof controls |
+| Managed local work | `create-snipara init --profile local-work` | Compatible tools; no automatic test or worker launch |
+| Explicit combined workflow | Context export and reviewed Controller bridge | Exact identities, policy, evidence and consumer compatibility |
 
-The [path guide](TASK_JOURNEY.md), the [per-task context](TASK_CONTEXT.md)
-and the [resume](WORK_CONTINUITY.md) describe the exact commands. The
-local task operations do not require a Hosted activation. A command
-for memory or remote retrieval keeps its own access requirements.
+See [task journey](TASK_JOURNEY.md), [task context](TASK_CONTEXT.md) and
+[continuity](WORK_CONTINUITY.md). Repository checks require a prepared
+[Sandbox validation request](guides/sandbox-validation-preparation/README.md).
 
 <a id="contrats-et-reprise"></a>
 
-## Contracts and resume
+## Compatibility and migration
 
-The pair prepared for the full path is Companion **3.7.2** and
-Orchestrator **1.10.0**. This does not declare any other incompatible pair:
-the contracts actually present determine what each reader accepts.
+- **Resume JSON:** from 4.0, `workflow resume --json` is a compact overview.
+  Add `--detail` for the full payload and inspect `overview_incomplete` results.
+- **Managed tools:** use the installer's selected versions and
+  `toolchain status`; do not infer compatibility by mixing arbitrary latest
+  releases. Plugin pins have their own delivery lifecycle.
+- **Scoped validation:** needs a compatible Orchestrator and Sandbox contract.
+  Scope, request, source, image and artifacts remain bound to the receipt.
+  Reuse requires fresh verification. A missing coordinator cannot silently
+  fall back to uncoordinated execution.
+- **Task context:** `source-context-v1` retains references and context;
+  `runtime-source-context-v1` additionally binds exact task bodies. Older
+  reference-only exports do not prove a source was loaded. Unknown versions
+  or changed bindings require inspection and a compatible export.
+- **Task progress:** versioned task references and evidence-derived progress
+  distinguish recorded closure from current verified completion. A saved
+  running marker does not restore a process or prove it remains alive.
 
-- Older exports without versioned context keep their behavior of
-  reference or title; the absence of a source does not prove it was loaded.
-- `source-context-v1` preserves the context and its rich references.
-  `runtime-source-context-v1` additionally links the exact pack bodies provided to
-  each task and its consumer. An unknown version or an altered
-  binding must be rejected before creating a Controller.
-- Loading an old workflow does not silently migrate it to a new
-  contract. Keep the original; prepare/export a new copy with the
-  existing commands if the path requires more evidence.
-- A resume revalidates repository, index, and components. A preserved
-  history does not represent fresh evidence from a runtime still alive.
-
-Before a different combination, verify its export with the consumer
-exact ; a refusal requires an update or a new export, without removing the
-security fields to get the file accepted. The validation of a bridge
-does not prove either the semantic use of the context by a model, or its success.
+Retain old checkpoints before an explicit refresh. Do not remove contract or
+security fields to make an incompatible export pass admission.
 
 <a id="vérification-de-livraison"></a>
 
-## Delivery verification
+## Verify the delivered artifact
 
-The public suites of the repository can target this entry point by
-`SNIPARA_COMPANION_TEST_CLI=/chemin/installation/node_modules/snipara-companion/dist/index.js`.
-an explicitly provided but empty value, missing from disk, or invalid
-fails; it must not fall back to the checkout build. Without this variable,
-the suites keep their usual source path. The receipt must verify the origin of the
-Python imports of the installed wheel when the bridge is exercised.
+The public suites can target an installed CLI with
+`SNIPARA_COMPANION_TEST_CLI=/path/to/install/node_modules/snipara-companion/dist/index.js`.
+An explicitly empty, absent or invalid target fails instead of falling back to
+the checkout build. Without the variable, suites use their normal source path.
+Run executable repository checks through the reviewed validation environment.
 
-The create-snipara, MCP, OpenClaw, and business packages remain independent.
-Their publications are only required if their own behavior changes.
-The pins of a plugin and the public Companion mirror constitute separate
-surfaces to be revalidated during a later authorized delivery.
-
-Known demonstrations, the exposed public campaign, and the L7 collector
-do not replace the independent L6 qualification nor the human measures L7.
-Neither installation, nor reinstallation, nor a folder merges or deploys code.
+Retain source, request, image and artifact identities with the results. Verify
+Python import origin separately when testing an installed Orchestrator bridge.
+Static documentation review, package installation, runtime checks, independent
+review, human pilots and publication each establish different evidence.

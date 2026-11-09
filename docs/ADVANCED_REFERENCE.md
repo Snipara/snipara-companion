@@ -1,0 +1,717 @@
+# Companion advanced workflows and contracts
+
+Start with the [README](../README.md) for local tasks, impact, resumption and validation.
+This guide retains the detailed integration and workflow contracts. Check installed
+command support with `--help`; version-specific history belongs in the
+[changelog](../CHANGELOG.md).
+
+## Companion Continuity Contract V1
+
+Editor integrations and post-activation workflows can ask Companion for one
+machine-readable "continue this workspace" payload:
+
+```bash
+npx -y snipara-companion@latest continue-workspace --include-session-context --json
+```
+
+The payload version is `snipara.companion.continuity.v1`. It is designed for
+native editor commands, status bars, panels, and agent handoffs that need to
+resume real work without rescanning or reimplementing Snipara semantics. It
+includes project binding, session bootstrap entries and quality warnings,
+workflow phase state, Team Sync handoff summary, passive source snapshot status,
+session snapshot summary, stable local artifact paths, and recommended next
+actions.
+
+Session bootstrap treats two explicit profiles as durable operating context:
+the project profile is selected first, followed by the authenticated owner
+profile. These profiles reserve bounded space ahead of ordinary decisions and
+carryover; Companion does not infer a psychological profile from conversation
+history.
+
+Use this for workspace continuity. Hosted observations require an authorized
+project connection; local workflow state does not require Hosted activation.
+`create-snipara` owns guided setup and Companion owns repeatable local continuity.
+
+## Retrieval And Outcome Correlation
+
+`snipara-companion init` creates and prints a bounded workspace session ID.
+Export it as `SNIPARA_SESSION_ID` before starting Codex, Claude, Cursor, VS Code,
+Continue, or another HTTP MCP client. Generated configs forward it as
+`X-Snipara-Session-Id`, while canonical execution events use the same Companion
+session automatically. Clients without environment-backed headers can pass the
+same value as `correlation_context.session_id` on retrieval tools.
+
+The identifier is opaque, project-scoped telemetry. It does not grant access or
+change authorization, and explicit per-call correlation remains authoritative.
+Companion also forwards its configured `sessionId` automatically on every
+Hosted MCP call and labels supported retrieval traffic as
+`snipara-companion`, unless the caller supplied an explicit client label. This
+improves join coverage without inventing a second server-side identity.
+
+The workspace API key is stored in `.snipara/companion/config.json`. Companion
+keeps that directory and file owner-only on POSIX systems (`0700`/`0600`) and
+adds `/.snipara/companion/` to the workspace `.gitignore`. After initialization,
+index documentation before expecting project-specific query results:
+
+```bash
+npx -y snipara-companion@latest sync-documents --dir ./docs --recursive --reindex
+npx -y snipara-companion@latest doctor
+```
+
+An empty index is reported explicitly as “0 documents indexed” with that
+recovery command; it is not presented as an ordinary no-match.
+
+Example output excerpt:
+
+```text
+Code impact - local - src/auth/session.ts
+Source: local_overlay
+Reason: source_forced_local
+
+Incoming (2) - files that depend on this
+  apps/web/src/lib/auth/permissions.ts
+  apps/web/src/app/api/auth/session/route.ts
+
+Outgoing (2) - files this depends on
+  src/auth/cookies.ts
+  src/auth/tokens.ts
+
+Use --json for full overlay details.
+```
+
+That first command is the product promise: run a local blast-radius check from
+your current checkout in seconds, before an agent edits the wrong thing.
+
+## Free Local Surface
+
+These commands are useful without hosted Snipara:
+
+| Command                                                                               | What it gives you locally                                                    |
+| ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `source init` / `source sync` / `source status`                                       | Local source snapshot, document preview, and code overlay                    |
+| `docs bootstrap`                                                                      | Reviewable Project Brief preview or safe write from local source evidence    |
+| `code impact` (`impact` alias) / `code local impact`                                  | Bounded transitive blast radius, chains, and explainable local risk          |
+| `reality-check`                                                                       | Intent Ledger, Unknown Registry, auto-linked context, and inspectable proof  |
+| `code callers` / `imports` / `neighbors` / `shortest-path`                            | Structural repo questions from local files                                   |
+| `workflow start` / `phase-start` / `phase-commit` / `resume`                          | Agent continuity that survives compaction                                    |
+| `workflow task-start` / `task-next` / `task-status` / `task-commit` / `task-retry`    | Fresh task context, DAG selection, bounded retries, and recovery             |
+| `feature init` / `specify` / `plan` / `tasks` / `start`                               | Spec-driven feature artifacts bridged into the managed workflow              |
+| `workflow timeline` / `workflow session`                                              | Append-only local activity log and Session Snapshot V0                       |
+| `workflow decisions` / `workflow decide`                                              | Local human decision requests and response receipts                          |
+| `workflow policy-ledger` / `workflow apply-decisions` / `workflow sync-policy-ledger` | Project Policy review ledger, explicit apply pipeline, and hosted audit sync |
+| `run --emit-policy-decisions`                                                         | Project Policy review requests in the agent workflow                         |
+| `workflow producer-triage`                                                            | Ask for human review of unreviewed Producer Loop samples                     |
+| `workflow producer-report`                                                            | Local Producer Loop adoption and calibration report                          |
+| `workflow producer-review`                                                            | Mark local Producer Loop samples reviewed or rejected                        |
+| `context-control plan` / `apply` / `drift` / `validate` / `hosted-*`                  | Review local state and reconcile Context as Code with hosted project context |
+| `agent-context validate` / `resolve` / `evidence`                                     | Compile role policy and collect AC-1 dogfood evidence                        |
+| `context-pack`                                                                        | Reversible local packs for long logs, diffs, and tool output                 |
+| `judgment-card`, `verify`, `lead-plan`, `agent-readiness`                             | Local review artifacts and delegation contracts                              |
+| `intelligence ledger-export`                                                          | Structured redacted ledger JSON for replay and review                        |
+| `stuck-guard`, `memory-guard`, `pre-tool`, `post-tool`                                | Fail-soft local guards and hook helpers                                      |
+
+### Canonical command forms
+
+Use the exact CLI value after `workflow run --mode`:
+
+| CLI value     | Guide label         | Meaning                                                                             |
+| ------------- | ------------------- | ----------------------------------------------------------------------------------- |
+| `lite`        | LITE                | Small, known-scope work with no mandatory hosted context call                       |
+| `standard`    | STANDARD            | Normal work with context and code-graph follow-up when needed                       |
+| `auto`        | AUTO                | Default mode; routes by task intent to `lite`, `standard`, `full`, or `orchestrate` |
+| `full`        | FULL                | Managed, phased work with durable context and plan support                          |
+| `orchestrate` | FULL + ORCHESTRATED | Explicit deeper orchestration for multi-agent or proof-gate work                    |
+
+The root `run` command is the Project Intelligence judgment/release flow.
+`workflow run` is the workflow-mode runner. They share a verb but are not
+aliases.
+
+Use `code impact` as the canonical impact gate. The root `impact` command is a
+compatibility alias, while `code local impact` is the separate non-canonical
+local-overlay query. Use `final-commit` as the canonical final workflow
+closeout; `workflow final-commit` remains a compatibility alias. `task-commit`
+captures a durable task outcome, and `workflow phase-commit` records one
+managed phase and advances the workflow; these are distinct operations.
+
+For a non-blocking dependency proof, add the dependency name to the impact
+review. Companion reads the local manifest and lockfile, emits a bounded
+versioned adapter receipt when both agree, and leaves the check unresolved when
+one side is missing:
+
+```bash
+npx -y snipara-companion code impact \
+  --changed-files src/cache.ts \
+  --minimum-change-mode review \
+  --minimum-change-dependency yaml
+```
+
+In the same local or hybrid review, Companion also reads the working-tree Git
+diff. It confirms `smallest_safe_diff` only when the diff files match the
+requested and local impact files, the local risk is low, and the impact has no
+missing targets, warnings, or truncated traversal. Otherwise it returns
+`needs_review`; the `git_diff` receipt is versioned and fingerprinted, and the
+review remains non-blocking.
+
+For a public, copy/paste-oriented table, see the
+[Companion CLI Command Reference](https://www.snipara.com/docs/integration/companion/reference).
+
+### Spec-driven feature workflow
+
+Companion provides a native Spec Kit-style preparation layer without creating a
+second workflow state machine. Durable product and engineering artifacts live
+under `docs/specs/<feature>/`; `.snipara/workflow/current.json` remains the only
+managed execution state.
+
+```bash
+snipara-companion feature init oauth-onboarding \
+  --goal "Make GitHub OAuth onboarding recoverable" \
+  --why "Users need an actionable recovery path" \
+  --user "new Snipara user" \
+  --constraint "Never expose OAuth secrets" \
+  --acceptance "OAuth failures show a recovery action"
+
+snipara-companion feature plan oauth-onboarding
+snipara-companion feature tasks oauth-onboarding
+snipara-companion feature start oauth-onboarding
+```
+
+The flow creates `feature.json`, `spec.md`, `plan.md`, `tasks.md`, and a
+machine-readable `workflow-plan.json`. `feature plan` uses Hosted Snipara's
+planner; if you prefer to author or review the plan locally, edit `plan.md`
+with a numbered `## Phases` section and run
+`snipara-companion feature tasks <slug> --from-plan`. Both sources normalize to
+the same phase-shaped chunks, and `feature start` delegates to the existing
+`workflow start` command. It does not replace Companion's phases, memory, code
+impact, or handoff logic.
+
+#### Task-level execution
+
+Tasks can load their own cited source bodies before starting. See
+[task-local source context](TASK_CONTEXT.md) for request fields, planner
+compatibility, bounded receipts, offline resume and evidence limits.
+
+Each managed phase now contains a normalized task contract. Existing
+phase-only plans are migrated in memory to one task per phase, so older
+`.snipara/workflow/current.json` files remain readable. A planner may add
+`tasks`, `depends_on`, `parallel_group`, `verify`, `max_attempts`, and
+`recovery_task_id` fields when a phase needs finer-grained execution:
+
+```json
+{
+  "id": "implementation",
+  "title": "Implementation",
+  "tasks": [
+    {
+      "id": "data-contract",
+      "query": "Define the data contract",
+      "files": ["src/contracts.ts"],
+      "verify": ["pnpm test --filter contracts"],
+      "max_attempts": 2,
+      "parallel_group": "contracts"
+    },
+    {
+      "id": "ui-slice",
+      "query": "Implement the UI slice",
+      "depends_on": ["data-contract"],
+      "recovery_task_id": "data-contract"
+    }
+  ]
+}
+```
+
+Run one task with a compact, fresh context envelope rather than carrying a raw
+conversation across tasks:
+
+```bash
+snipara-companion workflow task-start implementation data-contract
+snipara-companion workflow task-status implementation
+snipara-companion workflow task-commit implementation data-contract \
+  --summary "Contract implemented" \
+  --evidence "passed:pnpm test --filter contracts" \
+  --files src/contracts.ts
+snipara-companion workflow task-retry implementation ui-slice \
+  --reason "Focused verification still fails after the first attempt"
+```
+
+`task-start` increments a bounded attempt counter and prints the bootstrap,
+impact, verification, and commit gates for that task. `task-commit` records the
+outcome and evidence without pushing commits automatically. A blocked task can
+be retried until `max_attempts`; after that, the declared recovery task or an
+explicit contract revision is required. `parallel_group` is coordination
+metadata only: agents must still use Companion collaboration claims and locks
+before editing overlapping files.
+
+### Agent Context Dogfood
+
+`agent-context` compiles one agent's working context from a versioned local
+manifest. It layers company truth, project truth, and only the roles assigned to
+that agent. The resolver also prints the exact memory recalls, agent-local
+default write target, and review-gated promotion targets.
+
+```bash
+npx -y snipara-companion agent-context validate \
+  --manifest snipara.agent-context.json
+
+npx -y snipara-companion agent-context resolve \
+  --agent snipara-code \
+  --task "implement the next bounded change"
+```
+
+Use `--json` when another agent runtime will consume the resolution. This local
+command plans retrieval; it does not read the source documents or call Hosted
+MCP on the agent's behalf. Role memory is represented by exact categories in
+the existing project or team scopes, so the V0 dogfood flow needs no database
+migration.
+
+Managed workflows now dogfood this policy automatically when the repository
+contains `snipara.agent-context.json` and the configured agent (or
+`SNIPARA_AGENT_ID`) exists in the manifest. Start a workflow normally:
+
+```bash
+snipara-companion workflow start \
+  --goal "implement the next bounded change" \
+  --plan-file .snipara/plans/next-change.json
+snipara-companion workflow task-start implementation
+```
+
+The task envelope carries the selected agent, manifest hash, role-scoped source
+list, memory recall/write policy, boundaries, and retrieval commands. The
+agent still performs the Hosted MCP `snipara_recall` and
+`snipara_context_query` calls explicitly; Companion does not hide retrieval or
+promote memory on the agent's behalf. Use `--agent <id>` or
+`--agent-context-manifest <file>` to override the workflow defaults, and
+`--skip-agent-context` only when a task is intentionally outside the local
+manifest policy.
+
+Collect AC-1 evidence after a representative task:
+
+```bash
+snipara-companion agent-context evidence template \
+  --agent snipara-code \
+  --task "implement a bounded product change" \
+  --output .snipara/agent-context/task-code-1.json
+
+# Complete source use, recalls, token count, capability assessment, and proof.
+snipara-companion agent-context evidence record \
+  --from .snipara/agent-context/task-code-1.json
+
+snipara-companion agent-context evidence status
+snipara-companion agent-context evidence status --enforce
+```
+
+Receipts are appended to `.snipara/agent-context/evidence.jsonl`, linked to the
+manifest hash, and rejected if they claim a source, recall, or promotion target
+outside the resolved policy. The status gate evaluates only receipts linked to
+the current manifest hash and reports older receipts as excluded. `--enforce`
+stays non-zero until the documented AC-1 exit gate is met; it does not authorize
+a hosted compiler or memory promotion workflow.
+
+### Context Control
+
+`context-control` is the local trust layer for Project Intelligence state. It
+borrows Terraform's useful product grammar without copying Terraform: preview a
+bounded context mutation, inspect drift, then apply only the exact reviewed
+plan. V0 remains the local trust-artifact layer. Context Control V1 adds an
+authenticated hosted diff/apply path with tenant scoping, compare-and-set hashes,
+explicit Decision Request approval, detailed receipts, and add/update-only writes.
+
+```bash
+npx -y snipara-companion context-control plan \
+  --summary "record reviewed context state" \
+  --output .snipara/context-control/plans/demo.json
+
+npx -y snipara-companion context-control apply \
+  --plan .snipara/context-control/plans/demo.json \
+  --approve
+
+npx -y snipara-companion context-control drift
+```
+
+For Context as Code V0, add `snipara.project-context.json` and validate it
+locally:
+
+```json
+{
+  "schemaVersion": "snipara.project_context_manifest.v0",
+  "sources": [
+    {
+      "path": "docs/architecture.md",
+      "authority": "canonical",
+      "tier": "HOT",
+      "required": true,
+      "description": "Architecture context that agents should treat as canonical."
+    }
+  ],
+  "policies": [
+    {
+      "id": "review-context-changes",
+      "scope": "memory.canonical",
+      "requirement": "Human review required before changing canonical context.",
+      "reviewRequired": true
+    }
+  ]
+}
+```
+
+To reconcile that manifest with hosted project context, first write a reviewed
+plan and Decision Request, resolve the request, then apply the exact plan:
+
+```text
+snipara-companion context-control hosted-diff --manifest snipara.project-context.json --output .snipara/context-control/plans/hosted.json --emit-decision-request
+snipara-companion workflow decide <request-id> --choose approve_hosted_apply --reviewer <name>
+snipara-companion context-control hosted-apply --plan .snipara/context-control/plans/hosted.json --approval .snipara/decisions/resolved/<request-id>.json --output .snipara/context-control/applied/hosted.json
+```
+
+V1 never deletes remote documents. It reports hosted paths outside the manifest,
+blocks authority promotions on existing managed sources, rejects stale remote
+hashes, and requires an EDITOR-authorized API key for mutation. The local
+approval artifact records declared human review; the API key remains the actual
+hosted mutation authority.
+
+```bash
+npx -y snipara-companion context-control validate --manifest snipara.project-context.json
+npx -y snipara-companion context-control plan --manifest snipara.project-context.json
+```
+
+The manifest is declarative metadata only. Validation and local reconciliation
+do not upload documents, approve memory, refresh hosted context, or mutate
+hosted Snipara state. `context-control drift` scopes dirty Git signals to the
+manifest, manifest sources, local Decision Requests, and `.snipara/context-control/`
+artifacts so unrelated checkout noise does not become permanent drift. A future
+V1 hosted refresh/apply surface should compare manifest state against hosted
+context before allowing real hosted mutations.
+
+### Local Worker Registry
+
+Use `workers local` when you want Companion to route bounded work to a local
+OpenAI-compatible runtime such as LM Studio. The registry is project state under
+`.snipara/workers/`; commit intentional profile changes like any other
+workflow artifact. Keep API keys, tokens, passwords, and private credentialed
+URLs out of worker profiles. Use environment variables for credentials.
+
+Probe the local runtime first:
+
+```bash
+npx -y snipara-companion workers local probe \
+  --base-url http://127.0.0.1:1234 \
+  --model openai/gpt-oss-20b \
+  --role documentation \
+  --capability docs_write \
+  --write-scope packages/cli/README.md
+```
+
+Declare the worker only after the probe matches the intended model and scope:
+
+```bash
+npx -y snipara-companion workers local add \
+  --id local-openai-gpt-oss-20b \
+  --base-url http://127.0.0.1:1234 \
+  --model openai/gpt-oss-20b \
+  --role documentation \
+  --capability docs_write \
+  --write-scope packages/cli/README.md
+```
+
+Inspect declared workers before routing:
+
+```bash
+npx -y snipara-companion workers local list
+npx -y snipara-companion workers local status --json
+```
+
+Remove stale local profiles when a model, endpoint, or write scope is no longer
+valid:
+
+```bash
+npx -y snipara-companion workers local remove local-openai-gpt-oss-20b
+```
+
+Reviewed trust is separate from registration. Compute a scoped candidate from
+accepted, source-backed real-work receipts, emit a Decision Request, and inspect
+the resulting expiring event:
+
+```bash
+npx -y snipara-companion workers trust candidate --emit-decision-requests --json
+npx -y snipara-companion workers trust review \
+  --request-id decision-abc123 \
+  --choice approve \
+  --reviewer alice \
+  --expires-in-days 30
+npx -y snipara-companion workers trust status --json
+```
+
+Benchmarks, fixtures, model names, and self-attestation never promote a worker.
+Even `delegated_earned` is limited to the exact low-risk category, profile hash,
+write scope, and expiry. It removes only a repeated approval receipt; explicit
+execution, proof, verification, and all sensitive/release gates remain.
+
+## Agent Continuity
+
+After the first impact check, keep the work resumable:
+
+```bash
+npx -y snipara-companion workflow start --goal "ship auth hardening"
+npx -y snipara-companion workflow judgment
+npx -y snipara-companion workflow phase-start audit
+npx -y snipara-companion lead-plan --task "ship auth hardening" --changed-files src/auth/session.ts --proof "pnpm test auth" --acceptance "auth tests pass"
+npx -y snipara-companion lead-plan --from-plan ./project-health-lead-plan.json --reconcile --changed-files src/auth/session.ts
+npx -y snipara-companion lead-plan --from-plan ./project-health-lead-plan.json --json | jq '.engineeringLeadPlan.executionReceipts'
+npx -y snipara-companion lead-plan --task "review controller progress" --from-controller .snipara/orchestrator/project-controllers/<controller-id>/state.json --json
+npx -y snipara-companion workflow phase-commit audit --summary "mapped auth impact"
+npx -y snipara-companion workflow producer-triage
+npx -y snipara-companion workflow decisions
+npx -y snipara-companion workflow policy-ledger
+npx -y snipara-companion workflow decide decision-abc123 --choose accept_all --reviewer alice
+npx -y snipara-companion workflow apply-decisions --dry-run
+npx -y snipara-companion workflow sync-policy-ledger
+npx -y snipara-companion workflow timeline
+npx -y snipara-companion workflow timeline --export md
+npx -y snipara-companion workflow session --json
+npx -y snipara-companion workflow producer-report
+npx -y snipara-companion workflow producer-review --latest --outcome useful --reviewer alice
+npx -y snipara-companion handoff --summary "auth impact mapped" --next "run auth tests"
+```
+
+`lead-plan --from-controller <snapshot>` adds a read-only `controllerProgress`
+section with task IDs, dependencies, reported status and a hash of the source
+bytes. The snapshot must describe the current workspace and a valid bounded
+DAG. Snapshots older than 30 minutes are labeled stale. This section remains
+`unverified_local_snapshot`: it neither imports execution authority nor marks
+Companion tasks complete. Check actual host proofs, candidate review and
+integration receipts before accepting the reported progress.
+
+For a stricter engineering workflow, add `--strict` to a completed
+`workflow task-commit` or `workflow phase-commit`. Strict phase closeout requires
+all declared tasks to be completed or skipped and requires every supplied
+verification item to be passed. The default remains backward-compatible for
+older workflows; strict mode is recommended for release, security, and
+multi-agent work.
+
+Managed workflow judgments use risk-based authority. `info` and `watch`
+recommendations are accepted locally by policy and remain auditable; `risk` and
+`block` recommendations still need `workflow judgment-respond`. The immutable
+card is never rewritten. Companion appends an effective resolution and can lift
+a verification-only `proof_required` state only after a completed outcome and
+matching passed evidence. Failed evidence, a blocked collaboration guard, a
+`resolve_blocker` action, or an explicit blocked response remains a hard stop.
+
+`snipara-companion` writes local state under `.snipara/` so a coding agent can
+resume with the current phase, recent handoffs, timeline, context packs, and
+verification hints.
+
+`workflow timeline` reads the append-only activity log at
+`.snipara/activity/timeline.jsonl`, including privacy-safe PostToolUse outcomes
+and file evidence when the Companion hook is installed. `workflow session` derives
+`.snipara/activity/session.json` for fast local resume and Orchestrator dogfood;
+Session Snapshot V0 includes latest activity, risk reasons, touched files, a
+next action, and advisory Intent Detection V0. Intent Detection V0 reports the
+inferred intent, confidence, reason-code signals, local evidence counts, and a
+suggested workflow mode. `workflow run` uses AUTO by default and that same
+Control Plane principle to choose lite, standard, full, or orchestrate. It
+reports an automatic setup card for Companion, hosted memory, Orchestrator,
+and policy-gated workers. Standalone `snipara-memory` remains an explicit
+application choice. Lite runs with zero
+mandatory hosted context calls; recall/context/code-impact are on-demand
+escalations, not an entry toll.
+`workflow timeline --export md` prints a compact redacted Markdown timeline for
+handoff or publication.
+
+Workflow `phase-commit` and `final-commit` also emit Producer Loop artifacts
+under `.snipara/producer-loop/`. These are local review evidence backed by the
+redacted Coding Intelligence Ledger, not automatic durable memory, worker
+execution, calibrated confidence, or server-side attestation. Use
+`workflow producer-report` to inspect local adoption, reason-code counts, sample
+size, reviewed/rejected/unreviewed counts, invalid artifacts, and calibration
+caveats before any future hard gate. The report also joins attributed gated
+receipts from `.snipara/orchestrator/executions/` with persisted supervisor
+reviews, then emits `workerReceipts` and a per-`workerId`/`workCategory`
+`workerTrust` breakdown. That report is observability only. The separate
+`workers trust candidate/review/status` flow can write a reviewed event after
+the evidence thresholds and human Decision Request pass; it never promotes from
+the report alone.
+
+`final-commit` also prints a stable seven-section closeout report:
+
+1. What changed
+2. Why
+3. Evidence
+4. Decisions kept
+5. Decisions proposed for review
+6. Not persisted
+7. Risks and next step
+
+Pass an explicit rationale with `--why`, repeatable verification receipts with
+`--evidence <status:text>`, remaining risks with `--risk`, and the recommended
+follow-up with `--next-step`. Supported evidence statuses are `passed`,
+`failed`, `not-run`, and `unknown`; evidence without a status remains
+`unknown`. The same redacted, versioned report is written to
+`.snipara/workflow/final-report.json`, and `--json` includes the report plus its
+artifact path and SHA-256 hash. Stored phase outcomes appear under decisions
+kept, while Why Capture candidates remain explicitly pending review.
+The report also recognizes exported PR Answer Pack decision-capture artifacts
+with producer kind `pr_answer_pack_decision_capture`, so calibration can track
+more than the workflow producer once those artifacts are present locally.
+Use `workflow producer-review --artifact <path|file|artifactId>` or
+`workflow producer-review --latest` after auditing embedded evidence to move a
+sample from `sample_unreviewed` to `sample_reviewed` or `sample_rejected`.
+For conversational human review, run `workflow producer-triage` to create a
+batched Decision Request artifact, `workflow decisions --json` to give the
+LLM client the exact question/evidence/options to ask, and `workflow decide`
+only after the human answers. Batched requests include readable evidence items
+with artifact summaries, statuses, file hints, and metadata instead of only
+opaque refs. Decision requests never resolve by timeout or default, and only
+`workflow decide` applies the existing `producer-review` path.
+When repeated resolved receipts share the same human choice and rationale,
+`workflow decide` may emit a new review-only policy suggestion decision request;
+it still uses manual apply instructions and never writes policy automatically.
+`workflow policy-ledger` gives the LLM agent a consolidated view of pending,
+approved, refused, modified, and deferred Project Policy decision artifacts,
+plus the exact pending requests it should ask the human about. It is read-only
+and does not apply policy edits.
+After the human resolves a request, `workflow apply-decisions --dry-run` previews
+local follow-up actions for resolved Project Policy receipts. Running
+`workflow apply-decisions` writes only idempotent review artifacts such as local
+policy drafts under `.snipara/policies/drafts/`; it does not activate canonical
+Project Policy silently.
+Run `workflow sync-policy-ledger` after local review to upload Decision Request,
+resolution, apply receipt, and policy draft artifacts into the hosted Project
+Policy ledger. The sync is audit-only and does not approve, refuse, activate, or
+edit canonical Project Policy.
+Other producers such as `outcome-capture preview --emit-decisions`,
+`memory reviews --emit-decisions`, `workflow decision-producer memory`, and
+`workflow decision-producer context-risk` emit requests with their existing apply
+paths declared; they do not write canonical memory directly. `memory reviews`
+is the hosted-memory review connector: it reads review queue, cleanup, and
+duplicate candidate surfaces, summarizes the items for the LLM, and only writes
+local Decision Requests when `--emit-decisions` is passed. Its JSON output
+includes `emittedCount`, `emittedRequestIds`, and an `emitted` summary so an
+agent can continue without re-listing pending requests.
+
+## Local First, Hosted When Useful
+
+Local mode is first-class for one repo, one machine, and one session. Hosted
+Snipara is the upgrade path for team and cross-project intelligence.
+
+| Need                                            | Local companion           | Hosted Snipara                      |
+| ----------------------------------------------- | ------------------------- | ----------------------------------- |
+| Inspect this repo before editing                | Yes, no account           | Optional hosted code graph          |
+| Activate docs and code without GitHub           | Yes, `source init`        | Provider sync after approval        |
+| Keep code private on this machine               | Yes                       | Use only when explicitly configured |
+| Preserve agent workflow state                   | Yes, `.snipara/` files    | Syncs across machines and agents    |
+| Store/retrieve long tool output                 | Yes, `context-pack`       | Metadata and receipts can be shared |
+| Semantic project context and embeddings         | Local docs/artifacts only | Managed context ranking             |
+| Reviewed memory and outcome calibration         | Local artifacts only      | Team memory and proof loop          |
+| Shared claims, locks, dashboards, GitHub checks | Local hints only          | Team coordination and audit         |
+
+Use hosted mode when you want shared memory, semantic retrieval, cloud code
+graph, cross-machine presence, outcome learning, team coordination, or dashboard
+proof. Keep local mode when the question is simply: "what does this repo say
+will break if I touch this file?"
+
+For folders without Git metadata or users who have not approved GitHub yet, run:
+
+```bash
+npx -y snipara-companion source init .
+npx -y snipara-companion source status --json
+```
+
+This writes `.snipara/source/latest.json`, builds a local document sync preview,
+and refreshes `.snipara/code-overlay/latest.json`. The hosted code graph remains
+the canonical shared graph after provider sync.
+
+### Generate a reviewable Project Brief
+
+When a project has code but little or no documentation, Companion can generate a
+local, evidence-linked starting point without inventing architecture or business
+rules:
+
+```bash
+npx -y snipara-companion docs bootstrap --preview
+npx -y snipara-companion docs bootstrap --apply
+npx -y snipara-companion source sync --apply --reindex
+```
+
+The default output is `docs/PROJECT.md`. Preview does not write anything, and an
+existing output is protected unless `--force` is explicit. The generated brief
+lists observed files, safe package metadata, and documentation gaps; review it
+before indexing it into hosted Snipara.
+
+Overlay v2 uses the TypeScript Compiler API to extract stable symbols plus
+`CALLS`, `REFERENCES`, `IMPORTS`, and `CONTAINS` edges. Python and Go retain an
+import-level fallback. Use `--depth`, `--direction`, `--edge-kinds`, and
+`--max-nodes` to bound traversal. `source watch` refreshes the overlay with
+per-file incremental reuse. With hosted configuration, `--source auto` uses the
+hosted graph for a clean checkout and a provenance-preserving hybrid for dirty
+or ahead work; `--source local` remains completely offline.
+
+## Install
+
+Use `npx` for one-off checks:
+
+```bash
+npx -y snipara-companion code impact --changed-files src/auth/session.ts --source local
+```
+
+Install globally only if you use it every day:
+
+```bash
+npm install -g snipara-companion
+snipara-companion code impact --changed-files src/auth/session.ts
+snipara-companion workflow resume
+```
+
+## Command Reference
+
+Resume work with decisions, failed attempts, evidence and remaining checks using
+`workflow resume`. From 4.0, JSON defaults to a compact overview; use
+`workflow resume --detail --json` for the full payload. Use `workflow checkpoint` to bind the current state explicitly.
+This works independently of Orchestrator. See [work continuity](./WORK_CONTINUITY.md)
+for drift states, offline behavior and evidence limits.
+
+The previous long README has moved to [docs/FULL_REFERENCE.md](./FULL_REFERENCE.md).
+Start there for the full command list, hook setup, hosted MCP bridge commands,
+workflow modes, team-sync, local context packs, and release-oriented flows.
+
+Launch assets, demo scripts, and post drafts live in
+[docs/launch/LAUNCH_KIT.md](./launch/LAUNCH_KIT.md).
+
+Release notes live in [CHANGELOG.md](../CHANGELOG.md).
+
+`session-end --summary "What was completed" --files src/example.ts` saves a
+session checkpoint to the hosted journal and prints a local receipt path.
+Hooks can pass the summary through `--summary-stdin` and use `--session-id` for
+the host task identity. Without a summary or files, the checkpoint is explicitly
+skipped. A failed write keeps the checkpoint and session id; retry the printed
+receipt with `session-end --retry <receipt.json>`. `session status` shows the last
+checkpoint status. Receipts live in `.snipara/companion/session-closeouts/` and
+contain a bounded, redacted summary; they are local artifacts, not source files.
+A journal entry id confirms persistence; automation event delivery is reported
+separately. A timeout can leave server acceptance uncertain, so a retry after an
+unconfirmed response may create a second journal entry. New Codex hook bundles
+forward the final assistant summary; older hooks need to be refreshed to do so.
+This checkpoint preserves session context; it does not generate product docs.
+
+When project auth is configured, `workflow phase-commit`, `final-commit`, and
+`team-sync handoff` also run reviewed Why Capture. The Companion first sends a
+read-only preview and confirms only when the server detects durable rationale.
+Low-risk, directly confirmed and sufficiently evidenced captures can be
+approved by the hosted memory policy; shared-scope, conflicting, weakly
+supported, imported, or canonical decision-draft candidates remain reviewed.
+Capture failures stay visible but do not block the primary workflow command. No
+documentation prompt is shown. `final-commit` remains handoff-only: the report
+explains what was stored or proposed, but it does not itself approve canonical
+decision drafts or write final summary text as durable memory.
+After a verified `git commit`, `git revert`, or `git cherry-pick` result, the
+PostToolUse hook runs the same preview-then-confirm flow when no managed
+workflow is active. It submits the commit message, commit SHA, and changed-file
+evidence as `sourceKind=commit`; ordinary messages produce no candidate, and
+any captured rationale remains pending human review.
+
+### Portable workflow starting points
+
+Use `workflow scaffold --preset bugfix`, `--preset feature` or `--preset legacy`
+with a concrete `--goal`. Edit the generated plan, then use the existing
+`workflow start`, phase and resume commands. Completion declarations remain
+separate from checked Controller proof sources and Feature acceptance.
+See [portable workflows](portable-methods.md) for context bounds, legacy
+compatibility and the native continuation validation procedure.

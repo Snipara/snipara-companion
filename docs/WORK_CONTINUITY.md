@@ -7,6 +7,7 @@ local module. Orchestrator has its own independent `controller brief` command.
 ```sh
 snipara-companion workflow checkpoint --json
 snipara-companion workflow resume --json
+snipara-companion workflow resume --detail --json
 ```
 
 The existing workflow commands capture a local, content-addressed checkpoint
@@ -14,7 +15,12 @@ when they save work state. `checkpoint` explicitly captures the current files
 without completing a task. A new snapshot keeps the initial dirty baseline;
 previous context-pack bodies remain historical artifacts.
 
-The resume output adds `continuity`: the goal and criteria, files, decisions
+Companion 4.0 and newer return a compact versioned overview by default. Use
+`--detail --json` for the full response or when the overview reports
+`overview_incomplete`. Scripts that consumed the previous full JSON must add
+`--detail`. Neither view runs the saved work.
+
+The detailed resume output adds `continuity`: the goal and criteria, files, decisions
 and reasons, attempt outcomes including failed approaches and recovery reasons,
 evidence references, missing checks, blockers, remaining tasks and a structured
 next action. Task and phase commits retain explicit `--decision`, `--why`,
