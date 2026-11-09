@@ -2,6 +2,10 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 4.0.2
+
+- Match the public Sandbox command contract: pass evidence stores only to run, verify, status and cancel; keep gate, choose and diagnose compatible.
+
 ## 4.0.1
 
 - Delegate scoped local validation runs to Orchestrator for shared execution exclusion and freshly verified Sandbox receipt reuse. Preserve original run identity and report reuse separately.

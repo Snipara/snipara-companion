@@ -70,7 +70,7 @@ export async function invokeSandboxValidation(action: string, options: {
   const args = ['validation', action];
   const parameters = delegated
     ? {request: options.request, scope: options.scope, store: options.store, 'sandbox-command': options.sandboxCommand}
-    : {request: options.request, scope: action === 'run' ? undefined : options.scope, 'run-id': options.runId, store: options.store, choice: options.choice, environment: options.environment};
+    : {request: options.request, scope: action === 'run' ? undefined : options.scope, 'run-id': options.runId, store: ['run', 'verify', 'status', 'cancel'].includes(action) ? options.store : undefined, choice: options.choice, environment: options.environment};
   for (const [flag, value] of Object.entries(parameters)) {
     if (value !== undefined) args.push(`--${flag}`, value);
   }

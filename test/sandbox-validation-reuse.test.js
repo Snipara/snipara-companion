@@ -213,6 +213,39 @@ test('legacy unscoped runs invoke standalone Sandbox without coordinator or scop
   assert.deepEqual(f.sandboxCalls()[0].args, ['validation', 'run', '--request', f.request, '--store', f.store]);
 });
 
+test('direct SDK evidence stores are forwarded only to commands supporting --store', async t => {
+  const f = fixture(t);
+  const vector = require('./fixtures/sandbox-scope-v2.json').cases[0];
+  fs.writeFileSync(f.request, JSON.stringify(vector.request));
+  const argvFile = path.join(path.dirname(f.request), 'direct-sdk-argv.json');
+  const choice = {schema_version: 'snipara.validation.choice.v1', scope_sha256: vector.sha256, authority: 'operator_asserted', choice: 'alternative', environment: 'reviewed environment', created_at: Date.now()/1000, expires_at: Date.now()/1000+600};
+  const responses = {
+    gate: {status: 'sandbox_ready', scope_sha256: vector.sha256, sandbox_used: false, execution_authorized_by_gate: false, readiness: {schema_version: 'snipara.sandbox.validation.v1', ready: true, backend: 'docker', image_id: 'sha256:synthetic'}},
+    choose: choice,
+    diagnose: {schema_version: 'snipara.sandbox.validation.v1', ready: true, backend: 'docker'},
+    run: f.receipt,
+    verify: {schema_version: 'snipara.sandbox.validation.v1', valid: true, run_id: f.receipt.run_id, reasons: [], receipt: f.receipt},
+    status: f.receipt,
+    cancel: {cancel_requested: true, run_id: f.receipt.run_id},
+  };
+  fs.writeFileSync(f.sandboxCommand, `#!${process.execPath}
+const args=process.argv.slice(2);require('node:fs').writeFileSync(${JSON.stringify(argvFile)},JSON.stringify(args));
+console.log(JSON.stringify(${JSON.stringify(responses)}[args[1]]));
+`, {mode: 0o755});
+  for (const action of Object.keys(responses)) {
+    const options = {request: f.request, store: f.store, sandboxCommand: f.sandboxCommand};
+    if (['gate', 'choose'].includes(action)) options.scope = vector.scope;
+    if (['verify', 'status', 'cancel'].includes(action)) options.runId = f.receipt.run_id;
+    if (action === 'choose') Object.assign(options, {choice: 'alternative', environment: choice.environment, acknowledgeUserChoice: true});
+    const outcome = await invokeSandboxValidation(action, options);
+    assert.equal(outcome.exitCode, 0, JSON.stringify(outcome.result));
+    const args = JSON.parse(fs.readFileSync(argvFile, 'utf8'));
+    assert.equal(args.includes('--store'), ['run', 'verify', 'status', 'cancel'].includes(action), action);
+    if (args.includes('--store')) assert.equal(args[args.indexOf('--store')+1], f.store);
+  }
+  assert.equal(f.calls().length, 0);
+});
+
 test('coordinated controls need explicit scope and appear only on run help', async t => {
   const f = fixture(t);
   for (const [action, options] of [['run', {noReuse: true}], ['run', {orchestratorCommand: f.orchestratorCommand}], ['gate', {scope: 'lot', noReuse: true}]]) {
