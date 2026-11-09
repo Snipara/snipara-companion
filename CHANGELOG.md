@@ -2,7 +2,13 @@
 
 Release notes for `snipara-companion`, newest first.
 
-## 4.0.0 — prepared candidate (unpublished)
+## 4.0.1
+
+- Delegate scoped local validation runs to Orchestrator for shared execution exclusion and freshly verified Sandbox receipt reuse. Preserve original run identity and report reuse separately.
+- Keep legacy unscoped execution available; require compatible Orchestrator for coordinated runs and never silently fall back after uncertain execution.
+- Match Sandbox's capability-bound scope v3 while preserving empty-capability v2 identities.
+
+## 4.0.0
 
 - Breaking CLI JSON contract: `workflow resume --json` returns a versioned compact overview by default. Existing full-payload consumers must add `--detail`; HTTP What Changed stays full by default. This migration requires a major Companion release.
 

@@ -47,6 +47,7 @@ export async function invokeSandboxValidation(action: string, options: {
   request?: string; scope?: string; runId?: string; store?: string;
   choice?: string; environment?: string; acknowledgeUserChoice?: boolean;
   sandboxCommand?: string; probeTimeoutSeconds?: number;
+  noReuse?: boolean; orchestratorCommand?: string;
 }): Promise<{ exitCode: number; result: Record<string, unknown> }> {
   if (!['gate', 'choose', 'diagnose', 'run', 'verify', 'status', 'cancel'].includes(action)) {
     throw new Error('Unsupported Sandbox validation action');
@@ -55,6 +56,9 @@ export async function invokeSandboxValidation(action: string, options: {
   if (options.probeTimeoutSeconds !== undefined && (!diagnostic || !Number.isInteger(options.probeTimeoutSeconds) || options.probeTimeoutSeconds < 1 || options.probeTimeoutSeconds > MAX_PROBE_TIMEOUT_SECONDS)) {
     return {exitCode: 2, result: {...sandboxUnavailable, stage: 'adapter_input', reason_code: 'invalid_probe_timeout', reason: 'probeTimeoutSeconds is an integer from 1 to 60, supported only for diagnose and gate.'}};
   }
+  if (((options.noReuse || options.orchestratorCommand !== undefined) && (action !== 'run' || !options.scope?.trim())) || (action === 'run' && options.scope !== undefined && !options.scope.trim())) {
+    return {exitCode: 2, result: {...sandboxUnavailable, stage: 'adapter_input', reason_code: 'explicit_scope_required', reason: 'Coordinated run controls require validation run with an explicit workflow or lot scope.'}};
+  }
   if (process.platform === 'win32') return {exitCode: 2, result: {...sandboxUnavailable, reason: 'Repository validation currently qualifies macOS/Linux Docker only.'}};
   const requiresRequest = ['gate','choose','diagnose','run','verify'].includes(action);
   const requiresRun = ['verify','status','cancel'].includes(action);
@@ -62,31 +66,64 @@ export async function invokeSandboxValidation(action: string, options: {
     return {exitCode: 2, result: {...sandboxUnavailable, reason: 'Explicit request, workflow scope and valid run identity are required for the selected action.'}};
   }
   if (action === 'choose' && (!options.acknowledgeUserChoice || !['alternative','install','local','skip'].includes(options.choice || '') || (options.choice === 'alternative' && !options.environment))) return {exitCode: 2, result: {...sandboxUnavailable, reason: 'An explicit acknowledged user choice is required.'}};
+  const delegated = action === 'run' && !!options.scope;
   const args = ['validation', action];
-  for (const [flag, value] of Object.entries({request: options.request, scope: options.scope, 'run-id': options.runId, store: options.store, choice: options.choice, environment: options.environment})) {
+  const parameters = delegated
+    ? {request: options.request, scope: options.scope, store: options.store, 'sandbox-command': options.sandboxCommand}
+    : {request: options.request, scope: action === 'run' ? undefined : options.scope, 'run-id': options.runId, store: options.store, choice: options.choice, environment: options.environment};
+  for (const [flag, value] of Object.entries(parameters)) {
     if (value !== undefined) args.push(`--${flag}`, value);
   }
-  if (options.acknowledgeUserChoice) args.push('--acknowledge-user-choice');
+  if (delegated && options.noReuse) args.push('--no-reuse');
+  if (!delegated && options.acknowledgeUserChoice) args.push('--acknowledge-user-choice');
   // Omit the new option by default so older published Sandbox CLIs remain compatible.
   if (options.probeTimeoutSeconds !== undefined) args.push('--probe-timeout-seconds', String(options.probeTimeoutSeconds));
   const env: Record<string, string | undefined> = {};
   for (const name of ['PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG']) {
     if (process.env[name]) env[name] = process.env[name];
   }
+  const command = delegated ? options.orchestratorCommand || 'snipara-orchestrator' : options.sandboxCommand || 'snipara-sandbox';
+  if (delegated) {
+    try {
+      const capability = await executeBounded(command, ['validation', 'run', '--help'], env, 10_000);
+      if (capability.status !== 0 || !/(?:^|\s)--no-reuse(?:\s|,|$)/m.test(capability.stdout)) throw new Error('The Orchestrator validation run command does not expose --no-reuse.');
+    } catch (error) {
+      return {exitCode: 2, result: {status: 'orchestrator_update_required', stage: 'adapter_capability', reason_code: 'orchestrator_update_required', reason: `Scoped validation requires Orchestrator 1.14 or newer with validation reuse support. ${redactDiagnostic((error as Error).message)}`, execution_authorized_by_gate: false}};
+    }
+  }
   let child: {stdout: string; stderr: string; status: number | null};
   const timeoutMs = diagnostic
     ? ((options.probeTimeoutSeconds ?? DEFAULT_PROBE_TIMEOUT_SECONDS) + DIAGNOSTIC_CONTROL_GRACE_SECONDS + ADAPTER_STARTUP_ALLOWANCE_SECONDS) * 1000
     : action === 'run' ? 960_000 : 30_000;
   try {
-    child = await executeBounded(options.sandboxCommand || 'snipara-sandbox', args, env, timeoutMs);
+    child = await executeBounded(command, args, env, timeoutMs);
   } catch (error) {
     const failure = error as Error & {code?: string};
+    if (delegated) return {exitCode: 2, result: {status: 'validation_reuse_needs_review', work_reuse: {state: 'needs_review'}, stage: 'adapter_process', reason_code: failure.code === 'ETIMEDOUT' ? 'orchestrator_process_timeout' : failure.code === 'EOUTPUT' ? 'orchestrator_output_limit' : 'orchestrator_process_failed', reason: redactDiagnostic(failure.message || 'Orchestrator process failed.'), adapter_timeout_seconds: timeoutMs / 1000, execution_authorized_by_gate: false}};
     return {exitCode: 2, result: {...sandboxUnavailable, stage: 'adapter_process', reason_code: failure.code === 'ETIMEDOUT' ? 'sandbox_process_timeout' : failure.code === 'EOUTPUT' ? 'sandbox_output_limit' : 'sandbox_process_failed', reason: redactDiagnostic(failure.message || 'Sandbox process failed to start.'), adapter_timeout_seconds: timeoutMs / 1000}};
   }
   try {
     const value: unknown = JSON.parse(child.stdout);
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid Sandbox response');
     const result = value as Record<string, unknown>;
+    const workReuse = result.work_reuse && typeof result.work_reuse === 'object' && !Array.isArray(result.work_reuse) ? result.work_reuse as Record<string, unknown> : undefined;
+    if (delegated && workReuse?.state === 'needs_review' && (result.status === 'needs_user_choice' || result.status === 'user_choice_recorded')) {
+      if (result.run_id !== undefined || result.execution_authorized_by_gate !== false || (result.sandbox_used !== undefined && result.sandbox_used !== false) || Array.from(options.scope!).length > 256) throw new Error('Invalid nonexecution gate response');
+      const scope = result.scope_sha256 === undefined ? undefined : expectedSandboxScope(options.request!, options.scope!);
+      if (result.scope_sha256 !== scope) throw new Error('Invalid gate scope binding');
+      if (result.status === 'needs_user_choice') {
+        const allowed = ['alternative', 'install', 'continue_without_sandbox'];
+        if (typeof result.prompt !== 'string' || !result.prompt.trim() || result.prompt.length > 2000 || !Array.isArray(result.choices) || result.choices.length < 1 || result.choices.length > allowed.length || new Set(result.choices).size !== result.choices.length || !result.choices.every(value => typeof value === 'string' && allowed.includes(value))) throw new Error('Invalid unavailable gate choices');
+        return {exitCode: 2, result: sanitizeDiagnostics({...result, prompt: redactDiagnostic(result.prompt)})};
+      }
+      const choice = result.choice as Record<string, unknown> | undefined;
+      if (!scope || result.sandbox_used !== false || result.proof_requirement_waived !== false || !validChoice(choice, scope) || choice?.choice === 'install') throw new Error('Invalid recorded gate choice');
+      return {exitCode: 2, result: sanitizeDiagnostics(result)};
+    }
+    if (delegated && result.run_id === undefined && ((result.status === 'validation_in_progress' && workReuse?.state === 'in_progress') || (result.status === 'validation_reuse_needs_review' && workReuse?.state === 'needs_review'))) {
+      return {exitCode: 2, result: sanitizeDiagnostics(result)};
+    }
+    if (delegated && (!workReuse || typeof workReuse.state !== 'string' || !['executed', 'reused', 'needs_review'].includes(workReuse.state))) throw new Error('Invalid validation reuse metadata');
     const schema = result.schema_version === 'snipara.sandbox.validation.v1';
     const identity = ['gate','choose'].includes(action) && typeof result.scope_sha256 === 'string' && result.scope_sha256 === expectedSandboxScope(options.request!, options.scope!);
     const ready = result.readiness as Record<string, unknown> | undefined;
@@ -102,9 +139,10 @@ export async function invokeSandboxValidation(action: string, options: {
       : action === 'verify' ? schema && typeof result.valid === 'boolean' && result.run_id === options.runId && Array.isArray(result.reasons) && (result.valid === false || (result.reasons.length === 0 && validVerifiedReceipt(result.receipt, options.runId!)))
       : schema && typeof result.run_id === 'string' && /^[a-f0-9]{32}$/.test(result.run_id) && (!options.runId || result.run_id === options.runId) && typeof result.status === 'string' && ['preparing','running','passed','failed','timeout','cancelled','environment_incompatible','artifact_error','collection_error','cleanup_failed','error','interrupted'].includes(String(result.status)) && typeof result.cleanup_complete === 'boolean';
     if (!valid) throw new Error('Unsupported Sandbox response schema');
-    const failed = result.status === 'needs_user_choice' || (action === 'verify' && result.valid !== true) || (action === 'diagnose' && result.ready !== true) || (action === 'run' && (result.status !== 'passed' || result.cleanup_complete !== true));
+    const failed = result.status === 'needs_user_choice' || (action === 'verify' && result.valid !== true) || (action === 'diagnose' && result.ready !== true) || (action === 'run' && (result.status !== 'passed' || result.cleanup_complete !== true)) || (delegated && workReuse?.state === 'needs_review');
     return {exitCode: failed ? 2 : child.status ?? 2, result: sanitizeDiagnostics(result)};
   } catch {
+    if (delegated) return {exitCode: 2, result: {status: 'validation_reuse_needs_review', work_reuse: {state: 'needs_review'}, stage: 'adapter_response', reason_code: 'orchestrator_response_invalid', reason: child.stderr ? redactDiagnostic(child.stderr) : 'Orchestrator returned an unsupported or malformed response after execution was attempted; inspect its evidence before retrying.', execution_authorized_by_gate: false}};
     return {exitCode: 2, result: {...sandboxUnavailable, stage: 'adapter_response', reason_code: 'sandbox_response_invalid', reason: child.stderr ? redactDiagnostic(child.stderr) : 'Sandbox returned an unsupported or malformed response; update/configure it or select an alternative.'}};
   }
 }

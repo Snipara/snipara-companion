@@ -1,4 +1,4 @@
-/** Independent scope binding for the public snipara.validation.scope.v2 contract. */
+/** Independent scope binding for the public snipara.validation.scope.v2/v3 contracts. */
 import {openSync, readSync, closeSync, fstatSync, constants, realpathSync} from 'node:fs';
 import {isAbsolute, resolve, posix} from 'node:path';
 import {createHash} from 'node:crypto';
@@ -17,7 +17,7 @@ export function expectedSandboxScope(requestFile: string, scope: string): string
   const raw: unknown = JSON.parse(text);
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Invalid request');
   const r=raw as Record<string,unknown>;
-  const known=new Set(['schema_version','workspace','argv','image','profile','cwd','timeout_seconds','cpus','memory_mb','pids','disk_mb','artifacts']);
+  const known=new Set(['schema_version','workspace','argv','image','profile','cwd','timeout_seconds','cpus','memory_mb','pids','disk_mb','artifacts','requirements']);
   if(Object.keys(r).some(key=>!known.has(key))) throw new Error('Unknown request fields');
   const schema=r.schema_version === undefined ? 'snipara.sandbox.validation.v1' : r.schema_version;
   if(schema !== 'snipara.sandbox.validation.v1' || typeof r.workspace !== 'string' || !isAbsolute(r.workspace) || r.workspace.split('/').includes('..') || typeof r.image !== 'string' || !r.image || r.image.startsWith('-') || /\s/.test(r.image)) throw new Error('Unsupported request identity');
@@ -34,6 +34,24 @@ export function expectedSandboxScope(requestFile: string, scope: string): string
   const cpus=r.cpus === undefined ? 2 : r.cpus;
   if(typeof cpus !== 'number' || !Number.isFinite(cpus) || cpus<0.01 || cpus>8) throw new Error('Invalid CPU limit');
   const parts=['snipara.validation.scope.v2',scope,schema,workspace,profile,r.image,posix.normalize(cwd).replace(/\/+$/,'') || '.',String(integer('timeout_seconds',120,1,900)),String(Math.trunc(cpus*1_000_000_000)),String(integer('memory_mb',2048,64,8192)),String(integer('pids',128,16,512)),String(integer('disk_mb',2048,16,4096))];
+  const rawRequirements=r.requirements === undefined ? {} : r.requirements;
+  if(!rawRequirements || typeof rawRequirements !== 'object' || Array.isArray(rawRequirements)) throw new Error('Invalid requirements');
+  const requirements=rawRequirements as Record<string,unknown>;
+  const patterns={
+    python_modules: /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/,
+    node_modules: /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/,
+    commands: /^[A-Za-z0-9][A-Za-z0-9._+-]*$/,
+  };
+  if(Object.keys(requirements).some(name=>!Object.hasOwn(patterns,name))) throw new Error('Unknown requirements fields');
+  const names=(['python_modules','node_modules','commands'] as const).map(name=>{
+    const values=requirements[name] === undefined ? [] : requirements[name];
+    if(!Array.isArray(values) || values.length>32 || values.some(value=>typeof value !== 'string' || value.length>128 || patterns[name].exec(value)?.[0]!==value)) throw new Error('Invalid requirement names');
+    return [...new Set(values as string[])];
+  });
+  if(names.some(values=>values.length>0)) {
+    parts[0]='snipara.validation.scope.v3';
+    parts.push(...names.map(values=>JSON.stringify(values)));
+  }
   if(parts.some(value=>Buffer.from(value,'utf8').toString('utf8')!==value)) throw new Error('Invalid Unicode identity');
   return createHash('sha256').update(JSON.stringify(parts),'utf8').digest('hex');
 }

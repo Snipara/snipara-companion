@@ -773,6 +773,11 @@ for (const action of ["gate", "choose", "diagnose", "run", "verify", "status", "
     .option("--environment <name>", "Name the chosen alternative environment")
     .option("--acknowledge-user-choice", "Record an actual explicit user choice; never inferred")
     .option("--sandbox-command <path>", "Explicit Sandbox executable; no shell interpolation");
+  if (action === "run") {
+    validationCommand
+      .option("--no-reuse", "Request a fresh scoped run while retaining the shared validation lock")
+      .option("--orchestrator-command <path>", "Compatible Orchestrator executable for scoped validation");
+  }
   if (["gate", "diagnose"].includes(action)) {
     validationCommand.option(
       "--probe-timeout-seconds <seconds>",
@@ -781,7 +786,7 @@ for (const action of ["gate", "choose", "diagnose", "run", "verify", "status", "
     );
   }
   validationCommand.action(async (options) => {
-    const outcome = await invokeSandboxValidation(action, options);
+    const outcome = await invokeSandboxValidation(action, action === "run" ? {...options, noReuse: options.reuse === false} : options);
     console.log(JSON.stringify(outcome.result));
     process.exitCode = outcome.exitCode;
   });
