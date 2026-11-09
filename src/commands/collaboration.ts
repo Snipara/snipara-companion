@@ -324,9 +324,12 @@ export function loadCollaborationState(rootDir = process.cwd()): CollaborationLo
     schemaVersion: "snipara.collaboration.v1",
     updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(),
     workSessionId: normalizeOptionalString(parsed.workSessionId),
-    workflowSessions: Object.fromEntries(Object.entries(parsed.workflowSessions ?? {}).filter(
-      ([key, value]) => /^[a-f0-9]{64}$/.test(key) && typeof value === "string" && value.length > 0
-    )),
+    workflowSessions: Object.fromEntries(
+      Object.entries(parsed.workflowSessions ?? {}).filter(
+        ([key, value]) =>
+          /^[a-f0-9]{64}$/.test(key) && typeof value === "string" && value.length > 0
+      )
+    ),
     sessionId: normalizeOptionalString(parsed.sessionId),
     actorId: normalizeOptionalString(parsed.actorId),
     actorType: normalizeActorType(parsed.actorType),
@@ -632,14 +635,23 @@ export async function workflowCollaborationStart(
   const session = hostedSession.status === "ok" ? hostedSession.data?.session : undefined;
   const workSessionId = session?.id ?? persistedSessionId ?? logicalSessionId;
   if (session) {
-    state.workflowSessions = { ...state.workflowSessions, [sessionKey]: session.id };
+    state.workflowSessions = {
+      ...state.workflowSessions,
+      [sessionKey]: session.id,
+    };
   }
   const effectiveResources =
     hostedSession.status === "ok" ? (hostedSession.data?.resources ?? resources) : resources;
-  let hostedClaim: HostedAttempt<CollaborationLeaseResponse> = { status: "skipped" };
+  let hostedClaim: HostedAttempt<CollaborationLeaseResponse> = {
+    status: "skipped",
+  };
   const shouldClaim = options.mode === "full" || options.mode === "orchestrate";
 
-  if (hostedSession.status === "ok" && shouldClaim && (files.length > 0 || effectiveResources.length > 0)) {
+  if (
+    hostedSession.status === "ok" &&
+    shouldClaim &&
+    (files.length > 0 || effectiveResources.length > 0)
+  ) {
     hostedClaim = await maybeCreateHostedLeases(context, {
       workSessionId,
       files,
@@ -704,7 +716,8 @@ export async function workflowCollaborationRelease(
   });
   const state = loadCollaborationState(rootDir);
   const targetSessionId = options.workflowId
-    ? state.workflowSessions?.[workflowSessionKey(context, options.workflowId)] ?? workflowWorkSessionId(options.workflowId)
+    ? (state.workflowSessions?.[workflowSessionKey(context, options.workflowId)] ??
+      workflowWorkSessionId(options.workflowId))
     : state.workSessionId;
   const activeLeases = state.leases.filter(
     (lease) =>
@@ -875,7 +888,11 @@ export async function collaborationHooksInstallCommand(
   }
 
   console.log("Collaboration Guard Git Hooks");
-  for (const hook of result.hooks as Array<{ hook: string; path: string; action: string }>) {
+  for (const hook of result.hooks as Array<{
+    hook: string;
+    path: string;
+    action: string;
+  }>) {
     console.log(`${hook.hook}: ${hook.action} (${hook.path})`);
   }
   console.log("Mode: blocking");
@@ -1344,7 +1361,9 @@ async function runCollaborationWatchTick(
   let heartbeatHosted: HostedAttempt<Array<{ lease: CollaborationLeaseSummary }>> = {
     status: "skipped",
   };
-  let claimHosted: HostedAttempt<CollaborationLeaseResponse> = { status: "skipped" };
+  let claimHosted: HostedAttempt<CollaborationLeaseResponse> = {
+    status: "skipped",
+  };
   let releaseHosted: HostedAttempt<Array<{ lease: CollaborationLeaseSummary }>> = {
     status: "skipped",
   };
@@ -1395,7 +1414,9 @@ async function runCollaborationWatchTick(
       releaseHosted = await releaseHostedLeases(
         context,
         staleActiveLeases.map((lease) => lease.id),
-        { reason: "Released by collaboration watch because the resource is no longer active." }
+        {
+          reason: "Released by collaboration watch because the resource is no longer active.",
+        }
       );
       const releasedIds = new Set(
         releaseHosted.status === "ok"
@@ -1526,30 +1547,58 @@ function deriveGuardProfileResources(
   }
   if (profile === "pre-deploy") {
     resources.push(
-      { kind: "DEPLOY", id: "production-deployment", label: "Production deployment" },
-      { kind: "SURFACE", id: "deployment", label: "Deployment and infrastructure" }
+      {
+        kind: "DEPLOY",
+        id: "production-deployment",
+        label: "Production deployment",
+      },
+      {
+        kind: "SURFACE",
+        id: "deployment",
+        label: "Deployment and infrastructure",
+      }
     );
   }
   if (profile === "migration" || profile === "schema") {
     resources.push(
-      { kind: "SCHEMA", id: "prisma:tenant_snipara", label: "Prisma tenant_snipara schema" },
+      {
+        kind: "SCHEMA",
+        id: "prisma:tenant_snipara",
+        label: "Prisma tenant_snipara schema",
+      },
       { kind: "SURFACE", id: "database", label: "Database and schema" }
     );
   }
   if (profile === "release-package") {
-    resources.push({ kind: "SURFACE", id: "release-package", label: "Package release surface" });
+    resources.push({
+      kind: "SURFACE",
+      id: "release-package",
+      label: "Package release surface",
+    });
   }
   if (profile === "pre-commit" || profile === "pre-push") {
     if (files.some(isPrismaSchemaPath)) {
       resources.push(
-        { kind: "SCHEMA", id: "prisma:tenant_snipara", label: "Prisma tenant_snipara schema" },
+        {
+          kind: "SCHEMA",
+          id: "prisma:tenant_snipara",
+          label: "Prisma tenant_snipara schema",
+        },
         { kind: "SURFACE", id: "database", label: "Database and schema" }
       );
     }
     if (files.some(isDeploymentPath)) {
       resources.push(
-        { kind: "DEPLOY", id: "production-deployment", label: "Production deployment" },
-        { kind: "SURFACE", id: "deployment", label: "Deployment and infrastructure" }
+        {
+          kind: "DEPLOY",
+          id: "production-deployment",
+          label: "Production deployment",
+        },
+        {
+          kind: "SURFACE",
+          id: "deployment",
+          label: "Deployment and infrastructure",
+        }
       );
     }
     if (files.some((file) => file.endsWith("package.json") || file.includes("/package.json"))) {
@@ -1798,7 +1847,9 @@ function buildCollaborationGitHookBlock(hookName: "pre-commit" | "pre-push"): st
   const profile = hookName === "pre-push" ? "pre-push" : "pre-commit";
   return [
     collaborationHookBlockMarker(hookName, "start"),
-    "# Atomically claim checkout git writes, then block unsafe parallel edits.",
+    profile === "pre-commit"
+      ? "# Request a cooperative checkout lease before changing the index."
+      : "# Atomically claim checkout git writes, then block unsafe parallel edits.",
     'if [ "${SNIPARA_COLLABORATION_GUARD:-1}" = "0" ]; then',
     '  echo "Snipara collaboration guard bypassed by SNIPARA_COLLABORATION_GUARD=0" >&2',
     "else",
@@ -1812,7 +1863,7 @@ function buildCollaborationGitHookBlock(hookName: "pre-commit" | "pre-push"): st
     "      return 127",
     "    fi",
     "  }",
-    `  snipara_companion_hook collaboration claim --resource SURFACE:checkout-git-write --mode EXCLUSIVE --ttl-seconds 300 --reason "${profile} git write" --json >/dev/null || true`,
+    `  snipara_companion_hook collaboration claim --resource SURFACE:checkout-git-write --mode EXCLUSIVE --ttl-seconds 300 --reason "${profile} git write" --json >/dev/null || ${profile === "pre-commit" ? "exit $?" : "true"}`,
     "  snipara_companion_guard() {",
     `    snipara_companion_hook collaboration guard --profile ${profile} --action ${profile} --resource SURFACE:checkout-git-write --enforce "$@" --json >/dev/null`,
     "  }",
@@ -1829,7 +1880,7 @@ function buildCollaborationGitHookBlock(hookName: "pre-commit" | "pre-push"): st
     "  else",
     "    snipara_companion_guard",
     "  fi",
-    "fi",
+    profile === "pre-commit" ? "fi || exit $?" : "fi",
     collaborationHookBlockMarker(hookName, "end"),
   ].join("\n");
 }
@@ -1848,6 +1899,15 @@ function mergeManagedCollaborationHookBlock(
   const base = currentContent && currentContent.trim() ? currentContent : "#!/usr/bin/env sh\n";
   const withShebang = base.startsWith("#!") ? base : `#!/usr/bin/env sh\n${base}`;
   const nextBlock = `${block}\n`;
+
+  if (hookName === "pre-commit") {
+    const newline = withShebang.indexOf("\n");
+    const shebang = newline < 0 ? withShebang : withShebang.slice(0, newline);
+    const body = newline < 0 ? "" : withShebang.slice(newline + 1);
+    return ensureTrailingNewline(
+      `${shebang}\n${nextBlock}${body.replace(managedBlockPattern, "")}`
+    );
+  }
 
   if (managedBlockPattern.test(withShebang)) {
     return ensureTrailingNewline(withShebang.replace(managedBlockPattern, nextBlock));
@@ -1873,7 +1933,12 @@ function installManagedCollaborationGitHook(
   repoRoot: string,
   hookName: "pre-commit" | "pre-push",
   options: CollaborationHooksInstallOptions
-): { hook: string; path: string; action: "created" | "updated" | "unchanged"; content: string } {
+): {
+  hook: string;
+  path: string;
+  action: "created" | "updated" | "unchanged";
+  content: string;
+} {
   const hooksDir = resolveGitHooksDir(repoRoot);
   const hookPath = path.join(hooksDir, hookName);
   const currentContent = fs.existsSync(hookPath) ? fs.readFileSync(hookPath, "utf8") : null;
@@ -1963,7 +2028,18 @@ function expireLocalLeases(state: CollaborationLocalState, now = new Date()): vo
 }
 
 function workflowSessionKey(context: ResolvedCollaborationContext, workflowId: string): string {
-  return createHash("sha256").update(JSON.stringify([context.config.apiUrl, context.config.projectId, context.actor.actorType, context.actor.actorId, context.worktree, workflowId])).digest("hex");
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        context.config.apiUrl,
+        context.config.projectId,
+        context.actor.actorType,
+        context.actor.actorId,
+        context.worktree,
+        workflowId,
+      ])
+    )
+    .digest("hex");
 }
 
 function workflowWorkSessionId(workflowId: string): string {

@@ -2,6 +2,10 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 4.2.2
+
+- Propagate collaboration guard failures and run the pre-commit guard before mutating staged files.
+
 ## 4.2.1
 
 - Forward validation scope only to Sandbox commands that accept it, while preserving scoped coordinator runs.

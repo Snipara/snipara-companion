@@ -794,7 +794,10 @@ test("collaboration guard stores state at the git root from nested package invoc
   const nestedDir = path.join(dir, "packages", "cli");
   fs.mkdirSync(nestedDir, { recursive: true });
   fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
-  const gitInit = spawnSync("git", ["init", "-q"], { cwd: dir, encoding: "utf8" });
+  const gitInit = spawnSync("git", ["init", "-q"], {
+    cwd: dir,
+    encoding: "utf8",
+  });
   assert.equal(gitInit.status, 0, gitInit.stderr);
   const preloadPath = writeHostedReviewOnlyGuardPreload(dir);
 
@@ -952,7 +955,10 @@ test("collaboration guard reads dirty git files with spaces", () => {
   spawnSync("git", ["init"], { cwd: dir, stdio: "ignore" });
   fs.mkdirSync(path.join(dir, "src"), { recursive: true });
   fs.writeFileSync(path.join(dir, "src", "with space.ts"), "export const value = 1;\n", "utf8");
-  spawnSync("git", ["add", "-N", "src/with space.ts"], { cwd: dir, stdio: "ignore" });
+  spawnSync("git", ["add", "-N", "src/with space.ts"], {
+    cwd: dir,
+    stdio: "ignore",
+  });
   const preloadPath = writeHostedCollaborationPreload(dir);
   const logPath = path.join(dir, "collab-log.jsonl");
 
@@ -991,7 +997,8 @@ test("collaboration hooks install plan writes blocking managed hooks", () => {
   assert.match(preCommitHook, /pnpm --filter snipara-companion exec tsx src\/index\.ts/);
   assert.match(preCommitHook, /snipara-companion "\$@"/);
   assert.match(preCommitHook, /collaboration claim --resource SURFACE:checkout-git-write/);
-  assert.match(preCommitHook, /collaboration claim .*--json >\/dev\/null \|\| true/);
+  assert.match(preCommitHook, /collaboration claim .*--json >\/dev\/null \|\| exit \$\?/);
+  assert.match(prePushHook, /collaboration claim .*--json >\/dev\/null \|\| true/);
   assert.match(preCommitHook, /guard --profile pre-commit .*--resource SURFACE:checkout-git-write/);
   assert.match(preCommitHook, /--mode EXCLUSIVE --ttl-seconds 300/);
   assert.match(preCommitHook, /SNIPARA_COLLABORATION_GUARD_ACK_REVIEW_ONLY/);
@@ -1002,6 +1009,61 @@ test("collaboration hooks install plan writes blocking managed hooks", () => {
   assert.doesNotMatch(preCommitHook, /snipara-companion@latest/);
   assert.match(preCommitHook, /SNIPARA_COLLABORATION_GUARD=0/);
   assert.match(preCommitHook, /return 127/);
+});
+
+test("generated pre-commit guard precedes existing commands and reinstalls idempotently", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-collaboration-hook-order-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  spawnSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  const hookPath = path.join(dir, ".git", "hooks", "pre-commit");
+  const original = '#!/usr/bin/env sh\nprintf "user\\n" >> "$SNIPARA_HOOK_CALL_LOG"\n';
+  fs.writeFileSync(hookPath, original, { mode: 0o755 });
+  buildCollaborationHooksInstallPlan({ dir });
+  const installed = fs.readFileSync(hookPath, "utf8");
+  assert.ok(installed.indexOf("collaboration claim") < installed.indexOf('printf "user'));
+  assert.ok(installed.includes(original.split("\n").slice(1).join("\n")));
+  buildCollaborationHooksInstallPlan({ dir });
+  assert.equal(fs.readFileSync(hookPath, "utf8"), installed);
+  const start = installed.indexOf("# snipara:collaboration-guard pre-commit:start");
+  const endMarker = "# snipara:collaboration-guard pre-commit:end";
+  const end = installed.indexOf(endMarker) + endMarker.length;
+  fs.writeFileSync(hookPath, `${original}\n${installed.slice(start, end)}\n`);
+  buildCollaborationHooksInstallPlan({ dir });
+  const relocated = fs.readFileSync(hookPath, "utf8");
+  assert.ok(relocated.indexOf("collaboration claim") < relocated.indexOf('printf "user'));
+  assert.ok(relocated.includes(original.split("\n").slice(1).join("\n")));
+  buildCollaborationHooksInstallPlan({ dir });
+  assert.equal(fs.readFileSync(hookPath, "utf8"), relocated);
+
+  const bin = path.join(dir, "bin"),
+    logPath = path.join(dir, "calls.log");
+  fs.mkdirSync(bin);
+  fs.writeFileSync(
+    path.join(bin, "snipara-companion"),
+    '#!/usr/bin/env sh\nprintf "%s\\n" "$2" >> "$SNIPARA_HOOK_CALL_LOG"\n[ "$2" != "$SNIPARA_HOOK_FAIL" ] || exit 23\n',
+    { mode: 0o755 }
+  );
+  for (const [failure, expected] of [
+    ["claim", ["claim"]],
+    ["guard", ["claim", "guard"]],
+    ["", ["claim", "guard", "user"]],
+  ]) {
+    fs.writeFileSync(logPath, "");
+    const result = spawnSync("sh", [hookPath], {
+      cwd: dir,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        SNIPARA_HOOK_CALL_LOG: logPath,
+        SNIPARA_HOOK_FAIL: failure,
+        SNIPARA_COLLABORATION_GUARD: "1",
+        SNIPARA_COLLABORATION_GUARD_ACK_REVIEW_ONLY: "0",
+      },
+    });
+    assert.equal(result.status, failure ? 23 : 0, result.stderr);
+    assert.deepEqual(fs.readFileSync(logPath, "utf8").trim().split("\n"), expected);
+  }
 });
 
 test("managed hooks forward and consume one-shot review-only acknowledgements", () => {

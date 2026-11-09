@@ -1,0 +1,24 @@
+# Build only from a dedicated, reviewed context, never the repository root.
+**
+!Dockerfile
+!workspace/
+!workspace/package.json
+!workspace/pnpm-lock.yaml
+!workspace/pnpm-workspace.yaml
+!workspace/.npmrc
+!workspace/patches/
+!workspace/patches/**
+!workspace/apps/
+!workspace/apps/*/
+!workspace/apps/*/package.json
+!workspace/packages/
+!workspace/packages/*/
+!workspace/packages/*/package.json
+!pnpm-store/
+!pnpm-store/**
+!npm-cache/
+!npm-cache/**
+!prisma/
+!prisma/SHA256SUMS
+!prisma/schema-engine
+!prisma/libquery_engine.so.node
