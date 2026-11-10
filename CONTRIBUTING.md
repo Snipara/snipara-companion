@@ -48,4 +48,10 @@ private repository output.
 Keep changes focused and include tests for behavior changes. For public CLI
 behavior, update `README.md` and help-output tests when relevant.
 
+Keep changes easy to review: fewer than 200 changed lines is the target;
+200–400 lines needs an explicit review of the scope, and more than 400 lines
+should be split or justified. Run `snipara-companion workflow impact-gate`
+before pushing committed workflow phases to see this budget alongside the
+local impact report.
+
 Run `pnpm pack:smoke` before opening a release-facing package change.
