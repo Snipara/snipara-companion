@@ -2,6 +2,12 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 4.2.3
+
+- Skip hosted routing-policy discovery for ordinary LITE workflows; preserve explicit routing, active local policy and Orchestrator handoff requests.
+- Keep bounded task guidance in LITE regardless of file count unless multi-phase work is requested.
+- Distribute four concise, optional agent skills for direct fixes, sourced answers, task resumption and context retrieval.
+
 ## 4.2.2
 
 - Propagate collaboration guard failures and run the pre-commit guard before mutating staged files.

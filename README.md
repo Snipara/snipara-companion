@@ -16,6 +16,10 @@ Snipara adds sourced project context and shared memory when you connect it.
 Orchestrator adds optional execution and integration controls. Each can be
 used independently.
 
+For a clear, bounded edit, work directly with your agent and run the relevant
+checks. Add a managed task when continuity or evidence tracking helps. The
+[optional agent skills](docs/skills/README.md) follow the same principle.
+
 <a id="install"></a>
 
 ## Start with a local task

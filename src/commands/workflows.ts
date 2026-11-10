@@ -10575,9 +10575,18 @@ export async function workflowRunCommand(options: {
   }
 
   const client = hostedConfigured ? createClient(20000) : null;
-  const loadedAdaptiveRoutingPolicy = hostedConfigured
-    ? await loadAdaptiveRoutingProjectPolicy(client, localAdaptiveRoutingPolicy)
-    : localAdaptiveRoutingPolicy;
+  // A plain LITE task does not need hosted routing discovery. Explicit routing,
+  // local policy demand and handoffs retain the existing hosted policy path.
+  const needsHostedRoutingPolicy =
+    effectiveMode !== "lite" ||
+    localAdaptiveRoutingRequested ||
+    (localAdaptiveRoutingPolicy !== null && localAdaptiveRoutingPolicy.mode !== "off") ||
+    options.emitOrchestratorHandoff ||
+    options.autoRouteOrchestrator;
+  const loadedAdaptiveRoutingPolicy =
+    hostedConfigured && needsHostedRoutingPolicy
+      ? await loadAdaptiveRoutingProjectPolicy(client, localAdaptiveRoutingPolicy)
+      : localAdaptiveRoutingPolicy;
   const adaptiveRoutingPolicy =
     options.routingLocalWorker && localAdaptiveRoutingPolicy
       ? localAdaptiveRoutingPolicy

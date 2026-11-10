@@ -194,6 +194,29 @@ test('single-file edit guide stays LITE and refuses unresolved identities', (t) 
 });
 
 
+test('edit guide uses explicit phases rather than file count and preserves execution boundaries', (t) => {
+  const f = fixture(t);
+  const files = ['service.js', 'docs.md', 'notes.md', 'copy.md', 'readme.md', 'help.md'];
+  for (const file of files.slice(1)) fs.writeFileSync(path.join(f.cwd, file), 'Known text\n');
+  for (const count of [2, 6]) {
+    const targets = files.slice(0, count).flatMap((file) => ['--file', file]);
+    for (const multiPhase of [false, true]) {
+      const result = f.run(['guide', 'edit', ...targets, ...(multiPhase ? ['--multi-phase'] : [])]);
+      assert.equal(result.status, 0, result.stderr);
+      const card = JSON.parse(result.stdout);
+      assert.equal(card.mode, multiPhase ? 'full' : 'lite');
+      assert.deepEqual(card.files, files.slice(0, count));
+      assert.deepEqual(card.mutations, []);
+      assert.deepEqual(card.authority, { executionGranted: false, integrationGranted: false, deploymentGranted: false });
+      assert.equal(card.nextAction.executed, false);
+      assert.match(card.nextAction.effects.join(' '), /Sandbox validation gate/);
+      if (!multiPhase) assert.match(card.reason, /risk, architecture or continuity/);
+    }
+  }
+  assert.equal(fs.existsSync(path.join(f.cwd, '.snipara/workflow')), false);
+  assert.equal(fs.existsSync(f.networkLog), false);
+});
+
 test('intent guide preserves option-like file names as literal verification targets', (t) => {
   const f = fixture(t);
   fs.writeFileSync(path.join(f.cwd, '--help'), 'literal source\n');

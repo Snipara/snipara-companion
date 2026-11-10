@@ -147,6 +147,7 @@ function writeWorkflowPreload(dir) {
       "globalThis.fetch = async (url, init = {}) => {",
       "  const parsedUrl = new URL(String(url));",
       "  const pathname = parsedUrl.pathname;",
+      "  if (process.env.SNIPARA_TEST_REQUEST_LOG) fs.appendFileSync(process.env.SNIPARA_TEST_REQUEST_LOG, `${pathname}\\n`, 'utf8');",
       "  if (pathname.includes('/mcp/')) {",
       "    const body = JSON.parse(init.body || '{}');",
       "    const toolName = body.params?.name;",
@@ -4877,35 +4878,99 @@ test("workflow lite mode does not require hosted configuration", () => {
   }
 });
 
-test("workflow auto lite does not call hosted context or bootstrap tools", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-auto-lite-"));
-  try {
-    fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
-    const preloadPath = writeWorkflowPreload(dir);
-    const toolLogPath = path.join(dir, "tools.log");
-    const result = runCli(
-      ["workflow", "run", "--mode", "auto", "--query", "fix typo in README small diff", "--json"],
-      {
-        cwd: dir,
-        nodeArgs: ["--require", preloadPath],
-        env: {
-          SNIPARA_API_KEY: "test-key",
-          SNIPARA_PROJECT_ID: "proj_test",
-          SNIPARA_API_URL: "https://api.test",
-          SNIPARA_TEST_TOOL_LOG: toolLogPath,
-        },
-      }
-    );
+test("ordinary workflow LITE makes no hosted requests even with hosted catalog preferences", () => {
+  for (const mode of ["auto", "lite"]) {
+    for (const localPolicy of [null, { mode: "off" }]) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-auto-lite-"));
+      try {
+        fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+        if (localPolicy) {
+          fs.mkdirSync(path.join(dir, ".snipara"));
+          fs.writeFileSync(path.join(dir, ".snipara", "adaptive-routing.json"), JSON.stringify(localPolicy));
+        }
+        const preloadPath = writeWorkflowPreload(dir);
+        const requestLogPath = path.join(dir, "requests.log");
+        const result = runCli(
+          ["workflow", "run", "--mode", mode, "--query", "fix typo in README small diff", "--json"],
+          {
+            cwd: dir,
+            nodeArgs: ["--require", preloadPath],
+            env: {
+              SNIPARA_API_KEY: "test-key",
+              SNIPARA_PROJECT_ID: "proj_test",
+              SNIPARA_API_URL: "https://api.test",
+              SNIPARA_TEST_REQUEST_LOG: requestLogPath,
+              SNIPARA_TEST_AUTOMATION_SETTINGS: JSON.stringify({ adaptiveRoutingMode: "catalog" }),
+            },
+          }
+        );
 
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    const payload = JSON.parse(result.stdout);
-    assert.equal(payload.effective_mode, "lite");
-    const calledTools = fs.existsSync(toolLogPath) ? fs.readFileSync(toolLogPath, "utf8") : "";
-    assert.doesNotMatch(calledTools, /snipara_context_query/);
-    assert.doesNotMatch(calledTools, /snipara_session_memories/);
-    assert.doesNotMatch(calledTools, /snipara_recall/);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+        assert.equal(result.status, 0, result.stderr || result.stdout);
+        const payload = JSON.parse(result.stdout);
+        assert.equal(payload.effective_mode, "lite");
+        assert.deepEqual(payload.retrieval_policy.mandatory_calls, []);
+        assert.equal(payload.adaptive_routing, null);
+        assert.equal(payload.orchestrator_handoff, null);
+        assert.equal(fs.existsSync(requestLogPath), false, "LITE unexpectedly requested hosted data");
+        assert.equal(fs.existsSync(path.join(dir, ".snipara", "orchestrator")), false);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  }
+});
+
+test("workflow LITE retains hosted routing policy for explicit routing, local demand and handoffs", () => {
+  for (const entry of [
+    { args: ["--adaptive-routing-dry-run"] },
+    { args: ["--route-local-workers"] },
+    { args: [], localPolicy: { mode: "recommend" } },
+    { args: ["--emit-orchestrator-handoff"] },
+    { args: ["--auto-route-orchestrator"] },
+  ]) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-lite-routing-"));
+    try {
+      fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+      if (entry.localPolicy) {
+        fs.mkdirSync(path.join(dir, ".snipara"));
+        fs.writeFileSync(path.join(dir, ".snipara", "adaptive-routing.json"), JSON.stringify(entry.localPolicy));
+      }
+      const preloadPath = writeWorkflowPreload(dir);
+      const requestLogPath = path.join(dir, "requests.log");
+      const toolLogPath = path.join(dir, "tools.log");
+      const result = runCli(
+        ["workflow", "run", "--mode", "lite", "--query", "fix typo in README", ...entry.args, "--json"],
+        {
+          cwd: dir,
+          nodeArgs: ["--require", preloadPath],
+          env: {
+            SNIPARA_API_KEY: "test-key",
+            SNIPARA_PROJECT_ID: "proj_test",
+            SNIPARA_API_URL: "https://api.test",
+            SNIPARA_TEST_REQUEST_LOG: requestLogPath,
+            SNIPARA_TEST_TOOL_LOG: toolLogPath,
+            SNIPARA_TEST_AUTOMATION_SETTINGS: JSON.stringify({
+              adaptiveRoutingMode: "catalog",
+              adaptiveRoutingAllowedEndpointTypes: ["cloud"],
+              adaptiveRoutingDailyBudgetCents: 50,
+            }),
+          },
+        }
+      );
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const payload = JSON.parse(result.stdout);
+      assert.equal(payload.effective_mode, "lite");
+      assert.match(fs.readFileSync(requestLogPath, "utf8"), /\/automation\n/);
+      assert.match(fs.readFileSync(toolLogPath, "utf8"), /snipara_adaptive_routing_catalog/);
+      assert.deepEqual(payload.adaptive_routing.requirements.allowedEndpointTypes, ["cloud"]);
+      assert.equal(payload.adaptive_routing.requirements.dailyBudgetCents, 50);
+      if (entry.args.includes("--route-local-workers")) {
+        assert.equal(payload.adaptive_routing.gateway.source, "hosted_mcp");
+        assert.match(payload.adaptive_routing.routingCard.warnings.join(" "), /does not allow local endpoints/);
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   }
 });
 

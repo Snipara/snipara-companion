@@ -690,12 +690,12 @@ export function buildTaskIntentGuide(options: {
     argv = ["snipara-companion", "verify", "--skip-impact", "--changed-files", ...files, "--json"];
     effects = ["Reads local package scripts and returns a verification plan; executes no tests"];
   } else {
-    mode = options.multiPhase || files.length > 1 ? "full" : "lite";
+    mode = options.multiPhase ? "full" : "lite";
     argv = ["snipara-companion", "verify", "--skip-impact", "--changed-files", ...files, "--json"];
     effects = ["Read the selected source and applicable instructions, make the authorized edit, then review the local verification plan", "Executable repository checks still require the applicable Sandbox validation gate"];
     reason = mode === "lite"
-      ? "Single-file, single-phase entry: no mandatory Hosted call, Controller or phase-memory write. Escalate for risky or architectural work."
-      : "Multiple files or phases require the managed workflow before implementation";
+      ? "Single-phase entry: file count alone does not require a managed workflow. No mandatory Hosted call, Controller or phase-memory write. Escalate for risk, architecture or continuity needs."
+      : "Explicit multiple phases require the managed workflow before implementation";
   }
   return {
     schemaVersion: "snipara.task_intent_guide.v1", intent: options.intent,
