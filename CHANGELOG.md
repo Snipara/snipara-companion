@@ -2,6 +2,10 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 4.2.4
+
+- Keep routine Team Sync handoffs and status reads continuity-only, preventing repeated handoffs from adding durable pending memories. Preserve explicit durable Why Capture and phase/final decisions.
+
 ## 4.2.3
 
 - Skip hosted routing-policy discovery for ordinary LITE workflows; preserve explicit routing, active local policy and Orchestrator handoff requests.

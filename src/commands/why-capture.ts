@@ -391,6 +391,12 @@ export async function captureCompanionWhy(
     ...(commitSha ? { commitSha } : {}),
   };
 
+  // A handoff is continuity, even when its summary sounds like a decision.
+  // Deliberate callers can supply rationale through the existing why input.
+  if (input.sourceKind === "handoff" && !input.why?.trim()) {
+    return { ...baseReceipt, status: "skipped", error: "continuity_only" };
+  }
+
   if (!loadConfig({ cwd }).apiKey) {
     return { ...baseReceipt, status: "skipped" };
   }

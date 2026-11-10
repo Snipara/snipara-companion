@@ -35,7 +35,6 @@ import { appendActivityEvent, writeSessionSnapshot } from "./activity";
 import { appendJournalCheckpoint, type JournalWriteResult } from "./journal";
 import {
   captureCompanionWhy,
-  readLatestWorkflowCommands,
   type CompanionWhyCaptureReceipt,
 } from "./why-capture";
 
@@ -764,6 +763,8 @@ async function createTeamSyncHandoffPayload(
     files: record.files,
     cwd: rootDir,
   });
+  // Routine handoffs retain continuity without requesting durable rationale.
+  // Keep the skipped Why Capture receipt in the existing output contract.
   const whyCapture = await captureCompanionWhy({
     cwd: rootDir,
     sourceKind: "handoff",
@@ -773,7 +774,6 @@ async function createTeamSyncHandoffPayload(
       .filter(Boolean)
       .join("\n"),
     files: record.files,
-    commands: readLatestWorkflowCommands(rootDir),
   });
   appendActivityEvent({
     cwd: rootDir,

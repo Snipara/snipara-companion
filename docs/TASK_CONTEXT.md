@@ -7,20 +7,24 @@ behavior and make no mandatory context calls.
 ```json
 {
   "goal": "Implement a bounded change",
-  "steps": [{
-    "id": "implementation",
-    "tasks": [{
-      "id": "update-service",
-      "query": "Implement the reviewed service contract",
-      "files": ["src/service.ts"],
-      "contextRequest": {
-        "queries": ["service contract error behavior"],
-        "maxTokens": 4000,
-        "maxChunks": 8,
-        "timeoutMs": 30000
-      }
-    }]
-  }]
+  "steps": [
+    {
+      "id": "implementation",
+      "tasks": [
+        {
+          "id": "update-service",
+          "query": "Implement the reviewed service contract",
+          "files": ["src/service.ts"],
+          "contextRequest": {
+            "queries": ["service contract error behavior"],
+            "maxTokens": 4000,
+            "maxChunks": 8,
+            "timeoutMs": 30000
+          }
+        }
+      ]
+    }
+  ]
 }
 ```
 
@@ -93,3 +97,49 @@ This is not a cross-process lock or an atomic compare-and-swap guarantee.
 Controller/native-runtime injection, independently authenticated reviewers,
 complete objective acceptance and the consolidated evidence dossier remain
 separate contracts and qualification steps.
+
+## English procedural questions and bounded recovery
+
+Use the original task plus two to four concrete English facets for maintained
+English documentation. Preserve exact client names, identifiers, paths and
+versions. The existing `context_query` operation carries those facets within one
+context budget; it does not require a new planner or translation service:
+
+```json
+{
+  "contextRequest": {
+    "maxTokens": 4000,
+    "maxChunks": 8,
+    "timeoutMs": 30000,
+    "operation": {
+      "action": "context_query",
+      "params": {
+        "query": "What current backup procedure applies to this project?",
+        "retrieval_queries": [
+          "current backup destinations reviewed owner decision",
+          "backup prerequisites retention restore verification constraints"
+        ],
+        "auto_decompose": false,
+        "include_all_tiers": false
+      },
+      "bindings": {}
+    }
+  }
+}
+```
+
+The task loader already fetches exact cited chunks and rejects missing,
+truncated, mismatched or over-budget material. It does not secretly retry or
+weaken that contract. An assistant can perform one narrow keyword recovery
+before freezing a request, or explicitly revise a failed request for a fresh
+attempt. Use three to eight terms, `max_tokens=800`, references enabled,
+`search_mode="keyword"`, `auto_decompose=false` and `include_all_tiers=false`.
+No repeated fanout until a favorable answer appears.
+
+Retirement banners, canonical replacements, negative constraints and missing
+prerequisites remain relevant even when a child section looks complete. Source
+quality is not evidence that a procedure applies to an unknown client. Preserve
+insufficient-evidence results rather than assigning generic project hosting to
+that client. Journal storage is continuity; task-summary proposals await review.
+A previously saved PASS describes its original source and receipt identity,
+not the current checkout. State which checks actually ran and which are planned.

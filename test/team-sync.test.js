@@ -1028,16 +1028,136 @@ test("team-sync handoff publishes the hosted capsule when configured", () => {
   assert.match(result.stdout, /Hosted Handoff/);
   assert.match(result.stdout, /Handoff ID: handoff_hosted_1/);
   assert.match(result.stdout, /Attention: proof_required/);
-  const whyCapture = fs
-    .readFileSync(whyCaptureLog, "utf8")
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line));
-  assert.equal(whyCapture.length, 2);
-  assert.equal(whyCapture[0].previewOnly, true);
-  assert.equal(whyCapture[1].confirmed, true);
-  assert.equal(whyCapture[1].sourceKind, "handoff");
-  assert.match(whyCapture[1].sourceText, /Run permissions tests before merge/);
+  assert.equal(fs.existsSync(whyCaptureLog), false);
+  assert.equal(loadTeamSyncState(dir).handoffs.length, 1);
+});
+
+test("repeated public handoffs and status reads do not grow the Why Capture queue", (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-handoff-continuity-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+  const preloadPath = writeHostedTeamSyncPreload(dir);
+  const whyCaptureLog = path.join(dir, "why-capture.jsonl");
+  const journalLog = path.join(dir, "journal.jsonl");
+  const summary = "Decision: Keep review gates. Why: Review before merge. Next: run tests";
+  const options = {
+    cwd: dir,
+    env: {
+      SNIPARA_API_KEY: "snp-test",
+      SNIPARA_PROJECT_ID: "project_1",
+      SNIPARA_API_URL: "https://api.snipara.com",
+      SNIPARA_TEST_WHY_CAPTURE_LOG: whyCaptureLog,
+      SNIPARA_TEST_JOURNAL_LOG: journalLog,
+    },
+    nodeArgs: ["-r", preloadPath],
+  };
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const result = runCli(
+      ["team-sync", "handoff", "--summary", summary, "--attention", "proof", "--json"],
+      options
+    );
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.hosted.status, "ok");
+    assert.equal(payload.hosted.data.handoff.durable, false);
+    assert.equal(payload.whyCapture.status, "skipped");
+    assert.equal(payload.whyCapture.error, "continuity_only");
+    assert.equal(payload.whyCapture.capturedCount, 0);
+    assert.deepEqual(payload.whyCapture.pendingMemories, []);
+  }
+  const topLevel = runCli(["handoff", "--summary", summary, "--json"], options);
+  assert.equal(topLevel.status, 0, topLevel.stderr || topLevel.stdout);
+  assert.equal(loadTeamSyncState(dir).handoffs.length, 3);
+  assert.equal(fs.readFileSync(journalLog, "utf8").trim().split("\n").length, 3);
+  for (const command of ["what-changed", "resume"]) {
+    const result = runCli(["team-sync", command, "--json"], options);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  }
+  assert.equal(fs.existsSync(whyCaptureLog), false);
+});
+
+test("Why Capture requires explicit rationale for handoffs and preserves durable commit paths", async (t) => {
+  const { loadRuntimeSource } = require("./helpers/runtime-source.cjs");
+  const { captureCompanionWhy } = loadRuntimeSource(
+    path.resolve(__dirname, "../src/commands/why-capture.ts")
+  );
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-explicit-why-"));
+  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+  const previousFetch = globalThis.fetch;
+  const keys = ["SNIPARA_API_KEY", "SNIPARA_PROJECT_ID", "SNIPARA_API_URL"];
+  const previousEnv = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  t.after(() => {
+    globalThis.fetch = previousFetch;
+    for (const key of keys) {
+      if (previousEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = previousEnv[key];
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  process.env.SNIPARA_API_KEY = "snp-test";
+  process.env.SNIPARA_PROJECT_ID = "project_1";
+  process.env.SNIPARA_API_URL = "https://api.snipara.com";
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    assert.match(String(url), /\/agents\/memory\/why-capture$/);
+    const body = JSON.parse(init.body);
+    calls.push(body);
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        success: true,
+        data: {
+          previewOnly: body.previewOnly,
+          confirmed: body.confirmed,
+          candidateCount: 1,
+          capturedCount: body.confirmed ? 1 : 0,
+          memories: body.confirmed
+            ? [{ id: "pending_why", content: "Keep review gates", reviewStatus: "PENDING" }]
+            : [],
+        },
+      }),
+    };
+  };
+  for (const why of [undefined, "", "  \n "]) {
+    const receipt = await captureCompanionWhy({
+      cwd: dir,
+      sourceKind: "handoff",
+      summary: "Decision: Keep review gates",
+      why,
+    });
+    assert.equal(receipt.status, "skipped");
+    assert.equal(receipt.error, "continuity_only");
+    assert.equal(receipt.capturedCount, 0);
+  }
+  assert.deepEqual(calls, []);
+
+  const explicit = await captureCompanionWhy({
+    cwd: dir,
+    sourceKind: "handoff",
+    summary: "Keep review gates",
+    why: "Independent evidence must precede integration",
+  });
+  assert.equal(explicit.status, "captured");
+  assert.equal(explicit.pendingMemories[0].reviewStatus, "PENDING");
+  assert.equal(calls[0].previewOnly, true);
+  assert.equal(calls[1].confirmed, true);
+  assert.equal(calls[1].why, "Independent evidence must precede integration");
+
+  for (const sourceKind of ["commit", "phase_commit", "final_commit"]) {
+    calls.length = 0;
+    const receipt = await captureCompanionWhy({
+      cwd: dir,
+      sourceKind,
+      summary: "Keep review gates",
+    });
+    assert.equal(receipt.status, "captured");
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].previewOnly, true);
+    assert.equal(calls[1].confirmed, true);
+    assert.equal(calls[1].sourceKind, sourceKind);
+  }
 });
 
 test("team-sync what-changed includes hosted continuity evidence in json mode", () => {
