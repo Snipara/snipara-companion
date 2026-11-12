@@ -223,7 +223,7 @@ test("phase lifecycle cannot bypass actual context preparation", (t) => {
   const f=fixture(t,simple());
   const bypass=f.run(["workflow","phase-commit","code","--summary","Pretend complete","--json"]);
   assert.notEqual(bypass.status,0);assert.match(bypass.stderr,/load its required context/);
-  const result=f.run(["workflow","phase-start","code","--json"]);
+  const result=f.run(["workflow","phase-start","code","--json","--detail"]);
   assert.equal(result.status,0,result.stderr);
   assert.equal(JSON.parse(result.stdout).task_context.chunks[0].id,"chunk_alpha");
   assert.equal(f.state().phases[0].tasks[0].attempt,1);

@@ -19,6 +19,15 @@ import type {
 import { loadConfig, type ConfigResolutionOptions, type RLMConfig } from "../config/store";
 import { resolveProject } from "../project/resolver";
 import { normalizeSessionCheckpoint, type SessionCheckpoint } from "../session/checkpoint";
+import {
+  isSourcesValidationError,
+  recordServedMemoryIds,
+  rejectedSourceIndexes,
+  sanitizeSources,
+  servedIdsFromResult,
+  type PhaseOutcomePayload,
+  type SourcePointer,
+} from "../runtime/memory-sources";
 
 export interface ContextQueryResult {
   sections: Array<{
@@ -26,7 +35,11 @@ export interface ContextQueryResult {
     content: string;
     file: string;
     lines: [number, number];
+    /** Display-only rank-normalised score; use the raw scores below for any threshold. */
     relevance_score: number;
+    fused_score?: number | null;
+    semantic_score?: number | null;
+    keyword_score?: number | null;
     token_count: number;
     truncated: boolean;
     quality_score?: number | null;
@@ -466,6 +479,24 @@ export interface RecallResult {
   temporal_context?: { contract: string; view: "current" | "history"; as_of: string | null };
 }
 
+/** Compact recall omits empty warnings, timing, query and the default status; fill them so callers see one shape. */
+export function normalizeRecallResult(value: RecallResult): RecallResult {
+  const memories = Array.isArray(value?.memories) ? value.memories : [];
+  return {
+    ...value,
+    memories: memories.map((memory) => ({
+      ...memory,
+      status: String(memory.status ?? "ACTIVE").toUpperCase() as MemoryStatus,
+      relevance: typeof memory.relevance === "number" ? memory.relevance : 0,
+      confidence: typeof memory.confidence === "number" ? memory.confidence : 0,
+    })),
+    warnings: Array.isArray(value?.warnings) ? value.warnings : [],
+    total_searched: typeof value?.total_searched === "number" ? value.total_searched : memories.length,
+    query: typeof value?.query === "string" ? value.query : "",
+    timing_ms: typeof value?.timing_ms === "number" ? value.timing_ms : 0,
+  };
+}
+
 export interface SessionMemoryEntry extends Record<string, unknown> {
   id?: string;
   memory_id?: string;
@@ -702,7 +733,6 @@ export interface ProjectAutomationSettings {
   adaptiveRoutingFallback?: string;
   adaptiveRoutingDailyBudgetCents?: number;
   adaptiveRoutingMonthlyBudgetCents?: number;
-  adaptiveRoutingCatalogLimit?: number;
 }
 
 export interface ProjectAutomationSettingsResult {
@@ -1132,7 +1162,6 @@ export interface CollaborationSessionSummary {
   actorType: CollaborationActorType;
   actorLabel?: string | null;
   sessionId?: string | null;
-  swarmId?: string | null;
   client?: string | null;
   repository?: string | null;
   branch?: string | null;
@@ -1149,7 +1178,6 @@ export interface CollaborationSessionSummary {
 export interface CollaborationLeaseSummary {
   id: string;
   workSessionId?: string | null;
-  swarmId?: string | null;
   resourceKind: CollaborationResourceKind;
   resourceId: string;
   resourceLabel?: string | null;
@@ -1648,7 +1676,7 @@ export class RLMClient {
    */
   async queryContext(
     query: string,
-    maxTokens: number = 8000,
+    maxTokens: number = 800,
     options: ContextQueryOptions = {}
   ): Promise<ContextQueryResult> {
     interface MCPContextResult {
@@ -1662,6 +1690,9 @@ export class RLMClient {
         line_start?: number;
         line_end?: number;
         relevance_score?: number;
+        fused_score?: number | null;
+        semantic_score?: number | null;
+        keyword_score?: number | null;
         quality_score?: number | null;
         quality_flags?: string[];
         tokens?: number;
@@ -1693,7 +1724,7 @@ export class RLMClient {
       max_tokens: maxTokens,
       search_mode: options.searchMode ?? "hybrid",
       include_metadata: options.includeMetadata ?? true,
-      include_answer_pack: options.includeAnswerPack ?? true,
+      include_answer_pack: options.includeAnswerPack ?? false, // explicitly compact, including older servers
       auto_decompose: options.autoDecompose,
       include_shared_context: options.includeSharedContext,
       include_all_tiers: options.includeAllTiers,
@@ -1712,6 +1743,9 @@ export class RLMClient {
           ? [s.lines[0] || 0, s.lines[1] || 0]
           : ([s.line_start || 0, s.line_end || 0] as [number, number]),
         relevance_score: s.relevance_score || 0,
+        fused_score: s.fused_score,
+        semantic_score: s.semantic_score,
+        keyword_score: s.keyword_score,
         token_count: s.token_count || s.tokens || 0,
         truncated: s.truncated || false,
         quality_score: s.quality_score,
@@ -1942,7 +1976,6 @@ export class RLMClient {
       limit?: number;
       minRelevance?: number;
       includeInactive?: boolean;
-      warningThreshold?: number;
       memoryView?: "current" | "history";
       asOf?: string;
     } = {}
@@ -1954,7 +1987,7 @@ export class RLMClient {
         !requestedCutoff || Date.parse(options.asOf) > Date.now())) {
       throw new Error("asOf requires memoryView=history and a past ISO timestamp with timezone");
     }
-    const result = await this.mcpCall<RecallResult>("snipara_recall", {
+    const result = normalizeRecallResult(await this.mcpCall<RecallResult>("snipara_recall", {
       query,
       type: options.type,
       scope: options.scope,
@@ -1962,10 +1995,9 @@ export class RLMClient {
       limit: options.limit ?? 5,
       min_relevance: options.minRelevance ?? 0.5,
       include_inactive: options.includeInactive ?? false,
-      warning_threshold: options.warningThreshold ?? 0.72,
       ...(memoryView !== "current" ? { memory_view: memoryView } : {}),
       ...(options.asOf ? { as_of: options.asOf } : {}),
-    });
+    }));
     if (memoryView !== "current" || options.asOf) {
       const metadata = result.temporal_context;
       if (metadata?.contract !== "snipara.memory-temporal.v1" || metadata.view !== memoryView ||
@@ -1973,6 +2005,7 @@ export class RLMClient {
         throw new Error("Hosted server did not confirm the requested memory view/cutoff; refusing a silent current-view fallback");
       }
     }
+    recordServedMemoryIds(servedIdsFromResult(result));
     return result;
   }
 
@@ -2768,7 +2801,6 @@ export class RLMClient {
   async startCollaborationSession(
     args: CollaborationActorPayload & {
       workSessionId?: string;
-      swarmId?: string;
       client?: string;
       repository?: string;
       branch?: string;
@@ -2798,7 +2830,6 @@ export class RLMClient {
     workSessionId: string,
     args: CollaborationActorPayload & {
       status?: "ACTIVE" | "STALE" | "COMPLETED" | "ABANDONED";
-      swarmId?: string;
       client?: string;
       repository?: string;
       branch?: string;
@@ -2827,7 +2858,6 @@ export class RLMClient {
   async createCollaborationLeases(
     args: CollaborationActorPayload & {
       workSessionId?: string;
-      swarmId?: string;
       mode?: CollaborationLeaseMode;
       reason?: string;
       ttlSeconds?: number;
@@ -3100,6 +3130,7 @@ export class RLMClient {
       ...(includeYesterday !== undefined ? { include_yesterday: includeYesterday } : {}),
     });
 
+    recordServedMemoryIds(servedIdsFromResult(result));
     return normalizeSessionMemoriesResult(result);
   }
 
@@ -3112,7 +3143,28 @@ export class RLMClient {
     filesTouched?: string[];
     persistTypes?: string[];
     handoffOnly?: boolean;
+    sources?: SourcePointer[];
   }): Promise<Record<string, unknown>> {
+    const sources = sanitizeSources(args.sources);
+    try {
+      return await this.sendEndOfTaskCommit(args, sources);
+    } catch (error) {
+      if (sources.length === 0 || !isSourcesValidationError(error)) throw error;
+      // Drop the pointer the server names (or all of them when it names none) and retry once with the same body.
+      const named = rejectedSourceIndexes(error instanceof Error ? error.message : String(error), sources.length);
+      return this.sendEndOfTaskCommit(args, named.length > 0 ? sources.filter((_, index) => !named.includes(index)) : []);
+    }
+  }
+
+  /** Single wire adapter for the phase outcome record; the tool name and field names live here only. */
+  async recordPhaseOutcome(payload: PhaseOutcomePayload): Promise<Record<string, unknown>> {
+    return this.mcpCall("snipara_memory_outcome", { ...payload });
+  }
+
+  private async sendEndOfTaskCommit(
+    args: Parameters<RLMClient["endOfTaskCommit"]>[0],
+    sources: SourcePointer[]
+  ): Promise<Record<string, unknown>> {
     return this.mcpCall("snipara_end_of_task_commit", {
       summary: args.summary,
       ...(args.task ? { task: args.task } : {}),
@@ -3132,6 +3184,8 @@ export class RLMClient {
       files_touched: args.filesTouched || [],
       persist_types: args.persistTypes ?? ["decision", "learning", "workflow"],
       ...(args.handoffOnly !== undefined ? { handoff_only: args.handoffOnly } : {}),
+      ...(sources.length > 0 ? { sources } : {}),
+      ...(this.config.sessionId ? { session_id: this.config.sessionId.slice(0, 128) } : {}),
     });
   }
 

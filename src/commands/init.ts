@@ -319,7 +319,7 @@ async function promptForProjectSelection(
 /**
  * Generate Claude Code hook configuration (JSON object)
  */
-function generateClaudeHookConfig(options: {
+export function generateClaudeHookConfig(options: {
   preserveOnCompaction?: boolean;
   restoreOnSessionStart?: boolean;
 }): object {
@@ -352,6 +352,9 @@ function generateClaudeHookConfig(options: {
       ],
     },
   ];
+
+  // A failed tool call is reported through its own event; the same script records it as failure evidence.
+  hooks.PostToolUseFailure = hooks.PostToolUse;
 
   hooks.Stop = [
     {
@@ -634,16 +637,17 @@ limit_context() {
 `;
 }
 
-function generateClaudeContextEmitter(eventName: string): string {
+function generateClaudeContextEmitter(eventName: string, dynamicEvent = false): string {
+  // dynamicEvent: the script serves several events and echoes the one that invoked it.
   return `
 emit_context() {
   local content="$1"
 
   [ -z "$content" ] && exit 0
   content=$(limit_context "$content")
-  jq -n --arg content "$content" '{
+  jq -n --arg content "$content" ${dynamicEvent ? '--arg event "${HOOK_EVENT_NAME:-' + eventName + '}" ' : ""}'{
     hookSpecificOutput: {
-      hookEventName: "${eventName}",
+      hookEventName: ${dynamicEvent ? "$event" : `"${eventName}"`},
       additionalContext: $content
     }
   }'
@@ -660,16 +664,18 @@ fi
 
 [ -z "$INPUT" ] && exit 0
 
+HOOK_SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // .sessionId // empty' 2>/dev/null || true)
+[ -z "$HOOK_SESSION_ID" ] || export SNIPARA_SESSION_ID="$HOOK_SESSION_ID"
 TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool_name // .tool // .name // "unknown"' 2>/dev/null || echo "unknown")
 TOOL_INPUT_JSON=$(printf '%s' "$INPUT" | jq -c '.tool_input // .input // .arguments // .args // .' 2>/dev/null || printf '%s' "$INPUT")
 `;
 }
 
-function generateClaudeStuckGuardScript(): string {
+export function generateClaudeStuckGuardScript(): string {
   return `${generateClaudeHookPreamble("PreToolUse hook for Snipara context and stuck-guard checks.")}
 ${generateClaudeContextEmitter("PreToolUse")}
 ${generateClaudeToolInputLoader()}
-CONTEXT=$(snipara-companion pre-tool "$TOOL_INPUT_JSON" --tool "$TOOL_NAME" --max-tokens "\${SNIPARA_HOOK_MAX_TOKENS:-1200}" 2>/dev/stderr || true)
+CONTEXT=$(snipara-companion pre-tool "$TOOL_INPUT_JSON" --stuck-guard-only --tool "$TOOL_NAME" --max-tokens "\${SNIPARA_HOOK_MAX_TOKENS:-1200}" 2>&2 || true)
 emit_context "$CONTEXT"
 `;
 }
@@ -681,31 +687,37 @@ CONTEXT=""
 if [ -f ".snipara/workflow/current.json" ]; then
   WORKFLOW_STATUS=$(jq -r '.status // empty' ".snipara/workflow/current.json" 2>/dev/null || true)
   if [ "$WORKFLOW_STATUS" != "completed" ]; then
-    CONTEXT=$(snipara-companion workflow resume --include-session-context 2>/dev/stderr || true)
+    CONTEXT=$(snipara-companion workflow resume --include-session-context 2>&2 || true)
   fi
 fi
 
 if [ -z "$CONTEXT" ]; then
-  CONTEXT=$(snipara-companion session-bootstrap --include-session-context --max-context-tokens "\${SNIPARA_HOOK_MAX_TOKENS:-1200}" 2>/dev/stderr || true)
+  CONTEXT=$(snipara-companion session-bootstrap --include-session-context --max-context-tokens "\${SNIPARA_HOOK_MAX_TOKENS:-1200}" 2>&2 || true)
 fi
 
 emit_context "$CONTEXT"
 `;
 }
 
-function generateClaudeSessionScript(): string {
+export function generateClaudeSessionScript(): string {
   return `${generateClaudeHookPreamble("PostToolUse hook for Snipara file tracking and failure guidance.")}
-${generateClaudeContextEmitter("PostToolUse")}
+${generateClaudeContextEmitter("PostToolUse", true)}
 ${generateClaudeToolInputLoader()}
 TOOL_OUTPUT_JSON=$(printf '%s' "$INPUT" | jq -c '.tool_response // .tool_output // .result // .response // {}' 2>/dev/null || echo "{}")
 STATUS=$(printf '%s' "$INPUT" | jq -r '.status // .tool_status // empty' 2>/dev/null || true)
+# Claude reports a failed tool call through PostToolUseFailure with an error text, not a tool_response.
+HOOK_EVENT_NAME=$(printf '%s' "$INPUT" | jq -r '.hook_event_name // "PostToolUse"' 2>/dev/null || echo "PostToolUse")
+if [ "$HOOK_EVENT_NAME" = "PostToolUseFailure" ]; then
+  TOOL_OUTPUT_JSON=$(printf '%s' "$INPUT" | jq -c '{is_error: true, error: ((.error // "") | tostring | .[0:400])}' 2>/dev/null || echo '{"is_error":true}')
+  STATUS="failed"
+fi
 
 ARGS=(post-tool "$TOOL_INPUT_JSON" --tool "$TOOL_NAME" --result "$TOOL_OUTPUT_JSON")
 if [ -n "$STATUS" ]; then
   ARGS+=(--status "$STATUS")
 fi
 
-CONTEXT=$(snipara-companion "\${ARGS[@]}" 2>/dev/stderr || true)
+CONTEXT=$(snipara-companion "\${ARGS[@]}" 2>&2 || true)
 emit_context "$CONTEXT"
 `;
 }
@@ -715,9 +727,9 @@ function generateClaudeCompactScript(): string {
 ${generateClaudeContextEmitter("PreCompact")}
 if [ -f ".snipara/workflow/current.json" ]; then
   SUMMARY="Claude Code compacted while a managed workflow state existed. Resume with snipara-companion workflow resume --include-session-context and continue from .snipara/workflow/current.json."
-  CONTEXT=$(snipara-companion task-commit --summary "$SUMMARY" --category workflow-compaction --outcome partial 2>/dev/stderr || true)
+  CONTEXT=$(snipara-companion task-commit --summary "$SUMMARY" --category workflow-compaction --outcome partial 2>&2 || true)
 else
-  CONTEXT=$(snipara-companion task-commit --summary "Claude Code compacted local session context" --category session-compaction --outcome partial 2>/dev/stderr || true)
+  CONTEXT=$(snipara-companion task-commit --summary "Claude Code compacted local session context" --category session-compaction --outcome partial 2>&2 || true)
 fi
 
 emit_context "$CONTEXT"
@@ -749,7 +761,7 @@ if [ -z "$INPUT" ]; then
   exit 0
 fi
 
-CONTEXT=$(snipara-companion pre-tool "$INPUT" --tool beforeReadFile 2>/dev/stderr || true)
+CONTEXT=$(snipara-companion pre-tool "$INPUT" --stuck-guard-only --tool beforeReadFile 2>&2 || true)
 if [ -n "$CONTEXT" ]; then
   jq -n --arg content "$CONTEXT" '{
     continue: true,
@@ -775,7 +787,7 @@ if [ -z "$INPUT" ]; then
   exit 0
 fi
 
-CONTEXT=$(snipara-companion post-tool "$INPUT" --tool afterFileEdit 2>/dev/stderr || true)
+CONTEXT=$(snipara-companion post-tool "$INPUT" --tool afterFileEdit 2>&2 || true)
 if [ -n "$CONTEXT" ]; then
   jq -n --arg content "$CONTEXT" '{
     continue: true,

@@ -11,6 +11,25 @@ const cliVersion = JSON.parse(
 ).version;
 
 function runCli(args, options = {}) {
+  // Legacy envelope assertions opt in to full detail; default receipts have separate regressions.
+  if (args[0] === "workflow" && ["start", "phase-start", "phase-commit"].includes(args[1]) &&
+      args.includes("--json") && !args.includes("--detail")) args = [...args, "--detail"];
+  // FULL phase commits require actual authoritative usage records, even in isolated fixtures.
+  if (args[0] === "workflow" && args[1] === "phase-commit" && options.usage !== false) {
+    const home = options.env?.HOME ?? fs.mkdtempSync(path.join(os.tmpdir(), "snipara-usage-home-"));
+    const sessions = path.join(home, ".codex", "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    const thread = "companion-fixture";
+    const timestamp = new Date().toISOString();
+    fs.writeFileSync(path.join(sessions, "fixture.jsonl"), [
+      { type: "session_meta", payload: { id: thread, timestamp, source: "cli" } },
+      { type: "response_item", timestamp, payload: { role: "user" } },
+      { type: "token_usage_record", payload: { thread_id: thread, response_id: "fixture-response",
+        usage: { input_tokens: 10, cached_input_tokens: 5, output_tokens: 1,
+          reasoning_output_tokens: 0, total_tokens: 11 } } },
+    ].map(JSON.stringify).join("\n") + "\n");
+    options = { ...options, env: { ...options.env, HOME: home, CODEX_THREAD_ID: thread } };
+  }
   const env = {
     ...process.env,
     SNIPARA_COMPANION_SKIP_NPM_VERSION_CHECK: "1",
@@ -260,14 +279,16 @@ function writeMemoryPreload(dir) {
       "  const toolName = body.params?.name;",
       "  const args = body.params?.arguments || {};",
       "  let result;",
-      "  if (toolName === 'snipara_memory_health') {",
+      "  if (toolName === 'snipara_memories') {",
+      "    result = { memories: [{ memory_id: 'mem_' + args.offset, content: 'x'.repeat(1000), type: 'decision', scope: args.scope, category: args.category, status: 'active' }], total_count: 41, has_more: args.offset + args.limit < 41 };",
+      "  } else if (toolName === 'snipara_memory_health') {",
       "    result = { total_scanned: 12, scope: args.scope, counts: { by_status: { active: 11 }, top_categories: [] }, auto_compact: { threshold: 10, would_trigger_by_count: true }, received: args };",
-      "  } else if (toolName === 'snipara_memory_clean_candidates') {",
-      "    result = { total_scanned: 12, counts: { noise: 1, possibly_stale: 2, duplicates: 0 }, candidates: { noise: [{ memory_id: 'mem_noise', reason: 'receipt', preview: 'low signal' }], possibly_stale: [{ memory_id: 'mem_stale', reason: 'old_context_or_todo', type: 'context', scope: 'project', category: 'runbook', status: 'active', preview: 'Old runbook may be stale', created_at: '2026-01-01T00:00:00.000Z' }] }, received: args };",
       "  } else if (toolName === 'snipara_memory_review_queue') {",
       "    result = { items: [{ memory_id: 'mem_candidate', content: 'Candidate memory needs promotion review', type: 'decision', scope: 'project', category: 'workflow-phase', status: 'pending', review_status: 'pending', needs_review_reason: 'candidate_memory', confidence: 0.73, created_at: '2026-07-02T17:00:00.000Z', evidence: [{ external_ref: 'workflow:phase-commit', weight: 1 }] }], total_count: 1, received: args, mutated: false };",
-      "  } else if (toolName === 'snipara_memory_duplicate_candidates') {",
-      "    result = { group_count: 1, groups: [{ keep_memory_id: 'mem_keep', candidates: [{ memory_id: 'mem_dupe', content: 'Duplicate decision memory', status: 'active', type: 'decision' }] }], received: args, mutated: false };",
+      "  } else if (toolName === 'snipara_memory_restore') {",
+      "    result = { memory_id: args.memory_id, restored: true, previous_status: 'invalidated', message: 'restored', received: args };",
+      "  } else if (toolName === 'snipara_memory_outcome') {",
+      "    result = { recorded: args.memory_ids.length, outcome: args.outcome, memories: args.memory_ids.map((id) => ({ memory_id: id, confirmed: 0, refuted: 3, posterior: 0.2, retirement_candidate: true })), received: args };",
       "  } else if (toolName === 'snipara_memory_compact') {",
       "    result = { dry_run: args.dry_run, mutated: false, planned_actions: 3, received: args };",
       "  } else if (toolName === 'snipara_memory_invalidate') {",
@@ -369,8 +390,6 @@ test("root help exposes workflow, intelligence, and code commands", () => {
   assert.match(result.stdout, /\bmemory\b/);
   assert.match(result.stdout, /\bdoctor\b/);
   assert.match(result.stdout, /\bautomations\b/);
-  assert.match(result.stdout, /\bswarm\b/);
-  assert.match(result.stdout, /\bhtask\b/);
 });
 
 test("memory help exposes audit, dry-run, and lifecycle commands", () => {
@@ -378,10 +397,12 @@ test("memory help exposes audit, dry-run, and lifecycle commands", () => {
   assert.equal(result.status, 0);
   assert.match(result.stdout, /\baudit\b/);
   assert.match(result.stdout, /\bhealth\b/);
-  assert.match(result.stdout, /clean-candidates/);
+  assert.doesNotMatch(result.stdout, /clean-candidates/);
   assert.match(result.stdout, /\bcompact\b/);
   assert.match(result.stdout, /\binvalidate\b/);
   assert.match(result.stdout, /\bsupersede\b/);
+  assert.match(result.stdout, /\brestore\b/);
+  assert.match(result.stdout, /\boutcome\b/);
 });
 
 test("intelligence help exposes the brief command", () => {
@@ -1182,7 +1203,7 @@ test("run command promotes hosted served judgment identity into the first-class 
   assert.equal(calls[0].body.runId, payload.runEnvelope.runId);
 });
 
-test("memory audit combines health, candidates, and compact dry-run", () => {
+test("memory audit combines health and the compact dry-run", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-memory-"));
   const preloadPath = writeMemoryPreload(dir);
 
@@ -1193,8 +1214,6 @@ test("memory audit combines health, candidates, and compact dry-run", () => {
       "--scope",
       "project",
       "--include-inactive",
-      "--limit-per-bucket",
-      "3",
       "--json",
     ],
     {
@@ -1217,14 +1236,10 @@ test("memory audit combines health, candidates, and compact dry-run", () => {
   assert.equal(payload.summary.activeCount, 11);
   assert.equal(payload.summary.autoCompactThreshold, 10);
   assert.equal(payload.summary.autoCompactWouldTrigger, true);
-  assert.equal(payload.summary.cleanupCandidateCounts.noise, 1);
   assert.ok(
-    payload.summary.recommendedActions.includes(
-      "snipara-companion memory clean-candidates --scope project --limit-per-bucket 5"
-    )
+    payload.summary.recommendedActions.includes("snipara-companion memory compact --scope project")
   );
-  assert.equal(payload.cleanCandidates.counts.noise, 1);
-  assert.equal(payload.cleanCandidates.received.limit_per_bucket, 3);
+  assert.equal(payload.cleanCandidates, undefined);
   assert.equal(payload.compactDryRun.dry_run, true);
   assert.equal(payload.compactDryRun.mutated, false);
   assert.equal(payload.compactDryRun.received.dry_run, true);
@@ -1293,6 +1308,32 @@ test("memory lifecycle commands call hosted invalidate and supersede tools", () 
   assert.equal(supersedePayload.received.new_memory_id, "mem_new");
   assert.equal(supersedePayload.received.reason, "corrected source-selection rule");
   assert.equal(supersedePayload.received.text, undefined);
+
+  const env = {
+    SNIPARA_API_KEY: "test-key",
+    SNIPARA_PROJECT_ID: "snipara",
+    SNIPARA_API_URL: "https://api.snipara.com",
+  };
+  const restore = runCli(
+    ["memory", "restore", "mem_old", "--reason", "still true", "--undo-supersede", "--json"],
+    { cwd: dir, env, nodeArgs: ["--require", preloadPath] }
+  );
+  assert.equal(restore.status, 0, restore.stderr);
+  const restorePayload = JSON.parse(restore.stdout);
+  assert.equal(restorePayload.restored, true);
+  assert.equal(restorePayload.received.memory_id, "mem_old");
+  assert.equal(restorePayload.received.reason, "still true");
+  assert.equal(restorePayload.received.undo_supersede, true);
+
+  const outcome = runCli(["memory", "outcome", "refuted", "mem_a", "mem_b", "--count", "3", "--json"], {
+    cwd: dir,
+    env,
+    nodeArgs: ["--require", preloadPath],
+  });
+  assert.equal(outcome.status, 0, outcome.stderr);
+  const outcomePayload = JSON.parse(outcome.stdout);
+  assert.deepEqual(outcomePayload.received, { memory_ids: ["mem_a", "mem_b"], outcome: "refuted", count: 3 });
+  assert.equal(outcomePayload.memories[0].retirement_candidate, true);
 });
 
 test("memory reviews summarizes hosted review surfaces and emits decision requests", () => {
@@ -1317,19 +1358,19 @@ test("memory reviews summarizes hosted review surfaces and emits decision reques
   assert.equal(payload.version, "snipara.memory_review_connector.v0");
   assert.equal(payload.scope, "project");
   assert.equal(payload.surfaces.review_queue.count, 1);
-  assert.equal(payload.surfaces.clean_candidates.count, 2);
-  assert.equal(payload.surfaces.duplicate_candidates.count, 1);
-  assert.equal(payload.items.length, 4);
-  assert.equal(payload.requests.length, 4);
-  assert.equal(payload.writes.length, 4);
-  assert.equal(payload.emittedCount, 4);
+  assert.equal(payload.surfaces.clean_candidates, undefined);
+  assert.equal(payload.surfaces.duplicate_candidates, undefined);
+  assert.equal(payload.items.length, 1);
+  assert.equal(payload.requests.length, 1);
+  assert.equal(payload.writes.length, 1);
+  assert.equal(payload.emittedCount, 1);
   assert.deepEqual(
     payload.emittedRequestIds,
     payload.writes.map((write) => write.requestId)
   );
   assert.deepEqual(payload.emitted, {
     enabled: true,
-    count: 4,
+    count: 1,
     requestIds: payload.emittedRequestIds,
   });
   assert.equal(payload.requests[0].schemaVersion, "snipara.decision_request.v0");
@@ -1476,65 +1517,19 @@ test("top-level brief is an alias for intelligence brief", () => {
   assert.equal(payload.resumeContext.resumeContext.focus.summary, "Resume intelligence surface");
 });
 
-test("swarm help exposes the hosted fallback subcommands", () => {
-  const result = runCli(["swarm", "--help"]);
-  assert.equal(result.status, 0);
-  assert.match(
-    result.stdout,
-    /prefer\s+snipara-orchestrator\s+for\s+shared\s+multi-agent\s+task\s+routing/i
-  );
-  assert.match(result.stdout, /\bcreate\b/);
-  assert.match(result.stdout, /\bjoin\b/);
-});
-
-test("swarm create help stays an explicit legacy passthrough", () => {
-  const result = runCli(["swarm", "create", "--help"]);
-  assert.equal(result.status, 0);
-  assert.match(result.stdout, /--name/);
-  assert.doesNotMatch(result.stdout, /reuse-existing/);
-});
-
-test("htask help exposes the hosted fallback subcommands", () => {
-  const result = runCli(["htask", "--help"]);
-  assert.equal(result.status, 0);
-  assert.match(
-    result.stdout,
-    /prefer\s+snipara-orchestrator\s+for\s+shared\s+multi-agent\s+queues/i
-  );
-  assert.match(result.stdout, /\bcreate\b/);
-  assert.doesNotMatch(result.stdout, /\bbootstrap\b/);
-  assert.match(result.stdout, /create-feature/);
-  assert.match(result.stdout, /\bnext\b/);
-  assert.match(result.stdout, /\btree\b/);
-  assert.match(result.stdout, /\bcomplete\b/);
-});
-
-test("htask create-feature help stays an explicit legacy passthrough", () => {
-  const result = runCli(["htask", "create-feature", "--help"]);
-  assert.equal(result.status, 0);
-  assert.match(result.stdout, /swarm-id/);
-  assert.match(result.stdout, /workstream-owner/);
-  assert.doesNotMatch(result.stdout, /swarm-name/);
-  assert.doesNotMatch(result.stdout, /create-initiative/);
-  assert.doesNotMatch(result.stdout, /custom-workstream/);
-  assert.doesNotMatch(result.stdout, /no-actionable-tasks/);
-});
-
-test("htask next help stays read-only unless orchestrator claims work", () => {
-  const result = runCli(["htask", "next", "--help"]);
-  assert.equal(result.status, 0);
-  assert.match(result.stdout, /swarm-id/);
-  assert.doesNotMatch(result.stdout, /swarm-name/);
-  assert.doesNotMatch(result.stdout, /claim-for-agent/);
-});
-
 test("query help exposes follow recommendation flag", () => {
   const result = runCli(["query", "--help"]);
   assert.equal(result.status, 0);
   assert.match(result.stdout, /follow-recommendation/);
   assert.match(result.stdout, /--search-mode/);
   assert.match(result.stdout, /--timeout-ms/);
-  assert.match(result.stdout, /--no-answer-pack/);
+  assert.match(result.stdout, /--answer-pack/);
+  assert.doesNotMatch(result.stdout, /--no-answer-pack/); // hidden compatibility flag
+});
+
+test("query still accepts the former --no-answer-pack flag", () => {
+  const result = runCli(["query", "--no-answer-pack", "--help"]);
+  assert.equal(result.status, 0);
 });
 
 test("init help lists extended client presets", () => {
@@ -2685,7 +2680,7 @@ test("memory-guard validation rejects destructive checks without auditable inten
   assert.equal(payload.errors[0].field, "destructive");
 });
 
-test("memory-guard strict mode uses a distinct exit code when guidance is unavailable", () => {
+test("memory-guard strict mode passes when guidance is unavailable", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-memory-guard-"));
 
   const result = runCli(
@@ -2706,11 +2701,11 @@ test("memory-guard strict mode uses a distinct exit code when guidance is unavai
     }
   );
 
-  assert.equal(result.status, 21, result.stderr);
+  assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
-  assert.equal(payload.shouldBlock, true);
-  assert.equal(payload.blockReason, "guidance_unavailable");
-  assert.equal(payload.exitCode, 21);
+  assert.equal(payload.shouldBlock, false);
+  assert.equal(payload.blockReason, undefined);
+  assert.equal(payload.exitCode, 0);
   assert.equal(payload.requiresConfirmation, false);
 });
 
@@ -2723,7 +2718,7 @@ test("automations help exposes install, update, diff, and status commands", () =
   assert.match(result.stdout, /\bstatus\b/);
 });
 
-test("workflow start suggests Snipara Sandbox installation for runtime-marked phases", () => {
+test("workflow start saves runtime-marked phases and prints a short receipt", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-workflow-runtime-"));
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-home-"));
   const planPath = path.join(dir, "plan.json");
@@ -2754,10 +2749,13 @@ test("workflow start suggests Snipara Sandbox installation for runtime-marked ph
   );
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.match(result.stdout, /npx create-snipara repair --with-runtime/);
+  assert.match(result.stdout, /Details: \.snipara\/workflow\/detail-start\.json/);
+  assert.ok(Buffer.byteLength(result.stdout) < 2000);
+  const state = JSON.parse(fs.readFileSync(path.join(dir, ".snipara/workflow/current.json")));
+  assert.equal(state.phases[0].needsRuntime, true);
 });
 
-test("workflow phase-start prints code impact and symbol-card gates", () => {
+test("workflow phase-start saves context rather than echoing accumulated gates", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-workflow-code-gate-"));
   fs.mkdirSync(path.join(dir, ".snipara", "workflow"), { recursive: true });
   fs.writeFileSync(
@@ -2791,15 +2789,11 @@ test("workflow phase-start prints code impact and symbol-card gates", () => {
   const result = runCli(["workflow", "phase-start", "implement-auth"], { cwd: dir });
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.match(result.stdout, /snipara-companion code impact --changed-files/);
-  assert.match(result.stdout, /src\/auth\.ts/);
-  assert.match(result.stdout, /--diff-summary 'Implement auth'/);
-  assert.match(result.stdout, /snipara-companion code symbol-card --qualified-name '<symbol>'/);
-  assert.match(result.stdout, /Coding workflow mode/);
-  assert.match(result.stdout, /STANDARD/);
-  assert.match(result.stdout, /FULL \+ ORCHESTRATED/);
-  assert.match(result.stdout, /routes\/services\/jobs/);
-  assert.match(result.stdout, /execution\/test\/debug\/finalization/);
+  assert.ok(Buffer.byteLength(result.stdout) < 2000);
+  const detailPath = result.stdout.match(/Details: (.+)/)[1].trim();
+  const detail = JSON.parse(fs.readFileSync(path.join(dir, detailPath)));
+  assert.deepEqual(detail.current_phase.files, ["src/auth.ts", "tests/auth.test.ts"]);
+  assert.equal(detail.current_phase.query, "Implement auth hardening");
 });
 
 test("deep doctor json reports runtime readiness", () => {
@@ -3105,4 +3099,28 @@ test("query surfaces a friendly auth hint on HTTP 401", () => {
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Snipara rejected the API key/);
   assert.match(result.stderr, /npx -y snipara-companion@latest init --force/);
+});
+
+
+test("memory list emits bounded previews and navigable filtered inventory pages", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-memory-list-"));
+  const preload = writeMemoryPreload(dir);
+  const options = { cwd: dir, nodeArgs: ["-r", preload], env: { HOME: dir,
+    SNIPARA_API_KEY: "test-key", SNIPARA_PROJECT_ID: "project_1", SNIPARA_API_URL: "https://api.example.test" } };
+  try {
+    const first = runCli(["memory", "list", "--scope", "project", "--category", "decisions", "--json"], options);
+    assert.equal(first.status, 0, first.stderr || first.stdout);
+    const page = JSON.parse(first.stdout);
+    assert.equal(page.memories[0].preview.length, 240);
+    assert.equal(page.memories[0].scope, "project");
+    assert.equal(page.memories[0].category, "decisions");
+    assert.equal(page.next_offset, 20);
+    const last = runCli(["memory", "list", "--offset", "40", "--json"], options);
+    assert.equal(last.status, 0, last.stderr || last.stdout);
+    assert.equal(JSON.parse(last.stdout).memories[0].memory_id, "mem_40");
+    assert.equal(JSON.parse(last.stdout).next_offset, null);
+    const invalid = runCli(["memory", "list", "--limit", "51", "--json"], options);
+    assert.notEqual(invalid.status, 0);
+    assert.match(invalid.stderr, /limit 1..50/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

@@ -19,7 +19,7 @@ export interface AgentContextValidateCommandOptions {
 
 export interface AgentContextResolveCommandOptions {
   manifest?: string;
-  agent: string;
+  agent?: string;
   task: string;
   json?: boolean;
   cwd?: string;
@@ -96,7 +96,7 @@ function manifestPath(cwd: string, candidate?: string): string {
 
 export interface LocalAgentContextResolutionOptions {
   manifest?: string;
-  agent: string;
+  agent?: string;
   task: string;
   cwd?: string;
 }
@@ -132,7 +132,7 @@ export function resolveLocalAgentContext(
     manifestPath: path.relative(cwd, resolvedManifestPath) || path.basename(resolvedManifestPath),
     resolution: resolveAgentContext({
       manifest,
-      agent: options.agent,
+      agent: options.agent?.trim() || defaultContextAgent(manifest),
       task: options.task,
     }),
   };
@@ -245,4 +245,13 @@ export async function agentContextResolveCommand(
       : formatAgentContextResolution(resolution)
   );
   return resolution;
+}
+
+export function defaultContextAgent(manifest: unknown): string {
+  const explicit = process.env.SNIPARA_AGENT_ID?.trim();
+  if (explicit) return explicit;
+  const agents = manifest && typeof manifest === "object" && "agents" in manifest
+    ? (manifest as { agents: Record<string, unknown> }).agents : {};
+  for (const alias of ["snipara-code", "code", "codex"]) if (Object.hasOwn(agents, alias)) return alias;
+  return Object.keys(agents).sort()[0] ?? "snipara-code";
 }

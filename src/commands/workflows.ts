@@ -80,7 +80,7 @@ import {
   type LocalContextPackReceiptPayload,
 } from "./events";
 import {
-  appendActivityEvent,
+  appendActivityEvent as appendRawActivityEvent,
   buildSessionSnapshot,
   readActivityTimeline,
   readSessionSnapshot,
@@ -109,7 +109,22 @@ import {
   writeDecisionRequest,
 } from "./decision-requests";
 import { buildDecisionApplyReport, type DecisionApplyItem } from "./decision-apply";
-import { memoryGuardCheckCommand } from "./memory-guard";
+import { workflowEfficiencyCommand, efficiencyFailureReason } from "./workflow-efficiency";
+import { printWorkflowReceipt } from "./workflow-receipt";
+import {
+  briefSummary,
+  clearServedIds,
+  collectSources,
+  flushPhaseOutcomes,
+  parseDocSource,
+  phaseOutcomeResult,
+  readServedIds,
+  validMemoryIds,
+  verifiedReceiptSince,
+  type PhaseOutcomePayload,
+  type SourcePointer,
+} from "../runtime/memory-sources";
+import { memoryGuardCheckCommand, runMemoryGuardCheck } from "./memory-guard";
 import {
   workflowCollaborationRelease,
   workflowCollaborationStart,
@@ -174,9 +189,8 @@ const TASK_COMMIT_TIMEOUT_MS = 30_000;
 const FINAL_COMMIT_TIMEOUT_MS = 90_000;
 const COMPANION_CONTINUITY_CONTRACT_VERSION = "snipara.companion.continuity.v1";
 const FINAL_COMMIT_RETRY_TIMEOUT_MS = 45_000;
-const FINAL_COMMIT_SUMMARY_MAX_CHARS = 1_200;
+const FINAL_COMMIT_SUMMARY_MAX_CHARS = 600;
 const FINAL_COMMIT_RETRY_SUMMARY_MAX_CHARS = 600;
-const DEFAULT_ADAPTIVE_ROUTING_CATALOG_LIMIT = 20;
 const DEFAULT_LOCAL_ORCHESTRATOR_TIMEOUT_MS = 8_000;
 const ADAPTIVE_ROUTING_POLICY_RELATIVE_PATH = path.join(".snipara", "adaptive-routing.json");
 const MEMORY_DECISION_PRODUCER_ACTIONS = new Set([
@@ -285,7 +299,7 @@ type ReindexMode = "incremental" | "full";
 type ManagedWorkflowPlanSource = "file" | "inline";
 type TaskCommitOutcome = "completed" | "partial" | "blocked" | "abandoned";
 type ManagedWorkflowSchemaVersion = "snipara.workflow.v1" | "snipara.workflow.v2";
-type AdaptiveRoutingMode = "off" | "recommend" | "catalog";
+type AdaptiveRoutingMode = "off" | "recommend";
 
 interface AdaptiveRoutingProjectPolicy {
   source: "hosted_project" | "local_file";
@@ -299,16 +313,14 @@ interface AdaptiveRoutingProjectPolicy {
   fallback: "main_agent";
   dailyBudgetCents: number;
   monthlyBudgetCents: number;
-  catalogLimit?: number;
 }
 
-interface AdaptiveRoutingPolicyClient extends AdaptiveRoutingCatalogClient {
+interface AdaptiveRoutingPolicyClient {
   getAutomationSettings(): Promise<{ settings: ProjectAutomationSettings }>;
 }
 
 interface AdaptiveRoutingIntent {
   shouldBuild: boolean;
-  shouldUseHostedCatalog: boolean;
   warnings: string[];
 }
 
@@ -1075,9 +1087,13 @@ export interface OnboardFolderManifest {
 
 function ensureConfigured(): void {
   if (!isConfigured()) {
-    console.log("Not configured. Run 'npx -y snipara-companion@latest init' first.");
-    process.exit(1);
+    throw new Error("Not configured. Run 'npx -y snipara-companion@latest init' first.");
   }
+}
+
+function appendActivityEvent(...args: Parameters<typeof appendRawActivityEvent>): void {
+  try { appendRawActivityEvent(...args); }
+  catch (error) { console.error(`Supplemental workflow activity unavailable: ${checkpointText(error instanceof Error ? error.message : String(error))}`); }
 }
 
 function printJson(data: unknown): void {
@@ -3322,6 +3338,13 @@ export function buildWorkflowPlanScaffold(
   };
 }
 
+export function readWorkflowPlanIdentity(planFile?: string): { id?: string; goal?: string } {
+  if (!planFile?.toLowerCase().endsWith(".json")) return {};
+  const parsed: unknown = JSON.parse(fs.readFileSync(planFile, "utf8"));
+  if (!isRecord(parsed)) return {};
+  return { id: stringValue(parsed.id), goal: stringValue(parsed.goal) };
+}
+
 function readWorkflowPlanFile(planFile: string, fallbackGoal: string): ManagedWorkflowPhase[] {
   const content = fs.readFileSync(planFile, "utf-8");
   if (planFile.toLowerCase().endsWith(".json")) {
@@ -5322,8 +5345,6 @@ async function findMemoryReviewConnectorItem(
   try {
     const result = await buildMemoryReviewConnector({
       limit: 50,
-      includeCleanCandidates: false,
-      includeDuplicates: false,
     });
     return (
       result.items.find(
@@ -5956,7 +5977,7 @@ export function resolveAutoWorkflowMode(query: string): Exclude<WorkflowMode, "a
   const normalized = query.toLowerCase();
 
   if (
-    /\b(orchestrate|orchestrat|swarm|essaim|htask|h[- ]?tache|handoff|passation|multi-agent|multi agent|multi-agent|sous-agent|sous agent|worker|travailleur|parall[eè]le|coordonn(?:er|ation)|proof gate|proof-gate|preuve|garde-fou|gate|drift check|d[eé]rive|release gate|production gate|mise en production|contr[oô]le de production)\b/.test(
+    /\b(orchestrate|orchestrat|handoff|passation|multi-agent|multi agent|multi-agent|sous-agent|sous agent|worker|travailleur|parall[eè]le|coordonn(?:er|ation)|proof gate|proof-gate|preuve|garde-fou|gate|drift check|d[eé]rive|release gate|production gate|mise en production|contr[oô]le de production)\b/.test(
       normalized
     )
   ) {
@@ -6026,7 +6047,7 @@ export function resolveAutomaticSetup(
     orchestrator: orchestratorRequired ? "required" : hasOrchestratorSignal ? "available" : "none",
     workers:
       orchestratorRequired &&
-      /\b(worker|travailleur|sous-agent(?:s)?|sous agent(?:s)?|parall[eè]le(?:s)?|swarm|essaim)\b/i.test(
+      /\b(worker|travailleur|sous-agent(?:s)?|sous agent(?:s)?|parall[eè]le(?:s)?)\b/i.test(
         query
       )
         ? "policy_gated"
@@ -6194,7 +6215,7 @@ function printManagedWorkflowDiscipline(): void {
   );
   console.log("- --mode auto routes by task intent; a nudge is advisory, not a gate.");
   console.log(
-    "- FULL + ORCHESTRATED: use explicit snipara-orchestrator handoff only for production gates, drift checks, htasks, or multi-agent coordination."
+    "- FULL + ORCHESTRATED: use explicit snipara-orchestrator handoff only for production gates, drift checks, or multi-agent coordination."
   );
   console.log(
     "- Before concluding on routes/services/jobs, risky changes, or what is missing, run the code impact gate."
@@ -7626,31 +7647,18 @@ function printOrchestratorHandoffHint(
       );
     } else if (recommendation.orchestratorRequired) {
       console.log(
-        "Companion recommends an explicit orchestrator handoff for production proof gates, drift checks, htask queues, or multi-agent coordination."
+        "Companion recommends an explicit orchestrator handoff for production proof gates, drift checks, or multi-agent coordination."
       );
     } else {
       console.log(
         "Companion can keep this local for now, but orchestrator is likely to help once proof gates or shared coordination become explicit."
       );
     }
-    if (recommendation.reasons.includes("htask_or_swarm_intent")) {
-      console.log(
-        "Preferred multi-agent path: snipara-orchestrator swarm-create | swarm-join | htask-create-feature | htask-create | htask-next | htask-tree | htask-complete."
-      );
-      console.log(
-        "Companion may retain legacy direct hosted passthrough commands, but htasks belong to the orchestrator workflow surface."
-      );
-    }
   } else {
     console.log(
-      "For production proof gates, drift checks, htasks, or multi-agent coordination, install explicitly with: npx create-snipara repair --with-orchestrator"
+      "For production proof gates, drift checks, or multi-agent coordination, install explicitly with: npx create-snipara repair --with-orchestrator"
     );
     console.log("Manual install: pip install snipara-orchestrator");
-    if (recommendation.reasons.includes("htask_or_swarm_intent")) {
-      console.log(
-        "Install orchestrator before using hosted htasks or swarm coordination as a workflow surface."
-      );
-    }
   }
 
   console.log(
@@ -7732,23 +7740,6 @@ function printAdaptiveRoutingRecommendation(routing: AdaptiveWorkRoutingRecommen
       }
     }
   }
-}
-
-interface AdaptiveRoutingCatalogGatewayResult {
-  success?: boolean;
-  fallback?: string;
-  catalog?: AdaptiveRoutingRuntimeCatalog;
-  resolution?: {
-    status?: string;
-    candidate_count?: number;
-    candidateCount?: number;
-    fallback?: string;
-  };
-  warnings?: unknown[];
-}
-
-interface AdaptiveRoutingCatalogClient {
-  callTool<T>(toolName: string, args: Record<string, unknown>): Promise<T>;
 }
 
 function policyValue(
@@ -7846,9 +7837,6 @@ function normalizeAdaptiveRoutingProjectPolicy(
     monthlyBudgetCents: normalizeCents(
       policyValue(settings, "adaptiveRoutingMonthlyBudgetCents", "monthlyBudgetCents")
     ),
-    catalogLimit: normalizeAdaptiveRoutingCatalogLimit(
-      policyValue(settings, "adaptiveRoutingCatalogLimit", "catalogLimit")
-    ),
   };
 }
 
@@ -7866,32 +7854,23 @@ function resolveAdaptiveRoutingIntent(
     plannerRetainsReasoning?: boolean;
     strongRepair?: boolean;
   },
-  policy: AdaptiveRoutingProjectPolicy | null,
-  hostedConfigured: boolean
+  policy: AdaptiveRoutingProjectPolicy | null
 ): AdaptiveRoutingIntent {
   const cliRequested = shouldBuildAdaptiveRouting(options);
   if (!policy) {
-    return {
-      shouldBuild: cliRequested,
-      shouldUseHostedCatalog: cliRequested,
-      warnings: [],
-    };
+    return { shouldBuild: cliRequested, warnings: [] };
   }
 
   if (options.routingLocalWorker) {
     return {
       shouldBuild: true,
-      shouldUseHostedCatalog: false,
-      warnings: [
-        `Declared local worker ${options.routingLocalWorker} selected; hosted adaptive catalog lookup is disabled for this run.`,
-      ],
+      warnings: [`Declared local worker ${options.routingLocalWorker} selected.`],
     };
   }
 
   if (policy.mode === "off") {
     return {
       shouldBuild: cliRequested,
-      shouldUseHostedCatalog: false,
       warnings: cliRequested
         ? ["Project Adaptive Work Routing policy is off; keeping recommendation metadata local."]
         : [],
@@ -7900,94 +7879,10 @@ function resolveAdaptiveRoutingIntent(
 
   return {
     shouldBuild: true,
-    shouldUseHostedCatalog: hostedConfigured && policy.mode === "catalog",
     warnings: [
-      ...(policy.mode === "recommend"
-        ? [
-            "Project Adaptive Work Routing policy is recommendation-only; hosted catalog lookup is disabled.",
-          ]
-        : []),
-      ...(!hostedConfigured && policy.mode === "catalog"
-        ? [
-            "Local Adaptive Work Routing policy requested catalog mode; hosted catalog lookup is skipped without Snipara configuration.",
-          ]
-        : []),
+      "Project Adaptive Work Routing policy is recommendation-only; no hosted catalog is consulted.",
     ],
   };
-}
-
-async function enrichAdaptiveRoutingWithHostedCatalog(
-  client: AdaptiveRoutingCatalogClient,
-  routing: AdaptiveWorkRoutingRecommendation
-): Promise<AdaptiveWorkRoutingRecommendation> {
-  try {
-    const result = await client.callTool<AdaptiveRoutingCatalogGatewayResult>(
-      "snipara_adaptive_routing_catalog",
-      {
-        work_profile: routing.workProfile,
-        model_requirements: routing.requirements,
-        limit: routing.requirements.catalogLimit ?? DEFAULT_ADAPTIVE_ROUTING_CATALOG_LIMIT,
-      }
-    );
-    const catalog = normalizeAdaptiveRoutingCatalog(result.catalog);
-    const gatewaySucceeded = result.success === true;
-    const warnings = normalizeStringArray(result.warnings) ?? [];
-    const gatewayWarnings = gatewaySucceeded
-      ? warnings
-      : [
-          ...warnings,
-          "Hosted adaptive routing catalog did not return success=true; treating gateway as failed closed.",
-        ];
-    const candidateCount =
-      numberValue(result.resolution?.candidate_count) ??
-      numberValue(result.resolution?.candidateCount) ??
-      catalog.candidates.length;
-    const gateway: AdaptiveRoutingGatewayStatus = {
-      source: "hosted_mcp",
-      success: gatewaySucceeded,
-      resolutionStatus: stringValue(result.resolution?.status),
-      candidateCount,
-      fallback:
-        stringValue(result.fallback) ?? stringValue(result.resolution?.fallback) ?? "main_agent",
-      warnings: gatewayWarnings,
-    };
-    const reasons = [
-      ...routing.routingCard.reasons,
-      gatewaySucceeded
-        ? candidateCount > 0
-          ? `hosted adaptive routing catalog returned ${candidateCount} candidate(s)`
-          : "hosted adaptive routing catalog returned no candidates and will fail closed"
-        : "hosted adaptive routing catalog did not report explicit success and will fail closed",
-    ];
-
-    return {
-      ...routing,
-      gateway,
-      runtimeCatalog: catalog,
-      routingCard: {
-        ...routing.routingCard,
-        reasons: uniqueStrings(reasons),
-        warnings: uniqueStrings([...routing.routingCard.warnings, ...gatewayWarnings]),
-      },
-    };
-  } catch (error) {
-    const warning = `Hosted adaptive routing catalog unavailable; keeping local dry-run metadata (${toPreview(error)}).`;
-    return {
-      ...routing,
-      gateway: {
-        source: "hosted_mcp",
-        success: false,
-        resolutionStatus: "unavailable",
-        candidateCount: 0,
-        fallback: "main_agent",
-        warnings: [warning],
-      },
-      routingCard: {
-        ...routing.routingCard,
-        warnings: uniqueStrings([...routing.routingCard.warnings, warning]),
-      },
-    };
-  }
 }
 
 function normalizeAdaptiveRoutingCatalog(value: unknown): AdaptiveRoutingRuntimeCatalog {
@@ -8277,7 +8172,6 @@ function enrichAdaptiveRoutingWithLocalOrchestrator(
         speed: "normal",
         cost: "balanced",
         contextBudget: routing.requirements.contextBudget,
-        qualityScore: null,
         isAvailable: true,
         requiresApiKey: false,
         metadata: {
@@ -8946,7 +8840,7 @@ export async function queryCommand(options: {
   }
   const timeoutMs = Math.max(1_000, Math.min(options.timeoutMs ?? 30_000, 120_000));
   const client = createClient(timeoutMs);
-  const result = await client.queryContext(options.query, options.maxTokens || 8000, {
+  const result = await client.queryContext(options.query, options.maxTokens ?? 800, {
     searchMode: searchMode as "keyword" | "semantic" | "hybrid",
     includeAnswerPack: options.includeAnswerPack,
     minimumChangeMode: options.minimumChangeMode,
@@ -10591,11 +10485,7 @@ export async function workflowRunCommand(options: {
     options.routingLocalWorker && localAdaptiveRoutingPolicy
       ? localAdaptiveRoutingPolicy
       : loadedAdaptiveRoutingPolicy;
-  const adaptiveRoutingIntent = resolveAdaptiveRoutingIntent(
-    options,
-    adaptiveRoutingPolicy,
-    hostedConfigured
-  );
+  const adaptiveRoutingIntent = resolveAdaptiveRoutingIntent(options, adaptiveRoutingPolicy);
   const localWorkerRoutingDefaults = adaptiveRoutingIntent.shouldBuild
     ? resolveLocalWorkerRoutingDefaults({
         workerId: options.routingLocalWorker,
@@ -10610,16 +10500,9 @@ export async function workflowRunCommand(options: {
         adaptiveRoutingIntent.warnings
       )
     : null;
-  const adaptiveRoutingWithCatalog =
-    adaptiveRoutingDryRun && adaptiveRoutingIntent.shouldUseHostedCatalog && client
-      ? await enrichAdaptiveRoutingWithHostedCatalog(client, adaptiveRoutingDryRun)
-      : adaptiveRoutingDryRun;
-  const adaptiveRouting = shouldResolveAdaptiveRoutingLocally(
-    routingOptions,
-    adaptiveRoutingWithCatalog
-  )
-    ? enrichAdaptiveRoutingWithLocalOrchestrator(adaptiveRoutingWithCatalog!, routingOptions)
-    : adaptiveRoutingWithCatalog;
+  const adaptiveRouting = shouldResolveAdaptiveRoutingLocally(routingOptions, adaptiveRoutingDryRun)
+    ? enrichAdaptiveRoutingWithLocalOrchestrator(adaptiveRoutingDryRun!, routingOptions)
+    : adaptiveRoutingDryRun;
   const orchestratorRecommendation = getOrchestratorRecommendation(options.query, effectiveMode, {
     policyAutoRoute: options.autoRouteOrchestrator,
     policySource: options.orchestratorPolicySource,
@@ -11074,7 +10957,6 @@ function buildWorkflowAdaptiveRouting(
         policy?.plannerRetainsReasoning ??
         (options.routeLocalWorkers ? true : undefined),
       strongRepair: options.strongRepair,
-      catalogLimit: policy?.catalogLimit ?? DEFAULT_ADAPTIVE_ROUTING_CATALOG_LIMIT,
       dailyBudgetCents: policy?.dailyBudgetCents,
       monthlyBudgetCents: policy?.monthlyBudgetCents,
     });
@@ -11128,7 +11010,7 @@ function normalizeRoutingEndpointTypes(values: string[] | undefined): string[] {
 
 function normalizeAdaptiveRoutingMode(value: unknown): AdaptiveRoutingMode | null {
   const normalized = stringValue(value)?.toLowerCase();
-  return normalized === "off" || normalized === "recommend" || normalized === "catalog"
+  return normalized === "off" || normalized === "recommend"
     ? normalized
     : null;
 }
@@ -11145,14 +11027,6 @@ function normalizeCents(value: unknown): number {
     return 0;
   }
   return Math.floor(parsed);
-}
-
-function normalizeAdaptiveRoutingCatalogLimit(value: unknown): number | undefined {
-  const parsed = numberValue(value);
-  if (parsed === undefined || parsed < 1) {
-    return undefined;
-  }
-  return Math.min(Math.floor(parsed), 100);
 }
 
 function intersectStrings(left: string[], right: string[]): string[] {
@@ -11217,8 +11091,9 @@ function startManagedWorkflowState(options: {
     );
   }
 
+  const planIdentity = readWorkflowPlanIdentity(options.planFile);
   const goal =
-    options.goal ??
+    options.goal ?? planIdentity.goal ??
     (options.planFile ? `Workflow from ${path.basename(options.planFile)}` : undefined);
   if (!goal) {
     throw new Error("Provide --goal or --plan-file");
@@ -11229,7 +11104,7 @@ function startManagedWorkflowState(options: {
     : normalizeWorkflowPlanInput(goal, goal);
   const now = new Date().toISOString();
   const workflowId =
-    options.id ?? sanitizeWorkflowId(goal, `workflow-${now.slice(0, 10).replace(/-/g, "")}`);
+    options.id ?? planIdentity.id ?? sanitizeWorkflowId(goal, `workflow-${now.slice(0, 10).replace(/-/g, "")}`);
   const agentContext = options.skipAgentContext
     ? undefined
     : options.agent || options.manifest
@@ -12003,6 +11878,7 @@ export async function workflowStartCommand(options: {
   manifest?: string;
   skipAgentContext?: boolean;
   json?: boolean;
+  detail?: boolean;
 }): Promise<void> {
   const state = await publishWorkflowStartCoordination(
     startManagedWorkflowState({
@@ -12031,12 +11907,7 @@ export async function workflowStartCommand(options: {
   });
   writeOptionalWorkflowSessionSnapshot();
 
-  if (options.json) {
-    printJson(state);
-    return;
-  }
-  printManagedWorkflowState(state);
-  printManagedWorkflowNextCommands(state);
+  printWorkflowReceipt(state, "start", state, options);
 }
 
 export async function workflowJudgmentCommand(options: {
@@ -12848,6 +12719,7 @@ export async function workflowSessionCommand(options: {
 export async function workflowPhaseStartCommand(options: {
   phaseId: string;
   json?: boolean;
+  detail?: boolean;
 }): Promise<void> {
   const state = readRequiredWorkflowState();
   const phase = findWorkflowPhase(state, options.phaseId);
@@ -12858,14 +12730,13 @@ export async function workflowPhaseStartCommand(options: {
     if (!active) {
       const next = nextEligibleWorkflowTask(state, phase);
       if (!next) throw new Error(`Phase '${phase.id}' has no eligible context task`);
-      return workflowTaskStartCommand({ phaseId: phase.id, taskId: next.id, json: options.json });
+      return workflowTaskStartCommand({ phaseId: phase.id, taskId: next.id, json: options.json, detail: options.detail, compactReceipt: true });
     }
     const context = loadedWorkflowTaskContext(state, phase, active);
     if (active.contextRequest && !context) throw new Error("Active task context is not prepared");
     const envelope = taskContextEnvelope(state, phase, active);
-    if (options.json) printJson({ workflow: state, current_phase: phase,
-      current_task: active, context_envelope: envelope, task_context: context });
-    else { printWorkflowTaskEnvelope(envelope, active); printLoadedTaskContext(context); }
+    printWorkflowReceipt(state, "phase-start", { workflow: state, current_phase: phase,
+      current_task: active, context_envelope: envelope, task_context: context }, options, phase.id);
     return;
   }
   const now = new Date().toISOString();
@@ -12873,9 +12744,7 @@ export async function workflowPhaseStartCommand(options: {
   phase.startedAt = phase.startedAt ?? now;
   state.status = "active";
   state.currentPhaseId = phase.id;
-  const runtimeBinding = phase.needsRuntime
-    ? ensureSandboxRuntimeBinding(state, phase, now)
-    : undefined;
+  if (phase.needsRuntime) ensureSandboxRuntimeBinding(state, phase, now);
   state.updatedAt = now;
   writeWorkflowState(state);
   appendActivityEvent({
@@ -12893,43 +12762,7 @@ export async function workflowPhaseStartCommand(options: {
   });
   writeOptionalWorkflowSessionSnapshot();
 
-  if (options.json) {
-    printJson({ workflow: state, current_phase: phase });
-    return;
-  }
-
-  printManagedWorkflowState(state);
-  printManagedWorkflowDiscipline();
-  console.log(chalk.bold("Phase context gate"));
-  console.log(
-    "snipara-companion session-bootstrap --include-session-context --max-context-tokens 1000"
-  );
-  console.log(
-    `snipara-companion workflow run --mode full --include-session-context --query ${shellQuote(
-      phaseQuery(state, phase)
-    )}`
-  );
-  if (phase.files && phase.files.length > 0) {
-    console.log(
-      `snipara-companion code impact --changed-files ${phase.files.map(shellQuote).join(" ")} --diff-summary ${shellQuote(
-        phase.title
-      )}`
-    );
-  } else {
-    console.log(
-      "snipara-companion code impact --changed-files <files...> --diff-summary '<change>'"
-    );
-  }
-  console.log(
-    "For a named class/function/method in this phase, run: snipara-companion code symbol-card --qualified-name '<symbol>'"
-  );
-  if (runtimeBinding) {
-    console.log(`Runtime binding: Snipara Sandbox session ${runtimeBinding.sessionId}`);
-    console.log(
-      `Checkpoint runtime progress with: snipara-companion workflow runtime-checkpoint ${phase.id} --summary '<resume-ready runtime state>' --rehydrate-file <state.json>`
-    );
-  }
-  console.log("");
+  printWorkflowReceipt(state, "phase-start", { workflow: state, current_phase: phase }, options, phase.id);
 }
 
 export async function workflowTaskStartCommand(options: {
@@ -12939,6 +12772,8 @@ export async function workflowTaskStartCommand(options: {
   manifest?: string;
   skipAgentContext?: boolean;
   json?: boolean;
+  detail?: boolean;
+  compactReceipt?: boolean;
 }): Promise<void> {
   const state = readRequiredWorkflowState();
   const phase = findWorkflowPhase(state, options.phaseId);
@@ -13033,6 +12868,11 @@ export async function workflowTaskStartCommand(options: {
   });
   writeOptionalWorkflowSessionSnapshot();
 
+  if (options.compactReceipt) {
+    printWorkflowReceipt(state, "phase-start", { workflow: state, current_phase: phase,
+      current_task: task, context_envelope: envelope, task_context: loadedContext }, options, phase.id);
+    return;
+  }
   if (options.json) {
     printJson({
       workflow: state,
@@ -13640,7 +13480,7 @@ export async function workflowResumeCommand(options: {
   let bootstrap: SessionMemoriesResult | undefined;
   let bootstrapError: string | undefined;
   try {
-    ensureConfigured();
+    if (!isConfigured()) throw new Error("Hosted memory unavailable: workspace is not configured; local workflow remains resumable.");
     bootstrap = await createClient(15000).getSessionMemories(resolvedCriticalTokens, resolvedContextTokens);
   } catch (error) {
     bootstrapError = checkpointText(error instanceof Error ? error.message : String(error));
@@ -13880,6 +13720,7 @@ async function commitTaskMemory(options: {
   category?: string;
   outcome?: TaskCommitOutcome;
   files?: string[];
+  sources?: SourcePointer[];
 }): Promise<Record<string, unknown>> {
   if (process.env.SNIPARA_LOCAL_ONLY === "1") return {
     stored_count: 0, skipped_count: 0, candidates: [], stored_candidates: [], skipped_candidates: [],
@@ -13898,6 +13739,7 @@ async function commitTaskMemory(options: {
     category: options.category,
     outcome: options.outcome,
     filesTouched: options.files,
+    sources: options.sources,
   });
 }
 
@@ -13908,6 +13750,7 @@ async function commitPhaseTaskMemory(options: {
   category?: string;
   outcome: TaskCommitOutcome;
   files?: string[];
+  sources?: SourcePointer[];
 }): Promise<Record<string, unknown>> {
   try {
     return await commitTaskMemory(options);
@@ -13980,6 +13823,7 @@ async function commitFinalTaskMemory(options: {
   category?: string;
   outcome: TaskCommitOutcome;
   files?: string[];
+  sources?: SourcePointer[];
 }): Promise<Record<string, unknown>> {
   if (process.env.SNIPARA_LOCAL_ONLY === "1") return {
     stored_count: 0, skipped_count: 0, candidates: [], stored_candidates: [], skipped_candidates: [],
@@ -14020,6 +13864,7 @@ async function commitFinalTaskMemory(options: {
       filesTouched: options.files,
       persistTypes: handoffOnly ? [] : ["decision", "learning", "workflow"],
       handoffOnly,
+      sources: options.sources,
     });
   };
 
@@ -14149,6 +13994,47 @@ function printWhyCaptureNotice(result: CompanionWhyCaptureReceipt): void {
   }
 }
 
+/**
+ * One idempotent phase outcome per phase-commit: served ids, result, optional explicit verdicts.
+ * Local-only sends nothing; a failed send is queued and never fails the commit.
+ */
+async function sendPhaseMemoryOutcome(args: {
+  state: ManagedWorkflowState;
+  phaseId: string;
+  startedAt?: string;
+  outcome: TaskCommitOutcome;
+  helped?: string[];
+  misled?: string[];
+}): Promise<{ served: number; outcome: string; send: "sent" | "queued" | "skipped" }> {
+  const cwd = process.cwd();
+  const served = readServedIds(cwd, args.state.workflowId, args.phaseId);
+  const helped = validMemoryIds(args.helped);
+  const misled = validMemoryIds(args.misled);
+  const receipt = args.outcome === "completed" ? verifiedReceiptSince(cwd, args.startedAt) : undefined;
+  const result = phaseOutcomeResult(args.outcome, receipt);
+  const base = { served: served.length, outcome: result };
+  if (process.env.SNIPARA_LOCAL_ONLY === "1" || !isConfigured()) return { ...base, send: "skipped" };
+  const index = args.state.phases.findIndex((phase) => phase.id === args.phaseId);
+  const attempt = args.state.phases[index]?.commitHistory?.length ?? 1;
+  const ids = [...new Set([...served, ...helped, ...misled])].slice(0, 50);
+  const verdicts: Record<string, "helped" | "misled"> = {};
+  for (const id of helped) if (ids.includes(id)) verdicts[id] = "helped";
+  for (const id of misled) if (ids.includes(id)) verdicts[id] = "misled";
+  const sessionId = loadConfig().sessionId;
+  const payload: PhaseOutcomePayload | undefined = ids.length === 0 ? undefined : {
+    phase_id: `${args.state.workflowId}:${index}${attempt > 1 ? `:${attempt}` : ""}`,
+    result,
+    memory_ids: ids,
+    ...(receipt ? { receipt_ref: receipt } : {}),
+    ...(Object.keys(verdicts).length > 0 ? { verdicts } : {}),
+    ...(sessionId ? { session_id: sessionId.slice(0, 128) } : {}),
+  };
+  const client = createClient(10_000);
+  const flushed = await flushPhaseOutcomes(cwd, payload, (item) => client.recordPhaseOutcome(item));
+  if (payload) clearServedIds(cwd, args.state.workflowId, args.phaseId);
+  return { ...base, send: flushed.queued > 0 ? "queued" : payload ? "sent" : "skipped" };
+}
+
 export async function workflowPhaseCommitCommand(options: {
   phaseId: string;
   summary: string;
@@ -14163,8 +14049,25 @@ export async function workflowPhaseCommitCommand(options: {
   evidence?: string[];
   strict?: boolean;
   json?: boolean;
+  detail?: boolean;
+  sources?: string[];
+  memoryHelped?: string[];
+  memoryMisled?: string[];
 }): Promise<void> {
   const state = readRequiredWorkflowState();
+  if (state.coordination?.mode === "full" || state.coordination?.mode === "orchestrate" ||
+      (!state.coordination && inferWorkflowCoordinationMode({ planFile: state.planFile }) === "full")) {
+    const efficiency = await workflowEfficiencyCommand({ profile: "full", enforce: true, since: state.createdAt });
+    // Stop only on measured excess. Missing local usage records (for example a Claude
+    // Code session, which writes no Codex transcripts) cannot prove a breach, so they
+    // are reported on stderr and do not block the phase.
+    if (efficiency.report.exceeded.length > 0) {
+      throw new Error(efficiencyFailureReason(efficiency.report));
+    }
+    if (efficiency.report.coverage.status !== "complete") {
+      console.error(`Workflow efficiency not enforced: usage coverage is ${efficiency.report.coverage.status}.`);
+    }
+  }
   const phase = findWorkflowPhase(state, options.phaseId);
   const outcome = options.outcome ?? "completed";
   if (outcome === "completed") {
@@ -14173,7 +14076,7 @@ export async function workflowPhaseCommitCommand(options: {
         throw new Error(`Task '${task.id}' must load its required context before phase completion`);
     }
   }
-  const category = options.category ?? "workflow-phase";
+  const category = options.category ?? "phase-commit";
   const files = options.files && options.files.length > 0 ? options.files : phase.files;
 
   if (options.strict && outcome === "completed") {
@@ -14187,18 +14090,27 @@ export async function workflowPhaseCommitCommand(options: {
     );
   }
 
-  await memoryGuardCheckCommand({
+  const guard = await runMemoryGuardCheck({
     trigger: "commit",
     files,
     strict: true,
   });
+  if (guard.shouldBlock) throw new Error(`Memory Guard blocked phase commit: ${guard.blockReason}`);
 
-  const durableSummary = buildWorkflowPhaseCommitSummary({
+  const durableSummary = briefSummary(buildWorkflowPhaseCommitSummary({
     workflowId: state.workflowId,
     phase,
     summary: options.summary,
-  });
+  }));
   const structuredWhy = structuredTaskCommitWhy(options);
+  const memorySources = collectSources({
+    cwd: process.cwd(),
+    planFile: state.planFile,
+    phaseId: phase.id,
+    phaseIndex: state.phases.findIndex((candidate) => candidate.id === phase.id),
+    docs: (options.sources ?? []).map(parseDocSource),
+    since: phase.startedAt ?? state.createdAt,
+  });
   const result = await commitPhaseTaskMemory({
     summary: durableSummary,
     task: `${state.goal} / ${phase.title}`,
@@ -14206,6 +14118,7 @@ export async function workflowPhaseCommitCommand(options: {
     category,
     outcome,
     files,
+    sources: memorySources,
   });
 
   const now = new Date().toISOString();
@@ -14359,31 +14272,20 @@ export async function workflowPhaseCommitCommand(options: {
   }
   writeOptionalWorkflowSessionSnapshot();
 
-  if (options.json) {
-    printJson({
-      workflow: state,
-      commit: result,
-      journal,
-      teamSyncCompletedWork: completedTeamSyncWork,
-      producerLoopArtifact,
-      whyCapture,
-      coordinationRelease,
-      judgmentReceipts,
-    });
-    return;
-  }
-  printTaskCommitResult(result);
-  printJournalWarning(journal);
-  printTeamSyncCompletionNotice(completedTeamSyncWork);
-  printProducerLoopArtifactNotice(producerLoopArtifact);
-  printWhyCaptureNotice(whyCapture);
-  if (judgmentReceipts.length > 0) {
-    console.log(
-      `Judgment receipts: ${judgmentReceipts.filter((receipt) => receipt.status === "recorded").length}/${judgmentReceipts.length} recorded`
-    );
-  }
-  printManagedWorkflowState(state);
-  printManagedWorkflowNextCommands(state);
+  const memoryOutcome = await sendPhaseMemoryOutcome({
+    state,
+    phaseId: phase.id,
+    startedAt: phase.startedAt ?? state.createdAt,
+    outcome,
+    helped: options.memoryHelped,
+    misled: options.memoryMisled,
+  });
+  const memoryCounts = { sources: memorySources.length, ...memoryOutcome };
+
+  printWorkflowReceipt(state, "phase-commit", {
+    workflow: state, commit: result, journal, teamSyncCompletedWork: completedTeamSyncWork,
+    producerLoopArtifact, whyCapture, coordinationRelease, judgmentReceipts, memory: memoryCounts,
+  }, options, phase.id, memoryCounts);
 }
 
 export async function finalCommitCommand(options: {
@@ -14400,6 +14302,7 @@ export async function finalCommitCommand(options: {
   risks?: string[];
   nextStep?: string;
   json?: boolean;
+  sources?: string[];
 }): Promise<void> {
   const state = readWorkflowState();
   const outcome = options.outcome ?? "completed";
@@ -14450,6 +14353,12 @@ export async function finalCommitCommand(options: {
     category,
     outcome,
     files: options.files,
+    sources: collectSources({
+      cwd: process.cwd(),
+      planFile: state?.planFile,
+      docs: (options.sources ?? []).map(parseDocSource),
+      since: state?.createdAt,
+    }),
   });
 
   if (state) {
@@ -14938,7 +14847,6 @@ export async function recallCommand(options: {
   limit?: number;
   minRelevance?: number;
   includeInactive?: boolean;
-  warningThreshold?: number;
   memoryView?: "current" | "history";
   asOf?: string;
   json?: boolean;
@@ -14953,7 +14861,6 @@ export async function recallCommand(options: {
     limit: options.limit,
     minRelevance: options.minRelevance,
     includeInactive: options.includeInactive,
-    warningThreshold: options.warningThreshold,
     memoryView: options.memoryView,
     asOf: options.asOf,
   });
@@ -14974,6 +14881,7 @@ export async function taskCommitCommand(options: {
   outcome?: "completed" | "partial" | "blocked" | "abandoned";
   files?: string[];
   json?: boolean;
+  sources?: string[];
 }): Promise<void> {
   ensureConfigured();
 
@@ -14989,6 +14897,7 @@ export async function taskCommitCommand(options: {
     category: options.category,
     outcome: options.outcome,
     filesTouched: options.files,
+    sources: (options.sources ?? []).map(parseDocSource),
   });
   if (options.json) {
     printJson(result);

@@ -309,3 +309,17 @@ test("agent-context evidence ledger fails closed when a receipt is edited", () =
   assert.notEqual(status.status, 0);
   assert.match(status.stderr, /hash mismatch/);
 });
+
+
+test("agent-context resolve defaults to the code agent without a required option", () => {
+  const { cwd } = createFixture();
+  const previous = process.env.SNIPARA_AGENT_ID;
+  delete process.env.SNIPARA_AGENT_ID;
+  try {
+    const result = runCli(["agent-context", "resolve", "--task", "Implement resolver", "--json"], cwd);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(JSON.parse(result.stdout).agent.alias, "code");
+  } finally {
+    if (previous !== undefined) process.env.SNIPARA_AGENT_ID = previous;
+  }
+});

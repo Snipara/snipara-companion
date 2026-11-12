@@ -2,6 +2,12 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 5.0.0
+
+- Remove the swarm and htask commands, --swarm-id flags, related doctor checks and routing hints, and featureTitle/workstreams handoff inputs.
+- Forward memory sources, preserve workflow session boundaries and record outcomes; update commit guards and stuck-session handling.
+- Migration: remove deleted commands, flags and handoff fields from scripts; use the retained workflow and collaboration commands.
+
 ## 4.2.4
 
 - Keep routine Team Sync handoffs and status reads continuity-only, preventing repeated handoffs from adding durable pending memories. Preserve explicit durable Why Capture and phase/final decisions.

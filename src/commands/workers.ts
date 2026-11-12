@@ -863,7 +863,7 @@ function upsertLocalAdaptiveRoutingPolicy(workerRole: string): string {
   const existing = readJsonRecord(policyPath) ?? {};
   const next = {
     ...existing,
-    mode: stringValue(existing.mode) ?? "catalog",
+    mode: stringValue(existing.mode) ?? "recommend",
     plannerRetainsReasoning: existing.plannerRetainsReasoning !== false,
     preferLocalWorkers: true,
     allowedEndpointTypes: uniqueStrings([
@@ -882,7 +882,6 @@ function upsertLocalAdaptiveRoutingPolicy(workerRole: string): string {
       "tests",
       "review",
     ]),
-    catalogLimit: typeof existing.catalogLimit === "number" ? existing.catalogLimit : 8,
   };
   writeJsonFile(policyPath, next);
   return policyPath;

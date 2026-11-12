@@ -197,3 +197,27 @@ prepared dependency image described above. A documentation review alone does
 not qualify runtime behavior or publish a package.
 
 MIT licensed. See [package metadata](package.json) for repository and support links.
+
+### Quiet command defaults
+
+`init --with-hooks` and `automations install` make Companion pre-tool hooks quiet
+for Claude, Cursor and Codex bundles. `post-tool` emits a short rescue hint only
+after repeated identical failed results or empty searches. `query` defaults to 800
+source tokens; use `--max-tokens` and opt in with `--answer-pack` when needed.
+
+`workflow start`, `workflow phase-start` and `workflow phase-commit` print compact
+receipts and save the full payload to the returned detail path. Add `--detail` to
+print it. JSON stdout stays machine-readable. FULL phase commits enforce
+`workflow efficiency`, including cached input tokens. Unavailable usage coverage
+blocks this enforcement check and does not establish zero usage.
+
+`workflow start --plan-file plan.json` takes the plan's top-level id/goal by default.
+`workflow resume` can use local state without hosted configuration.
+`agent-context resolve --task "Implement change"` selects the configured/code agent
+unless `--agent` overrides it. `memory list --limit 20 --offset 0 --json` provides
+a bounded, paginated inventory instead of repeated recalls.
+
+Pre-commit collaboration checks use the selected staged index, including linked
+worktrees. Memory Guard passes docs-only changes and unavailable guidance; strict
+destructive-action and contradiction confirmation rules remain in force. Failed
+hook steps identify themselves on stderr. See [full reference](docs/FULL_REFERENCE.md).

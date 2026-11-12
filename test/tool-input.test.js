@@ -334,3 +334,177 @@ test("getStuckGuardInjection returns only inject or enforce rescue text", () => 
     "SNIPARA_RESCUE_PACK v1\nCheck memory."
   );
 });
+
+test("recorded productive and failing result sequences do not cause repeated rescue packs", () => {
+  const { advanceStuckEvidence, toolActionKey } = require("../dist/index.js");
+  let evidence, packs = [];
+  const record = (tool, input, classification, at) => {
+    const next = advanceStuckEvidence(evidence, { type: "tool_result", payload: {
+      tool, action_key: toolActionKey(tool, input), result_classification: classification,
+    } }, at);
+    evidence = next.evidence;
+    if (next.pack) packs.push(next.pack);
+  };
+  for (let i = 0; i < 200; i++) record(i % 2 ? "Read" : "PlanUpdate", `auth schema prod ${i}`, "success", i);
+  assert.equal(packs.length, 0);
+  for (let i = 0; i < 8; i++) record("Bash", '{"command":"false"}', "failure", 1000 + i);
+  assert.equal(packs.length, 1);
+  record("Bash", '{"command":"false"}', "success", 1010);
+  record("Bash", '{"command":"false"}', "failure", 1011);
+  assert.equal(packs.length, 1);
+  for (let i = 0; i < 3; i++) record("PlanUpdate", "same", "empty_result", 2000 + i);
+  assert.equal(packs.length, 1);
+  for (let i = 0; i < 3; i++) record("Search", "missing", "empty_result", 3000 + i);
+  assert.equal(packs.length, 2);
+  assert.equal(toolActionKey("Bash", '{"a":1,"b":2}'), toolActionKey("Bash", '{"b":2,"a":1}'));
+});
+
+test("hook Git environment keeps linked worktree and alternate index relative to hook cwd", () => {
+  const { hookGitEnvironment } = require("../dist/index.js");
+  const env = hookGitEnvironment("/repo/packages/cli", {
+    SNIPARA_WORKSPACE_DIR: "/repo", GIT_DIR: ".git", GIT_INDEX_FILE: "alternate-index",
+  });
+  assert.equal(env.GIT_DIR, "/repo/.git");
+  assert.equal(env.GIT_INDEX_FILE, "/repo/alternate-index");
+});
+
+test("staged paths exclude unrelated unstaged files and preserve spaces", t => {
+  const { readStagedPaths } = require("../dist/index.js");
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-hook-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  runGit(cwd, ["init"]);
+  fs.writeFileSync(path.join(cwd, "staged doc.md"), "staged");
+  fs.writeFileSync(path.join(cwd, "unrelated.ts"), "unstaged");
+  runGit(cwd, ["add", "staged doc.md"]);
+  assert.deepEqual(readStagedPaths(cwd), ["staged doc.md"]);
+});
+
+test("workflow receipts do not echo accumulated state", () => {
+  const { buildWorkflowReceipt } = require("../dist/index.js");
+  const state = { workflowId: "one", status: "active", phases: [
+    { id: "first", status: "completed", payload: "x".repeat(150000) },
+    { id: "next", status: "pending" },
+  ] };
+  const receipt = buildWorkflowReceipt(state, "phase-commit", "details.json", "first");
+  assert.ok(Buffer.byteLength(JSON.stringify(receipt)) < 2000);
+  assert.equal(receipt.nextPhaseId, "next");
+  assert.equal(receipt.status, "completed");
+  assert.equal(receipt.detailPath, "details.json");
+});
+
+test("plan identity is read from top-level fields", t => {
+  const { readWorkflowPlanIdentity } = require("../dist/index.js");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-plan-id-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "unrelated-name.json");
+  fs.writeFileSync(file, JSON.stringify({ id: "real-id", goal: "Real goal", phases: [] }));
+  assert.deepEqual(readWorkflowPlanIdentity(file), { id: "real-id", goal: "Real goal" });
+  assert.deepEqual(readWorkflowPlanIdentity(), {});
+});
+
+test("memory list pagination is bounded before any network call", () => {
+  const { memoryListPage } = require("../dist/index.js");
+  assert.deepEqual(memoryListPage({}), { limit: 20, offset: 0 });
+  assert.deepEqual(memoryListPage({ limit: 50, offset: 100 }), { limit: 50, offset: 100 });
+  for (const limit of [0, -1, 51, NaN, 1.5]) assert.throws(() => memoryListPage({ limit }));
+  assert.throws(() => memoryListPage({ offset: -1 }));
+});
+
+test("default context agent prefers code aliases and has a deterministic fallback", () => {
+  const { defaultContextAgent } = require("../dist/index.js");
+  const old = process.env.SNIPARA_AGENT_ID;
+  delete process.env.SNIPARA_AGENT_ID;
+  try {
+    assert.equal(defaultContextAgent({ agents: { security: {}, code: {} } }), "code");
+    assert.equal(defaultContextAgent({ agents: { z: {}, a: {} } }), "a");
+  } finally {
+    if (old === undefined) delete process.env.SNIPARA_AGENT_ID;
+    else process.env.SNIPARA_AGENT_ID = old;
+  }
+});
+
+test("new hook bundles are quiet for Claude, Codex and Cursor, idempotently", () => {
+  const { quietCompanionHook } = require("../dist/index.js");
+  for (const client of ["Claude", "Codex", "Cursor"]) {
+    const script = `#!/bin/bash\n# ${client}\nsnipara-companion pre-tool "$INPUT" --tool Read\n`;
+    const quiet = quietCompanionHook(script);
+    assert.match(quiet, /pre-tool --stuck-guard-only/);
+    assert.equal(quietCompanionHook(quiet), quiet);
+  }
+});
+
+test("search classification excludes reads and detects explicit structured failures", () => {
+  assert.equal(classifyToolResult({ tool: "Read", result: "" }), "success");
+  assert.equal(classifyToolResult({ tool: "PlanUpdate", result: "" }), "success");
+  assert.equal(classifyToolResult({ tool: "Bash", command: "rg missing .", exitCode: 1 }), "empty_result");
+  assert.equal(classifyToolResult({ tool: "Search", result: "[]" }), "empty_result");
+  assert.equal(classifyToolResult({ tool: "Bash", result: '{"exit_code":2,"stderr":"failed"}' }), "failure");
+});
+
+
+test("linked worktree hook reads only its alternate staged index after pnpm changes cwd", t => {
+  const { readStagedPaths } = require("../dist/index.js");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-linked-hook-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const main = path.join(root, "main"), linked = path.join(root, "linked");
+  fs.mkdirSync(main);
+  runGit(main, ["init"]);
+  runGit(main, ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--allow-empty", "--no-verify", "-m", "base"]);
+  runGit(main, ["worktree", "add", "-b", "fixture", linked]);
+  fs.mkdirSync(path.join(linked, "packages/cli"), { recursive: true });
+  fs.writeFileSync(path.join(linked, "selected doc.md"), "selected");
+  fs.writeFileSync(path.join(linked, "wrong-index.ts"), "other");
+  fs.writeFileSync(path.join(linked, "unstaged.ts"), "unstaged");
+  runGit(linked, ["add", "wrong-index.ts"]);
+  const env = { ...process.env, SNIPARA_WORKSPACE_DIR: linked,
+    GIT_DIR: path.relative(linked, runGit(linked, ["rev-parse", "--absolute-git-dir"])),
+    GIT_WORK_TREE: ".", GIT_INDEX_FILE: "alternate-index" };
+  const add = spawnSync("git", ["add", "selected doc.md"], {
+    cwd: linked, env: { ...env, GIT_INDEX_FILE: path.join(linked, "alternate-index") }, encoding: "utf8",
+  });
+  assert.equal(add.status, 0, add.stderr);
+  assert.deepEqual(readStagedPaths(path.join(linked, "packages/cli"), env), ["selected doc.md"]);
+  assert.throws(() => readStagedPaths(linked, { ...env, GIT_DIR: "missing-git" }), /Cannot read staged files/);
+});
+
+test("stuck evidence expires and distinguishes different failed inputs", () => {
+  const { advanceStuckEvidence, toolActionKey } = require("../dist/index.js");
+  const event = input => ({ type: "tool_result", payload: { tool: "Bash",
+    action_key: toolActionKey("Bash", input), result_classification: "failure" } });
+  let state = advanceStuckEvidence(undefined, event("false"), 0).evidence;
+  state = advanceStuckEvidence(state, event("false"), 120001).evidence;
+  assert.deepEqual(state.entries.map(entry => entry.hits.length), [1]);
+  state = advanceStuckEvidence(state, event("other failure"), 120002).evidence;
+  assert.deepEqual(state.entries.map(entry => entry.hits.length), [1, 1]);
+  assert.notEqual(toolActionKey("Bash", "echo A"), toolActionKey("Bash", "echo a"));
+  assert.equal(classifyToolResult({ tool: "Grep", result: '{"numFiles":0,"content":""}' }), "empty_result");
+});
+
+
+test("persistent stuck evidence emits once and skips a concurrent writer", t => {
+  const { createHash } = require("node:crypto");
+  const { updateLocalStuckGuard, toolActionKey } = require("../dist/index.js");
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-stuck-local-"));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const original = process.cwd();
+  process.chdir(cwd);
+  try {
+    const event = { type: "tool_result", session_id: "fixture-session", payload: {
+      tool: "Bash", action_key: toolActionKey("Bash", "false"), result_classification: "failure",
+    } };
+    assert.equal(updateLocalStuckGuard(event), null);
+    assert.equal(updateLocalStuckGuard(event), null);
+    assert.match(updateLocalStuckGuard(event), /SNIPARA_RESCUE_PACK/);
+    assert.equal(updateLocalStuckGuard(event), null);
+    const lock = path.join(cwd, ".snipara/stuck-guard", createHash("sha256").update(event.session_id).digest("hex") + ".json.lock");
+    fs.writeFileSync(lock, "busy");
+    assert.equal(updateLocalStuckGuard(event), null);
+  } finally { process.chdir(original); }
+});
+
+test("search result arrays count as empty only when no populated list or count contradicts them", () => {
+  assert.equal(classifyToolResult({ tool: "Search", result: '{"results":[]}' }), "empty_result");
+  assert.equal(classifyToolResult({ tool: "Grep", result: '{"numFiles":0,"numMatches":2}' }), "success");
+  assert.equal(classifyToolResult({ tool: "Search", result: '{"results":["hit"]}' }), "success");
+  assert.equal(classifyToolResult({ tool: "Search", result: '{"total_count":0,"results":["hit"]}' }), "success");
+});

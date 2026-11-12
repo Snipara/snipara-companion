@@ -57,6 +57,25 @@ const { spawnSync } = require("node:child_process");
 const cliPath = path.join(__dirname, "..", "dist", "index.js");
 
 function runCli(args, options = {}) {
+  // Legacy envelope assertions opt in to full detail; default receipts have separate regressions.
+  if (args[0] === "workflow" && ["start", "phase-start", "phase-commit"].includes(args[1]) &&
+      args.includes("--json") && !args.includes("--detail")) args = [...args, "--detail"];
+  // FULL phase commits require actual authoritative usage records, even in isolated fixtures.
+  if (args[0] === "workflow" && args[1] === "phase-commit" && options.usage !== false) {
+    const home = options.env?.HOME ?? fs.mkdtempSync(path.join(os.tmpdir(), "snipara-usage-home-"));
+    const sessions = path.join(home, ".codex", "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    const thread = "companion-fixture";
+    const timestamp = new Date().toISOString();
+    fs.writeFileSync(path.join(sessions, "fixture.jsonl"), [
+      { type: "session_meta", payload: { id: thread, timestamp, source: "cli" } },
+      { type: "response_item", timestamp, payload: { role: "user" } },
+      { type: "token_usage_record", payload: { thread_id: thread, response_id: "fixture-response",
+        usage: { input_tokens: 10, cached_input_tokens: 5, output_tokens: 1,
+          reasoning_output_tokens: 0, total_tokens: 11 } } },
+    ].map(JSON.stringify).join("\n") + "\n");
+    options = { ...options, env: { ...options.env, HOME: home, CODEX_THREAD_ID: thread } };
+  }
   const env = {
     ...process.env,
     ...(options.env ?? {}),
@@ -189,7 +208,7 @@ function writeWorkflowPreload(dir) {
       "      }",
       "      const finalTimeoutMode = process.env.SNIPARA_TEST_FINAL_COMMIT_TIMEOUT;",
       "      const phaseTimeoutMode = process.env.SNIPARA_TEST_PHASE_COMMIT_TIMEOUT;",
-      "      const shouldTimeout = (commitArgs.category === 'final-commit' && (finalTimeoutMode === 'always' || (finalTimeoutMode === 'first' && endOfTaskCommitAttempts === 1))) || (commitArgs.category === 'workflow-phase' && phaseTimeoutMode === 'always');",
+      "      const shouldTimeout = (commitArgs.category === 'final-commit' && (finalTimeoutMode === 'always' || (finalTimeoutMode === 'first' && endOfTaskCommitAttempts === 1))) || (commitArgs.category === 'phase-commit' && phaseTimeoutMode === 'always');",
       "      if (shouldTimeout) {",
       "        const error = new Error('This operation was aborted');",
       "        error.name = 'AbortError';",
@@ -255,19 +274,6 @@ function writeWorkflowPreload(dir) {
       "          jsonrpc: '2.0',",
       "          id: 1,",
       "          result: { content: [{ type: 'text', text: JSON.stringify(sessionMemories) }] },",
-      "        }),",
-      "      };",
-      "    }",
-      "    if (toolName === 'snipara_adaptive_routing_catalog') {",
-      "      const catalogResponse = process.env.SNIPARA_TEST_ADAPTIVE_CATALOG_RESPONSE ? JSON.parse(process.env.SNIPARA_TEST_ADAPTIVE_CATALOG_RESPONSE) : { success: true, catalog: { version: 'test.catalog.v1', candidates: [{ candidateId: 'local-docs', workerClass: 'coding', endpointType: 'local', capabilities: ['docs'], isAvailable: true }] }, resolution: { status: 'candidate_catalog', candidate_count: 1, fallback: 'main_agent' }, fallback: 'main_agent', warnings: [] };",
-      "      return {",
-      "        ok: true,",
-      "        status: 200,",
-      "        statusText: 'OK',",
-      "        json: async () => ({",
-      "          jsonrpc: '2.0',",
-      "          id: 1,",
-      "          result: { content: [{ type: 'text', text: JSON.stringify(catalogResponse) }] },",
       "        }),",
       "      };",
       "    }",
@@ -1028,10 +1034,10 @@ test("plan validation keeps structural validity while warning on weak file hints
       steps: [
         {
           action: "implementation_map",
-          title: "Map htask implementation",
+          title: "Map workflow implementation",
           expected_output: "files",
           params: {
-            likely_files: ["apps/mcp-server/src/engine/handlers/htask.py"],
+            likely_files: ["apps/mcp-server/src/engine/handlers/memory.py"],
             max_tokens: 500,
           },
         },
@@ -2491,7 +2497,7 @@ test("workflow phase-commit advances local state when hosted commit times out", 
   );
   assert.equal(current.status, "completed");
   assert.equal(current.phases[0].status, "completed");
-  assert.equal(current.lastCommit.category, "workflow-phase");
+  assert.equal(current.lastCommit.category, "phase-commit");
   const teamSyncStateAfter = JSON.parse(
     fs.readFileSync(path.join(dir, ".snipara", "team-sync", "session.json"), "utf8")
   );
@@ -3703,7 +3709,6 @@ test("orchestrator handoff artifact captures workflow and routing metadata", () 
       summary: "Prepare orchestrator handoff",
       rootDir: dir,
       changedFiles: ["packages/cli/src/commands/team-sync.ts"],
-      workstreams: ["team-sync:resume"],
     });
 
     assert.equal(artifact.workflow.workflowId, "companion-routing");
@@ -3733,7 +3738,7 @@ test("orchestrator handoff artifact captures workflow and routing metadata", () 
     });
 
     assert.equal(written.relativePath, ORCHESTRATOR_HANDOFF_RELATIVE_PATH);
-    assert.match(written.command, /^snipara-orchestrator agents coordinate --plan /);
+    assert.match(written.command, /^snipara-orchestrator agents execute-gated --plan /);
     assert.equal(fs.existsSync(path.join(dir, ORCHESTRATOR_HANDOFF_RELATIVE_PATH)), true);
     const persisted = JSON.parse(
       fs.readFileSync(path.join(dir, ORCHESTRATOR_HANDOFF_RELATIVE_PATH), "utf8")
@@ -4078,7 +4083,7 @@ test("workflow run emits adaptive routing dry-run metadata into orchestrator han
   }
 });
 
-test("workflow run applies project adaptive routing catalog policy", () => {
+test("workflow run applies the hosted project routing policy without a catalog lookup", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-adaptive-routing-policy-"));
   try {
     fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
@@ -4130,7 +4135,7 @@ test("workflow run applies project adaptive routing catalog policy", () => {
           SNIPARA_PROJECT_ID: "project_1",
           SNIPARA_API_URL: "https://api.snipara.com",
           SNIPARA_TEST_AUTOMATION_SETTINGS: JSON.stringify({
-            adaptiveRoutingMode: "catalog",
+            adaptiveRoutingMode: "recommend",
             adaptiveRoutingRequireApproval: true,
             adaptiveRoutingPlannerRetainsReasoning: true,
             adaptiveRoutingPreferLocalWorkers: true,
@@ -4155,14 +4160,12 @@ test("workflow run applies project adaptive routing catalog policy", () => {
       "local",
     ]);
     assert.deepEqual(payload.adaptive_routing.requirements.preferredEndpointTypes, ["local"]);
-    assert.equal(payload.adaptive_routing.requirements.catalogLimit, 20);
     assert.equal(payload.adaptive_routing.requirements.dailyBudgetCents, 500);
     assert.equal(payload.adaptive_routing.requirements.monthlyBudgetCents, 2000);
-    assert.equal(payload.adaptive_routing.gateway.success, true);
-    assert.equal(payload.adaptive_routing.gateway.candidateCount, 1);
+    assert.equal(payload.adaptive_routing.gateway, undefined);
     assert.match(
       payload.adaptive_routing.routingCard.reasons.join(" "),
-      /project adaptive routing policy mode is catalog/
+      /project adaptive routing policy mode is recommend/
     );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -4617,13 +4620,12 @@ test("workflow run uses local adaptive routing policy without hosted configurati
       path.join(dir, ".snipara", "adaptive-routing.json"),
       JSON.stringify(
         {
-          mode: "catalog",
+          mode: "recommend",
           plannerRetainsReasoning: true,
           preferLocalWorkers: true,
           allowedEndpointTypes: ["local", "cloud"],
           preferredEndpointTypes: ["local"],
           allowedWorkerClasses: ["documentation", "tests", "review"],
-          catalogLimit: 8,
         },
         null,
         2
@@ -4651,102 +4653,8 @@ test("workflow run uses local adaptive routing policy without hosted configurati
     assert.equal(payload.context, undefined);
     assert.equal(payload.adaptive_routing.gateway, undefined);
     assert.equal(payload.adaptive_routing.requirements.workerRole, "documentation");
-    assert.equal(payload.adaptive_routing.requirements.catalogLimit, 8);
     assert.deepEqual(payload.adaptive_routing.requirements.preferredEndpointTypes, ["local"]);
-    assert.match(
-      payload.adaptive_routing.routingCard.warnings.join(" "),
-      /hosted catalog lookup is skipped without Snipara configuration/
-    );
     assert.equal(payload.orchestrator_handoff.relativePath, ORCHESTRATOR_HANDOFF_RELATIVE_PATH);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("workflow run treats missing adaptive catalog success as fail-closed", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-adaptive-routing-strict-"));
-  try {
-    fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
-    fs.mkdirSync(path.join(dir, ".snipara", "workflow"), { recursive: true });
-    fs.writeFileSync(
-      path.join(dir, ".snipara", "workflow", "current.json"),
-      JSON.stringify(
-        {
-          schemaVersion: "snipara.workflow.v2",
-          workflowId: "adaptive-routing-strict",
-          goal: "Prepare adaptive routing handoff",
-          status: "active",
-          currentPhaseId: "docs-worker",
-          planSource: "inline",
-          createdAt: "2026-06-18T21:30:00.000Z",
-          updatedAt: "2026-06-18T21:30:00.000Z",
-          phases: [
-            {
-              id: "docs-worker",
-              title: "Docs worker",
-              query: "Update docs through a scoped worker",
-              status: "in_progress",
-              files: ["docs/roadmap.md"],
-            },
-          ],
-        },
-        null,
-        2
-      ),
-      "utf8"
-    );
-
-    const preloadPath = writeWorkflowPreload(dir);
-    const result = runCli(
-      [
-        "workflow",
-        "run",
-        "--mode",
-        "standard",
-        "--query",
-        "Use adaptive routing for documentation",
-        "--adaptive-routing-dry-run",
-        "--emit-orchestrator-handoff",
-        "--json",
-      ],
-      {
-        cwd: dir,
-        env: {
-          SNIPARA_API_KEY: "snp-test",
-          SNIPARA_PROJECT_ID: "project_1",
-          SNIPARA_API_URL: "https://api.snipara.com",
-          SNIPARA_TEST_ADAPTIVE_CATALOG_RESPONSE: JSON.stringify({
-            catalog: {
-              version: "test.catalog.v1",
-              candidates: [
-                {
-                  candidateId: "local-docs",
-                  workerClass: "documentation",
-                  endpointType: "local",
-                  capabilities: ["docs"],
-                  isAvailable: true,
-                },
-              ],
-            },
-            resolution: {
-              status: "candidate_catalog",
-              candidate_count: 1,
-              fallback: "main_agent",
-            },
-          }),
-        },
-        nodeArgs: ["-r", preloadPath],
-      }
-    );
-
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    const payload = JSON.parse(result.stdout);
-    assert.equal(payload.adaptive_routing.gateway.success, false);
-    assert.equal(payload.adaptive_routing.gateway.candidateCount, 1);
-    assert.match(
-      payload.adaptive_routing.routingCard.warnings.join(" "),
-      /did not return success=true/
-    );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -4878,7 +4786,7 @@ test("workflow lite mode does not require hosted configuration", () => {
   }
 });
 
-test("ordinary workflow LITE makes no hosted requests even with hosted catalog preferences", () => {
+test("ordinary workflow LITE makes no hosted requests even with hosted routing preferences", () => {
   for (const mode of ["auto", "lite"]) {
     for (const localPolicy of [null, { mode: "off" }]) {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-auto-lite-"));
@@ -4900,7 +4808,7 @@ test("ordinary workflow LITE makes no hosted requests even with hosted catalog p
               SNIPARA_PROJECT_ID: "proj_test",
               SNIPARA_API_URL: "https://api.test",
               SNIPARA_TEST_REQUEST_LOG: requestLogPath,
-              SNIPARA_TEST_AUTOMATION_SETTINGS: JSON.stringify({ adaptiveRoutingMode: "catalog" }),
+              SNIPARA_TEST_AUTOMATION_SETTINGS: JSON.stringify({ adaptiveRoutingMode: "recommend" }),
             },
           }
         );
@@ -4950,7 +4858,7 @@ test("workflow LITE retains hosted routing policy for explicit routing, local de
             SNIPARA_TEST_REQUEST_LOG: requestLogPath,
             SNIPARA_TEST_TOOL_LOG: toolLogPath,
             SNIPARA_TEST_AUTOMATION_SETTINGS: JSON.stringify({
-              adaptiveRoutingMode: "catalog",
+              adaptiveRoutingMode: "recommend",
               adaptiveRoutingAllowedEndpointTypes: ["cloud"],
               adaptiveRoutingDailyBudgetCents: 50,
             }),
@@ -4961,11 +4869,11 @@ test("workflow LITE retains hosted routing policy for explicit routing, local de
       const payload = JSON.parse(result.stdout);
       assert.equal(payload.effective_mode, "lite");
       assert.match(fs.readFileSync(requestLogPath, "utf8"), /\/automation\n/);
-      assert.match(fs.readFileSync(toolLogPath, "utf8"), /snipara_adaptive_routing_catalog/);
+      assert.equal(fs.existsSync(toolLogPath), false, "no hosted catalog tool call is made");
       assert.deepEqual(payload.adaptive_routing.requirements.allowedEndpointTypes, ["cloud"]);
       assert.equal(payload.adaptive_routing.requirements.dailyBudgetCents, 50);
       if (entry.args.includes("--route-local-workers")) {
-        assert.equal(payload.adaptive_routing.gateway.source, "hosted_mcp");
+        assert.notEqual(payload.adaptive_routing.gateway?.source, "hosted_mcp");
         assert.match(payload.adaptive_routing.routingCard.warnings.join(" "), /does not allow local endpoints/);
       }
     } finally {
@@ -5185,7 +5093,9 @@ test("memory guard treats explicit failure triggers and npm E-codes as failures"
   });
 
   assert.equal(result.triggered, true);
+  // "npm publish" is a release step: strict mode blocks it until the user confirms.
   assert.equal(result.shouldBlock, true);
+  assert.equal(result.blockReason, "confirmation_required");
   assert.equal(result.findings[0].code, "recent_failure");
 });
 

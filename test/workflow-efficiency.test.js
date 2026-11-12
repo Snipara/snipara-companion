@@ -145,3 +145,19 @@ test("invalid explicit options are rejected without echoing supplied content", a
   await assert.rejects(measureWorkflowEfficiency({ ...options, profile: "PRIVATE_PROFILE" }), /lite, standard or full/);
   await assert.rejects(measureWorkflowEfficiency({ ...options, maxResponses: -1 }), /Invalid efficiency threshold/);
 });
+
+test("cached standing context counts toward total input and enforced text is one line", async t => {
+  const options = await fixture(t);
+  await log(options, "root.jsonl", [meta("root"), timed(), usage("cached", {
+    input_tokens: 1000000, cached_input_tokens: 999999, total_tokens: 1000020,
+  })]);
+  const advisory = await workflowEfficiencyCommand({ ...options, maxInputTokens: 1000 });
+  assert.equal(advisory.exitCode, 0);
+  assert.ok(advisory.report.exceeded.includes("maxInputTokens"));
+  const enforced = await workflowEfficiencyCommand({ ...options, maxInputTokens: 1000, enforce: true });
+  assert.equal(enforced.exitCode, 1);
+  const message = renderWorkflowEfficiency(enforced.report);
+  assert.equal(message.split("\n").length, 1);
+  assert.match(message, /maxInputTokens exceeded/);
+  assert.match(message, /cached=999999/);
+});

@@ -642,8 +642,6 @@ export async function createTeamSyncStartWorkPayload(
       summary: record.summary,
       title: record.summary,
       changedFiles: summary.files,
-      featureTitle: record.summary,
-      workstreams: ["team-sync:start-work"],
     }
   );
   const journal = await appendJournalCheckpoint({
@@ -750,8 +748,6 @@ async function createTeamSyncHandoffPayload(
       title: summary.latestActiveWork?.summary ?? record.summary,
       changedFiles: summary.files,
       resumeSummary: record.next,
-      featureTitle: summary.latestActiveWork?.summary ?? record.summary,
-      workstreams: ["team-sync:handoff"],
     }
   );
   const journal = await appendJournalCheckpoint({
@@ -1433,8 +1429,6 @@ export async function teamSyncWhatChangedCommand(options: TeamSyncCommandOptions
       title: "Team Sync What Changed",
       changedFiles: summary.files,
       resumeSummary: summary.latestHandoff?.summary ?? summary.latestActiveWork?.summary,
-      featureTitle: summary.latestActiveWork?.summary ?? summary.latestHandoff?.summary ?? null,
-      workstreams: ["team-sync:what-changed"],
     }
   );
 
@@ -1554,8 +1548,6 @@ export async function teamSyncResumeCommand(options: TeamSyncCommandOptions): Pr
       title: "Team Sync Resume",
       changedFiles: summary.files,
       resumeSummary: summary.latestHandoff?.next ?? summary.latestActiveWork?.summary,
-      featureTitle: summary.latestActiveWork?.summary ?? summary.latestHandoff?.summary ?? null,
-      workstreams: ["team-sync:resume"],
     }
   );
 
@@ -1978,8 +1970,6 @@ function maybeWriteTeamSyncOrchestratorHandoff(
     title?: string | null;
     changedFiles?: string[];
     resumeSummary?: string;
-    featureTitle?: string | null;
-    workstreams?: string[];
   }
 ): WrittenOrchestratorHandoff | null {
   if (!enabled || !recommendation) {
@@ -1995,8 +1985,6 @@ function maybeWriteTeamSyncOrchestratorHandoff(
     rootDir,
     changedFiles: input.changedFiles,
     resumeSummary: input.resumeSummary,
-    featureTitle: input.featureTitle ?? undefined,
-    workstreams: input.workstreams,
   });
 }
 

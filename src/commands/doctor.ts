@@ -3,7 +3,7 @@
  *
  * Runs read-only probes and prints (or returns as JSON) a health report:
  * runtime/companion configuration, Snipara authentication, and the hosted tool
- * catalog (including htask/swarm completeness). Meant for debugging setup
+ * catalog. Meant for debugging setup
  * before filing issues — it changes nothing.
  */
 import * as fs from "fs";
@@ -65,10 +65,6 @@ interface DoctorToolCatalogReport {
   available: boolean;
   detail: string;
   toolCount?: number;
-  htaskToolCount?: number;
-  swarmToolCount?: number;
-  htaskComplete?: boolean;
-  swarmComplete?: boolean;
 }
 
 function probeCompanionVersion(report: RuntimeDetectionReport): DoctorCompanionVersionReport {
@@ -292,29 +288,10 @@ async function probeToolCatalog(
       typeof result.count === "number" && Number.isFinite(result.count)
         ? result.count
         : tools.length;
-    const toolNames = tools
-      .map((tool) =>
-        tool && typeof tool === "object" && typeof tool.tool === "string" ? tool.tool : null
-      )
-      .filter((tool): tool is string => Boolean(tool));
-    const expectedHtaskTools = [
-      "snipara_htask_create",
-      "snipara_htask_create_feature",
-      "snipara_htask_tree",
-      "snipara_htask_complete",
-      "snipara_htask_recommend_batch",
-    ];
-    const expectedSwarmTools = ["snipara_swarm_create", "snipara_swarm_join"];
-    const htaskToolCount = expectedHtaskTools.filter((tool) => toolNames.includes(tool)).length;
-    const swarmToolCount = expectedSwarmTools.filter((tool) => toolNames.includes(tool)).length;
     return {
       checked: true,
       available: true,
       toolCount,
-      htaskToolCount,
-      swarmToolCount,
-      htaskComplete: htaskToolCount === expectedHtaskTools.length,
-      swarmComplete: swarmToolCount === expectedSwarmTools.length,
       detail: `snipara_help(list_all=true) returned ${toolCount} tools`,
     };
   } catch (error) {
@@ -367,7 +344,7 @@ function printDoctorReport(
     report.orchestrator.cliAvailable,
     report.orchestrator.cliAvailable
       ? orchestratorVersionSummary(report)
-      : "not found on PATH (optional; install only for production gates or htasks)"
+      : "not found on PATH (optional; install only for production gates)"
   );
   printCheck(
     "LLM provider key",
@@ -381,18 +358,6 @@ function printDoctorReport(
   }
   if (toolCatalog.checked) {
     printCheck("Hosted tool catalog", toolCatalog.available, toolCatalog.detail);
-    if (toolCatalog.available) {
-      printCheck(
-        "Hosted htask family",
-        Boolean(toolCatalog.htaskComplete),
-        `${toolCatalog.htaskToolCount ?? 0}/5 expected htask tools present in hosted catalog`
-      );
-      printCheck(
-        "Hosted swarm family",
-        Boolean(toolCatalog.swarmComplete),
-        `${toolCatalog.swarmToolCount ?? 0}/2 expected swarm tools present in hosted catalog`
-      );
-    }
   }
   printCheck(
     "Docker",
@@ -408,11 +373,6 @@ function printDoctorReport(
   console.log(
     "- A lean Snipara tool set is expected in normal agent sessions. Use snipara_help(query=...) for routed guidance and snipara_help(list_all=true) to inspect specialist opt-in surfaces."
   );
-  if (toolCatalog.available && toolCatalog.htaskToolCount) {
-    console.log(
-      "- If the hosted catalog includes htask tools but Codex only exposed the core trio, reference snipara_htask_create, snipara_htask_create_feature, snipara_htask_tree, or snipara_htask_recommend_batch explicitly in the session to trigger lazy discovery."
-    );
-  }
 
   console.log("");
   console.log(chalk.bold("Snipara Sandbox guidance"));
@@ -452,25 +412,10 @@ function printDoctorReport(
   console.log(chalk.bold("Snipara Orchestrator guidance"));
   if (report.orchestrator.cliAvailable) {
     console.log("- Use snipara-orchestrator explicitly for production proof gates.");
-    console.log(
-      "- For shared task queues or multi-agent coordination, prefer snipara-orchestrator as the primary path."
-    );
-    console.log(
-      "- Bootstrap or resume the shared coordination layer with snipara-orchestrator swarm-create | swarm-join when a swarm does not already exist."
-    );
-    console.log(
-      "- Primary multi-agent path: snipara-orchestrator swarm-create | swarm-join | htask-create-feature | htask-create | htask-next | htask-tree | htask-complete."
-    );
-    console.log(
-      "- Companion may retain legacy direct hosted passthrough commands, but htasks belong to the orchestrator workflow surface."
-    );
   } else {
     console.log("- Existing project: npx create-snipara repair --with-orchestrator.");
     console.log("- Manual install: pip install snipara-orchestrator.");
     console.log("- Companion does not install or run orchestrator automatically.");
-    console.log(
-      "- Install orchestrator before using hosted htasks or swarm coordination as a workflow surface."
-    );
   }
 }
 

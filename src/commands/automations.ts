@@ -449,7 +449,7 @@ function withLocalApiKeyLoader(file: AutomationConfigFile): AutomationConfigFile
     return file;
   }
 
-  const content = file.content.replace(/^API_KEY="[^"\n]*"$/gm, LOCAL_API_KEY_LOADER);
+  const content = quietCompanionHook(file.content).replace(/^API_KEY="[^"\n]*"$/gm, LOCAL_API_KEY_LOADER);
   return content === file.content ? file : { ...file, content };
 }
 
@@ -926,4 +926,10 @@ export function automationsStatusCommand(options: { dir?: string }): void {
     const marker = file.state === "up-to-date" ? "=" : file.state === "missing" ? "!" : "~";
     console.log(`${marker} ${file.path} (${file.state})`);
   }
+}
+
+/** Apply the quiet Companion contract to hosted Claude, Codex and Cursor scripts. */
+export function quietCompanionHook(content: string): string {
+  return content.replace(/\bsnipara-companion pre-tool\b(?! --stuck-guard-only)/g,
+    "snipara-companion pre-tool --stuck-guard-only");
 }

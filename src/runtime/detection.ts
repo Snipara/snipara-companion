@@ -25,7 +25,6 @@ export type OrchestratorRecommendationReason =
   | "workflow_mode_orchestrate"
   | "production_validation_intent"
   | "proof_gate_intent"
-  | "htask_or_swarm_intent"
   | "multi_agent_intent"
   | "parallel_worker_intent"
   | "changed_files_threshold"
@@ -95,7 +94,6 @@ const ORCHESTRATOR_PRODUCTION_PATTERN =
   /\b(prod|production|deploy|deployment|release|rollout|cutover|drift|live validation|live check|live checks)\b/i;
 const ORCHESTRATOR_PROOF_PATTERN =
   /\b(proof|proofs|gate|gates|gatekeeper|evidence|proof[- ]?required)\b/i;
-const ORCHESTRATOR_HTASK_PATTERN = /\b(htask|hierarchical task|task queue|shared queue|swarm)\b/i;
 const ORCHESTRATOR_MULTI_AGENT_PATTERN =
   /\b(multi-agent|multi agent|parallel agent|parallel agents|agent coordination|coordinate agents)\b/i;
 const ORCHESTRATOR_PARALLEL_WORKER_PATTERN = /\b(worker|workers|parallel work)\b/i;
@@ -185,7 +183,7 @@ export function shouldSuggestRuntimeForWorkflow(query: string, mode: WorkflowMod
  * Recommend whether work should be routed to snipara-orchestrator.
  *
  * Scores intent signals from the query and workflow mode (orchestrate mode,
- * production / proof / htask / multi-agent / parallel patterns) plus contextual
+ * production / proof / multi-agent / parallel patterns) plus contextual
  * signals (changed-file count, active Team Sync collisions, policy auto-route).
  * The returned recommendation's level escalates with the accumulated score
  * (suggest → confirm → auto).
@@ -216,9 +214,6 @@ export function getOrchestratorRecommendation(
   if (ORCHESTRATOR_PROOF_PATTERN.test(query)) {
     addReason("proof_gate_intent", 30);
   }
-  if (ORCHESTRATOR_HTASK_PATTERN.test(query)) {
-    addReason("htask_or_swarm_intent", 30);
-  }
   if (ORCHESTRATOR_MULTI_AGENT_PATTERN.test(query)) {
     addReason("multi_agent_intent", 35);
   }
@@ -246,7 +241,6 @@ export function getOrchestratorRecommendation(
     mode === "orchestrate" ||
     reasons.includes("policy_auto_route") ||
     reasons.includes("proof_gate_intent") ||
-    reasons.includes("htask_or_swarm_intent") ||
     reasons.includes("multi_agent_intent") ||
     reasons.includes("team_sync_collision");
 
@@ -276,8 +270,6 @@ export function formatOrchestratorRecommendationReason(
       return "production, deploy, rollout, or live-validation intent";
     case "proof_gate_intent":
       return "proof, gate, or evidence requirements";
-    case "htask_or_swarm_intent":
-      return "htask, shared queue, or swarm coordination intent";
     case "multi_agent_intent":
       return "explicit multi-agent coordination intent";
     case "parallel_worker_intent":

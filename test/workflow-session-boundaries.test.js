@@ -146,7 +146,7 @@ function fixture(t) {
   function start(cwd, id = "alpha", overrides = {}) {
     const before = calls().length;
     const output = run(cwd, ["workflow", "start", "--id", id, "--goal", "Qualify session boundaries",
-      "--plan-file", path.join(cwd, "plan.json"), "--skip-agent-context", "--force", "--json"], overrides);
+      "--plan-file", path.join(cwd, "plan.json"), "--skip-agent-context", "--force", "--json", "--detail"], overrides);
     return { receipt: output.coordination.startReceipt, calls: calls().slice(before), state: readJson(statePath(cwd)) };
   }
   function git(cwd, args) {

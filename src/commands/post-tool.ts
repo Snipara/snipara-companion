@@ -12,6 +12,7 @@ import { isConfigured } from "../config/store";
 import {
   attachLocalContextPackReceipts,
   buildLocalContextPackReceipt,
+  buildCanonicalEvent,
   emitCanonicalEvent,
   type LocalContextPackReceiptPayload,
 } from "./events";
@@ -21,6 +22,7 @@ import {
   buildToolResultPayload,
   classifyToolResult,
   extractCommandFromToolInput,
+  updateLocalStuckGuard,
 } from "./stuck-guard";
 import { appendActivityEvent, writeSessionSnapshot } from "./activity";
 import { captureStandaloneCommitWhy, type CompanionWhyCaptureReceipt } from "./why-capture";
@@ -247,6 +249,11 @@ export async function postToolCommand(options: {
     exitCode: options.exitCode,
     status: options.status,
   });
+  try {
+    const pack = updateLocalStuckGuard(buildCanonicalEvent({ eventType: "tool_result",
+      payload: buildToolResultPayload(options) }));
+    if (pack) console.log(pack);
+  } catch { /* Optional hook evidence must not break the host tool. */ }
   let standaloneWhyCapture: CompanionWhyCaptureReceipt | undefined;
   if (commitResultMetadata.commitSha && isConfigured()) {
     try {
@@ -383,7 +390,7 @@ export async function postToolCommand(options: {
         strict: false,
         recentFailures: false,
       });
-      if (guard.triggered) {
+      if (guard.triggered && (guard.memories.length > 0 || guard.contextSections.length > 0)) {
         const lines = [
           "Snipara Memory Guard: A tool or command failed. Before retrying, read this guidance.",
         ];

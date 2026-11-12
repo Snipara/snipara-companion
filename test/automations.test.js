@@ -738,3 +738,18 @@ test("identical unmarked user text is not normalized or wrapped", async () => {
   assert.equal(result.written, 0);
   assert.equal(fs.readFileSync(path.join(dir, "AGENTS.md"), "utf8"), content);
 });
+
+test("installed Claude, Cursor and Codex Companion hooks default to quiet pre-tool calls", async t => {
+  for (const [client, prefix] of [["claude-code", ".claude"], ["cursor", ".cursor"], ["codex", ".codex"]]) {
+    const dir = makeWorkspace();
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const file = `${prefix}/hooks/pre-tool-use.sh`;
+    const source = { files: [{ path: file, content: '#!/bin/sh\nsnipara-companion pre-tool "$INPUT" --tool Read\n' }], instructions: [] };
+    await installAutomationBundle({ client, projectDir: dir, bundle: source });
+    const installed = fs.readFileSync(path.join(dir, file), "utf8");
+    assert.match(installed, /pre-tool --stuck-guard-only/);
+    await installAutomationBundle({ client, projectDir: dir, bundle: source });
+    assert.equal(fs.readFileSync(path.join(dir, file), "utf8"), installed);
+    assert.equal(getAutomationStatus(dir).files[0].state, "up-to-date");
+  }
+});

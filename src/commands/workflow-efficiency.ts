@@ -11,16 +11,16 @@ const integer = (value: unknown): value is number => typeof value === "number" &
 const timestamp = (value: unknown): number | undefined => typeof value === "string" && /^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(value) && Number.isFinite(Date.parse(value)) ? Date.parse(value) : undefined;
 export type EfficiencyProfile = "lite" | "standard" | "full";
 export interface EfficiencyThresholds {
-  maxResponses: number; maxUncachedInputTokens: number; maxOutputTokens: number; maxElapsedMinutes: number;
+  maxResponses: number; maxInputTokens: number; maxUncachedInputTokens: number; maxOutputTokens: number; maxElapsedMinutes: number;
 }
 export interface WorkflowEfficiencyOptions extends Partial<EfficiencyThresholds> {
   cwd?: string; sessionsDir?: string; rootThreadId?: string; since?: string;
   profile?: EfficiencyProfile; enforce?: boolean; json?: boolean;
 }
 export const WORKFLOW_EFFICIENCY_PROFILES: Record<EfficiencyProfile, EfficiencyThresholds> = {
-  lite: { maxResponses: 40, maxUncachedInputTokens: 100000, maxOutputTokens: 30000, maxElapsedMinutes: 30 },
-  standard: { maxResponses: 150, maxUncachedInputTokens: 500000, maxOutputTokens: 150000, maxElapsedMinutes: 120 },
-  full: { maxResponses: 400, maxUncachedInputTokens: 2000000, maxOutputTokens: 400000, maxElapsedMinutes: 360 },
+  lite: { maxInputTokens: 100000, maxResponses: 40, maxUncachedInputTokens: 100000, maxOutputTokens: 30000, maxElapsedMinutes: 30 },
+  standard: { maxInputTokens: 500000, maxResponses: 150, maxUncachedInputTokens: 500000, maxOutputTokens: 150000, maxElapsedMinutes: 120 },
+  full: { maxInputTokens: 2000000, maxResponses: 400, maxUncachedInputTokens: 2000000, maxOutputTokens: 400000, maxElapsedMinutes: 360 },
 };
 const LIMITS = { entries: 20000, files: 4000, depth: 8, headerBytes: 65536,
   discoveryBytes: 32 * 1024 * 1024, fileBytes: 128 * 1024 * 1024, totalBytes: 512 * 1024 * 1024, lineBytes: 1024 * 1024 };
@@ -274,7 +274,7 @@ export async function measureWorkflowEfficiency(options: WorkflowEfficiencyOptio
     if (!Number.isSafeInteger(totals[key] + amount[key])) gap("aggregate_overflow");
     else totals[key] += amount[key];
   }
-  const values: EfficiencyThresholds = { maxResponses: totals.responses, maxUncachedInputTokens: totals.uncachedInputTokens,
+  const values: EfficiencyThresholds = { maxInputTokens: totals.inputTokens, maxResponses: totals.responses, maxUncachedInputTokens: totals.uncachedInputTokens,
     maxOutputTokens: totals.outputTokens, maxElapsedMinutes: totals.elapsedMinutes ?? 0 };
   const exceeded = (Object.keys(thresholds) as (keyof EfficiencyThresholds)[]).filter(key => values[key] > thresholds[key]);
   const coverage = !selected.length || !supportedSessions.size ? "unavailable" : Object.keys(gaps).length ? "partial" : "complete";
@@ -294,6 +294,8 @@ export async function measureWorkflowEfficiency(options: WorkflowEfficiencyOptio
 
 export function renderWorkflowEfficiency(report: WorkflowEfficiencyReport, json = false): string {
   if (json) return JSON.stringify(report, null, 2);
+  if (report.mode === "enforce-check" && (report.exceeded.length || report.coverage.status !== "complete"))
+    return efficiencyFailureReason(report);
   const t = report.totals;
   return [`Workflow efficiency: ${report.status} (${report.mode})`,
     `Coverage: ${report.coverage.status}; ${report.scope.sessions} local Codex sessions; external providers excluded`,
@@ -307,4 +309,8 @@ export function renderWorkflowEfficiency(report: WorkflowEfficiencyReport, json 
 export async function workflowEfficiencyCommand(options: WorkflowEfficiencyOptions = {}): Promise<{ report: WorkflowEfficiencyReport; exitCode: number }> {
   const report = await measureWorkflowEfficiency(options);
   return { report, exitCode: options.enforce && (report.coverage.status !== "complete" || report.exceeded.length > 0) ? 1 : 0 };
+}
+
+export function efficiencyFailureReason(report: WorkflowEfficiencyReport): string {
+  return `Workflow efficiency stopped: ${report.exceeded.length ? report.exceeded.join(", ") + " exceeded" : "incomplete usage coverage"}; input=${report.totals.inputTokens} (cached=${report.totals.cachedInputTokens}), responses=${report.totals.responses}.`;
 }

@@ -555,10 +555,13 @@ test("queryContext requests answer packs and maps quality metadata", async () =>
     };
 
     const client = createClient();
-    const result = await client.queryContext("agent workflow", 1500);
+    const result = await client.queryContext("agent workflow", 1500, { includeAnswerPack: true });
 
     assert.equal(payload.params.name, "snipara_context_query");
     assert.equal(payload.params.arguments.include_answer_pack, true);
+    await client.queryContext("agent workflow");
+    assert.equal(payload.params.arguments.max_tokens, 800);
+    assert.equal(payload.params.arguments.include_answer_pack, false); // explicit compact default
     assert.equal(payload.params.arguments.include_metadata, true);
     assert.equal(payload.params.arguments.search_mode, "hybrid");
     assert.equal(result.answer_pack_included, true);

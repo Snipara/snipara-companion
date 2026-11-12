@@ -4,13 +4,13 @@
  * Before failed retries, commits, or finalization, this surfaces tagged memory
  * and source context and flags release surfaces (npm/pypi), destructive intent,
  * and contradictions. In strict mode it returns stable exit codes (see
- * MEMORY_GUARD_EXIT_CODES): 20 = confirmation required, 21 = guidance
- * unavailable, 22 = invalid options — so Git hooks can block or prompt.
+ * MEMORY_GUARD_EXIT_CODES): 20 = confirmation required,
+ * 22 = invalid options (missing guidance is advisory) — so Git hooks can block or prompt.
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execFileSync } from "node:child_process";
 import chalk from "chalk";
+import { readStagedPaths } from "./hook-git";
 import {
   createClient,
   type ContextQueryResult,
@@ -329,6 +329,8 @@ export function detectReleaseSurfacesFromFiles(root: string, files: string[]): R
 
   for (const rawFile of files) {
     const file = safeRelative(root, rawFile);
+    // Documentation alone is not a package release or executable change.
+    if (/(?:^|\/)docs?\//i.test(file) || /\.(?:md|mdx|rst|txt)$/i.test(file)) continue;
 
     const packageManifest =
       file.endsWith("package.json") && fs.existsSync(path.join(root, file))
@@ -376,19 +378,7 @@ export function detectReleaseSurfacesFromFiles(root: string, files: string[]): R
 }
 
 export function getStagedFiles(root: string): string[] {
-  try {
-    const output = execFileSync("git", ["diff", "--cached", "--name-only"], {
-      cwd: root,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    return output
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
+  return readStagedPaths(root);
 }
 
 function classifyRecentFailures(events: RecentAutomationEvent[]) {
@@ -752,7 +742,7 @@ export async function runMemoryGuardCheck(
   if (
     client &&
     options.recentFailures !== false &&
-    ["pre-commit", "commit", "pre-final"].includes(trigger)
+    ["commit", "pre-final"].includes(trigger)
   ) {
     try {
       const config = loadConfig();
@@ -864,7 +854,6 @@ export async function runMemoryGuardCheck(
     });
   }
 
-  const hasGuidance = memories.length > 0 || sections.length > 0;
   const requiresConfirmation = Boolean(
     options.requireConfirmation || destructive || contradictions.length > 0
   );
@@ -876,21 +865,16 @@ export async function runMemoryGuardCheck(
     overridesContradictions: Boolean(confirmedByUser && contradictions.length > 0),
   };
   const missingConfirmation = requiresConfirmation && !confirmation.confirmed;
-  const guidanceUnavailable = triggered && !hasGuidance;
   const blockReason: MemoryGuardBlockReason | undefined = options.strict
     ? missingConfirmation
       ? "confirmation_required"
-      : guidanceUnavailable
-        ? "guidance_unavailable"
-        : undefined
+      : undefined
     : undefined;
   const shouldBlock = Boolean(blockReason);
   const exitCode =
     blockReason === "confirmation_required"
       ? MEMORY_GUARD_EXIT_CODES.confirmationRequired
-      : blockReason === "guidance_unavailable"
-        ? MEMORY_GUARD_EXIT_CODES.guidanceUnavailable
-        : MEMORY_GUARD_EXIT_CODES.ok;
+      : MEMORY_GUARD_EXIT_CODES.ok;
   const confirmationPrompt = requiresConfirmation
     ? [
         "Ask the user to explicitly confirm before continuing.",
@@ -902,9 +886,7 @@ export async function runMemoryGuardCheck(
 
   if (shouldBlock) {
     warnings.push(
-      blockReason === "confirmation_required"
-        ? "Strict mode blocked this step until the user explicitly confirms the destructive or contradictory action."
-        : "Strict mode blocked this step because Memory Guard was triggered but no memory or context guidance was available."
+      "Strict mode blocked this step until the user explicitly confirms the destructive or contradictory action."
     );
   } else if (confirmation.confirmed && requiresConfirmation) {
     warnings.push(

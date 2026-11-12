@@ -194,3 +194,9 @@ snipara-companion validation preview --request .snipara/validation/request.json
 This reads at most 64 KiB from an in-workspace regular file. It does not invoke Sandbox, contact Docker, validate the request through the engine or authorize execution. The file-byte digest is not the Sandbox canonical request identity. Publication and installation of this candidate remain separate steps.
 
 An existing task card reads an optional `.snipara/tasks/<task-id>/sandbox-verification.json` through the same contained file boundary. Malformed, oversized or unsafe optional evidence degrades that observation without turning it into a passing test or blocking unrelated inspection. A displayed saved `valid` claim remains editable and historical; current reuse always requires fresh explicit verification.
+
+## Reproducible repository scripts
+
+The image, the workspace mirrors, the request preparation and the Postgres/Redis helpers for every test run of this repository are one
+unified definition in `sandbox/` (Dockerfile with `base` and `full` targets, `manifest.toml`, `sandbox.py`; see `sandbox/README.md`).
+The entry script always passes the local `sha256:` image id.

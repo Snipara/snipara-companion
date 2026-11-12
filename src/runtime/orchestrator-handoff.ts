@@ -68,7 +68,6 @@ export interface AdaptiveModelRequirements {
   structuredOutputRequired?: boolean;
   preferredEndpointTypes?: string[];
   allowedEndpointTypes?: string[];
-  catalogLimit?: number;
   dailyBudgetCents?: number;
   monthlyBudgetCents?: number;
   fallback: "main_agent";
@@ -154,7 +153,6 @@ export interface AdaptiveWorkRoutingOptions {
   plannerRetainsReasoning?: boolean;
   preferredProfileStrengths?: string[];
   structuredOutputRequired?: boolean;
-  catalogLimit?: number;
   dailyBudgetCents?: number;
   monthlyBudgetCents?: number;
   strongRepair?: boolean;
@@ -203,14 +201,9 @@ export interface OrchestratorHandoffArtifact {
     changedFiles: string[];
   };
   coordination: {
-    swarmId: string | null;
     claimScope: {
       files: string[];
       symbols: string[];
-    };
-    htask: {
-      featureTitle: string | null;
-      workstreams: string[];
     };
   };
   validation: {
@@ -241,8 +234,6 @@ export interface OrchestratorHandoffOptions {
   contextRefs?: string[];
   decisionIds?: string[];
   resumeSummary?: string;
-  featureTitle?: string;
-  workstreams?: string[];
   adaptiveRouting?: AdaptiveWorkRoutingRecommendation | null;
 }
 
@@ -333,14 +324,9 @@ export function buildOrchestratorHandoff(
       changedFiles,
     },
     coordination: {
-      swarmId: null,
       claimScope: {
         files: changedFiles,
         symbols: [],
-      },
-      htask: {
-        featureTitle: options.featureTitle ?? null,
-        workstreams: normalizeStringList(options.workstreams),
       },
     },
     validation: {
@@ -412,7 +398,6 @@ export function buildAdaptiveWorkRoutingRecommendation(
     structuredOutputRequired: structuredOutputRequired ? true : undefined,
     preferredEndpointTypes,
     allowedEndpointTypes,
-    catalogLimit: options.catalogLimit,
     dailyBudgetCents: options.dailyBudgetCents,
     monthlyBudgetCents: options.monthlyBudgetCents,
     fallback: "main_agent" as const,
@@ -720,7 +705,7 @@ export function writeOrchestratorHandoff(
     handoff,
     path: absolutePath,
     relativePath: ORCHESTRATOR_HANDOFF_RELATIVE_PATH,
-    command: `snipara-orchestrator agents coordinate --plan ${ORCHESTRATOR_HANDOFF_RELATIVE_PATH}`,
+    command: `snipara-orchestrator agents execute-gated --plan ${ORCHESTRATOR_HANDOFF_RELATIVE_PATH}`,
   };
 }
 

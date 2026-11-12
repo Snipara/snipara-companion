@@ -922,7 +922,7 @@ test("team-sync start-work keeps local state and prints hosted brief when config
   assert.match(result.stdout, /Prepared Orchestrator Handoff/);
   assert.match(
     result.stdout,
-    /snipara-orchestrator agents coordinate --plan \.snipara\/orchestrator\/handoff\.json/
+    /snipara-orchestrator agents execute-gated --plan \.snipara\/orchestrator\/handoff\.json/
   );
   assert.equal(fs.existsSync(path.join(dir, TEAM_SYNC_STATE_RELATIVE_PATH)), true);
   assert.equal(fs.existsSync(path.join(dir, ORCHESTRATOR_HANDOFF_RELATIVE_PATH)), true);

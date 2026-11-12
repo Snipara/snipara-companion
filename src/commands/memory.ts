@@ -30,25 +30,15 @@ export interface MemoryHealthCommandOptions {
   json?: boolean;
 }
 
-export interface MemoryCleanCandidatesCommandOptions {
-  scope?: MemoryScope;
-  includeInactive?: boolean;
-  limitPerBucket?: number;
-  json?: boolean;
-}
-
 export interface MemoryCompactCommandOptions {
   scope?: MemoryScope;
   deduplicate?: boolean;
-  promoteThreshold?: number;
-  archiveOlderThanDays?: number;
   json?: boolean;
 }
 
 export interface MemoryAuditCommandOptions
   extends
     MemoryHealthCommandOptions,
-    MemoryCleanCandidatesCommandOptions,
     MemoryCompactCommandOptions {}
 
 export interface MemoryInvalidateCommandOptions {
@@ -71,10 +61,6 @@ export interface MemoryReviewsCommandOptions {
   limit?: number;
   offset?: number;
   includeEvidence?: boolean;
-  includeCleanCandidates?: boolean;
-  includeDuplicates?: boolean;
-  includeInactive?: boolean;
-  minSimilarity?: number;
   emitDecisions?: boolean;
   json?: boolean;
 }
@@ -85,7 +71,6 @@ export interface MemoryAuditResult {
   scope?: MemoryScope;
   summary?: MemoryAuditSummary;
   health?: Record<string, unknown>;
-  cleanCandidates?: Record<string, unknown>;
   compactDryRun?: Record<string, unknown>;
   errors: Array<{ surface: string; message: string }>;
 }
@@ -105,7 +90,7 @@ export interface MemoryReviewConnectorResult {
 }
 
 export interface MemoryReviewConnectorItem {
-  source: "review_queue" | "clean_candidates" | "duplicate_candidates";
+  source: "review_queue";
   bucket?: string;
   memoryId: string;
   targetMemoryId?: string;
@@ -125,7 +110,6 @@ export interface MemoryAuditSummary {
   activeCount?: number;
   autoCompactThreshold?: number;
   autoCompactWouldTrigger?: boolean;
-  cleanupCandidateCounts: Record<string, number>;
   compactDryRunMutated?: boolean;
   compactDryRunPlannedActions?: number;
   recommendedActions: string[];
@@ -192,16 +176,6 @@ function buildHealthArgs(options: MemoryHealthCommandOptions): Record<string, un
   });
 }
 
-function buildCleanCandidatesArgs(
-  options: MemoryCleanCandidatesCommandOptions
-): Record<string, unknown> {
-  return compactObject({
-    scope: options.scope,
-    include_inactive: options.includeInactive || undefined,
-    limit_per_bucket: options.limitPerBucket,
-  });
-}
-
 function buildReviewQueueArgs(options: MemoryReviewsCommandOptions): Record<string, unknown> {
   return compactObject({
     scope: options.scope,
@@ -215,23 +189,10 @@ function buildReviewQueueArgs(options: MemoryReviewsCommandOptions): Record<stri
   });
 }
 
-function buildDuplicateCandidateArgs(
-  options: MemoryReviewsCommandOptions
-): Record<string, unknown> {
-  return compactObject({
-    scope: options.scope,
-    include_inactive: options.includeInactive || undefined,
-    limit: options.limit,
-    min_similarity: options.minSimilarity,
-  });
-}
-
 function buildCompactArgs(options: MemoryCompactCommandOptions): Record<string, unknown> {
   return compactObject({
     scope: options.scope,
     deduplicate: options.deduplicate ?? true,
-    promote_threshold: options.promoteThreshold,
-    archive_older_than_days: options.archiveOlderThanDays,
     dry_run: true,
   });
 }
@@ -324,52 +285,6 @@ function printMemoryHealth(result: Record<string, unknown>): void {
       console.log(`- ${preview(sample, 220)}`);
     }
   }
-}
-
-function printCandidateBucket(name: string, value: unknown): void {
-  if (!Array.isArray(value) || value.length === 0) {
-    return;
-  }
-
-  console.log(chalk.bold(name));
-  for (const candidate of value.slice(0, 6)) {
-    if (!isRecord(candidate)) {
-      console.log(`- ${preview(candidate, 240)}`);
-      continue;
-    }
-
-    const id = preview(candidate.memory_id ?? candidate.id ?? "unknown", 64);
-    const reason = candidate.reason ? ` | ${preview(candidate.reason, 80)}` : "";
-    const status = candidate.status ? ` | ${preview(candidate.status, 40)}` : "";
-    console.log(`- ${id}${reason}${status}`);
-    const text = candidate.preview ?? candidate.content ?? candidate.summary;
-    if (text) {
-      console.log(`  ${preview(text, 220)}`);
-    }
-  }
-}
-
-function printCleanCandidates(result: Record<string, unknown>): void {
-  console.log(chalk.bold("Memory Clean Candidates"));
-  if (numberValue(result.total_scanned) !== undefined) {
-    console.log(`Scanned: ${preview(result.total_scanned, 24)}`);
-  }
-
-  const counts = isRecord(result.counts) ? result.counts : {};
-  if (Object.keys(counts).length > 0) {
-    console.log(
-      Object.entries(counts)
-        .map(([key, value]) => `${key}: ${preview(value, 24)}`)
-        .join(" | ")
-    );
-  }
-
-  const candidates = isRecord(result.candidates) ? result.candidates : {};
-  printCandidateBucket("Noise", candidates.noise);
-  printCandidateBucket("Duplicates", candidates.duplicates);
-  printCandidateBucket("Possibly Stale", candidates.possibly_stale);
-  printCandidateBucket("Category Anomalies", candidates.category_anomalies);
-  printCandidateBucket("Needs Human Review", candidates.needs_human_review);
 }
 
 function summarizeMemoryContent(value: Record<string, unknown>, maxLength = 240): string {
@@ -471,92 +386,6 @@ function reviewQueueItems(result: Record<string, unknown>): MemoryReviewConnecto
   });
 }
 
-function cleanCandidateItems(result: Record<string, unknown>): MemoryReviewConnectorItem[] {
-  const candidates = isRecord(result.candidates) ? result.candidates : {};
-  const items: MemoryReviewConnectorItem[] = [];
-  for (const [bucket, value] of Object.entries(candidates)) {
-    for (const candidate of recordArrayValue(value)) {
-      const memoryId = memoryIdFrom(candidate);
-      if (!memoryId) continue;
-      const reason = stringValue(candidate.reason) ?? bucket;
-      const summary = summarizeMemoryContent(candidate);
-      const staleBucket = bucket === "possibly_stale";
-      const duplicateBucket = bucket === "duplicates";
-      const options = duplicateBucket
-        ? ["merge", "supersede", "keep", "inspect"]
-        : staleBucket
-          ? ["verify", "invalidate", "keep", "inspect"]
-          : ["archive", "invalidate", "keep", "inspect"];
-      const recommendation = staleBucket ? "verify" : duplicateBucket ? "inspect" : "archive";
-      const kind: DecisionRequestProducerKind = duplicateBucket
-        ? "memory_duplicate_candidate"
-        : "memory_clean_candidate";
-      items.push({
-        source: "clean_candidates",
-        bucket,
-        memoryId,
-        title: `${bucket.replace(/_/g, " ")} memory candidate ${memoryId}`,
-        summary,
-        kind,
-        status: stringValue(candidate.status),
-        action: `${bucket}_candidate`,
-        options,
-        recommendation,
-        reasonCodes: uniqueStrings(["memory_clean_candidates", bucket, reason]),
-        evidenceItem: memoryEvidenceItem(candidate, {
-          ref: `memory:${memoryId}`,
-          title: `${bucket.replace(/_/g, " ")} memory candidate ${memoryId}`,
-          summary,
-          kind,
-          status: stringValue(candidate.status),
-          reason,
-          source: "clean_candidates",
-          bucket,
-        }),
-      });
-    }
-  }
-  return items;
-}
-
-function duplicateCandidateItems(result: Record<string, unknown>): MemoryReviewConnectorItem[] {
-  return recordArrayValue(result.groups).flatMap((group, index) => {
-    const candidates = recordArrayValue(group.candidates ?? group.memories ?? group.items);
-    const keepMemoryId = firstString([group.keep_memory_id, group.canonical_memory_id]);
-    return candidates.flatMap((candidate) => {
-      const memoryId = memoryIdFrom(candidate);
-      if (!memoryId || memoryId === keepMemoryId) return [];
-      const summary = summarizeMemoryContent(candidate);
-      return [
-        {
-          source: "duplicate_candidates",
-          bucket: `group_${index + 1}`,
-          memoryId,
-          targetMemoryId: keepMemoryId,
-          title: `Duplicate memory candidate ${memoryId}`,
-          summary,
-          kind: "memory_duplicate_candidate",
-          status: stringValue(candidate.status),
-          action: "duplicate_candidate",
-          options: ["merge", "supersede", "keep", "inspect"],
-          recommendation: keepMemoryId ? "supersede" : "inspect",
-          reasonCodes: uniqueStrings(["memory_duplicate_candidates", `group_${index + 1}`]),
-          evidenceItem: memoryEvidenceItem(candidate, {
-            ref: `memory:${memoryId}`,
-            title: `Duplicate memory candidate ${memoryId}`,
-            summary,
-            kind: "memory_duplicate_candidate",
-            status: stringValue(candidate.status),
-            reason: "duplicate_candidate",
-            source: "duplicate_candidates",
-            bucket: `group_${index + 1}`,
-          }),
-        },
-      ];
-    });
-  });
-}
-
 export function buildMemoryReviewDecisionRequest(item: MemoryReviewConnectorItem): DecisionRequest {
   const applyPath =
     item.recommendation === "verify"
@@ -637,44 +466,6 @@ export async function buildMemoryReviewConnector(
       status: "error",
       message: error instanceof Error ? error.message : String(error),
     };
-  }
-
-  if (options.includeCleanCandidates !== false) {
-    try {
-      const cleanCandidates = await callMemoryTool<Record<string, unknown>>(
-        "snipara_memory_clean_candidates",
-        buildCleanCandidatesArgs({
-          scope: options.scope,
-          includeInactive: options.includeInactive,
-          limitPerBucket: options.limit,
-        })
-      );
-      const items = cleanCandidateItems(cleanCandidates);
-      result.items.push(...items);
-      result.surfaces.clean_candidates = { status: "ok", count: items.length };
-    } catch (error) {
-      result.surfaces.clean_candidates = {
-        status: "error",
-        message: error instanceof Error ? error.message : String(error),
-      };
-    }
-  }
-
-  if (options.includeDuplicates !== false) {
-    try {
-      const duplicateCandidates = await callMemoryTool<Record<string, unknown>>(
-        "snipara_memory_duplicate_candidates",
-        buildDuplicateCandidateArgs(options)
-      );
-      const items = duplicateCandidateItems(duplicateCandidates);
-      result.items.push(...items);
-      result.surfaces.duplicate_candidates = { status: "ok", count: items.length };
-    } catch (error) {
-      result.surfaces.duplicate_candidates = {
-        status: "error",
-        message: error instanceof Error ? error.message : String(error),
-      };
-    }
   }
 
   const seen = new Set<string>();
@@ -760,16 +551,9 @@ function buildMemoryAuditSummary(audit: MemoryAuditResult): MemoryAuditSummary {
   const healthCounts = isRecord(health.counts) ? health.counts : {};
   const healthByStatus = isRecord(healthCounts.by_status) ? healthCounts.by_status : {};
   const autoCompact = isRecord(health.auto_compact) ? health.auto_compact : {};
-  const cleanCandidates = isRecord(audit.cleanCandidates) ? audit.cleanCandidates : {};
-  const candidateCounts = isRecord(cleanCandidates.counts) ? cleanCandidates.counts : {};
   const compactDryRun = isRecord(audit.compactDryRun) ? audit.compactDryRun : {};
 
-  const cleanupCandidateCounts = Object.fromEntries(
-    Object.entries(candidateCounts)
-      .map(([key, value]) => [key, numberLikeValue(value)])
-      .filter((entry): entry is [string, number] => entry[1] !== undefined)
-  );
-  const totalScanned = numberLikeValue(health.total_scanned ?? cleanCandidates.total_scanned);
+  const totalScanned = numberLikeValue(health.total_scanned);
   const activeCount = numberLikeValue(healthByStatus.active);
   const autoCompactThreshold = numberLikeValue(autoCompact.threshold);
   const autoCompactWouldTrigger = autoCompact.would_trigger_by_count === true;
@@ -785,18 +569,7 @@ function buildMemoryAuditSummary(audit: MemoryAuditResult): MemoryAuditSummary {
       autoCompactThreshold !== undefined &&
       activeCount > autoCompactThreshold)
   ) {
-    recommendedActions.push(
-      `snipara-companion memory clean-candidates --scope ${scope} --limit-per-bucket 5`
-    );
-    recommendedActions.push(
-      `snipara-companion memory compact --scope ${scope} --archive-older-than-days 30`
-    );
-  }
-
-  if (Object.values(cleanupCandidateCounts).some((count) => count > 0)) {
-    recommendedActions.push(
-      'snipara-companion memory-guard check --intent "apply memory cleanup" --destructive --strict'
-    );
+    recommendedActions.push(`snipara-companion memory compact --scope ${scope}`);
   }
 
   return {
@@ -804,7 +577,6 @@ function buildMemoryAuditSummary(audit: MemoryAuditResult): MemoryAuditSummary {
     ...(activeCount !== undefined ? { activeCount } : {}),
     ...(autoCompactThreshold !== undefined ? { autoCompactThreshold } : {}),
     ...(Object.keys(autoCompact).length > 0 ? { autoCompactWouldTrigger } : {}),
-    cleanupCandidateCounts,
     ...(typeof compactDryRun.mutated === "boolean"
       ? { compactDryRunMutated: compactDryRun.mutated }
       : {}),
@@ -830,13 +602,6 @@ function printMemoryAuditSummary(summary: MemoryAuditSummary): void {
       `Auto-compaction: threshold ${summary.autoCompactThreshold} | would trigger: ${
         summary.autoCompactWouldTrigger ? "yes" : "no"
       }`
-    );
-  }
-  if (Object.keys(summary.cleanupCandidateCounts).length > 0) {
-    console.log(
-      `Cleanup candidates: ${Object.entries(summary.cleanupCandidateCounts)
-        .map(([key, value]) => `${key}: ${value}`)
-        .join(" | ")}`
     );
   }
   if (summary.recommendedActions.length > 0) {
@@ -885,22 +650,6 @@ export async function memoryHealthCommand(options: MemoryHealthCommandOptions): 
   }
 
   printMemoryHealth(result);
-}
-
-export async function memoryCleanCandidatesCommand(
-  options: MemoryCleanCandidatesCommandOptions
-): Promise<void> {
-  const result = await callMemoryTool(
-    "snipara_memory_clean_candidates",
-    buildCleanCandidatesArgs(options)
-  );
-
-  if (options.json) {
-    console.log(JSON.stringify(result, null, 2));
-    return;
-  }
-
-  printCleanCandidates(result);
 }
 
 export async function memoryReviewsCommand(options: MemoryReviewsCommandOptions): Promise<void> {
@@ -977,6 +726,73 @@ export async function memorySupersedeCommand(
   printMemorySupersede(result);
 }
 
+export interface MemoryRestoreCommandOptions {
+  reason?: string;
+  undoSupersede?: boolean;
+  json?: boolean;
+}
+
+export async function memoryRestoreCommand(
+  memoryId: string,
+  options: MemoryRestoreCommandOptions
+): Promise<void> {
+  const result = await callMemoryTool<Record<string, unknown>>(
+    "snipara_memory_restore",
+    compactObject({
+      memory_id: memoryId,
+      reason: options.reason,
+      undo_supersede: options.undoSupersede || undefined,
+    })
+  );
+  throwIfToolError(result);
+
+  if (options.json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(chalk.bold("Memory Restore"));
+  console.log(`Memory: ${preview(result.memory_id, 80)}`);
+  console.log(`Restored: ${preview(result.restored, 24)}`);
+  if (result.previous_status) {
+    console.log(`Previous status: ${preview(result.previous_status, 40)}`);
+  }
+  if (result.message) {
+    console.log(preview(result.message, 200));
+  }
+}
+
+export interface MemoryOutcomeCommandOptions {
+  count?: number;
+  json?: boolean;
+}
+
+export async function memoryOutcomeCommand(
+  outcome: string,
+  memoryIds: string[],
+  options: MemoryOutcomeCommandOptions
+): Promise<void> {
+  const result = await callMemoryTool<Record<string, unknown>>(
+    "snipara_memory_outcome",
+    compactObject({ memory_ids: memoryIds, outcome, count: options.count })
+  );
+  throwIfToolError(result);
+
+  if (options.json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(chalk.bold("Memory Outcome"));
+  console.log(`Recorded: ${preview(result.recorded, 24)} (${outcome})`);
+  for (const item of recordArrayValue(result.memories)) {
+    const flag = item.retirement_candidate === true ? " | retirement candidate" : "";
+    console.log(
+      `- ${preview(item.memory_id, 80)}: posterior ${preview(item.posterior, 24)} (confirmed ${preview(item.confirmed, 12)}, refuted ${preview(item.refuted, 12)})${flag}`
+    );
+  }
+}
+
 export async function buildMemoryAudit(
   options: MemoryAuditCommandOptions
 ): Promise<MemoryAuditResult> {
@@ -992,18 +808,6 @@ export async function buildMemoryAudit(
   } catch (error) {
     result.errors.push({
       surface: "memory_health",
-      message: error instanceof Error ? error.message : String(error),
-    });
-  }
-
-  try {
-    result.cleanCandidates = await callMemoryTool(
-      "snipara_memory_clean_candidates",
-      buildCleanCandidatesArgs(options)
-    );
-  } catch (error) {
-    result.errors.push({
-      surface: "memory_clean_candidates",
       message: error instanceof Error ? error.message : String(error),
     });
   }
@@ -1048,10 +852,6 @@ export async function memoryAuditCommand(options: MemoryAuditCommandOptions): Pr
     printMemoryHealth(audit.health);
     console.log("");
   }
-  if (audit.cleanCandidates) {
-    printCleanCandidates(audit.cleanCandidates);
-    console.log("");
-  }
   if (audit.compactDryRun) {
     printCompactDryRun(audit.compactDryRun);
     console.log("");
@@ -1071,4 +871,28 @@ export async function memoryAuditCommand(options: MemoryAuditCommandOptions): Pr
   console.log(
     'Before any destructive follow-up, run: snipara-companion memory-guard check --intent "apply memory cleanup" --destructive --strict'
   );
+}
+
+/** Read one bounded inventory page; never approximate inventory through recall. */
+export function memoryListPage(options: { limit?: number; offset?: number }) {
+  const limit = options.limit ?? 20, offset = options.offset ?? 0;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50 ||
+      !Number.isSafeInteger(offset) || offset < 0) throw new Error("Memory list requires limit 1..50 and a nonnegative integer offset");
+  return { limit, offset };
+}
+
+export async function memoryListCommand(options: {
+  limit?: number; offset?: number; scope?: MemoryScope; category?: string; json?: boolean;
+} = {}): Promise<void> {
+  const page = memoryListPage(options);
+  const result = await createClient().listMemories({ ...page, scope: options.scope, category: options.category });
+  const memories = result.memories.slice(0, page.limit).map(memory => ({
+    memory_id: memory.memory_id, type: memory.type, scope: memory.scope,
+    category: memory.category, status: memory.status, preview: memory.content.slice(0, 240),
+  }));
+  const receipt = { memories, total_count: result.total_count,
+    has_more: result.has_more, next_offset: result.has_more ? page.offset + page.limit : null };
+  console.log(options.json ? JSON.stringify(receipt) :
+    memories.map(memory => `${memory.memory_id} [${memory.type}/${memory.scope}] ${memory.preview}`).join("\n") +
+    `\nNext offset: ${receipt.next_offset ?? "none"}; total: ${receipt.total_count}`);
 }

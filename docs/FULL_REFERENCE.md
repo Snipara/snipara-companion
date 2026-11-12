@@ -219,7 +219,7 @@ earlier policy revision.
 | MCP tools, OAuth login, project-scoped context and memory | `snipara-mcp`            |
 | One-command Hosted MCP + companion setup                  | `create-snipara`         |
 | Git-style local continuity, workflow modes, and hooks     | `snipara-companion`      |
-| Production gates, drift checks, and htask orchestration   | `snipara-orchestrator`   |
+| Production gates, drift checks, and orchestration         | `snipara-orchestrator`   |
 | OpenClaw-specific automation hooks                        | `snipara-openclaw-hooks` |
 
 ### Codex Note
@@ -234,7 +234,7 @@ For Codex, the primary integration remains Hosted MCP plus `AGENTS.md`.
 
 ## Configuring MCP Tool Surfaces
 
-The MCP server advertises different tool surfaces depending on the `SNIPARA_EXPOSED_SURFACES` environment variable. Hosted MCP defaults to the lean agent contract: context, search, read, stats, help, memory recall/capture, and end-of-task commit. Specialist inline, companion, and orchestrator tools stay discoverable via `snipara_help`, which now marks them as `routed_or_opt_in`; standard agents should usually stay on the simple verbs and let Snipara route internally. To expose companion tools directly in the advertised manifest, set `SNIPARA_EXPOSED_SURFACES=inline,companion` on the MCP server. To expose swarm and htask coordination tools, use `SNIPARA_EXPOSED_SURFACES=inline,orchestrator`. Standard MCP agents only receive schemas for tools returned by `tools/list`.
+The MCP server advertises different tool surfaces depending on the `SNIPARA_EXPOSED_SURFACES` environment variable. Hosted MCP defaults to the lean agent contract: context, search, read, stats, help, memory recall/capture, and end-of-task commit. Specialist inline, companion, and orchestrator tools stay discoverable via `snipara_help`, which now marks them as `routed_or_opt_in`; standard agents should usually stay on the simple verbs and let Snipara route internally. To expose companion tools directly in the advertised manifest, set `SNIPARA_EXPOSED_SURFACES=inline,companion` on the MCP server. To expose the adaptive routing orchestrator catalog, use `SNIPARA_EXPOSED_SURFACES=inline,orchestrator`. Standard MCP agents only receive schemas for tools returned by `tools/list`.
 
 ## Installation
 
@@ -489,11 +489,9 @@ snipara-companion workflow run \
   "Update documentation for the new gateway"
 ```
 
-The output is a routing card and handoff metadata. Companion calls the hosted
-`snipara_adaptive_routing_catalog` tool when project auth and policy allow it,
-records the sanitized runtime catalog in the handoff, and falls back to local
-dry-run metadata when the hosted gateway is unavailable or omits
-`success: true`. It does not silently spawn workers. The stable contract is
+The output is a routing card and handoff metadata. Companion does not call a
+hosted catalog; local worker resolution goes through `snipara-orchestrator`. It
+does not silently spawn workers. The stable contract is
 provider-neutral requirements such as worker role, reasoning depth, context
 budget, endpoint type, write scope, and fallback.
 
@@ -582,8 +580,8 @@ snipara-companion workers local probe \
   --json
 ```
 
-`--routing-local-worker` loads the local declaration, pins the configured model,
-and disables hosted catalog lookup for that run. The result is still a bounded
+`--routing-local-worker` loads the local declaration, pins the configured model.
+The result is still a bounded
 routing/handoff contract: Companion resolves the local candidate through
 `snipara-orchestrator`, records metadata, and leaves execution plus proof review
 to the supervising agent workflow.
@@ -686,14 +684,13 @@ For the open package without Snipara SaaS, add a local policy file:
   "preferLocalWorkers": true,
   "allowedEndpointTypes": ["local", "cloud"],
   "preferredEndpointTypes": ["local"],
-  "allowedWorkerClasses": ["documentation", "tests", "review"],
-  "catalogLimit": 8
+  "allowedWorkerClasses": ["documentation", "tests", "review"]
 }
 ```
 
 Save it at `.snipara/adaptive-routing.json`. Without hosted configuration,
 `workflow run` only emits local Adaptive Work Routing metadata and handoff files:
-it does not query hosted context, call the hosted catalog, or spawn workers.
+it does not query hosted context or spawn workers.
 
 ## Engineering Lead Plans
 
@@ -1156,7 +1153,7 @@ npx -y snipara-companion@latest plan --query "plan the auth refactor" --write-pl
 npx -y snipara-companion@latest task-commit --summary "Shipped auth refactor" --files apps/web/src/lib/auth.ts
 
 snipara-companion query --query "auth middleware"
-snipara-companion query --query "auth middleware" --search-mode keyword --no-answer-pack --timeout-ms 30000
+snipara-companion query --query "auth middleware" --search-mode keyword --timeout-ms 30000
 snipara-companion query --query "who calls src.mcp_transport.handle_call_tool" --follow-recommendation
 snipara-companion status
 snipara-companion brief --task "ship auth hardening" --changed-files apps/web/src/lib/auth.ts tests/auth.test.ts --diff-summary "auth hardening"
@@ -1676,7 +1673,7 @@ Semantics:
 - `snipara-companion workflow run --mode full` = budgeted durable bootstrap + optional session context + context query + automatic structural follow-up + hosted plan with quality diagnostics
 - `snipara-companion plan --write-plan-file ./plan.json` = convert hosted `snipara_plan` output into managed workflow JSON
 - `snipara-companion plan --start-workflow` or `workflow run --mode full --start-workflow-from-plan` = create local `.snipara/workflow/current.json` from a valid generated plan
-- `snipara-companion workflow run --mode orchestrate` = explicit hosted orchestrator flow for deeper multi-step exploration; use the Python `snipara-orchestrator` package for production gates and htasks
+- `snipara-companion workflow run --mode orchestrate` = explicit hosted orchestrator flow for deeper multi-step exploration; use the Python `snipara-orchestrator` package for production gates
 - `snipara-companion workflow run` = suggests Snipara Sandbox when the query calls for validation, execution, data transforms, or heavier FULL/orchestrated work
 - `snipara-companion status` = top-level agentic work status across local workflow state, git dirtiness, and Team Sync carryover
 - `snipara-companion source init|sync|status|snapshot|watch` = automatic local source activation for folders with or without Git metadata; writes `.snipara/source/latest.json`, previews document sync, and refreshes the local code overlay cache
@@ -1692,9 +1689,9 @@ Semantics:
 - `snipara-companion run` = production Project Intelligence flow that combines the brief, guard action cards, package review, verification hints, and a final weighted Judgment Card
 - `snipara-companion workflow start --plan-file` = records the visible LLM plan locally so phase state survives agent compaction; prefer JSON plans with explicit ids for stable machine phase state
 - `snipara-companion workflow scaffold --preset project-intelligence-continuity-layer` = creates a four-phase managed plan for memory authority, code impact, continuity summaries, and release/docs surfaces
-- `snipara-companion workflow phase-start` = marks the current phase and prints the required Snipara context gate plus code-impact / symbol-card gates; runtime-marked phases also get a stable Snipara Sandbox session binding
+- `snipara-companion workflow phase-start` = marks the current phase, saves full context, and prints a compact receipt (`--detail` for the full payload); runtime-marked phases also get a stable Snipara Sandbox session binding
 - `snipara-companion workflow runtime-checkpoint` = captures a resume-ready Snipara Sandbox checkpoint for one phase using local workflow state plus a hosted automation event when configured
-- `snipara-companion workflow phase-commit` = calls hosted `snipara_end_of_task_commit` for that phase, updates local state, and advances the next phase; if the hosted commit times out or hits a transient network failure, local workflow state still advances with an explicit local fallback record
+- `snipara-companion workflow phase-commit` = calls hosted `snipara_end_of_task_commit` for that phase (short summary plus source pointers, then one phase outcome record), updates local state, and advances the next phase; if the hosted commit times out or hits a transient network failure, local workflow state still advances with an explicit local fallback record
 - `snipara-companion workflow phase-commit` and `workflow final-commit` also emit local Producer Loop artifacts under `.snipara/producer-loop/`, backed by the redacted Coding Intelligence Ledger. PR Answer Pack decision capture uses the same schema with producer kind `pr_answer_pack_decision_capture` when the artifact is exported or embedded by the hosted PR pack producer. These artifacts are review evidence only: they do not launch workers, approve durable memory, claim calibrated confidence, or provide server-side attestation.
 - `snipara-companion workflow decisions` = lists local pending Decision Request artifacts for LLM clients to ask the human, with evidence, options, recommendation, and apply-path metadata
 - `snipara-companion workflow policy-ledger` = read-only local Project Policy ledger for pending, approved, refused, modified, deferred, and expired policy decisions, including agent prompts for unresolved human choices
@@ -1730,12 +1727,13 @@ Semantics:
 - `snipara-companion sync-documents` = bulk `snipara_sync_documents` for text and supported binary parser documents from a JSON payload or directory
 - `snipara-companion sync-documents --dry-run` = validate the local payload and business-context freshness metadata without uploading
 - `snipara-companion business-health` = hosted `snipara_index_health`, with the `business_context` section surfaced for stale/reupload signals
-- `snipara-companion memory audit` = read-only memory hygiene pass that combines `snipara_memory_health`, `snipara_memory_clean_candidates`, and `snipara_memory_compact(dry_run=true)`
+- `snipara-companion memory audit` = read-only memory hygiene pass that combines `snipara_memory_health` and `snipara_memory_compact(dry_run=true)`
 - `snipara-companion memory health` = direct hosted `snipara_memory_health` diagnostics for active counts, stale/noise/anomaly samples, and auto-compaction threshold status
-- `snipara-companion memory clean-candidates` = direct hosted `snipara_memory_clean_candidates` review packet for noise, stale memories, duplicates, category anomalies, and human review queues
 - `snipara-companion memory compact` = hosted compaction preview only; it always calls `snipara_memory_compact` with `dry_run=true` and never mutates memory
 - `snipara-companion memory invalidate <memory-id>` = hosted `snipara_memory_invalidate` for lifecycle correction without deleting memory
-- `snipara-companion memory supersede <old-memory-id> <new-memory-id>` = hosted `snipara_memory_supersede` for replacing obsolete memory with a newer approved memory
+- `snipara-companion memory supersede <old-memory-id> <new-memory-id>` = hosted `snipara_memory_supersede` for replacing obsolete memory with a newer approved memory (the new one must be active, same scope, compatible type)
+- `snipara-companion memory restore <memory-id>` = hosted `snipara_memory_restore`: bring a retired memory back to active with its previous validity (`--undo-supersede` drops the supersede link)
+- `snipara-companion memory outcome <confirmed|refuted|unused> <memory-id...>` = hosted `snipara_memory_outcome`: record whether served memories helped; recall reranks with the outcome posterior
 - `snipara-companion memory local -- <args...>` = pass-through to the open `snipara-memory` CLI for local no-account memory workflows
 - `snipara-companion eval export` = write a `snipara-evals` case JSON from local workflow/team-sync state and explicit expected signals
 - `snipara-companion eval run <case.json...>` = run `snipara-evals` locally through `npx` or `SNIPARA_EVALS_RUNNER`
@@ -1791,7 +1789,7 @@ operator has explicitly confirmed the override.
 Strict mode exit codes:
 
 - `20`: confirmation is required before continuing.
-- `21`: memory/context guidance was unavailable for a triggered guard.
+- `21`: reserved for compatibility; missing memory/context guidance is advisory and no longer blocks.
 - `22`: guard options were invalid, for example `--destructive` without a
   specific `--intent` or `--command`.
 
@@ -1804,6 +1802,27 @@ Companion separates two concepts:
   `snipara_end_of_task_commit` to persist meaningful task, phase, or workflow outcomes.
   `workflow phase-commit` and `final-commit` keep local workflow state moving on transient
   hosted commit timeouts and surface that local fallback explicitly in the result.
+
+Short memories with source pointers: `workflow phase-commit` and `final-commit` send a
+short summary (at most about 600 characters, category `phase-commit` / `final-commit`) and a
+`sources` array of at most 8 pointers: the plan file with `/phases/<i>`, the workflow state file,
+`.snipara/orchestrator/handoff.json` when it exists, the commit SHAs of the phase, and every
+`--source <path>[#<exact heading>]` you pass (repeatable; `task-commit` accepts it too). The detail
+stays in those files. If the server rejects a pointer, Companion drops it (all of them when the
+error names none) and retries once with the same body, never a longer one. Every end-of-task write
+carries the Companion `session_id` so the server can tell sessions apart when it corroborates a memory.
+
+Phase outcome: during a phase Companion records which memory ids were served to the agent by its
+own recall, session-brief and pre-tool paths (ids only, at most 50 per phase, in
+`.snipara/workflow/served-memories.json`). `workflow phase-commit` then sends one idempotent
+outcome through `snipara_memory_outcome` (`phase_id` = `<workflow id>:<phase index>`, plus `:<attempt>` after a
+re-commit; the same id is a no-op server side): `succeeded_verified` only when a Sandbox
+`validation verify` receipt was recorded (`.snipara/workflow/validation-receipts.json`) after the
+phase started (sent as `receipt_ref`), otherwise `succeeded_unverified`; `blocked` and `partial` send `failed`, and
+`abandoned` sends `abandoned`. Companion never invents a refutation: pass `--memory-misled <id>` or
+`--memory-helped <id>` (repeatable) to say so explicitly. `SNIPARA_LOCAL_ONLY=1` sends nothing. A
+failed send never fails the commit; it is kept in `.snipara/workflow/outcome-pending.json` and
+retried at the next commit. The default receipt shows counts only (`Memory: sources, served, outcome, send`).
 
 `final-commit` remains handoff-only when no structured rationale is supplied.
 When `--why` or another structured Why Capture field is present, Companion sends
@@ -1824,7 +1843,7 @@ keep that in a separate hook or adapter; reserve `task-commit` for durable summa
 
 ### Compaction-Safe LLM Plan Workflow
 
-Use this when the user's LLM has already produced a plan and Snipara should enforce the workflow around it. For coding work, choose LITE, STANDARD, FULL, or FULL + ORCHESTRATED explicitly before editing: LITE is for small single-phase changes, STANDARD is for normal context/code-graph work, FULL managed workflow is for multi-file, risky, release/deploy, architectural, compaction-prone, or maintainer-sensitive work, and FULL + ORCHESTRATED is for production proof gates, drift checks, htasks, or explicit multi-agent coordination.
+Use this when the user's LLM has already produced a plan and Snipara should enforce the workflow around it. For coding work, choose LITE, STANDARD, FULL, or FULL + ORCHESTRATED explicitly before editing: LITE is for small single-phase changes, STANDARD is for normal context/code-graph work, FULL managed workflow is for multi-file, risky, release/deploy, architectural, compaction-prone, or maintainer-sensitive work, and FULL + ORCHESTRATED is for production proof gates, drift checks, or explicit multi-agent coordination.
 
 1. Generate or save a visible plan into a JSON file. `snipara-companion plan --query "<goal>" --write-plan-file ./plan.json` converts hosted `snipara_plan` output into a managed workflow plan; keep a Markdown/Text copy only when you also want a human-facing contract alongside the machine plan. Keep simple Q&A and single-source lookups on targeted `snipara_context_query`; for FULL-mode audits, comparisons, roadmap/implementation planning, release readiness, or package-surface reviews, preserve the axes with `snipara_decompose` and execute independent follow-up questions with `snipara_multi_query` when those tools are exposed.
 2. Run `snipara-companion workflow start --goal "<goal>" --plan-file ./plan.json`.
@@ -1833,7 +1852,7 @@ Use this when the user's LLM has already produced a plan and Snipara should enfo
 5. Before risky code changes, routes/services/jobs work, or any "what is missing" conclusion, run `snipara-companion code impact --changed-files <files...> --diff-summary "<change>"`. For an important symbol, run `snipara-companion code symbol-card --qualified-name <symbol>`.
 6. After compaction, first run `snipara-companion workflow resume --include-session-context`, then rerun `workflow judgment` to inspect the persisted card and `workflow phase-start <phase_id>` before editing again.
 7. For execution/test/debug/finalization that benefits from repeatable isolation, use Snipara Sandbox MCP `execute_python` from the AI client or standalone `snipara-sandbox run`. After material runtime progress, capture a resume-ready checkpoint with `snipara-companion workflow runtime-checkpoint <phase_id> --summary "<state>" --rehydrate-file <state.json>`.
-8. For production gates, drift checks, or htask coordination, hand off explicitly to `snipara-orchestrator`; companion should detect and suggest the package but must not spawn workers automatically.
+8. For production gates or drift checks, hand off explicitly to `snipara-orchestrator`; companion should detect and suggest the package but must not spawn workers automatically.
 9. End every phase with `snipara-companion workflow phase-commit <phase_id> --summary "<outcome>" --evidence "passed:<proof>" --files <files...>` when the phase produced concrete verification evidence.
 10. End the whole task with `snipara-companion final-commit --summary "<final outcome>" --why "<rationale>" --evidence "passed:<proof>" --risk "<remaining risk>" --next-step "<recommended follow-up>" --files <files...>`.
 
@@ -1971,7 +1990,7 @@ Design rule:
 - hosted Snipara = source of truth for context, chunks, plans, memory, and review policy
 - use `companion` for daily coding ergonomics and auto-routing
 - use `orchestrate` only when the task is genuinely multi-step and exploration-heavy
-- use `snipara-orchestrator` only for proof-based validation, drift detection, htasks, and production gates
+- use `snipara-orchestrator` only for proof-based validation, drift detection, and production gates
 
 ### `snipara-companion cache clear`
 
@@ -1991,9 +2010,34 @@ snipara-companion cache clear
 
 - `snipara-mcp` - core MCP client
 - `create-snipara` - onboarding for Hosted MCP + companion workflows, with optional Snipara Sandbox and explicit orchestrator add-on
-- `snipara-orchestrator` - production validation, drift checks, and htask orchestration
+- `snipara-orchestrator` - production validation and drift checks
 - `snipara-openclaw-hooks` - OpenClaw-specific automation hooks
 
 ## License
 
 MIT
+
+## Bounded Companion command defaults (November 2026)
+
+See [bounded command contracts](../../../docs/reference/COMPANION_DOGFOODING_COMMANDS.md)
+for these current defaults:
+
+- `pre-tool --stuck-guard-only`: local repeated-result evidence, no keyword-only
+  rescue or automatic context retrieval. New Claude/Cursor templates and installed
+  Companion pre-tool calls in Codex bundles use this flag.
+- `query`: 800 source tokens by default; `--max-tokens` expands it and
+  `--answer-pack` opts into answer packs.
+- `collaboration guard --profile pre-commit --enforce`: staged paths only,
+  including linked worktree/alternate-index hook environments; failures on stderr.
+- `memory-guard check --strict`: absent guidance passes; destructive actions and
+  contradictions retain confirmation requirements.
+- `workflow start --plan-file`: top-level JSON id/goal unless explicitly overridden.
+- `workflow start`, `phase-start`, `phase-commit`: compact receipts by default,
+  full artifacts on disk, `--detail` for full output, clean `--json` stdout.
+- `workflow efficiency --max-input-tokens`: counts cached input in the total;
+  `--enforce` fails on excess/incomplete coverage. FULL phase commits enforce it.
+- `workflow resume`: local state works without hosted configuration.
+- `agent-context resolve`: agent selection defaults to the environment/code alias
+  or first manifest agent; `--agent` explicitly selects another.
+- `memory list --limit 20 --offset 0 --json`: bounded inventory with 240-character
+  previews, at most 50 memories per page and `next_offset` for pagination.

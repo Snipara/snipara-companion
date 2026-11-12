@@ -9,6 +9,7 @@
  * only the hosted backend can prove what another machine is doing.
  */
 import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
+import { hookGitEnvironment, readStagedPaths } from "./hook-git";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -202,7 +203,6 @@ interface CollaborationCommandOptions {
   actorType?: string;
   sessionId?: string;
   workSessionId?: string;
-  swarmId?: string;
   client?: string;
   repository?: string;
   branch?: string;
@@ -520,7 +520,6 @@ export async function collaborationStartCommand(
   const heartbeatTtlSeconds = parsePositiveInteger(options.heartbeatTtlSeconds, "heartbeat ttl");
   const hosted = await maybeStartHostedSession(context, {
     workSessionId: options.workSessionId ?? state.workSessionId,
-    swarmId: options.swarmId,
     task,
     heartbeatTtlSeconds,
     files,
@@ -575,7 +574,6 @@ export async function collaborationClaimCommand(
   const workSessionId = await ensureWorkSession(context, state, options, files);
   const hosted = await maybeCreateHostedLeases(context, {
     workSessionId,
-    swarmId: options.swarmId,
     files,
     resources,
     mode,
@@ -835,6 +833,7 @@ export async function collaborationGuardCommand(
   });
 
   if (guardFailed) {
+    console.error(`Collaboration guard failed (${profile}): ${evaluation?.decision ?? hosted.status}${hosted.error ? `: ${hosted.error}` : ""}; ${actionCards.map((card) => card.title).join("; ") || "hosted guard did not authorize this action"}`);
     process.exitCode = 2;
   }
 
@@ -1133,7 +1132,6 @@ async function maybeStartHostedSession(
   context: ResolvedCollaborationContext,
   input: {
     workSessionId?: string;
-    swarmId?: string;
     task?: string;
     heartbeatTtlSeconds?: number;
     files?: string[];
@@ -1151,7 +1149,6 @@ async function maybeStartHostedSession(
       data: await client.startCollaborationSession({
         ...context.actor,
         workSessionId: input.workSessionId,
-        swarmId: input.swarmId,
         client: context.client,
         repository: context.repository,
         branch: context.branch,
@@ -1172,7 +1169,6 @@ async function maybeCreateHostedLeases(
   context: ResolvedCollaborationContext,
   input: {
     workSessionId?: string;
-    swarmId?: string;
     mode: CollaborationLeaseMode;
     reason?: string;
     ttlSeconds?: number;
@@ -1191,7 +1187,6 @@ async function maybeCreateHostedLeases(
       data: await client.createCollaborationLeases({
         ...context.actor,
         workSessionId: input.workSessionId,
-        swarmId: input.swarmId,
         mode: input.mode,
         reason: input.reason,
         ttlSeconds: input.ttlSeconds,
@@ -1327,7 +1322,6 @@ async function runCollaborationWatchTick(
   const mode = normalizeLeaseMode(options.mode) ?? "WATCH";
   const sessionHosted = await maybeStartHostedSession(context, {
     workSessionId: options.workSessionId ?? state.workSessionId,
-    swarmId: options.swarmId,
     task,
     heartbeatTtlSeconds,
     files,
@@ -1394,7 +1388,6 @@ async function runCollaborationWatchTick(
     if (missingResources.length > 0) {
       claimHosted = await maybeCreateHostedLeases(context, {
         workSessionId,
-        swarmId: options.swarmId,
         files: [],
         resources: missingResources,
         mode,
@@ -1482,6 +1475,7 @@ function resolveGuardFiles(
   if (explicit.length > 0) {
     return explicit;
   }
+  if (profile === "pre-commit") return readStagedPaths(context.rootDir);
   const dirtyFiles = readGitDirtyFiles(context.rootDir);
   if (dirtyFiles.length > 0) {
     return dirtyFiles;
@@ -1828,6 +1822,7 @@ function readGitRawValue(rootDir: string, args: string[]): string | undefined {
   try {
     const execOptions: ExecFileSyncOptionsWithStringEncoding = {
       cwd: rootDir,
+      env: hookGitEnvironment(rootDir),
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 1000,
@@ -1853,6 +1848,7 @@ function buildCollaborationGitHookBlock(hookName: "pre-commit" | "pre-push"): st
     'if [ "${SNIPARA_COLLABORATION_GUARD:-1}" = "0" ]; then',
     '  echo "Snipara collaboration guard bypassed by SNIPARA_COLLABORATION_GUARD=0" >&2',
     "else",
+    '  export SNIPARA_WORKSPACE_DIR="${SNIPARA_WORKSPACE_DIR:-$PWD}"',
     "  snipara_companion_hook() {",
     '    if [ -f "packages/cli/src/index.ts" ] && command -v pnpm >/dev/null 2>&1; then',
     '      pnpm --filter snipara-companion exec tsx src/index.ts "$@"',
@@ -1863,7 +1859,7 @@ function buildCollaborationGitHookBlock(hookName: "pre-commit" | "pre-push"): st
     "      return 127",
     "    fi",
     "  }",
-    `  snipara_companion_hook collaboration claim --resource SURFACE:checkout-git-write --mode EXCLUSIVE --ttl-seconds 300 --reason "${profile} git write" --json >/dev/null || ${profile === "pre-commit" ? "exit $?" : "true"}`,
+    `  snipara_companion_hook collaboration claim --resource SURFACE:checkout-git-write --mode EXCLUSIVE --ttl-seconds 300 --reason "${profile} git write" --json >/dev/null || { snipara_claim_status=$?; echo "Snipara ${profile} failed: collaboration claim (exit $snipara_claim_status)." >&2; ${profile === "pre-commit" ? 'exit "$snipara_claim_status"' : "true"}; }`,
     "  snipara_companion_guard() {",
     `    snipara_companion_hook collaboration guard --profile ${profile} --action ${profile} --resource SURFACE:checkout-git-write --enforce "$@" --json >/dev/null`,
     "  }",
@@ -1875,10 +1871,11 @@ function buildCollaborationGitHookBlock(hookName: "pre-commit" | "pre-push"): st
     "      snipara_guard_status=$?",
     "    fi",
     '    if [ "$snipara_guard_status" -ne 0 ]; then',
+    '      echo "Snipara collaboration guard failed (exit $snipara_guard_status)." >&2',
     '      exit "$snipara_guard_status"',
     "    fi",
     "  else",
-    "    snipara_companion_guard",
+    `    snipara_companion_guard || { snipara_guard_status=$?; echo "Snipara ${profile} failed: collaboration guard (exit $snipara_guard_status)." >&2; exit "$snipara_guard_status"; }`,
     "  fi",
     profile === "pre-commit" ? "fi || exit $?" : "fi",
     collaborationHookBlockMarker(hookName, "end"),

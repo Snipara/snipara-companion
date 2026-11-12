@@ -1,4 +1,12 @@
 #!/usr/bin/env node
+export { quietCompanionHook } from "./commands/automations";
+export { readWorkflowPlanIdentity } from "./commands/workflows";
+export { defaultContextAgent } from "./commands/agent-context";
+export { memoryListPage } from "./commands/memory";
+import { memoryListCommand } from "./commands/memory";
+export { buildWorkflowReceipt } from "./commands/workflow-receipt";
+export { hookGitEnvironment, readStagedPaths } from "./commands/hook-git";
+export { generateClaudeHookConfig, generateClaudeSessionScript, generateClaudeStuckGuardScript } from "./commands/init";
 
 /**
  * snipara-companion CLI entry point.
@@ -10,7 +18,7 @@
  * Command families registered below:
  *   - Setup / auth:      login, init, config, doctor
  *   - Continuity:        status, timeline, handoff, verify, brief, workflow, intelligence
- *   - Team coordination: collaboration, swarm, htask (+ handoff/resume via team-sync)
+ *   - Team coordination: collaboration (+ handoff/resume via team-sync)
  *   - Editor hooks:      pre-tool, post-tool, session-end (invoked by Claude Code / IDE hooks)
  *   - Guards:            stuck-guard, memory-guard
  *   - Hosted context:    query, shared-context, plan, multi-query, orchestrate, chunk, reindex
@@ -26,8 +34,9 @@
 
 import fs from "fs";
 import path from "path";
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { invokeSandboxValidation } from "./runtime/sandbox-validation";
+import { recordVerifiedReceipt } from "./runtime/memory-sources";
 import { validationMetadata } from "./commands/validation-profile";
 import {inspectManagedToolchain, managedTaskRuntime} from "./runtime/managed-toolchain";
 import {launchManagedMcp} from "./runtime/managed-mcp";
@@ -45,10 +54,11 @@ import {
 } from "./commands/stuck-guard";
 import {
   memoryAuditCommand,
-  memoryCleanCandidatesCommand,
   memoryCompactCommand,
   memoryHealthCommand,
   memoryInvalidateCommand,
+  memoryOutcomeCommand,
+  memoryRestoreCommand,
   memoryReviewsCommand,
   memorySupersedeCommand,
 } from "./commands/memory";
@@ -273,14 +283,6 @@ import {
   WORKFLOW_PLAN_PRESET_IDS,
 } from "./commands/workflows";
 import { workflowSyncPolicyLedgerCommand } from "./commands/policy-ledger-sync";
-import {
-  htaskCompleteCommand,
-  htaskCreateCommand,
-  htaskCreateFeatureCommand,
-  htaskNextCommand,
-  htaskTreeCommand,
-} from "./commands/htask";
-import { swarmCreateCommand, swarmJoinCommand } from "./commands/swarm";
 import { loadConfig } from "./config/store";
 
 import { previewSandboxValidationRequest } from "./commands/sandbox-evidence-card";
@@ -327,6 +329,9 @@ export {
   extractCommandFromToolInput,
   formatStuckGuardDecision,
   getStuckGuardInjection,
+  advanceStuckEvidence,
+  updateLocalStuckGuard,
+  toolActionKey,
 } from "./commands/stuck-guard";
 export {
   categoryFromGuardTag,
@@ -382,9 +387,10 @@ export {
 export {
   buildMemoryAudit,
   memoryAuditCommand,
-  memoryCleanCandidatesCommand,
   memoryCompactCommand,
   memoryHealthCommand,
+  memoryOutcomeCommand,
+  memoryRestoreCommand,
   memoryReviewsCommand,
 } from "./commands/memory";
 export {
@@ -759,7 +765,7 @@ program
     "Client type (claude-code|cursor|kimi|codex|gemini|mistral|chatgpt|vscode|continue|custom)"
   )
   .option("-f, --force", "Force overwrite existing configuration")
-  .option("-w, --with-hooks", "Install hooks automatically")
+  .option("-w, --with-hooks", "Install hooks automatically (quiet Companion pre-tool, no automatic retrieval)")
   .option("-d, --dir <directory>", "Project directory for hooks (default: current)")
   .action(async (options) => {
     await initCommand({
@@ -873,6 +879,9 @@ for (const action of ["gate", "choose", "diagnose", "run", "verify", "status", "
   }
   validationCommand.action(async (options) => {
     const outcome = await invokeSandboxValidation(action, action === "run" ? {...options, noReuse: options.reuse === false} : options);
+    // A verified run is the receipt a later phase-commit may cite; only `verify` with a valid receipt counts.
+    if (action === "verify" && outcome.exitCode === 0 && outcome.result.valid === true && typeof outcome.result.run_id === "string")
+      recordVerifiedReceipt(outcome.result.run_id, options.scope);
     console.log(JSON.stringify(outcome.result));
     process.exitCode = outcome.exitCode;
   });
@@ -1444,197 +1453,11 @@ program
   });
 
 program
-  .command("swarm")
-  .description(
-    "Legacy direct hosted swarm passthrough (prefer snipara-orchestrator for shared multi-agent task routing)"
-  )
-  .addCommand(
-    new Command("create")
-      .description("Create a hosted swarm for multi-agent coordination")
-      .requiredOption("--name <name>", "Swarm name")
-      .option("--description <description>", "Swarm description")
-      .option("--max-agents <n>", "Maximum agents", (value) => Number.parseInt(value, 10))
-      .option("--task-timeout <seconds>", "Task timeout in seconds", (value) =>
-        Number.parseInt(value, 10)
-      )
-      .option("--claim-timeout <seconds>", "Claim timeout in seconds", (value) =>
-        Number.parseInt(value, 10)
-      )
-      .option("--json", "Print raw JSON")
-      .action(async (options) => {
-        await swarmCreateCommand({
-          name: options.name,
-          description: options.description,
-          maxAgents: options.maxAgents,
-          taskTimeout: options.taskTimeout,
-          claimTimeout: options.claimTimeout,
-          json: options.json,
-        });
-      })
-  )
-  .addCommand(
-    new Command("join")
-      .description("Join an existing hosted swarm as an agent")
-      .requiredOption("--swarm-id <id>", "Swarm ID")
-      .requiredOption("--agent-id <id>", "Agent ID")
-      .option("--name <name>", "Human-readable agent name")
-      .option("--role <role>", "Role (coordinator|worker|observer)")
-      .option("--capability <capability...>", "Agent capabilities")
-      .option("--json", "Print raw JSON")
-      .action(async (options) => {
-        await swarmJoinCommand({
-          swarmId: options.swarmId,
-          agentId: options.agentId,
-          name: options.name,
-          role: options.role,
-          capabilities: options.capability,
-          json: options.json,
-        });
-      })
-  );
-
-program
-  .command("htask")
-  .description(
-    "Legacy direct hosted htask passthrough (prefer snipara-orchestrator for shared multi-agent queues)"
-  )
-  .addCommand(
-    new Command("create")
-      .description("Create a hosted hierarchical task at N0, N1, N2, or N3")
-      .requiredOption("--swarm-id <id>", "Swarm ID")
-      .requiredOption("--title <title>", "Task title")
-      .requiredOption("--description <description>", "Task description")
-      .requiredOption("--owner <owner>", "Task owner")
-      .option("--level <level>", "Task level (N0_INITIATIVE|N1_FEATURE|N2_WORKSTREAM|N3_TASK)")
-      .option("--parent-id <id>", "Parent task ID")
-      .option("--priority <priority>", "Priority (P0|P1|P2)")
-      .option("--eta-target <iso>", "Target completion date (ISO)")
-      .option("--execution-target <target>", "Execution target (LOCAL|CLOUD|HYBRID|EXTERNAL)")
-      .option("--workstream-type <type>", "Workstream type for N2 tasks")
-      .option("--acceptance-criteria-json <json>", "Acceptance criteria JSON array")
-      .option("--context-ref <ref...>", "Context reference paths or URLs")
-      .option("--context-query <query>", "Context query for hosted retrieval")
-      .option("--evidence-required-json <json>", "Evidence required JSON array")
-      .option("--is-blocking", "Mark the task blocking for parent closure")
-      .option("--json", "Print raw JSON")
-      .action(async (options) => {
-        await htaskCreateCommand({
-          swarmId: options.swarmId,
-          level: options.level,
-          title: options.title,
-          description: options.description,
-          owner: options.owner,
-          parentId: options.parentId,
-          priority: options.priority,
-          etaTarget: options.etaTarget,
-          executionTarget: options.executionTarget,
-          workstreamType: options.workstreamType,
-          acceptanceCriteriaJson: options.acceptanceCriteriaJson,
-          contextRefs: options.contextRef,
-          contextQuery: options.contextQuery,
-          evidenceRequiredJson: options.evidenceRequiredJson,
-          isBlocking: options.isBlocking,
-          json: options.json,
-        });
-      })
-  )
-  .addCommand(
-    new Command("create-feature")
-      .description("Create a hosted N1 feature with optional N2 workstreams")
-      .requiredOption("--swarm-id <id>", "Swarm ID")
-      .requiredOption("--title <title>", "Feature title")
-      .requiredOption("--description <description>", "Feature description")
-      .requiredOption("--owner <owner>", "Feature owner")
-      .option("--parent-id <id>", "Optional N0 parent ID")
-      .option("--workstream <type...>", "Workstream types to create")
-      .option("--workstream-owner <TYPE=owner...>", "Per-workstream owner mapping")
-      .option("--json", "Print raw JSON")
-      .action(async (options) => {
-        await htaskCreateFeatureCommand({
-          swarmId: options.swarmId,
-          title: options.title,
-          description: options.description,
-          owner: options.owner,
-          parentId: options.parentId,
-          workstreams: options.workstream,
-          workstreamOwners: options.workstreamOwner,
-          json: options.json,
-        });
-      })
-  )
-  .addCommand(
-    new Command("next")
-      .description("Get the next recommended hosted N3 htask batch")
-      .requiredOption("--swarm-id <id>", "Swarm ID")
-      .option("--feature-id <id>", "Optional feature ID")
-      .option("--workstream-type <type>", "Optional workstream type filter")
-      .option("--limit <n>", "Batch size", (value) => Number.parseInt(value, 10))
-      .option("--owner <owner>", "Owner filter")
-      .option("--include-blocked", "Include blocked tasks in the recommendation payload")
-      .option("--json", "Print raw JSON")
-      .action(async (options) => {
-        await htaskNextCommand({
-          swarmId: options.swarmId,
-          featureId: options.featureId,
-          workstreamType: options.workstreamType,
-          limit: options.limit,
-          owner: options.owner,
-          includeBlocked: options.includeBlocked,
-          json: options.json,
-        });
-      })
-  )
-  .addCommand(
-    new Command("tree")
-      .description("Print the hosted htask tree from a task or all roots")
-      .requiredOption("--swarm-id <id>", "Swarm ID")
-      .option("--task-id <id>", "Optional root task ID")
-      .option("--max-depth <n>", "Maximum depth", (value) => Number.parseInt(value, 10))
-      .option("--include-archived", "Include archived tasks")
-      .option("--include-completed", "Include completed tasks")
-      .option("--json", "Print raw JSON")
-      .action(async (options) => {
-        await htaskTreeCommand({
-          swarmId: options.swarmId,
-          taskId: options.taskId,
-          maxDepth: options.maxDepth,
-          includeArchived: options.includeArchived,
-          includeCompleted: options.includeCompleted,
-          json: options.json,
-        });
-      })
-  )
-  .addCommand(
-    new Command("complete")
-      .description("Complete a hosted N3 htask with result and evidence")
-      .requiredOption("--swarm-id <id>", "Swarm ID")
-      .requiredOption("--task-id <id>", "Task ID")
-      .option("--evidence-json <json>", "Evidence payload JSON")
-      .option("--result-json <json>", "Result payload JSON")
-      .option("--learnings-json <json>", "Learnings JSON array")
-      .option("--decision-impact-json <json>", "Decision impact JSON payload")
-      .option("--create-memory", "Request memory creation from the completion payload")
-      .option("--json", "Print raw JSON")
-      .action(async (options) => {
-        await htaskCompleteCommand({
-          swarmId: options.swarmId,
-          taskId: options.taskId,
-          evidenceJson: options.evidenceJson,
-          resultJson: options.resultJson,
-          learningsJson: options.learningsJson,
-          decisionImpactJson: options.decisionImpactJson,
-          createMemory: options.createMemory,
-          json: options.json,
-        });
-      })
-  );
-
-program
   .command("automations")
   .description("Install and inspect dashboard-generated automation hook bundles")
   .addCommand(
     new Command("install")
-      .description("Fetch and install the project automation bundle")
+      .description("Install the project bundle with quiet Companion pre-tool hooks")
       .option(
         "-c, --client <client>",
         "Client type (claude-code|cursor|kimi|codex|gemini|mistral|chatgpt|vscode|continue|custom)"
@@ -1697,7 +1520,7 @@ program
   .option("-t, --tool <tool>", "Tool name (Read, Glob, Grep, Edit)")
   .option("-m, --max-tokens <number>", "Maximum tokens", "1200")
   .option("--no-cache", "Bypass cache")
-  .option("--stuck-guard-only", "Run guard checks without automatic context retrieval")
+  .option("--stuck-guard-only", "Skip automatic retrieval; post-tool emits hints after three identical failed results")
   .action(async (toolInput, options) => {
     const resolvedToolInput = toolInput ?? (await readOptionalStdin());
     await preToolCommand({
@@ -1713,7 +1536,7 @@ program
 // Post-tool command (called by Claude Code hooks)
 program
   .command("post-tool")
-  .description("Track file access (PostToolUse hook)")
+  .description("Track file access and repeated failed-result evidence (PostToolUse hook)")
   .argument("[toolInput]", "Raw tool input (JSON) from hooks")
   .option("-f, --file <file>", "File that was accessed")
   .option("--files <files...>", "Multiple files that were accessed")
@@ -1901,7 +1724,7 @@ program
       .option("--trigger <trigger>", "failure|pre-commit|commit|pre-final|manual", "manual")
       .option("--file <file>", "Touched file")
       .option("--files <files...>", "Touched files")
-      .option("--staged", "Use git staged files")
+      .option("--staged", "Use only the selected Git index, including linked worktrees")
       .option("--command <command>", "Command or action that failed")
       .option("--intent <intent>", "Proposed user intent or action to check before mutating")
       .option("--result <result>", "Command result preview")
@@ -1913,7 +1736,7 @@ program
         "--confirmed-by-user <confirmation>",
         "Explicit user confirmation text that permits a strict destructive/contradictory override"
       )
-      .option("--strict", "Exit non-zero if guidance is required but unavailable")
+      .option("--strict", "Block unconfirmed destructive actions or contradictions; missing guidance passes")
       .option("--category <categories...>", "Additional memory categories to recall")
       .option("--no-context", "Skip source context query")
       .option("--no-recent-failures", "Skip recent Companion event failure inspection")
@@ -1974,10 +1797,11 @@ program
     "Search project documents, parsed files, and current truth through hosted Snipara context"
   )
   .requiredOption("-q, --query <query>", "Search query")
-  .option("-m, --max-tokens <number>", "Maximum tokens", "8000")
+  .option("-m, --max-tokens <number>", "Source token budget (explicitly raise for broader retrieval)", "800")
   .option("--search-mode <mode>", "Search mode: keyword|semantic|hybrid", "hybrid")
   .option("--timeout-ms <number>", "Hosted context query timeout in milliseconds", "30000")
-  .option("--no-answer-pack", "Skip Answer Pack generation")
+  .option("--answer-pack", "Include the derived Answer Pack (off by default)")
+  .addOption(new Option("--no-answer-pack", "Accepted for compatibility; the Answer Pack is already off by default").hideHelp())
   .option("--minimum-change-mode <mode>", "off|review (opt-in non-blocking review)", "off")
   .option("--no-auto-decompose", "Disable automatic query decomposition")
   .option("--no-shared-context", "Exclude linked shared context")
@@ -1992,7 +1816,7 @@ program
       maxTokens: parseInt(options.maxTokens, 10),
       searchMode: options.searchMode,
       timeoutMs: parseInt(options.timeoutMs, 10),
-      includeAnswerPack: options.answerPack !== false,
+      includeAnswerPack: options.answerPack === true ? true : undefined,
       minimumChangeMode: resolveMinimumChangeMode(options.minimumChangeMode),
       autoDecompose: options.autoDecompose !== false,
       includeSharedContext: options.sharedContext !== false,
@@ -2891,7 +2715,7 @@ agentContext
 agentContext
   .command("resolve")
   .description("Resolve one agent's shared and role-specific context for a task")
-  .requiredOption("--agent <agent>", "Agent alias or stable agent id")
+  .option("--agent <agent>", "Agent alias; defaults to SNIPARA_AGENT_ID, code agent, then first manifest agent")
   .requiredOption("--task <task>", "Current task")
   .option("--manifest <file>", "Agent Context manifest path", "snipara.agent-context.json")
   .option("--json", "Print raw JSON")
@@ -3109,6 +2933,7 @@ workflow
   .option("--since <timestamp>", "Count since ISO timestamp; defaults to workflow start, then root session start")
   .option("--profile <profile>", "Advisory thresholds: lite|standard|full", "standard")
   .option("--max-responses <number>", "Override recorded response threshold", Number)
+  .option("--max-input-tokens <number>", "Override total input threshold, including cached input", Number)
   .option("--max-uncached-input-tokens <number>", "Override uncached-input threshold", Number)
   .option("--max-output-tokens <number>", "Override output threshold", Number)
   .option("--max-elapsed-minutes <number>", "Override elapsed-time threshold (includes waiting)", Number)
@@ -3217,14 +3042,15 @@ workflow
   .option("-g, --goal <goal>", "Workflow goal")
   .option(
     "--plan-file <file>",
-    "LLM plan file; prefer JSON for stable phase ids, Markdown/Text also accepted"
+    "Plan file; JSON id and goal are defaults unless overridden by --id/--goal"
   )
   .option("--id <id>", "Stable workflow id")
   .option("--agent <agent>", "Agent Context identity to carry into task envelopes")
   .option("--agent-context-manifest <file>", "Agent Context manifest path")
   .option("--skip-agent-context", "Disable automatic Agent Context dogfooding for this workflow")
   .option("--force", "Replace an existing active workflow state")
-  .option("--json", "Print raw JSON")
+  .option("--detail", "Print full detail; default is a compact receipt with artifact paths")
+  .option("--json", "Print only JSON on stdout; diagnostics go to stderr")
   .action(async (options) => {
     await workflowStartCommand({
       goal: options.goal,
@@ -3234,7 +3060,7 @@ workflow
       agent: options.agent,
       manifest: options.agentContextManifest,
       skipAgentContext: Boolean(options.skipAgentContext),
-      json: options.json,
+      detail: Boolean(options.detail), json: options.json,
     });
   });
 
@@ -3427,7 +3253,7 @@ workflow
 workflow
   .command("resume")
   .description(
-    "Read historical work state, decisions, attempts and remaining work; revalidate files and guide runtime reattach without restoring a live process"
+    "Resume local state with optional hosted memory; revalidate files and guide runtime reattach"
   )
   .option("--max-critical-tokens <number>", "Durable memory token budget")
   .option("--max-context-tokens <number>", "Short-lived session context token budget")
@@ -3452,11 +3278,12 @@ workflow
 
 workflow
   .command("phase-start")
-  .description("Mark a workflow phase active and print the required Snipara context gate")
+  .description("Mark a workflow phase active; print a compact receipt and save full context")
   .argument("<phaseId>", "Workflow phase id")
-  .option("--json", "Print raw JSON")
+  .option("--detail", "Print full detail; default is a compact receipt with artifact paths")
+  .option("--json", "Print only JSON on stdout; diagnostics go to stderr")
   .action(async (phaseId, options) => {
-    await workflowPhaseStartCommand({ phaseId, json: options.json });
+    await workflowPhaseStartCommand({ phaseId, detail: Boolean(options.detail), json: options.json });
   });
 
 workflow
@@ -3612,7 +3439,7 @@ workflow
 workflow
   .command("phase-commit")
   .description(
-    "Persist a phase outcome through snipara_end_of_task_commit and advance the workflow"
+    "Persist a phase outcome; FULL workflows enforce efficiency before advancing"
   )
   .argument("<phaseId>", "Workflow phase id")
   .requiredOption("-s, --summary <summary>", "Phase outcome summary")
@@ -3621,7 +3448,7 @@ workflow
   .option("--alternative <alternative>", "Rejected alternative; repeatable", collectOption, [])
   .option("--constraint <constraint>", "Decision constraint; repeatable", collectOption, [])
   .option("--observed-outcome <outcome>", "Observed result, distinct from execution status")
-  .option("-c, --category <category>", "Memory category", "workflow-phase")
+  .option("-c, --category <category>", "Memory category", "phase-commit")
   .option("-o, --outcome <outcome>", "completed|partial|blocked|abandoned", "completed")
   .option("-f, --files <files...>", "Files touched")
   .option(
@@ -3630,8 +3457,12 @@ workflow
     collectOption,
     []
   )
+  .option("--source <path[#heading]>", "Doc path and exact heading where the decision lives; repeatable", collectOption, [])
+  .option("--memory-helped <id>", "Served memory that helped this phase; repeatable", collectOption, [])
+  .option("--memory-misled <id>", "Served memory that misled this phase; repeatable", collectOption, [])
   .option("--strict", "Require all tasks complete and passed evidence before completing this phase")
-  .option("--json", "Print raw JSON")
+  .option("--detail", "Print full detail; default is a compact receipt with artifact paths")
+  .option("--json", "Print only JSON on stdout; diagnostics go to stderr")
   .action(async (phaseId, options) => {
     await workflowPhaseCommitCommand({
       phaseId,
@@ -3646,7 +3477,10 @@ workflow
       files: options.files,
       evidence: options.evidence,
       strict: Boolean(options.strict),
-      json: options.json,
+      detail: Boolean(options.detail), json: options.json,
+      sources: options.source,
+      memoryHelped: options.memoryHelped,
+      memoryMisled: options.memoryMisled,
     });
   });
 
@@ -3670,6 +3504,7 @@ workflow
   )
   .option("--risk <risk>", "Known residual risk; repeatable", collectOption, [])
   .option("--next-step <nextStep>", "Recommended next action")
+  .option("--source <path[#heading]>", "Doc path and exact heading where the decision lives; repeatable", collectOption, [])
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await finalCommitCommand({
@@ -3686,6 +3521,7 @@ workflow
       risks: options.risk,
       nextStep: options.nextStep,
       json: options.json,
+      sources: options.source,
     });
   });
 
@@ -4316,7 +4152,6 @@ collaboration
   .option("--actor-type <actorType>", "HUMAN|AGENT|SYSTEM", "AGENT")
   .option("--session-id <sessionId>", "Automation/session id")
   .option("--work-session-id <workSessionId>", "Existing hosted work session id")
-  .option("--swarm-id <swarmId>", "Optional swarm id")
   .option("--client <client>", "Client label", "snipara-companion")
   .option("--repository <repository>", "Repository id")
   .option("-b, --branch <branch>", "Current branch name")
@@ -4334,7 +4169,6 @@ collaboration
       actorType: options.actorType,
       sessionId: options.sessionId,
       workSessionId: options.workSessionId,
-      swarmId: options.swarmId,
       client: options.client,
       repository: options.repository,
       branch: options.branch,
@@ -4365,7 +4199,6 @@ collaboration
   .option("--actor-type <actorType>", "HUMAN|AGENT|SYSTEM", "AGENT")
   .option("--session-id <sessionId>", "Automation/session id")
   .option("--work-session-id <workSessionId>", "Existing hosted work session id")
-  .option("--swarm-id <swarmId>", "Optional swarm id")
   .option("--client <client>", "Client label", "snipara-companion")
   .option("--repository <repository>", "Repository id")
   .option("-b, --branch <branch>", "Current branch name")
@@ -4391,7 +4224,6 @@ collaboration
       actorType: options.actorType,
       sessionId: options.sessionId,
       workSessionId: options.workSessionId,
-      swarmId: options.swarmId,
       client: options.client,
       repository: options.repository,
       branch: options.branch,
@@ -4414,7 +4246,6 @@ collaboration
   .option("--actor-type <actorType>", "HUMAN|AGENT|SYSTEM", "AGENT")
   .option("--session-id <sessionId>", "Automation/session id")
   .option("--work-session-id <workSessionId>", "Existing hosted work session id")
-  .option("--swarm-id <swarmId>", "Optional swarm id")
   .option("--client <client>", "Client label", "snipara-companion")
   .option("--repository <repository>", "Repository id")
   .option("-b, --branch <branch>", "Current branch name")
@@ -4433,7 +4264,6 @@ collaboration
       actorType: options.actorType,
       sessionId: options.sessionId,
       workSessionId: options.workSessionId,
-      swarmId: options.swarmId,
       client: options.client,
       repository: options.repository,
       branch: options.branch,
@@ -4446,7 +4276,7 @@ collaboration
 collaboration
   .command("guard")
   .description("Check files or resources against active collaboration sessions and locks")
-  .option("-f, --files <files...>", "Files to guard (defaults to dirty git files)")
+  .option("-f, --files <files...>", "Files to guard (pre-commit: staged index only; otherwise dirty files)")
   .option("-r, --resource <resources...>", "Explicit resources in KIND:id format")
   .option(
     "--profile <profile>",
@@ -5232,7 +5062,15 @@ program
 
 program
   .command("memory")
-  .description("Inspect memory health, cleanup candidates, and dry-run compaction")
+  .description("List memory inventory, inspect health, and preview cleanup or compaction")
+  .addCommand(new Command("list")
+    .description("List a bounded hosted memory inventory page with content previews")
+    .option("--limit <number>", "Page size, 1..50", Number, 20)
+    .option("--offset <number>", "Nonnegative page offset", Number, 0)
+    .option("--scope <scope>", "agent|project|team|user")
+    .option("--category <category>", "Filter by category")
+    .option("--json", "Print JSON inventory with next_offset")
+    .action(memoryListCommand))
   .addCommand(
     new Command("local")
       .description("Delegate to the local snipara-memory OSS engine")
@@ -5248,30 +5086,18 @@ program
   )
   .addCommand(
     new Command("audit")
-      .description("Run memory health, cleanup candidates, and compaction dry-run together")
+      .description("Run memory health and a compaction dry-run together")
       .option("-s, --scope <scope>", "Memory scope (agent|project|team|user)")
       .option("--include-inactive", "Include invalidated and superseded memories in scans")
       .option("--sample-limit <number>", "Maximum anomaly samples for memory health", "5")
-      .option("--limit-per-bucket <number>", "Maximum cleanup candidates per bucket", "10")
-      .option("--no-deduplicate", "Disable duplicate analysis in the compact dry-run")
-      .option("--promote-threshold <number>", "Promotion threshold for the compact dry-run")
-      .option("--archive-older-than-days <number>", "Archive-age threshold for the compact dry-run")
+      .option("--no-deduplicate", "Disable exact-duplicate analysis in the compact dry-run")
       .option("--json", "Print raw JSON")
       .action(async (options) => {
         await memoryAuditCommand({
           scope: options.scope,
           includeInactive: Boolean(options.includeInactive),
           sampleLimit: parseInt(options.sampleLimit, 10),
-          limitPerBucket: parseInt(options.limitPerBucket, 10),
           deduplicate: options.deduplicate,
-          promoteThreshold:
-            options.promoteThreshold !== undefined
-              ? parseFloat(options.promoteThreshold)
-              : undefined,
-          archiveOlderThanDays:
-            options.archiveOlderThanDays !== undefined
-              ? parseInt(options.archiveOlderThanDays, 10)
-              : undefined,
           json: options.json,
         });
       })
@@ -5293,22 +5119,6 @@ program
       })
   )
   .addCommand(
-    new Command("clean-candidates")
-      .description("Read-only grouped memory cleanup candidates")
-      .option("-s, --scope <scope>", "Memory scope (agent|project|team|user)")
-      .option("--include-inactive", "Include invalidated and superseded memories in scans")
-      .option("--limit-per-bucket <number>", "Maximum candidates per bucket", "10")
-      .option("--json", "Print raw JSON")
-      .action(async (options) => {
-        await memoryCleanCandidatesCommand({
-          scope: options.scope,
-          includeInactive: Boolean(options.includeInactive),
-          limitPerBucket: parseInt(options.limitPerBucket, 10),
-          json: options.json,
-        });
-      })
-  )
-  .addCommand(
     new Command("reviews")
       .description("Read hosted memory review surfaces and optionally emit decision requests")
       .option("-s, --scope <scope>", "Memory scope (agent|project|team|user)")
@@ -5319,13 +5129,6 @@ program
       .option("--limit <number>", "Maximum items per hosted review surface", "10")
       .option("--offset <number>", "Review queue offset", "0")
       .option("--no-evidence", "Skip hosted evidence refs in queue reads")
-      .option(
-        "--include-inactive",
-        "Include invalidated and superseded memories in candidate scans"
-      )
-      .option("--no-clean-candidates", "Skip clean-candidates review surface")
-      .option("--no-duplicates", "Skip duplicate-candidates review surface")
-      .option("--min-similarity <number>", "Duplicate candidate similarity threshold", "0.82")
       .option("--emit-decisions", "Write local Decision Request V0 artifacts")
       .option("--json", "Print raw JSON")
       .action(async (options) => {
@@ -5338,11 +5141,6 @@ program
           limit: parseInt(options.limit, 10),
           offset: parseInt(options.offset, 10),
           includeEvidence: options.evidence,
-          includeInactive: Boolean(options.includeInactive),
-          includeCleanCandidates: options.cleanCandidates,
-          includeDuplicates: options.duplicates,
-          minSimilarity:
-            options.minSimilarity !== undefined ? parseFloat(options.minSimilarity) : undefined,
           emitDecisions: Boolean(options.emitDecisions),
           json: options.json,
         });
@@ -5352,22 +5150,12 @@ program
     new Command("compact")
       .description("Preview hosted memory compaction without mutating memory")
       .option("-s, --scope <scope>", "Memory scope (agent|project|team|user)")
-      .option("--no-deduplicate", "Disable duplicate analysis in the dry-run")
-      .option("--promote-threshold <number>", "Promotion threshold for the dry-run")
-      .option("--archive-older-than-days <number>", "Archive-age threshold for the dry-run")
+      .option("--no-deduplicate", "Disable exact-duplicate analysis in the dry-run")
       .option("--json", "Print raw JSON")
       .action(async (options) => {
         await memoryCompactCommand({
           scope: options.scope,
           deduplicate: options.deduplicate,
-          promoteThreshold:
-            options.promoteThreshold !== undefined
-              ? parseFloat(options.promoteThreshold)
-              : undefined,
-          archiveOlderThanDays:
-            options.archiveOlderThanDays !== undefined
-              ? parseInt(options.archiveOlderThanDays, 10)
-              : undefined,
           json: options.json,
         });
       })
@@ -5397,6 +5185,35 @@ program
       .action(async (oldMemoryId, newMemoryId, options) => {
         await memorySupersedeCommand(oldMemoryId, newMemoryId, {
           reason: options.reason,
+          json: options.json,
+        });
+      })
+  )
+  .addCommand(
+    new Command("restore")
+      .description("Bring a retired hosted memory back to active with its previous validity")
+      .argument("<memory-id>", "Retired memory ID")
+      .option("--reason <reason>", "Why it is restored")
+      .option("--undo-supersede", "Drop the supersede link even if the replacing memory is live")
+      .option("--json", "Print raw JSON")
+      .action(async (memoryId, options) => {
+        await memoryRestoreCommand(memoryId, {
+          reason: options.reason,
+          undoSupersede: Boolean(options.undoSupersede),
+          json: options.json,
+        });
+      })
+  )
+  .addCommand(
+    new Command("outcome")
+      .description("Record whether served memories were confirmed, refuted or unused")
+      .argument("<outcome>", "confirmed | refuted | unused")
+      .argument("<memory-ids...>", "Served memory IDs")
+      .option("--count <number>", "How many times", "1")
+      .option("--json", "Print raw JSON")
+      .action(async (outcome, memoryIds, options) => {
+        await memoryOutcomeCommand(outcome, memoryIds, {
+          count: parseInt(options.count, 10),
           json: options.json,
         });
       })
@@ -5482,7 +5299,6 @@ program
   .option("-l, --limit <number>", "Maximum memories to return", "5")
   .option("--min-relevance <number>", "Minimum relevance threshold", "0.5")
   .option("--include-inactive", "Include invalidated or superseded memories in the main result set")
-  .option("--warning-threshold <number>", "Threshold for lifecycle warnings", "0.72")
   .option("--memory-view <view>", "current or retained history; history grants no current authority", "current")
   .option("--as-of <timestamp>", "Past ISO timestamp with timezone; requires --memory-view history")
   .option("--json", "Print raw JSON")
@@ -5495,7 +5311,6 @@ program
       limit: parseInt(options.limit, 10),
       minRelevance: parseFloat(options.minRelevance),
       includeInactive: Boolean(options.includeInactive),
-      warningThreshold: parseFloat(options.warningThreshold),
       memoryView: options.memoryView,
       asOf: options.asOf,
       json: options.json,
@@ -5564,6 +5379,7 @@ program
   .option("-c, --category <category>", "Category")
   .option("-o, --outcome <outcome>", "Outcome", "completed")
   .option("-f, --files <files...>", "Files touched")
+  .option("--source <path[#heading]>", "Doc path and exact heading where the decision lives; repeatable", collectOption, [])
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await taskCommitCommand({
@@ -5572,6 +5388,7 @@ program
       outcome: options.outcome,
       files: options.files,
       json: options.json,
+      sources: options.source,
     });
   });
 
@@ -5595,6 +5412,7 @@ program
   )
   .option("--risk <risk>", "Known residual risk; repeatable", collectOption, [])
   .option("--next-step <nextStep>", "Recommended next action")
+  .option("--source <path[#heading]>", "Doc path and exact heading where the decision lives; repeatable", collectOption, [])
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await finalCommitCommand({
@@ -5611,6 +5429,7 @@ program
       risks: options.risk,
       nextStep: options.nextStep,
       json: options.json,
+      sources: options.source,
     });
   });
 
