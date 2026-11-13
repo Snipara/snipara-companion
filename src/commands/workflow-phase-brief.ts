@@ -15,6 +15,9 @@ type Lookups = {
 };
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" ? value as Record<string, unknown> : {};
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
+// A memory is only useful when its constraint can be read: 160 characters cut most of them before the point,
+// and a 230-character section left the second memory as a bare id (real use, 2026-11-13).
+const MEMORY_CHARS = 380;
 const line = (value: string, max = 160): string => briefSummary(value.replace(/\s+/g, " "), max);
 export function phaseBriefFiles(phase: Pick<ManagedWorkflowPhase, "files" | "tasks">): string[] {
   return [...new Set([...(phase.files ?? []), ...(phase.tasks ?? []).flatMap(task => task.files ?? [])])];
@@ -92,7 +95,7 @@ export function assemblePhaseBrief(phase: Pick<ManagedWorkflowPhase, "files" | "
   if (!object(raw.memories).no_supporting_memory) sections.memories = raw.memories?.memories.slice(0, 3).map(memory => {
     const source = object(list(object(memory).sources)[0]);
     const pointer = source.path ? ` (${source.path}${source.line_start ? `:${source.line_start}` : ""}${source.heading ? `#${source.heading}` : ""})` : source.commit ? ` (${source.commit})` : "";
-    return `${memory.memory_id} [${memory.type}]: ${line(memory.content)}${pointer}`;
+    return `${memory.memory_id} [${memory.type}]: ${line(memory.content, MEMORY_CHARS)}${pointer}`;
   });
   if (!object(raw.context).no_supporting_source && !object(raw.context?.retrieval_diagnostics).no_supporting_source)
     // References mode returns the hits in section_refs and leaves sections empty.
@@ -102,12 +105,12 @@ export function assemblePhaseBrief(phase: Pick<ManagedWorkflowPhase, "files" | "
   const brief: PhaseBrief = { text: "" };
   const rendered: string[] = [];
   for (const key of Object.keys(labels) as Section[]) {
-    let remaining = key === "tasks" ? 360 : 230;
+    let remaining = key === "tasks" ? 360 : key === "memories" ? 3 * (MEMORY_CHARS + 90) : 230;
     const kept: string[] = [];
     for (const value of sections[key] ?? []) {
       if (remaining < 24) break;
       if (key === "risks" && value.length > remaining) break;
-      const item = line(value, Math.min(remaining, key === "tasks" ? 200 : 240));
+      const item = line(value, Math.min(remaining, key === "tasks" ? 200 : key === "memories" ? MEMORY_CHARS + 90 : 240));
       kept.push(item); remaining -= item.length + 1;
     }
     if (kept.length) { brief[key] = kept; rendered.push(`${labels[key]}:\n${kept.join("\n")}`); }

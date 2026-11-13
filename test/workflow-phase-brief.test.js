@@ -70,7 +70,10 @@ test("caps total text and structured arrays; raw lookups remain uncut", async ()
     codeImpact: async () => risks, getCollaborationState: async () => sessions,
     recallMemories: async () => ({ memories }), queryContext: async () => ({ sections: Array.from({ length: 20 }, () => context.sections[0]) }),
   } });
-  assert.ok(brief.text.length <= 1500);
+  assert.ok(brief.text.length <= 2700);
+  // Three memories, each long enough to carry its point (not one memory and two bare ids).
+  assert.equal(brief.memories.length, 3);
+  for (const item of brief.memories) assert.ok(item.length >= 300 && item.length <= 470, String(item.length));
   for (const key of ["risks", "sessions", "memories", "context"]) assert.ok((brief[key]?.length ?? 0) <= 3);
   assert.equal(briefLookups.memories.memories.length, 20);
 });

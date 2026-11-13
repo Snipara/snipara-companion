@@ -14356,7 +14356,7 @@ export async function finalCommitCommand(options: {
     for (const phase of state.phases) {
       if (!["completed", "skipped"].includes(phase.status) ||
         workflowTasks(phase).some((task) => !["completed", "skipped"].includes(task.status))) {
-        throw new Error(`Phase '${phase.id}' must complete its tasks before final completion`);
+        throw new Error(`Phase '${phase.id}' must complete its tasks before final completion; close the workflow as it stands with --outcome partial (or abandoned)`);
       }
       for (const task of workflowTasks(phase).filter((item) => item.contextRequest && item.status !== "skipped")) {
         if (!loadedWorkflowTaskContext(state, phase, task))

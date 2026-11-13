@@ -2,6 +2,11 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 5.1.5
+
+- Phase brief: each of up to three memories is shown with up to 380 characters (the section used to hold 230 characters in all, which left the second memory as a bare id).
+- `workflow final-commit`: the refusal for open tasks now says how to close the workflow as it stands (`--outcome partial` or `abandoned`).
+
 ## 5.1.4
 
 - Recall made before a task: the phase brief sends the task with its memory recall, and `recall --for-task` does the same from the command line. The server then also reads what other agents of the project recorded, examines more candidates, and keeps a memory when it applies to the task.
