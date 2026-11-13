@@ -178,6 +178,8 @@ export interface WorkflowCollaborationStartOptions {
 export interface WorkflowCollaborationReleaseOptions {
   rootDir?: string;
   workflowId?: string;
+  /** Session recorded at workflow start; survives a changed actor or session identity. */
+  workSessionId?: string;
   reason?: string;
 }
 
@@ -713,7 +715,9 @@ export async function workflowCollaborationRelease(
     client: "snipara-companion:workflow",
   });
   const state = loadCollaborationState(rootDir);
-  const targetSessionId = options.workflowId
+  const targetSessionId = options.workSessionId
+    ? options.workSessionId
+    : options.workflowId
     ? (state.workflowSessions?.[workflowSessionKey(context, options.workflowId)] ??
       workflowWorkSessionId(options.workflowId))
     : state.workSessionId;

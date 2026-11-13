@@ -2,6 +2,11 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 5.1.7
+
+- `review` and `verdict`: `review` hands the diff of the current commit to a separate reviewer in a fresh read-only session and keeps its findings in a receipt bound to that commit; `verdict` says whether the commit is `verified`, `partial` or `not verified`. Neither blocks.
+- `workflow phase-commit` and `final-commit`: leases are released with the work session recorded at workflow start. A session identity that changed since the start no longer leaves every lease active behind an "ok" receipt.
+
 ## 5.1.6
 
 - `validation`: `--run-id` is offered only on `verify`, `status` and `cancel`, the actions on which Sandbox accepts it; elsewhere it is refused before any Sandbox call.

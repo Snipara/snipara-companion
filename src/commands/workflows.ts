@@ -11854,6 +11854,7 @@ async function releaseWorkflowCoordination(
   }
   const releaseReceipt = await workflowCollaborationRelease({
     workflowId: state.workflowId,
+    workSessionId: state.coordination.workSessionId,
     reason,
   });
   state.coordination = {

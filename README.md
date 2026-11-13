@@ -127,6 +127,20 @@ silently executing on the host.
 
 <a id="local-first-hosted-when-useful"></a>
 
+## Get a second reading, and know what was checked
+
+```bash
+snipara-companion review --task "Add pagination to the orders API"
+snipara-companion verdict
+```
+
+`review` hands the diff of the current commit to a separate reviewer in a fresh, read-only session (Codex or Claude
+Code when installed, or any command through `--reviewer`) and keeps its findings in a receipt bound to that commit.
+`verdict` then says what the commit has: `verified` when checks passed and the review found no blocker, `partial`
+with the list of what is missing, or `not verified`. It does not block: the Sandbox and a second model are optional.
+Checks run by the Sandbox leave their receipt automatically; record another one with
+`snipara-companion verdict record-check --name unit`.
+
 ## Add sourced project context when useful
 
 For shared documentation, reviewed decisions and cross-session project memory:

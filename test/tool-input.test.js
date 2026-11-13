@@ -444,7 +444,8 @@ test("search classification excludes reads and detects explicit structured failu
 
 test("linked worktree hook reads only its alternate staged index after pnpm changes cwd", t => {
   const { readStagedPaths } = require("../dist/index.js");
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-linked-hook-"));
+  // Real path: on macOS the temporary directory is a symlink, which breaks the relative GIT_DIR below.
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "snipara-linked-hook-")));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const main = path.join(root, "main"), linked = path.join(root, "linked");
   fs.mkdirSync(main);

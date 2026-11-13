@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 export { buildPhaseBrief, assemblePhaseBrief, phasePlanAdvice } from "./commands/workflow-phase-brief";
+export { buildReviewBrief, parseReviewerOutput, computeVerdict, resolveReviewer, reviewCommand, recordCheckCommand, verdictCommand,
+  readCheckReceipts, readReviewReceipt, gitState } from "./commands/review";
+import { reviewCommand, recordCheckCommand, verdictCommand } from "./commands/review";
+import { createClient as createReviewClient } from "./api/client";
 export { quietCompanionHook } from "./commands/automations";
 export { readWorkflowPlanIdentity } from "./commands/workflows";
 export { defaultContextAgent } from "./commands/agent-context";
@@ -5508,6 +5512,54 @@ function handleCliError(error: unknown): never {
   console.error(`\n❌ ${formatCliError(error)}\n`);
   process.exit(1);
 }
+
+program
+  .command("review")
+  .description("Have a separate reviewer (another coding client, read-only) read the current commit's diff; keeps a receipt bound to the commit")
+  .option("-t, --task <task>", "What the change was meant to do (default: the commit message)")
+  .option("--base <ref>", "Review the diff from this ref (default: where the branch left main)")
+  .option("--reviewer <command>", "Command that reads the brief on stdin and prints findings as JSON (default: codex, else claude; or SNIPARA_REVIEW_COMMAND)")
+  .option("--timeout-seconds <seconds>", "Give up after this long", "600")
+  .option("--no-memory", "Do not add the project's recorded memories about the task to the brief")
+  .option("--json", "Print the receipt as JSON")
+  .action(async (options) => {
+    let memories: string[] | undefined;
+    if (options.memory !== false && options.task) {
+      try {
+        const recalled = await createReviewClient(12000).recallMemories(options.task, { limit: 3, task: options.task });
+        memories = recalled.memories.map((memory: { content: string }) => String(memory.content).replace(/\s+/g, " ").slice(0, 400));
+      } catch {
+        memories = undefined; // no hosted project, or it did not answer: the review does not depend on it
+      }
+    }
+    process.exitCode = await reviewCommand({
+      task: options.task,
+      base: options.base,
+      reviewer: options.reviewer,
+      timeoutSeconds: Number.parseInt(options.timeoutSeconds, 10),
+      memories,
+      json: Boolean(options.json),
+    });
+  });
+
+const verdict = program
+  .command("verdict")
+  .description("Say what was checked for the current commit: verified, partial or not verified (it qualifies, it does not block)")
+  .option("--require <state>", "Exit 2 unless the commit reaches this state (verified)")
+  .option("--json", "Print JSON")
+  .action((options) => {
+    process.exitCode = verdictCommand({ require: options.require, json: Boolean(options.json) });
+  });
+verdict
+  .command("record-check")
+  .description("Record that a check ran on the current commit (for checks run outside the Sandbox)")
+  .requiredOption("--name <name>", "Name of the check")
+  .option("--failed", "The check failed (default: it passed)")
+  .option("--detail <text>", "One line of detail")
+  .option("--json", "Print JSON")
+  .action((options) => {
+    process.exitCode = recordCheckCommand({ name: options.name, ok: !options.failed, detail: options.detail, json: Boolean(options.json) });
+  });
 
 async function main(): Promise<void> {
   await program.parseAsync(process.argv);

@@ -1769,6 +1769,66 @@ test("workflow phase-commit releases workflow coordination leases", () => {
   );
 });
 
+test("workflow phase-commit releases leases after the session identity changed", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-workflow-release-identity-"));
+  const planFile = path.join(dir, "workflow-plan.json");
+  fs.writeFileSync(
+    planFile,
+    JSON.stringify({
+      mode: "full",
+      steps: [
+        {
+          id: "edit-cli",
+          title: "Edit CLI",
+          query: "Edit the CLI",
+          files: ["packages/cli/src/index.ts"],
+        },
+      ],
+    }),
+    "utf8"
+  );
+  const preloadPath = writeWorkflowPreload(dir);
+  const collaborationLog = path.join(dir, "collaboration.log");
+  const env = {
+    SNIPARA_API_KEY: "test-key",
+    SNIPARA_PROJECT_ID: "project_1",
+    SNIPARA_API_URL: "https://api.example.test",
+    SNIPARA_TEST_COLLAB_LOG: collaborationLog,
+  };
+
+  const start = runCli(
+    ["workflow", "start", "--goal", "Ship release hygiene", "--plan-file", planFile, "--json"],
+    { cwd: dir, nodeArgs: ["--require", preloadPath], env: { ...env, SNIPARA_SESSION_ID: "sess_at_start" } }
+  );
+  assert.equal(start.status, 0, start.stderr || start.stdout);
+
+  const phaseCommit = runCli(
+    [
+      "workflow",
+      "phase-commit",
+      "edit-cli",
+      "--summary",
+      "Implemented edit",
+      "--outcome",
+      "completed",
+      "--files",
+      "packages/cli/src/index.ts",
+      "--json",
+    ],
+    { cwd: dir, nodeArgs: ["--require", preloadPath], env: { ...env, SNIPARA_SESSION_ID: "sess_at_commit" } }
+  );
+  assert.equal(phaseCommit.status, 0, phaseCommit.stderr || phaseCommit.stdout);
+  const payload = JSON.parse(phaseCommit.stdout);
+  assert.equal(payload.coordinationRelease.hostedReleaseStatus, "ok");
+  assert.ok(payload.workflow.coordination.releaseReceipt);
+  const calls = fs.readFileSync(collaborationLog, "utf8").trim().split("\n").map(JSON.parse);
+  assert.ok(
+    calls.some(
+      (call) => call.pathname.includes("/collaboration/leases/") && call.method === "PATCH"
+    )
+  );
+});
+
 test("workflow scaffold builds the Project Intelligence continuity layer plan", () => {
   const scaffold = buildWorkflowPlanScaffold("project-intelligence-continuity-layer", {
     cwd: "/tmp/workspace",
