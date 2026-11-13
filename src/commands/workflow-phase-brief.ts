@@ -134,8 +134,7 @@ export async function buildPhaseBrief(phase: ManagedWorkflowPhase, options: {
       ...(files.length ? { risks: () => client.codeImpact({ changedFiles: files, direction: "in", depth: 1, limit: 100 }),
         sessions: () => client.getCollaborationState() } : {}),
       memories: () => client.recallMemories(query, { limit: 3 }),
-      // Sections, not references: on production (2026-11-13) references mode returned neither sections nor
-      // section_refs for a query that the plain mode answered with two sources.
+      // Sections, not references: the brief prints the passages themselves.
       context: () => client.queryContext(query, 600, { includeSharedContext: false,
         includeAnswerPack: false, includeAllTiers: false, autoDecompose: false, includeMetadata: false }),
     };

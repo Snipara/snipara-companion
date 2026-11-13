@@ -596,7 +596,7 @@ test("queryContext forwards bounded retrieval options", async () => {
             content: [
               {
                 type: "text",
-                text: JSON.stringify({ sections: [], total_tokens: 0, search_mode: "keyword" }),
+                text: JSON.stringify({ sections: [], section_refs: [{ chunk_id: "c1", file: "docs/a.md" }], total_tokens: 0, search_mode: "keyword" }),
               },
             ],
           },
@@ -605,7 +605,7 @@ test("queryContext forwards bounded retrieval options", async () => {
     };
 
     const client = createClient();
-    await client.queryContext("bounded intent lookup", 1200, {
+    const result = await client.queryContext("bounded intent lookup", 1200, {
       searchMode: "keyword",
       includeAnswerPack: false,
       autoDecompose: false,
@@ -614,6 +614,8 @@ test("queryContext forwards bounded retrieval options", async () => {
       minimumChangeMode: "review",
     });
 
+    // References mode: the chunk references reach the caller (they were dropped until 5.1.2).
+    assert.deepEqual(result.section_refs, [{ chunk_id: "c1", file: "docs/a.md" }]);
     const args = payload.params.arguments;
     assert.equal(args.search_mode, "keyword");
     assert.equal(args.include_answer_pack, false);

@@ -31,6 +31,8 @@ import {
 
 export interface ContextQueryResult {
   no_supporting_source?: boolean;
+  /** References mode: chunk ids and previews, with `sections` left empty. */
+  section_refs?: Array<Record<string, unknown>>;
   sections: Array<{
     title: string;
     content: string;
@@ -1684,6 +1686,7 @@ export class RLMClient {
   ): Promise<ContextQueryResult> {
     interface MCPContextResult {
       no_supporting_source?: boolean;
+      section_refs?: Array<Record<string, unknown>>;
       sections: Array<{
         title: string;
         content: string;
@@ -1740,6 +1743,7 @@ export class RLMClient {
     // Transform MCP result to expected format
     return {
       no_supporting_source: result.no_supporting_source,
+      ...(Array.isArray(result.section_refs) ? { section_refs: result.section_refs } : {}),
       sections: (result.sections || []).map((s) => ({
         title: s.title || "Untitled",
         content: s.content || "",

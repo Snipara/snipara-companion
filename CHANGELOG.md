@@ -2,6 +2,10 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 5.1.3
+
+- Context query in references mode: the chunk references (`section_refs`) now reach the caller; they were dropped by the client.
+
 ## 5.1.2
 
 - Phase brief: the workflow's own file claims are no longer listed under Other sessions.
