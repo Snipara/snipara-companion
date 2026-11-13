@@ -232,7 +232,8 @@ test('unsupported CLI stderr is preserved with bounded redaction and no proof au
   const executable=path.join(folder,'runtime');
   fs.writeFileSync(executable,`#!${process.execPath}\nconsole.error('No such option: --probe-timeout-seconds token=synthetic-secret '+ 'x'.repeat(3000));process.exitCode=2`,{mode:0o755});
   const outcome=await invokeSandboxValidation('diagnose',{request:'request.json',sandboxCommand:executable,probeTimeoutSeconds:30});
-  assert.equal(outcome.exitCode,2);assert.equal(outcome.result.reason_code,'sandbox_response_invalid');
+  assert.equal(outcome.exitCode,2);assert.equal(outcome.result.reason_code,'sandbox_option_rejected');
+  assert.equal(outcome.result.status,'sandbox_incompatible');assert.doesNotMatch(outcome.result.prompt,/n'est pas disponible/);
   assert.match(outcome.result.reason,/No such option/);assert.ok(!outcome.result.reason.includes('synthetic-secret'));assert.ok(outcome.result.reason.length<=2000);
   assert.equal(outcome.result.execution_authorized_by_gate,false);
 });
@@ -263,4 +264,29 @@ test('adapter removes every NUL and redacts bounded top-level, nested and stderr
   assert.equal(outcome.exitCode,2);assert.equal(outcome.result.reason_code,'sandbox_response_invalid');
   assert.equal(outcome.result.reason,expected);assert.equal(outcome.result.reason.includes('\0'),false);
   assert.equal(outcome.result.execution_authorized_by_gate,false);
+});
+
+test('run identity is refused before Sandbox on actions that do not take it', async t => {
+  const folder=fs.mkdtempSync(path.join(os.tmpdir(),'sandbox-run-id-'));
+  t.after(()=>fs.rmSync(folder,{recursive:true,force:true}));
+  const marker=path.join(folder,'called');const executable=path.join(folder,'runtime');
+  fs.writeFileSync(executable,`#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(marker)},'1');console.log('{}')`,{mode:0o755});
+  for(const action of ['gate','choose','diagnose','run']){
+    const outcome=await invokeSandboxValidation(action,{request:'request.json',scope:action==='run'?undefined:'lot:a',runId:'a'.repeat(32),sandboxCommand:executable});
+    assert.equal(outcome.exitCode,2);assert.equal(outcome.result.reason_code,'run_id_not_supported');
+    assert.equal(outcome.result.status,'invalid_request');assert.equal(outcome.result.prompt,undefined);
+    assert.equal(outcome.result.execution_authorized_by_gate,false);
+  }
+  assert.equal(fs.existsSync(marker),false);
+});
+
+test('a Sandbox that runs and fails is not reported as unavailable', async t => {
+  const folder=fs.mkdtempSync(path.join(os.tmpdir(),'sandbox-command-failed-'));
+  t.after(()=>fs.rmSync(folder,{recursive:true,force:true}));
+  const executable=path.join(folder,'runtime');
+  fs.writeFileSync(executable,`#!${process.execPath}\nconsole.error('Traceback: invalid request');process.exitCode=1`,{mode:0o755});
+  const outcome=await invokeSandboxValidation('gate',{request:'request.json',scope:'lot:a',sandboxCommand:executable});
+  assert.equal(outcome.exitCode,2);assert.equal(outcome.result.status,'sandbox_command_failed');
+  assert.equal(outcome.result.reason_code,'sandbox_response_invalid');assert.match(outcome.result.reason,/invalid request/);
+  assert.doesNotMatch(outcome.result.prompt,/n'est pas disponible/);assert.equal(outcome.result.execution_authorized_by_gate,false);
 });

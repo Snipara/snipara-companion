@@ -858,7 +858,6 @@ for (const action of ["gate", "choose", "diagnose", "run", "verify", "status", "
     .command(action)
     .option("--request <file>", "Standalone Sandbox validation request JSON")
     .option("--scope <id>", "Authorized workflow or lot identity")
-    .option("--run-id <id>", "Sandbox run identity")
     .option("--store <path>", "Durable Sandbox evidence directory")
     .option("--choice <choice>", "Explicit user choice: alternative, install, local or skip")
     .option("--environment <name>", "Name the chosen alternative environment")
@@ -870,6 +869,9 @@ for (const action of ["gate", "choose", "diagnose", "run", "verify", "status", "
       .option("--no-reuse", "Request a fresh scoped run while retaining the shared validation lock")
       .option("--coordination-root <directory>", "Use the same operator-approved coordination root as the MCP server")
       .option("--orchestrator-command <path>", "Compatible Orchestrator executable for scoped validation");
+  }
+  if (["verify", "status", "cancel"].includes(action)) {
+    validationCommand.option("--run-id <id>", "Sandbox run identity");
   }
   if (["gate", "diagnose"].includes(action)) {
     validationCommand.option(

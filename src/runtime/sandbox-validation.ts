@@ -224,6 +224,18 @@ export async function invokeSandboxValidation(
     };
   const requiresRequest = ["gate", "choose", "diagnose", "run", "verify"].includes(action);
   const requiresRun = ["verify", "status", "cancel"].includes(action);
+  // Sandbox accepts a run identity only on these actions; forwarding it elsewhere is a usage error.
+  if (options.runId !== undefined && !requiresRun)
+    return {
+      exitCode: 2,
+      result: {
+        status: "invalid_request",
+        stage: "adapter_input",
+        reason_code: "run_id_not_supported",
+        reason: `--run-id applies only to validation verify, status and cancel; remove it from validation ${action}.`,
+        execution_authorized_by_gate: false,
+      },
+    };
   if (
     (requiresRequest && (!options.request || options.request.includes("\0"))) ||
     (requiresRun && !/^[a-f0-9]{32}$/.test(options.runId || "")) ||
@@ -535,6 +547,35 @@ export async function invokeSandboxValidation(
           execution_authorized_by_gate: false,
         },
       };
+    // Sandbox ran and answered with an error: that is not an absent Sandbox.
+    const stderr = child.stderr ? redactDiagnostic(child.stderr) : "";
+    if (child.status !== 0 && stderr) {
+      const optionRejected = /\b(?:no such option|unsupported option|unrecognized arguments?|unknown option)\b/i.test(
+        child.stderr
+      );
+      return {
+        exitCode: 2,
+        result: optionRejected
+          ? {
+              status: "sandbox_incompatible",
+              prompt:
+                "Snipara Sandbox est installé mais refuse une option transmise par Companion : les versions de Companion et de Sandbox sont incompatibles. Mettez l'un des deux à jour.",
+              stage: "adapter_response",
+              reason_code: "sandbox_option_rejected",
+              reason: stderr,
+              execution_authorized_by_gate: false,
+            }
+          : {
+              status: "sandbox_command_failed",
+              prompt:
+                "Snipara Sandbox est installé mais la commande a échoué. Lisez le motif (requête invalide ou erreur interne) avant de choisir un autre environnement.",
+              stage: "adapter_response",
+              reason_code: "sandbox_response_invalid",
+              reason: stderr,
+              execution_authorized_by_gate: false,
+            },
+      };
+    }
     return {
       exitCode: 2,
       result: {

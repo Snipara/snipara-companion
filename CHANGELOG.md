@@ -2,6 +2,11 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 5.1.6
+
+- `validation`: `--run-id` is offered only on `verify`, `status` and `cancel`, the actions on which Sandbox accepts it; elsewhere it is refused before any Sandbox call.
+- `validation`: a Sandbox that rejects an option is reported as `sandbox_incompatible`, and one that runs and fails as `sandbox_command_failed`, instead of "Sandbox is not available".
+
 ## 5.1.5
 
 - Phase brief: each of up to three memories is shown with up to 380 characters (the section used to hold 230 characters in all, which left the second memory as a bare id).
