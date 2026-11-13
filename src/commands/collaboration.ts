@@ -1800,7 +1800,7 @@ function readLocalOverlaySymbols(
   }
 }
 
-function readRepositoryId(rootDir: string): string | undefined {
+export function readRepositoryId(rootDir: string): string | undefined {
   const remote = readGitValue(rootDir, ["config", "--get", "remote.origin.url"]);
   if (!remote) {
     return undefined;

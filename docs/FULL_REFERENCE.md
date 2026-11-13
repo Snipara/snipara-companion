@@ -1688,8 +1688,11 @@ Semantics:
 - `snipara-companion intelligence ledger-export` = structured redacted Coding Intelligence Ledger JSON for replay, review, and commercial proof assets without dumping raw transcripts
 - `snipara-companion run` = production Project Intelligence flow that combines the brief, guard action cards, package review, verification hints, and a final weighted Judgment Card
 - `snipara-companion workflow start --plan-file` = records the visible LLM plan locally so phase state survives agent compaction; prefer JSON plans with explicit ids for stable machine phase state
+  Start also emits up to three advisory lines for missing tasks/files, more than
+  seven tasks, titles over 200 characters or tasks with more than five files.
+  JSON stdout includes these only in `planAdvice`; advice never blocks start.
 - `snipara-companion workflow scaffold --preset project-intelligence-continuity-layer` = creates a four-phase managed plan for memory authority, code impact, continuity summaries, and release/docs surfaces
-- `snipara-companion workflow phase-start` = marks the current phase, saves full context, and prints a compact receipt (`--detail` for the full payload); runtime-marked phases also get a stable Snipara Sandbox session binding
+- `snipara-companion workflow phase-start` = marks the current phase and prints its receipt plus a bounded phase brief; runtime-marked phases also get a stable Snipara Sandbox session binding
 - `snipara-companion workflow runtime-checkpoint` = captures a resume-ready Snipara Sandbox checkpoint for one phase using local workflow state plus a hosted automation event when configured
 - `snipara-companion workflow phase-commit` = calls hosted `snipara_end_of_task_commit` for that phase (short summary plus source pointers, then one phase outcome record), updates local state, and advances the next phase; if the hosted commit times out or hits a transient network failure, local workflow state still advances with an explicit local fallback record
 - `snipara-companion workflow phase-commit` and `workflow final-commit` also emit local Producer Loop artifacts under `.snipara/producer-loop/`, backed by the redacted Coding Intelligence Ledger. PR Answer Pack decision capture uses the same schema with producer kind `pr_answer_pack_decision_capture` when the artifact is exported or embedded by the hosted PR pack producer. These artifacts are review evidence only: they do not launch workers, approve durable memory, claim calibrated confidence, or provide server-side attestation.
@@ -2041,3 +2044,39 @@ for these current defaults:
   or first manifest agent; `--agent` explicitly selects another.
 - `memory list --limit 20 --offset 0 --json`: bounded inventory with 240-character
   previews, at most 50 memories per page and `next_offset` for pagination.
+
+### Phase-start brief and plan example
+
+`workflow phase-start <phaseId> [--no-brief] [--json] [--detail]` prints the existing
+receipt, a one-line pointer to its brief, then nonempty sections in this order:
+`Tasks`, `Risks`, `Other sessions`, `Memories`, `Context`. Total text is bounded to
+about 1,500 characters, with up to three lines per hosted section and memory
+content cut at about 160 characters. Tasks come directly from the plan. Risk
+counts (`N+ dependents`) are lower bounds from bounded inbound graph chains;
+names are the first two returned external dependents, with indexed commit and
+freshness warning. Other sessions excludes the current session and shows file
+or repository overlap and last activity. Context contains only source references.
+
+The four reads run concurrently (twelve seconds each, hard cap fifteen seconds; on the production host the code impact read alone takes about four seconds and the server reranks one request at a time).
+`SNIPARA_PHASE_BRIEF_TIMEOUT_MS` changes the lookup timeout within that hard cap.
+Failures are silent except for one trailing `Skipped: memories (timeout)`-style
+line, without changing exit status. `--no-brief`, missing configuration or
+`SNIPARA_LOCAL_ONLY=1` keeps local Tasks only. JSON includes the same compact
+`brief`; `.snipara/workflow/detail-phase-start.json` retains uncut successful
+responses in `briefLookups`. Existing served-memory ids remain available to
+`phase-commit --memory-helped <id>` / `--memory-misled <id>` and pending outcomes.
+No memory/document text is written to activity logs or telemetry.
+
+`workflow scaffold --preset bugfix --output plan.json` includes `files` and
+`tasks` in its examples. Replace empty file lists and example tasks with actual
+paths and the LLM-authored simple tasks, for example:
+
+```json
+{
+  "goal": "Preserve query scope",
+  "steps": [{
+    "id": "fix", "title": "Fix query routing", "files": ["src/query.ts"],
+    "tasks": [{ "id": "route", "title": "Preserve the query scope", "files": ["src/query.ts"] }]
+  }]
+}
+```

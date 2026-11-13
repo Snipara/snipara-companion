@@ -2319,7 +2319,7 @@ function completionTextsMatch(left: string, right: string): boolean {
   return shorter.length >= 16 && longer.includes(shorter);
 }
 
-function teamSyncFilesOverlap(leftFiles: string[], rightFiles: string[]): boolean {
+export function teamSyncFilesOverlap(leftFiles: string[], rightFiles: string[]): boolean {
   if (leftFiles.length === 0 || rightFiles.length === 0) {
     return false;
   }

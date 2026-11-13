@@ -30,6 +30,7 @@ import {
 } from "../runtime/memory-sources";
 
 export interface ContextQueryResult {
+  no_supporting_source?: boolean;
   sections: Array<{
     title: string;
     content: string;
@@ -457,6 +458,7 @@ export interface RecalledMemory {
   access_count: number;
   invalidated_reason?: string;
   superseded_by_memory_id?: string;
+  sources?: SourcePointer[];
 }
 
 export interface RecallWarning {
@@ -471,6 +473,7 @@ export interface RecallWarning {
 }
 
 export interface RecallResult {
+  no_supporting_memory?: boolean;
   memories: RecalledMemory[];
   warnings: RecallWarning[];
   total_searched: number;
@@ -1680,6 +1683,7 @@ export class RLMClient {
     options: ContextQueryOptions = {}
   ): Promise<ContextQueryResult> {
     interface MCPContextResult {
+      no_supporting_source?: boolean;
       sections: Array<{
         title: string;
         content: string;
@@ -1735,6 +1739,7 @@ export class RLMClient {
 
     // Transform MCP result to expected format
     return {
+      no_supporting_source: result.no_supporting_source,
       sections: (result.sections || []).map((s) => ({
         title: s.title || "Untitled",
         content: s.content || "",

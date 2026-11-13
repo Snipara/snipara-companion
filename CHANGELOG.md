@@ -2,6 +2,15 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 5.1.0
+
+- Add a bounded phase-start brief with plan tasks, indexed code dependents, other active sessions, recalled memories and source references; retain full lookup results in the existing detail file.
+- Keep hosted lookups concurrent and time-bounded, with local-only and --no-brief fallback; preserve served-memory outcome tracking.
+- Add advisory plan-shape guidance and scaffold examples with files and simple tasks.
+- `query` prints the sources only; `--diagnostics` restores retrieval diagnostics and timings.
+- The phase brief Risks line uses the dependents list of `snipara_code_impact` when the server provides it.
+- `code callers`, `imports` and `neighbors` print one line per caller or dependent file in text mode; `--json` keeps the full answer.
+
 ## 5.0.0
 
 - Remove the swarm and htask commands, --swarm-id flags, related doctor checks and routing hints, and featureTitle/workstreams handoff inputs.

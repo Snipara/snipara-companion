@@ -24,9 +24,10 @@ export function printWorkflowReceipt(state: Parameters<typeof buildWorkflowRecei
   const temporary = `${file}.${randomUUID()}.tmp`;
   fs.writeFileSync(temporary, JSON.stringify(payload, null, 2) + "\n", { flag: "wx", mode: 0o600 });
   fs.renameSync(temporary, file);
-  const receipt = { ...buildWorkflowReceipt(state, operation, relative, phaseId), ...(counts ? { memory: counts } : {}) };
+  const extras = payload && typeof payload === "object" ? payload as { brief?: { text: string }; planAdvice?: string[] } : {};
+  const receipt = { ...buildWorkflowReceipt(state, operation, relative, phaseId), ...(counts ? { memory: counts } : {}), ...(extras.brief ? { brief: extras.brief } : {}), ...(extras.planAdvice ? { planAdvice: extras.planAdvice } : {}) };
   const memoryLine = counts ? `\nMemory: ${Object.entries(counts).map(([key, value]) => `${key} ${value}`).join(", ")}` : "";
   console.log(options.json ? JSON.stringify(options.detail ? payload : receipt) :
     options.detail ? JSON.stringify(payload, null, 2) :
-    `${operation}: ${receipt.status}; workflow ${receipt.workflowId}; next ${receipt.nextPhaseId ?? "none"}${memoryLine}\nDetails: ${relative}`);
+    `${operation}: ${receipt.status}; workflow ${receipt.workflowId}; next ${receipt.nextPhaseId ?? "none"}${memoryLine}\nDetails: ${relative}${extras.brief?.text ? `\nBrief: ${relative}#brief\n${extras.brief.text}` : ""}`);
 }

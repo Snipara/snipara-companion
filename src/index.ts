@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+export { buildPhaseBrief, assemblePhaseBrief, phasePlanAdvice } from "./commands/workflow-phase-brief";
 export { quietCompanionHook } from "./commands/automations";
 export { readWorkflowPlanIdentity } from "./commands/workflows";
 export { defaultContextAgent } from "./commands/agent-context";
@@ -1801,6 +1802,7 @@ program
   .option("--search-mode <mode>", "Search mode: keyword|semantic|hybrid", "hybrid")
   .option("--timeout-ms <number>", "Hosted context query timeout in milliseconds", "30000")
   .option("--answer-pack", "Include the derived Answer Pack (off by default)")
+  .option("--diagnostics", "Include retrieval diagnostics and timings (off by default)")
   .addOption(new Option("--no-answer-pack", "Accepted for compatibility; the Answer Pack is already off by default").hideHelp())
   .option("--minimum-change-mode <mode>", "off|review (opt-in non-blocking review)", "off")
   .option("--no-auto-decompose", "Disable automatic query decomposition")
@@ -1817,6 +1819,7 @@ program
       searchMode: options.searchMode,
       timeoutMs: parseInt(options.timeoutMs, 10),
       includeAnswerPack: options.answerPack === true ? true : undefined,
+      includeMetadata: options.diagnostics === true,
       minimumChangeMode: resolveMinimumChangeMode(options.minimumChangeMode),
       autoDecompose: options.autoDecompose !== false,
       includeSharedContext: options.sharedContext !== false,
@@ -3278,12 +3281,13 @@ workflow
 
 workflow
   .command("phase-start")
-  .description("Mark a workflow phase active; print a compact receipt and save full context")
+  .description("Mark a workflow phase active; print a compact receipt and phase brief")
+  .option("--no-brief", "Use local tasks only; skip hosted phase brief lookups")
   .argument("<phaseId>", "Workflow phase id")
   .option("--detail", "Print full detail; default is a compact receipt with artifact paths")
   .option("--json", "Print only JSON on stdout; diagnostics go to stderr")
   .action(async (phaseId, options) => {
-    await workflowPhaseStartCommand({ phaseId, detail: Boolean(options.detail), json: options.json });
+    await workflowPhaseStartCommand({ phaseId, detail: Boolean(options.detail), json: options.json, brief: options.brief });
   });
 
 workflow

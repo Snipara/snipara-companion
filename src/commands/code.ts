@@ -3555,7 +3555,40 @@ function printCodeGraphAutoSourceResult(result: CodeGraphAutoSourceResult, json?
     console.log(`Limitations: ${result.sourceSelection.limitations.join("; ")}`);
   }
   console.log("");
+  if (printCompactGraphAnswer(result.result)) return;
   console.log(JSON.stringify(result.result, null, 2));
+}
+
+/** One line per caller or dependent file; the full answer stays available with --json. */
+function printCompactGraphAnswer(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  const rows = (input: unknown): Record<string, unknown>[] =>
+    Array.isArray(input) ? input.filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === "object") : [];
+  const callers = Array.isArray(record.callers) ? rows(record.callers) : null;
+  const dependents = record.dependents && typeof record.dependents === "object"
+    ? record.dependents as Record<string, unknown> : null;
+  if (!callers && !dependents) return false;
+  if (callers) {
+    console.log(`Callers: ${record.total_callers ?? callers.length}`);
+    for (const caller of callers) {
+      console.log(`- ${caller.file_path}:${caller.start_line} ${caller.local_name ?? caller.qualified_name}`);
+    }
+  }
+  if (dependents) {
+    console.log(`Dependent files: ${dependents.total_dependents ?? 0} (${dependents.test_files ?? 0} tests)`);
+    for (const file of rows(dependents.dependents)) {
+      const users = Array.isArray(file.used_by) ? file.used_by.slice(0, 3).join(", ") : "";
+      console.log(`- ${file.file_path}${file.is_test ? " [test]" : ""}${users ? `: ${users}` : ""}`);
+    }
+  }
+  const freshness = record.index_freshness && typeof record.index_freshness === "object"
+    ? record.index_freshness as Record<string, unknown> : null;
+  if (freshness) {
+    console.log(`Index: ${freshness.status ?? "unknown"} at ${String(freshness.indexed_commit_sha ?? "unknown").slice(0, 12)}`);
+  }
+  console.log("Use --json for the full answer.");
+  return true;
 }
 
 function isLocalImpactResult(value: unknown): value is Record<string, unknown> {

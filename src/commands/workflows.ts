@@ -111,6 +111,7 @@ import {
 import { buildDecisionApplyReport, type DecisionApplyItem } from "./decision-apply";
 import { workflowEfficiencyCommand, efficiencyFailureReason } from "./workflow-efficiency";
 import { printWorkflowReceipt } from "./workflow-receipt";
+import { buildPhaseBrief, phasePlanAdvice } from "./workflow-phase-brief";
 import {
   briefSummary,
   clearServedIds,
@@ -126,6 +127,8 @@ import {
 } from "../runtime/memory-sources";
 import { memoryGuardCheckCommand, runMemoryGuardCheck } from "./memory-guard";
 import {
+  loadCollaborationState,
+  readRepositoryId,
   workflowCollaborationRelease,
   workflowCollaborationStart,
   type WorkflowCollaborationReceipt,
@@ -568,6 +571,7 @@ export interface WorkflowPlanScaffoldDocument {
     files?: string[];
     gates?: string[];
     needs_runtime?: boolean;
+    tasks?: Array<{ id: string; title: string; files?: string[] }>;
   }>;
 }
 
@@ -3329,6 +3333,8 @@ export function buildWorkflowPlanScaffold(
   const cwd = path.resolve(options.cwd ?? process.cwd());
   const outputPath = path.resolve(options.outputPath ?? defaultWorkflowPlanOutputPath(preset, cwd));
   const plan = buildWorkflowPlanPresetDocument(preset, options.goal);
+  plan.steps = plan.steps.map(step => ({ ...step, files: step.files ?? [],
+    tasks: step.tasks ?? [{ id: `${step.id}-task`, title: step.title, files: step.files ?? [] }] }));
   return {
     preset,
     goal: plan.goal,
@@ -8824,6 +8830,7 @@ export async function queryCommand(options: {
   maxTokens?: number;
   searchMode?: string;
   includeAnswerPack?: boolean;
+  includeMetadata?: boolean;
   minimumChangeMode?: "off" | "review";
   minimumChangeEvidence?: MinimumChangeEvidence;
   autoDecompose?: boolean;
@@ -8843,6 +8850,8 @@ export async function queryCommand(options: {
   const result = await client.queryContext(options.query, options.maxTokens ?? 800, {
     searchMode: searchMode as "keyword" | "semantic" | "hybrid",
     includeAnswerPack: options.includeAnswerPack,
+    // Compact by default: the sources and nothing else. --diagnostics restores timings and stage details.
+    includeMetadata: options.includeMetadata ?? false,
     minimumChangeMode: options.minimumChangeMode,
     minimumChangeEvidence: options.minimumChangeEvidence,
     autoDecompose: options.autoDecompose,
@@ -11907,7 +11916,20 @@ export async function workflowStartCommand(options: {
   });
   writeOptionalWorkflowSessionSnapshot();
 
-  printWorkflowReceipt(state, "start", state, options);
+  // Inspect the authored steps: normalization preserves legacy callers by synthesizing tasks.
+  let authored: Array<{ id: string; files?: string[]; tasks?: Array<{ title: string; files?: string[] }> }> =
+    state.phases.map(phase => ({ ...phase, tasks: [] }));
+  if (state.planFile) {
+    try {
+      const text = fs.readFileSync(state.planFile, "utf8");
+      const steps = state.planFile.toLowerCase().endsWith(".json")
+        ? findWorkflowSteps(JSON.parse(text)) : parseWorkflowPlanText(text, state.goal);
+      authored = buildGeneratedWorkflowPlanDocument({ steps }, state.goal).steps;
+    } catch { /* Advice remains best effort; start has already validated the plan. */ }
+  }
+  const planAdvice = phasePlanAdvice(authored);
+  printWorkflowReceipt(state, "start", { ...state, planAdvice }, options);
+  if (!options.json && !options.detail) planAdvice.forEach(advice => console.log(advice));
 }
 
 export async function workflowJudgmentCommand(options: {
@@ -12716,10 +12738,29 @@ export async function workflowSessionCommand(options: {
   printKeyValue("Build time:", `${snapshot.performance.buildMs}ms`);
 }
 
+async function printPhaseStartReceipt(state: ManagedWorkflowState, phase: ManagedWorkflowPhase,
+  payload: Record<string, unknown>, options: { json?: boolean; detail?: boolean; brief?: boolean }): Promise<void> {
+  let client: ReturnType<typeof createClient> | undefined;
+  let local: ReturnType<typeof loadCollaborationState> | undefined;
+  const timeoutMs = Math.min(positiveIntegerEnv("SNIPARA_PHASE_BRIEF_TIMEOUT_MS", 12000), 15000);
+  try {
+    if (options.brief !== false && process.env.SNIPARA_LOCAL_ONLY !== "1" && isConfigured()) {
+      const config = loadConfig();
+      const saved = loadCollaborationState();
+      local = { ...saved, sessionId: config.sessionId ?? saved.sessionId,
+        repository: saved.repository ?? readRepositoryId(process.cwd()) };
+      client = createClient(timeoutMs);
+    }
+  } catch { /* Missing hosted configuration keeps the local task brief usable. */ }
+  const result = await buildPhaseBrief(phase, { client, local, timeoutMs });
+  printWorkflowReceipt(state, "phase-start", { ...payload, ...result }, options, phase.id);
+}
+
 export async function workflowPhaseStartCommand(options: {
   phaseId: string;
   json?: boolean;
   detail?: boolean;
+  brief?: boolean;
 }): Promise<void> {
   const state = readRequiredWorkflowState();
   const phase = findWorkflowPhase(state, options.phaseId);
@@ -12730,13 +12771,15 @@ export async function workflowPhaseStartCommand(options: {
     if (!active) {
       const next = nextEligibleWorkflowTask(state, phase);
       if (!next) throw new Error(`Phase '${phase.id}' has no eligible context task`);
-      return workflowTaskStartCommand({ phaseId: phase.id, taskId: next.id, json: options.json, detail: options.detail, compactReceipt: true });
+      return workflowTaskStartCommand({ phaseId: phase.id, taskId: next.id, json: options.json, detail: options.detail, compactReceipt: true, brief: options.brief });
     }
     const context = loadedWorkflowTaskContext(state, phase, active);
     if (active.contextRequest && !context) throw new Error("Active task context is not prepared");
     const envelope = taskContextEnvelope(state, phase, active);
-    printWorkflowReceipt(state, "phase-start", { workflow: state, current_phase: phase,
-      current_task: active, context_envelope: envelope, task_context: context }, options, phase.id);
+    state.currentPhaseId = phase.id;
+    writeWorkflowState(state);
+    await printPhaseStartReceipt(state, phase, { workflow: state, current_phase: phase,
+      current_task: active, context_envelope: envelope, task_context: context }, options);
     return;
   }
   const now = new Date().toISOString();
@@ -12762,7 +12805,7 @@ export async function workflowPhaseStartCommand(options: {
   });
   writeOptionalWorkflowSessionSnapshot();
 
-  printWorkflowReceipt(state, "phase-start", { workflow: state, current_phase: phase }, options, phase.id);
+  await printPhaseStartReceipt(state, phase, { workflow: state, current_phase: phase }, options);
 }
 
 export async function workflowTaskStartCommand(options: {
@@ -12774,6 +12817,7 @@ export async function workflowTaskStartCommand(options: {
   json?: boolean;
   detail?: boolean;
   compactReceipt?: boolean;
+  brief?: boolean;
 }): Promise<void> {
   const state = readRequiredWorkflowState();
   const phase = findWorkflowPhase(state, options.phaseId);
@@ -12869,8 +12913,8 @@ export async function workflowTaskStartCommand(options: {
   writeOptionalWorkflowSessionSnapshot();
 
   if (options.compactReceipt) {
-    printWorkflowReceipt(state, "phase-start", { workflow: state, current_phase: phase,
-      current_task: task, context_envelope: envelope, task_context: loadedContext }, options, phase.id);
+    await printPhaseStartReceipt(state, phase, { workflow: state, current_phase: phase,
+      current_task: task, context_envelope: envelope, task_context: loadedContext }, options);
     return;
   }
   if (options.json) {
