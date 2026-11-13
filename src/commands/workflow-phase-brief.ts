@@ -69,7 +69,12 @@ export function assemblePhaseBrief(phase: Pick<ManagedWorkflowPhase, "files" | "
   }
   if (raw.sessions && files.length) {
     const current = (id: string | null | undefined) => Boolean(id && [local.workSessionId, local.sessionId, ...Object.values(local.workflowSessions ?? {})].includes(id));
+    // Leases carry the actor that claimed them, not the work session: our own are recognised by the actor of
+    // our own session, otherwise every phase brief listed the workflow's own file claims as another session.
+    const ownActors = raw.sessions.sessions.filter(session => current(session.id) || current(session.sessionId))
+      .map(session => (session as unknown as Record<string, unknown>).actorId).filter(Boolean);
     const activeLeases = raw.sessions.leases.filter(lease => lease.status === "ACTIVE" && !current(lease.workSessionId) &&
+      !current(lease.claimedByActorId) && !ownActors.includes(lease.claimedByActorId) &&
       (!lease.expiresAt || Date.parse(lease.expiresAt) > Date.now()));
     const sessions = raw.sessions.sessions.filter(session => session.status === "ACTIVE" && !current(session.id) && !current(session.sessionId));
     const rows = sessions.flatMap(session => {

@@ -2,6 +2,10 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 5.1.2
+
+- Phase brief: the workflow's own file claims are no longer listed under Other sessions.
+
 ## 5.1.1
 
 - Phase brief: the Risks line fits its section, Context is read from sources instead of references, and the workflow's own session is no longer listed under Other sessions.

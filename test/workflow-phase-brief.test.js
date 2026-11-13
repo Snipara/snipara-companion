@@ -48,6 +48,15 @@ test("risks use the dependents list of the server and fit the section limit", ()
   assert.match(brief.risks[0], /; indexed 33b4793b1ba9$/);
 });
 
+test("own file claims are not listed as another session", () => {
+  const own = { id: "self", actorId: "sess_me", status: "ACTIVE", actorLabel: "Me" };
+  const lease = { status: "ACTIVE", resourceId: phase.files?.[0] ?? phase.tasks[0].files[0], claimedByActorId: "sess_me", claimedByLabel: "Me" };
+  const brief = assemblePhaseBrief(phase, { sessions: { sessions: [own], leases: [lease] } }, { workSessionId: "self" });
+  assert.equal(brief.sessions, undefined);
+  const other = assemblePhaseBrief(phase, { sessions: { sessions: [own], leases: [{ ...lease, claimedByActorId: "sess_other", claimedByLabel: "Other" }] } }, { workSessionId: "self" });
+  assert.match(other.sessions[0], /^Other: /);
+});
+
 test("omits empty sections and explicit abstentions", () => {
   assert.deepEqual(assemblePhaseBrief({ tasks: [] }, {}), { text: "" });
   const brief = assemblePhaseBrief(phase, { memories: { memories: [memory], no_supporting_memory: true },
