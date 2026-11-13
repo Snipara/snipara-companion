@@ -46,7 +46,7 @@ export function assemblePhaseBrief(phase: Pick<ManagedWorkflowPhase, "files" | "
   const risks = raw.risks;
   if (risks) {
     const freshness = object(risks.index_freshness);
-    const suffix = `; indexed ${freshness.indexed_commit_sha ?? "unknown"}${list(freshness.warnings).length ? "; stale/warning" : ""}`;
+    const suffix = `; indexed ${String(freshness.indexed_commit_sha ?? "unknown").slice(0, 12)}${list(freshness.warnings).length ? "; stale/warning" : ""}`;
     const groups = new Map<string, Map<string, string>>();
     for (const chain of list(object(risks.impact).impact_chains)) {
       const value = object(chain);
@@ -64,7 +64,7 @@ export function assemblePhaseBrief(phase: Pick<ManagedWorkflowPhase, "files" | "
     const rows = list(dependents.dependents).map(value => object(value)).filter(row => typeof row.file_path === "string");
     if (rows.length) {
       const named = [...rows.filter(row => !row.is_test), ...rows.filter(row => row.is_test)].slice(0, 4).map(row => String(row.file_path));
-      sections.risks = [`${line(`${dependents.total_dependents ?? rows.length} files depend on the changed files (${dependents.test_files ?? 0} tests): ${named.join(", ")}`, 220)}${suffix}`];
+      sections.risks = [`${line(`${dependents.total_dependents ?? rows.length} files depend on the changed files (${dependents.test_files ?? 0} tests): ${named.join(", ")}`, 190)}${suffix}`];
     }
   }
   if (raw.sessions && files.length) {
@@ -129,8 +129,10 @@ export async function buildPhaseBrief(phase: ManagedWorkflowPhase, options: {
       ...(files.length ? { risks: () => client.codeImpact({ changedFiles: files, direction: "in", depth: 1, limit: 100 }),
         sessions: () => client.getCollaborationState() } : {}),
       memories: () => client.recallMemories(query, { limit: 3 }),
-      context: () => client.queryContext(query, 600, { returnReferences: true, includeSharedContext: false,
-        includeAnswerPack: false, includeAllTiers: false, autoDecompose: false }),
+      // Sections, not references: on production (2026-11-13) references mode returned neither sections nor
+      // section_refs for a query that the plain mode answered with two sources.
+      context: () => client.queryContext(query, 600, { includeSharedContext: false,
+        includeAnswerPack: false, includeAllTiers: false, autoDecompose: false, includeMetadata: false }),
     };
     await Promise.all(Object.entries(calls).map(async ([name, call]) => {
       let timer: ReturnType<typeof setTimeout> | undefined;

@@ -2,6 +2,10 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 5.1.1
+
+- Phase brief: the Risks line fits its section, Context is read from sources instead of references, and the workflow's own session is no longer listed under Other sessions.
+
 ## 5.1.0
 
 - Add a bounded phase-start brief with plan tasks, indexed code dependents, other active sessions, recalled memories and source references; retain full lookup results in the existing detail file.

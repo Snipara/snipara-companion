@@ -25,7 +25,7 @@ test("assembles all five sections from concurrent stubbed client lookups", async
   const { brief, briefLookups } = await buildPhaseBrief(phase, { local: { workSessionId: "self", repository: "repo" }, client: {
     codeImpact: wrap("risks", risks), getCollaborationState: wrap("sessions", sessions),
     recallMemories: async (query, options) => { assert.equal(query, "Fix query routing"); assert.equal(options.limit, 3); started.push("memories"); return { memories: [memory] }; },
-    queryContext: async (_, tokens, options) => { assert.equal(tokens, 600); assert.equal(options.returnReferences, true); assert.equal(options.includeSharedContext, false); started.push("context"); return context; },
+    queryContext: async (_, tokens, options) => { assert.equal(tokens, 600); assert.equal(options.returnReferences, undefined); assert.equal(options.includeSharedContext, false); started.push("context"); return context; },
   } });
   assert.equal(started.length, 4);
   assert.deepEqual(Object.keys(brief), ["text", "tasks", "risks", "sessions", "memories", "context"]);
@@ -36,6 +36,16 @@ test("assembles all five sections from concurrent stubbed client lookups", async
   assert.match(brief.text, /mem-route \[decision\]/); assert.match(brief.text, /docs\/scope.md:12/);
   assert.match(brief.text, /docs\/query.md:10-18 — Query scope/);
   assert.equal(briefLookups.risks, risks);
+});
+
+test("risks use the dependents list of the server and fit the section limit", () => {
+  const dependents = { total_dependents: 8, test_files: 3, dependents: Array.from({ length: 8 }, (_, i) => ({
+    file_path: `apps/mcp-server/src/engine/scoring/some_long_module_name_${i}.py`, is_test: i > 4 })) };
+  const brief = assemblePhaseBrief(phase, { risks: { brief: true, dependents,
+    index_freshness: { indexed_commit_sha: "33b4793b1ba9aaaaaaaaaaaaaaaaaaaaaaaaaaaa", warnings: [] } } });
+  assert.equal(brief.risks.length, 1);
+  assert.match(brief.risks[0], /^8 files depend on the changed files \(3 tests\): /);
+  assert.match(brief.risks[0], /; indexed 33b4793b1ba9$/);
 });
 
 test("omits empty sections and explicit abstentions", () => {

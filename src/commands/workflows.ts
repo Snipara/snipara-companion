@@ -12747,7 +12747,9 @@ async function printPhaseStartReceipt(state: ManagedWorkflowState, phase: Manage
     if (options.brief !== false && process.env.SNIPARA_LOCAL_ONLY !== "1" && isConfigured()) {
       const config = loadConfig();
       const saved = loadCollaborationState();
+      // The workflow's own hosted work session must not be listed under "Other sessions".
       local = { ...saved, sessionId: config.sessionId ?? saved.sessionId,
+        workSessionId: state.coordination?.workSessionId ?? saved.workSessionId,
         repository: saved.repository ?? readRepositoryId(process.cwd()) };
       client = createClient(timeoutMs);
     }
