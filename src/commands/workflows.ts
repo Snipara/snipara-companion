@@ -14895,12 +14895,14 @@ export async function recallCommand(options: {
   includeInactive?: boolean;
   memoryView?: "current" | "history";
   asOf?: string;
+  forTask?: boolean;
   json?: boolean;
 }): Promise<void> {
   ensureConfigured();
 
   const client = createClient(15000);
   const result = await client.recallMemories(options.query, {
+    ...(options.forTask ? { task: options.query } : {}),
     type: options.type,
     scope: options.scope,
     category: options.category,

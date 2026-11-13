@@ -5305,9 +5305,11 @@ program
   .option("--include-inactive", "Include invalidated or superseded memories in the main result set")
   .option("--memory-view <view>", "current or retained history; history grants no current authority", "current")
   .option("--as-of <timestamp>", "Past ISO timestamp with timezone; requires --memory-view history")
+  .option("--for-task", "The query is a task about to be done: recall what applies to it, from every agent of the project")
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await recallCommand({
+      forTask: Boolean(options.forTask),
       query: options.query,
       type: options.type,
       scope: options.scope,

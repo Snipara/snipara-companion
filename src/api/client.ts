@@ -1987,6 +1987,8 @@ export class RLMClient {
       includeInactive?: boolean;
       memoryView?: "current" | "history";
       asOf?: string;
+      /** The task about to be done: the server then recalls for that task (other agents' records, wider pool, task judge). */
+      task?: string;
     } = {}
   ): Promise<RecallResult> {
     const memoryView = options.memoryView ?? "current";
@@ -2006,6 +2008,7 @@ export class RLMClient {
       include_inactive: options.includeInactive ?? false,
       ...(memoryView !== "current" ? { memory_view: memoryView } : {}),
       ...(options.asOf ? { as_of: options.asOf } : {}),
+      ...(options.task?.trim() ? { task: options.task.trim().slice(0, 512) } : {}),
     }));
     if (memoryView !== "current" || options.asOf) {
       const metadata = result.temporal_context;

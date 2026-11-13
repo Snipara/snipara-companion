@@ -133,7 +133,7 @@ export async function buildPhaseBrief(phase: ManagedWorkflowPhase, options: {
     const calls = {
       ...(files.length ? { risks: () => client.codeImpact({ changedFiles: files, direction: "in", depth: 1, limit: 100 }),
         sessions: () => client.getCollaborationState() } : {}),
-      memories: () => client.recallMemories(query, { limit: 3 }),
+      memories: () => client.recallMemories(query, { limit: 3, task: query }),
       // Sections, not references: the brief prints the passages themselves.
       context: () => client.queryContext(query, 600, { includeSharedContext: false,
         includeAnswerPack: false, includeAllTiers: false, autoDecompose: false, includeMetadata: false }),

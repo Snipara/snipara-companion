@@ -2,6 +2,10 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 5.1.4
+
+- Recall made before a task: the phase brief sends the task with its memory recall, and `recall --for-task` does the same from the command line. The server then also reads what other agents of the project recorded, examines more candidates, and keeps a memory when it applies to the task.
+
 ## 5.1.3
 
 - Context query in references mode: the chunk references (`section_refs`) now reach the caller; they were dropped by the client.

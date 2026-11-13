@@ -24,7 +24,7 @@ test("assembles all five sections from concurrent stubbed client lookups", async
   const wrap = (name, value) => async () => { started.push(name); await Promise.resolve(); return value; };
   const { brief, briefLookups } = await buildPhaseBrief(phase, { local: { workSessionId: "self", repository: "repo" }, client: {
     codeImpact: wrap("risks", risks), getCollaborationState: wrap("sessions", sessions),
-    recallMemories: async (query, options) => { assert.equal(query, "Fix query routing"); assert.equal(options.limit, 3); started.push("memories"); return { memories: [memory] }; },
+    recallMemories: async (query, options) => { assert.equal(query, "Fix query routing"); assert.equal(options.limit, 3); assert.equal(options.task, "Fix query routing"); started.push("memories"); return { memories: [memory] }; },
     queryContext: async (_, tokens, options) => { assert.equal(tokens, 600); assert.equal(options.returnReferences, undefined); assert.equal(options.includeSharedContext, false); started.push("context"); return context; },
   } });
   assert.equal(started.length, 4);
