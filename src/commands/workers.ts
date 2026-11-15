@@ -1,6 +1,6 @@
 import fs from "fs";
+import { buildLocalModelCatalog, type LocalModelCatalog } from "../runtime/local-worker-routing";
 import path from "path";
-import { execFileSync } from "node:child_process";
 import chalk from "chalk";
 import {
   DEFAULT_WORKER_CONTEXT_WINDOW,
@@ -264,7 +264,9 @@ export function workersLocalRemoveCommand(options: LocalWorkerRemoveOptions): vo
   }
 }
 
-export function workersLocalProbeCommand(options: LocalWorkerProbeOptions): LocalWorkerProbeResult {
+export async function workersLocalProbeCommand(
+  options: LocalWorkerProbeOptions
+): Promise<LocalWorkerProbeResult> {
   const role = normalizeWorkerRole(options.role);
   const baseUrl = normalizeBaseUrl(options.baseUrl ?? "http://127.0.0.1:1234");
   const provider = normalizeProvider(stringValue(options.provider) ?? "lm-studio");
@@ -273,7 +275,7 @@ export function workersLocalProbeCommand(options: LocalWorkerProbeOptions): Loca
   const declaredReasoning = options.reasoning;
   const inferredReasoning = inferWorkerReasoningFromModel(model || preferModel);
   const candidateReasoning = declaredReasoning || inferredReasoning;
-  const catalog = runOrchestratorLocalCatalog({
+  const catalog = await probeLocalCatalog({
     baseUrl,
     workerRole: role,
     capabilities: normalizeStringList(options.capabilities),
@@ -337,8 +339,10 @@ export function workersLocalProbeCommand(options: LocalWorkerProbeOptions): Loca
   };
 }
 
-export function workersLocalProbePrintCommand(options: LocalWorkerProbeOptions): void {
-  const payload = workersLocalProbeCommand(options);
+export async function workersLocalProbePrintCommand(
+  options: LocalWorkerProbeOptions
+): Promise<void> {
+  const payload = await workersLocalProbeCommand(options);
   printJson(payload);
 }
 
@@ -887,7 +891,7 @@ function upsertLocalAdaptiveRoutingPolicy(workerRole: string): string {
   return policyPath;
 }
 
-function runOrchestratorLocalCatalog(options: {
+async function probeLocalCatalog(options: {
   baseUrl: string;
   workerRole: string;
   capabilities: string[];
@@ -896,37 +900,19 @@ function runOrchestratorLocalCatalog(options: {
   preferModel?: string;
   apiKeyEnv?: string;
   apiKeyHeader?: "authorization" | "x-api-key";
-}): unknown {
-  const args = ["local-model-catalog", "--json", "--worker-role", options.workerRole];
-  if (options.baseUrl) {
-    args.push("--base-url", options.baseUrl);
-  }
-  for (const capability of options.capabilities) {
-    args.push("--capability", capability);
-  }
-  for (const scope of options.writeScope) {
-    args.push("--write-scope", scope);
-  }
-  if (options.model) {
-    args.push("--model", options.model);
-  }
-  if (options.preferModel) {
-    args.push("--prefer-model", options.preferModel);
-  }
-  if (options.apiKeyEnv) {
-    args.push("--api-key-env", options.apiKeyEnv);
-  }
-  if (options.apiKeyHeader) {
-    args.push("--api-key-header", options.apiKeyHeader);
-  }
-
+}): Promise<LocalModelCatalog> {
   try {
-    const result = execFileSync("snipara-orchestrator", args, {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 10_000,
-    }).trim();
-    return result ? JSON.parse(result) : {};
+    return await buildLocalModelCatalog({
+      baseUrl: options.baseUrl,
+      workerRole: options.workerRole,
+      // An empty list means "not given": the role's default capabilities apply.
+      capabilities: options.capabilities.length > 0 ? options.capabilities : undefined,
+      writeScope: options.writeScope,
+      model: options.model,
+      preferModel: options.preferModel,
+      apiKeyEnv: options.apiKeyEnv,
+      apiKeyHeader: options.apiKeyHeader,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Local worker probe failed: ${message}`);

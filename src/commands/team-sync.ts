@@ -33,19 +33,19 @@ import {
 } from "../runtime/orchestrator-handoff";
 import { appendActivityEvent, writeSessionSnapshot } from "./activity";
 import { appendJournalCheckpoint, type JournalWriteResult } from "./journal";
-import {
-  captureCompanionWhy,
-  type CompanionWhyCaptureReceipt,
-} from "./why-capture";
+import { captureCompanionWhy, type CompanionWhyCaptureReceipt } from "./why-capture";
 
 export const TEAM_SYNC_STATE_RELATIVE_PATH = path.join(".snipara", "team-sync", "session.json");
 const TEAM_SYNC_STALE_WORK_MS = 48 * 60 * 60 * 1000;
 const TEAM_SYNC_AUTO_ARCHIVE_WORK_MS = 14 * 24 * 60 * 60 * 1000;
 
 function writeOptionalTeamSyncSessionSnapshot(rootDir: string): void {
-  try { writeSessionSnapshot({ cwd: rootDir }); }
-  catch (error) {
-    console.error(`Supplemental session snapshot unavailable; Team Sync state was saved: ${checkpointText(error instanceof Error ? error.message : String(error))}`);
+  try {
+    writeSessionSnapshot({ cwd: rootDir });
+  } catch (error) {
+    console.error(
+      `Supplemental session snapshot unavailable; Team Sync state was saved: ${checkpointText(error instanceof Error ? error.message : String(error))}`
+    );
   }
 }
 
@@ -628,6 +628,7 @@ export async function createTeamSyncStartWorkPayload(
     summary,
     hosted,
     {
+      explicitRequest: options.emitOrchestratorHandoff,
       policyAutoRoute: options.autoRouteOrchestrator,
       policySource: options.orchestratorPolicySource,
     }
@@ -733,6 +734,7 @@ async function createTeamSyncHandoffPayload(
     summary,
     hosted,
     {
+      explicitRequest: options.emitOrchestratorHandoff,
       policyAutoRoute: options.autoRouteOrchestrator,
       policySource: options.orchestratorPolicySource,
     }
@@ -1414,6 +1416,7 @@ export async function teamSyncWhatChangedCommand(options: TeamSyncCommandOptions
     summary,
     hosted,
     {
+      explicitRequest: options.emitOrchestratorHandoff,
       policyAutoRoute: options.autoRouteOrchestrator,
       policySource: options.orchestratorPolicySource,
     }
@@ -1533,6 +1536,7 @@ export async function teamSyncResumeCommand(options: TeamSyncCommandOptions): Pr
     summary,
     hosted,
     {
+      explicitRequest: options.emitOrchestratorHandoff,
       policyAutoRoute: options.autoRouteOrchestrator,
       policySource: options.orchestratorPolicySource,
     }
@@ -2015,6 +2019,7 @@ function buildTeamSyncOrchestratorRecommendation(
     | TeamSyncResumeResponse
   >,
   options: {
+    explicitRequest?: boolean;
     policyAutoRoute?: boolean;
     policySource?: string;
   } = {}
@@ -2029,6 +2034,7 @@ function buildTeamSyncOrchestratorRecommendation(
     queryParts.filter(Boolean).join(" | "),
     "full",
     {
+      explicitRequest: options.explicitRequest,
       changedFilesCount: summary.files.length,
       hasActiveCollisions: hasTeamSyncCollisionSignal(action, hosted),
       policyAutoRoute: options.policyAutoRoute,

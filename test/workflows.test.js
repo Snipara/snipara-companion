@@ -26,6 +26,7 @@ const {
   formatFinalCommitReport,
   getPlanStepDisplayTitle,
   getOrchestratorRecommendation,
+  shouldSuggestOrchestratorForWorkflow,
   MEMORY_GUARD_CONTEXT_TIMEOUT_MS,
   MEMORY_GUARD_RECALL_TIMEOUT_MS,
   normalizeGuardTag,
@@ -58,8 +59,13 @@ const cliPath = path.join(__dirname, "..", "dist", "index.js");
 
 function runCli(args, options = {}) {
   // Legacy envelope assertions opt in to full detail; default receipts have separate regressions.
-  if (args[0] === "workflow" && ["start", "phase-start", "phase-commit"].includes(args[1]) &&
-      args.includes("--json") && !args.includes("--detail")) args = [...args, "--detail"];
+  if (
+    args[0] === "workflow" &&
+    ["start", "phase-start", "phase-commit"].includes(args[1]) &&
+    args.includes("--json") &&
+    !args.includes("--detail")
+  )
+    args = [...args, "--detail"];
   // FULL phase commits require actual authoritative usage records, even in isolated fixtures.
   if (args[0] === "workflow" && args[1] === "phase-commit" && options.usage !== false) {
     const home = options.env?.HOME ?? fs.mkdtempSync(path.join(os.tmpdir(), "snipara-usage-home-"));
@@ -67,13 +73,29 @@ function runCli(args, options = {}) {
     fs.mkdirSync(sessions, { recursive: true });
     const thread = "companion-fixture";
     const timestamp = new Date().toISOString();
-    fs.writeFileSync(path.join(sessions, "fixture.jsonl"), [
-      { type: "session_meta", payload: { id: thread, timestamp, source: "cli" } },
-      { type: "response_item", timestamp, payload: { role: "user" } },
-      { type: "token_usage_record", payload: { thread_id: thread, response_id: "fixture-response",
-        usage: { input_tokens: 10, cached_input_tokens: 5, output_tokens: 1,
-          reasoning_output_tokens: 0, total_tokens: 11 } } },
-    ].map(JSON.stringify).join("\n") + "\n");
+    fs.writeFileSync(
+      path.join(sessions, "fixture.jsonl"),
+      [
+        { type: "session_meta", payload: { id: thread, timestamp, source: "cli" } },
+        { type: "response_item", timestamp, payload: { role: "user" } },
+        {
+          type: "token_usage_record",
+          payload: {
+            thread_id: thread,
+            response_id: "fixture-response",
+            usage: {
+              input_tokens: 10,
+              cached_input_tokens: 5,
+              output_tokens: 1,
+              reasoning_output_tokens: 0,
+              total_tokens: 11,
+            },
+          },
+        },
+      ]
+        .map(JSON.stringify)
+        .join("\n") + "\n"
+    );
     options = { ...options, env: { ...options.env, HOME: home, CODEX_THREAD_ID: thread } };
   }
   const env = {
@@ -144,29 +166,15 @@ function writeWorkflowPreload(dir) {
     preloadPath,
     [
       "const fs = require('node:fs');",
-      "const childProcess = require('node:child_process');",
-      "const originalExecFileSync = childProcess.execFileSync;",
-      "childProcess.execFileSync = (command, args, options) => {",
-      "  if (command === 'snipara-orchestrator') {",
-      "    const argsLogPath = process.env.SNIPARA_TEST_ORCHESTRATOR_ARGS_LOG;",
-      "    if (argsLogPath) {",
-      "      fs.appendFileSync(argsLogPath, `${JSON.stringify({ command, args })}\\n`, 'utf8');",
-      "    }",
-      "    const subcommand = Array.isArray(args) ? args[0] : undefined;",
-      "    if (subcommand === 'local-model-catalog' && process.env.SNIPARA_TEST_LOCAL_ORCHESTRATOR_CATALOG_RESPONSE) {",
-      "      return process.env.SNIPARA_TEST_LOCAL_ORCHESTRATOR_CATALOG_RESPONSE;",
-      "    }",
-      "    if (subcommand === 'route' && process.env.SNIPARA_TEST_LOCAL_ORCHESTRATOR_ROUTE_RESPONSE) {",
-      "      return process.env.SNIPARA_TEST_LOCAL_ORCHESTRATOR_ROUTE_RESPONSE;",
-      "    }",
-      "  }",
-      "  return originalExecFileSync(command, args, options);",
-      "};",
       "let endOfTaskCommitAttempts = 0;",
       "globalThis.fetch = async (url, init = {}) => {",
       "  const parsedUrl = new URL(String(url));",
       "  const pathname = parsedUrl.pathname;",
       "  if (process.env.SNIPARA_TEST_REQUEST_LOG) fs.appendFileSync(process.env.SNIPARA_TEST_REQUEST_LOG, `${pathname}\\n`, 'utf8');",
+      "  if (pathname === '/v1/models' && process.env.SNIPARA_TEST_LOCAL_MODELS_RESPONSE) {",
+      "    if (process.env.SNIPARA_TEST_LOCAL_MODELS_LOG) fs.appendFileSync(process.env.SNIPARA_TEST_LOCAL_MODELS_LOG, `${String(url)}\\n`, 'utf8');",
+      "    return { ok: true, status: 200, statusText: 'OK', json: async () => JSON.parse(process.env.SNIPARA_TEST_LOCAL_MODELS_RESPONSE) };",
+      "  }",
       "  if (pathname.includes('/mcp/')) {",
       "    const body = JSON.parse(init.body || '{}');",
       "    const toolName = body.params?.name;",
@@ -1798,7 +1806,11 @@ test("workflow phase-commit releases leases after the session identity changed",
 
   const start = runCli(
     ["workflow", "start", "--goal", "Ship release hygiene", "--plan-file", planFile, "--json"],
-    { cwd: dir, nodeArgs: ["--require", preloadPath], env: { ...env, SNIPARA_SESSION_ID: "sess_at_start" } }
+    {
+      cwd: dir,
+      nodeArgs: ["--require", preloadPath],
+      env: { ...env, SNIPARA_SESSION_ID: "sess_at_start" },
+    }
   );
   assert.equal(start.status, 0, start.stderr || start.stdout);
 
@@ -1815,7 +1827,11 @@ test("workflow phase-commit releases leases after the session identity changed",
       "packages/cli/src/index.ts",
       "--json",
     ],
-    { cwd: dir, nodeArgs: ["--require", preloadPath], env: { ...env, SNIPARA_SESSION_ID: "sess_at_commit" } }
+    {
+      cwd: dir,
+      nodeArgs: ["--require", preloadPath],
+      env: { ...env, SNIPARA_SESSION_ID: "sess_at_commit" },
+    }
   );
   assert.equal(phaseCommit.status, 0, phaseCommit.stderr || phaseCommit.stdout);
   const payload = JSON.parse(phaseCommit.stdout);
@@ -2907,16 +2923,28 @@ test("managed workflow serves a judgment, allows an explicit override, and enric
   const afterRefusal = JSON.parse(fs.readFileSync(statePath, "utf8"));
   assert.equal(afterRefusal.status, beforeFinal.status);
   assert.deepEqual(afterRefusal.lastCommit, beforeFinal.lastCommit);
-  assert.ok(afterRefusal.judgment.resolution.evidence.unsatisfiedRequiredActions.includes("Resolve code impact applicability"));
+  assert.ok(
+    afterRefusal.judgment.resolution.evidence.unsatisfiedRequiredActions.includes(
+      "Resolve code impact applicability"
+    )
+  );
   assert.equal(fs.readFileSync(receiptLog, "utf8").trim().split("\n").length, 2);
 
   for (const evidence of ["passed:code impact", "passed:code impact applicability inspection"]) {
     const refusedLabel = run([...finalArgs, "--evidence", evidence]);
-    assert.notEqual(refusedLabel.status, 0, "Free-text impact evidence cannot repair the captured applicability gap");
+    assert.notEqual(
+      refusedLabel.status,
+      0,
+      "Free-text impact evidence cannot repair the captured applicability gap"
+    );
     const stillPending = JSON.parse(fs.readFileSync(statePath, "utf8"));
     assert.equal(stillPending.status, beforeFinal.status);
     assert.deepEqual(stillPending.lastCommit, beforeFinal.lastCommit);
-    assert.ok(stillPending.judgment.resolution.evidence.unsatisfiedRequiredActions.includes("Resolve code impact applicability"));
+    assert.ok(
+      stillPending.judgment.resolution.evidence.unsatisfiedRequiredActions.includes(
+        "Resolve code impact applicability"
+      )
+    );
     assert.equal(fs.readFileSync(receiptLog, "utf8").trim().split("\n").length, 2);
   }
 
@@ -2924,14 +2952,29 @@ test("managed workflow serves a judgment, allows an explicit override, and enric
   env.SNIPARA_TEST_COMPLETE_CODE_IMPACT = "1";
   const refreshed = run(["workflow", "judgment", "--refresh", "--json"]);
   assert.equal(refreshed.status, 0, refreshed.stderr || refreshed.stdout);
-  assert.equal(JSON.parse(refreshed.stdout).judgment.card.requiredActions.some(
-    (action) => action.title === "Resolve code impact applicability"
-  ), false);
+  assert.equal(
+    JSON.parse(refreshed.stdout).judgment.card.requiredActions.some(
+      (action) => action.title === "Resolve code impact applicability"
+    ),
+    false
+  );
   const respondedAfterRefresh = run([
-    "workflow", "judgment-respond", recommendationId, "--decision", "modified",
-    "--plan-before", "Implement\nClose", "--plan-after", "Implement\nRun workflow tests\nClose", "--json",
+    "workflow",
+    "judgment-respond",
+    recommendationId,
+    "--decision",
+    "modified",
+    "--plan-before",
+    "Implement\nClose",
+    "--plan-after",
+    "Implement\nRun workflow tests\nClose",
+    "--json",
   ]);
-  assert.equal(respondedAfterRefresh.status, 0, respondedAfterRefresh.stderr || respondedAfterRefresh.stdout);
+  assert.equal(
+    respondedAfterRefresh.status,
+    0,
+    respondedAfterRefresh.stderr || respondedAfterRefresh.stdout
+  );
 
   const finalized = run([
     ...finalArgs,
@@ -2990,19 +3033,37 @@ test("managed workflow serves a judgment, allows an explicit override, and enric
   assert.equal(current.judgmentHistory.length, 1);
   const originalJudgment = current.judgmentHistory[0];
   assert.equal(originalJudgment.responses[0].decision, "modified");
-  assert.ok(originalJudgment.card.requiredActions.some((action) => action.title === "Resolve code impact applicability"));
+  assert.ok(
+    originalJudgment.card.requiredActions.some(
+      (action) => action.title === "Resolve code impact applicability"
+    )
+  );
   assert.equal(originalJudgment.responses[0].outcomeReceipts.length, 1);
   assert.equal(current.judgment.responses[0].outcomeReceipts.length, 1);
-  assert.equal(originalJudgment.responses[0].outcomeReceipts[0].verification.evidence.some(
-    (item) => item.status === "passed" && item.label === "pnpm --filter snipara-companion test"
-  ), true);
+  assert.equal(
+    originalJudgment.responses[0].outcomeReceipts[0].verification.evidence.some(
+      (item) => item.status === "passed" && item.label === "pnpm --filter snipara-companion test"
+    ),
+    true
+  );
   assert.equal(current.judgment.responses[0].closeoutReceipt.status, "recorded");
   const finalReceipt = current.judgment.responses[0].outcomeReceipts.find((receipt) =>
     receipt.sourceRef.endsWith(":final")
   );
   const finalEvidence = finalReceipt.verification.evidence;
-  assert.ok(finalEvidence.some((item) => item.status === "passed" && item.label === "production workflow smoke"));
-  assert.ok(finalEvidence.some((item) => item.status === "passed" && item.source === "manual" && item.label === "code impact applicability inspection"));
+  assert.ok(
+    finalEvidence.some(
+      (item) => item.status === "passed" && item.label === "production workflow smoke"
+    )
+  );
+  assert.ok(
+    finalEvidence.some(
+      (item) =>
+        item.status === "passed" &&
+        item.source === "manual" &&
+        item.label === "code impact applicability inspection"
+    )
+  );
 });
 
 test("managed workflow judgment refresh archives the prior immutable card and responses", () => {
@@ -3072,15 +3133,17 @@ for (const [phaseStatus, taskStatus] of [
     state.status = "active";
     state.currentPhaseId = "verify";
     state.phases[1].status = phaseStatus;
-    state.phases[1].tasks = [{
-      id: "verify-check",
-      title: "Verify check",
-      query: "Verify check",
-      status: taskStatus,
-      attempt: 2,
-      maxAttempts: 3,
-      attemptHistory: [{ attempt: 1, outcome: "blocked", summary: "Missing proof" }],
-    }];
+    state.phases[1].tasks = [
+      {
+        id: "verify-check",
+        title: "Verify check",
+        query: "Verify check",
+        status: taskStatus,
+        attempt: 2,
+        maxAttempts: 3,
+        attemptHistory: [{ attempt: 1, outcome: "blocked", summary: "Missing proof" }],
+      },
+    ];
     const before = JSON.stringify(state, null, 2);
     fs.writeFileSync(statePath, before, "utf8");
     const commitLog = path.join(dir, "workflow-commit.jsonl");
@@ -3112,22 +3175,26 @@ test("final-commit accepts completed and explicitly skipped work without context
   const statePath = path.join(dir, ".snipara", "workflow", "current.json");
   const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
   state.phases[1].status = "skipped";
-  state.phases[1].tasks = [{
-    id: "verify-check", title: "Verify check", query: "Verify check", status: "skipped",
-    attempt: 2, maxAttempts: 3,
-  }];
-  fs.writeFileSync(statePath, JSON.stringify(state, null, 2), "utf8");
-  const result = runCli(
-    ["workflow", "final-commit", "--summary", "All work resolved", "--json"],
+  state.phases[1].tasks = [
     {
-      cwd: dir,
-      nodeArgs: ["-r", writeWorkflowPreload(dir)],
-      env: {
-        SNIPARA_API_KEY: "test-key", SNIPARA_PROJECT_ID: "project_1",
-        SNIPARA_API_URL: "https://api.example.test",
-      },
-    }
-  );
+      id: "verify-check",
+      title: "Verify check",
+      query: "Verify check",
+      status: "skipped",
+      attempt: 2,
+      maxAttempts: 3,
+    },
+  ];
+  fs.writeFileSync(statePath, JSON.stringify(state, null, 2), "utf8");
+  const result = runCli(["workflow", "final-commit", "--summary", "All work resolved", "--json"], {
+    cwd: dir,
+    nodeArgs: ["-r", writeWorkflowPreload(dir)],
+    env: {
+      SNIPARA_API_KEY: "test-key",
+      SNIPARA_PROJECT_ID: "project_1",
+      SNIPARA_API_URL: "https://api.example.test",
+    },
+  });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const current = JSON.parse(fs.readFileSync(statePath, "utf8"));
   assert.equal(current.status, "completed");
@@ -3142,19 +3209,36 @@ test("final-commit can record a partial outcome without erasing unresolved task 
   const statePath = path.join(dir, ".snipara", "workflow", "current.json");
   const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
   state.phases[1].status = "blocked";
-  state.phases[1].tasks = [{
-    id: "verify-check", title: "Verify check", query: "Verify check", status: "blocked",
-    attempt: 2, maxAttempts: 3, recoveryTaskId: "recover-proof", lastError: "Missing proof",
-    attemptHistory: [{ attempt: 1, outcome: "blocked", summary: "Missing proof" }],
-  }];
+  state.phases[1].tasks = [
+    {
+      id: "verify-check",
+      title: "Verify check",
+      query: "Verify check",
+      status: "blocked",
+      attempt: 2,
+      maxAttempts: 3,
+      recoveryTaskId: "recover-proof",
+      lastError: "Missing proof",
+      attemptHistory: [{ attempt: 1, outcome: "blocked", summary: "Missing proof" }],
+    },
+  ];
   fs.writeFileSync(statePath, JSON.stringify(state, null, 2), "utf8");
   const result = runCli(
-    ["workflow", "final-commit", "--summary", "Proof still missing", "--outcome", "partial", "--json"],
+    [
+      "workflow",
+      "final-commit",
+      "--summary",
+      "Proof still missing",
+      "--outcome",
+      "partial",
+      "--json",
+    ],
     {
       cwd: dir,
       nodeArgs: ["-r", writeWorkflowPreload(dir)],
       env: {
-        SNIPARA_API_KEY: "test-key", SNIPARA_PROJECT_ID: "project_1",
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "project_1",
         SNIPARA_API_URL: "https://api.example.test",
       },
     }
@@ -3168,23 +3252,24 @@ test("final-commit can record a partial outcome without erasing unresolved task 
   assert.equal(current.phases[1].tasks[0].maxAttempts, 3);
   assert.equal(current.phases[1].tasks[0].recoveryTaskId, "recover-proof");
   assert.equal(current.phases[1].tasks[0].lastError, "Missing proof");
-  assert.deepEqual(current.phases[1].tasks[0].attemptHistory, state.phases[1].tasks[0].attemptHistory);
+  assert.deepEqual(
+    current.phases[1].tasks[0].attemptHistory,
+    state.phases[1].tasks[0].attemptHistory
+  );
 });
 
 test("final-commit without managed state retains its standalone handoff behavior", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-final-unmanaged-"));
   fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
-  const result = runCli(
-    ["final-commit", "--summary", "Completed standalone work", "--json"],
-    {
-      cwd: dir,
-      nodeArgs: ["-r", writeWorkflowPreload(dir)],
-      env: {
-        SNIPARA_API_KEY: "test-key", SNIPARA_PROJECT_ID: "project_1",
-        SNIPARA_API_URL: "https://api.example.test",
-      },
-    }
-  );
+  const result = runCli(["final-commit", "--summary", "Completed standalone work", "--json"], {
+    cwd: dir,
+    nodeArgs: ["-r", writeWorkflowPreload(dir)],
+    env: {
+      SNIPARA_API_KEY: "test-key",
+      SNIPARA_PROJECT_ID: "project_1",
+      SNIPARA_API_URL: "https://api.example.test",
+    },
+  });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.equal(JSON.parse(result.stdout).commit.team_sync_handoff.status, "created");
   assert.equal(fs.existsSync(path.join(dir, ".snipara", "workflow", "current.json")), false);
@@ -3643,15 +3728,29 @@ test("final-commit writes local workflow and handoff fallback when hosted commit
   assert.ok(logged[1].summary.length <= 600);
 });
 
-test("orchestrator recommendation escalates explicit proof and multi-agent intent", () => {
+test("orchestrator recommendation is never opened by keywords or a file count", () => {
+  // AGENTS.md: depth is chosen from consequences, not keywords or a file-count
+  // threshold. Orchestrator was folded into Companion on 2026-11-15.
+  const query = "Coordinate multi-agent rollout with proof gates and live validation";
+  assert.equal(getOrchestratorRecommendation(query, "full", { changedFilesCount: 6 }), null);
+  assert.equal(
+    getOrchestratorRecommendation(query, "orchestrate", { hasActiveCollisions: true }),
+    null
+  );
+  assert.equal(shouldSuggestOrchestratorForWorkflow(query, "full"), false);
+  assert.equal(shouldSuggestOrchestratorForWorkflow(query, "orchestrate"), true);
+});
+
+test("a requested orchestrator handoff keeps proof and multi-agent annotations", () => {
   const recommendation = getOrchestratorRecommendation(
     "Coordinate multi-agent rollout with proof gates and live validation",
     "full",
-    { changedFilesCount: 6 }
+    { changedFilesCount: 6, explicitRequest: true }
   );
 
   assert.equal(recommendation.level, "confirm");
   assert.equal(recommendation.orchestratorRequired, true);
+  assert.ok(recommendation.reasons.includes("explicit_handoff_request"));
   assert.ok(recommendation.reasons.includes("multi_agent_intent"));
   assert.ok(recommendation.reasons.includes("proof_gate_intent"));
   assert.ok(recommendation.reasons.includes("changed_files_threshold"));
@@ -3760,7 +3859,7 @@ test("orchestrator handoff artifact captures workflow and routing metadata", () 
     const recommendation = getOrchestratorRecommendation(
       "Coordinate proof gate validation across multiple files",
       "full",
-      { changedFilesCount: 6, hasActiveCollisions: true }
+      { changedFilesCount: 6, hasActiveCollisions: true, explicitRequest: true }
     );
     const artifact = buildOrchestratorHandoff({
       sourceCommand: "workflow run",
@@ -3838,6 +3937,7 @@ test("orchestrator handoff only emits explicit or referenced decision IDs", () =
 test("adaptive work routing handoff remains recommendation-only and local-capable", () => {
   const recommendation = getOrchestratorRecommendation("Coordinate local worker coding", "full", {
     changedFilesCount: 1,
+    explicitRequest: true,
   });
   const adaptiveRouting = buildAdaptiveWorkRoutingRecommendation({
     query: "Reason with the main agent, then let a local worker code the docs update",
@@ -3866,7 +3966,7 @@ test("adaptive work routing handoff remains recommendation-only and local-capabl
   assert.equal(artifact.routing.routingCard.fallback, "main_agent");
   assert.match(
     artifact.routing.routingCard.reasons.join(" "),
-    /runtime catalog resolution remains delegated to snipara-orchestrator/
+    /runtime catalog resolution happens before any delegated execution/
   );
   assert.doesNotMatch(JSON.stringify(artifact.routing), /api[_-]?key|secret value/i);
 });
@@ -3874,6 +3974,7 @@ test("adaptive work routing handoff remains recommendation-only and local-capabl
 test("adaptive routing advertises a bounded strong-repair contract without spawning a worker", () => {
   const recommendation = getOrchestratorRecommendation("Coordinate local worker coding", "full", {
     changedFilesCount: 1,
+    explicitRequest: true,
   });
   const adaptiveRouting = buildAdaptiveWorkRoutingRecommendation({
     query: "Use a local worker for a bounded docs change and repair only failed proof",
@@ -3962,7 +4063,7 @@ test("workflow run emits adaptive routing dry-run metadata into orchestrator han
     );
 
     const preloadPath = writeWorkflowPreload(dir);
-    const orchestratorArgsLog = path.join(dir, "orchestrator-args.jsonl");
+    const localModelsLog = path.join(dir, "local-models.log");
     const result = runCli(
       [
         "workflow",
@@ -3984,78 +4085,12 @@ test("workflow run emits adaptive routing dry-run metadata into orchestrator han
           SNIPARA_API_KEY: "snp-test",
           SNIPARA_PROJECT_ID: "project_1",
           SNIPARA_API_URL: "https://api.snipara.com",
-          SNIPARA_TEST_ORCHESTRATOR_ARGS_LOG: orchestratorArgsLog,
-          SNIPARA_TEST_LOCAL_ORCHESTRATOR_CATALOG_RESPONSE: JSON.stringify({
-            schemaVersion: "snipara.orchestrator.runtime_catalog.v1",
-            source: "openai_compatible_local",
-            provider: "lm-studio",
-            baseUrl: "http://127.0.0.1:1234",
-            models: ["ggml-org/devstral-small-2-24b-instruct-2512-gguf"],
-            apiPaths: {
-              models: "/v1/models",
-              chatCompletions: "/v1/chat/completions",
-              responses: "/v1/responses",
-            },
-            candidates: [
-              {
-                candidateId: "local-devstral",
-                workerClass: "coding",
-                catalogSource: "openai_compatible_local",
-                endpointType: "local",
-                workerRoles: ["coding"],
-                capabilities: ["docs_write"],
-                isAvailable: true,
-                workerProfileId: "local-devstral-refactor",
-              },
-            ],
-            workerEndpoints: {
-              "local-devstral": {
-                provider: "lm-studio",
-                baseUrl: "http://127.0.0.1:1234",
-                model: "ggml-org/devstral-small-2-24b-instruct-2512-gguf",
-                apiPaths: {
-                  responses: "/v1/responses",
-                },
-                workerProfileId: "local-devstral-refactor",
-              },
-            },
-            workerProfiles: {
-              "local-devstral-refactor": {
-                profileId: "local-devstral-refactor",
-                strengths: ["code", "refactor", "agentic_exploration"],
-                structuredOutputFit: "medium",
-                timeoutRisk: "high",
-              },
-            },
-          }),
-          SNIPARA_TEST_LOCAL_ORCHESTRATOR_ROUTE_RESPONSE: JSON.stringify({
-            status: "resolved",
-            selected: {
-              candidate: {
-                candidateId: "local-devstral",
-                workerClass: "coding",
-                catalogSource: "openai_compatible_local",
-                endpointType: "local",
-              },
-              score: 0.91,
-              scoreBreakdown: {
-                capabilityFit: 0.2,
-                preferredStrengthFit: 0.3,
-                timeoutPenalty: -0.1,
-              },
-              reasons: ["candidate satisfies local documentation route"],
-            },
-            policyDecision: {
-              mode: "approval_required",
-              approvalRequired: true,
-              executionAllowed: false,
-            },
-            evaluatedCount: 1,
-            rejectedCount: 0,
-            fallback: "main_agent",
-            reasons: ["candidate satisfies local documentation route"],
-            warnings: [
-              "Selected local worker because the planner retains deep reasoning and work is scoped.",
+          SNIPARA_TEST_LOCAL_MODELS_LOG: localModelsLog,
+          // Only the model server is faked: the catalog and the resolver run for real.
+          SNIPARA_TEST_LOCAL_MODELS_RESPONSE: JSON.stringify({
+            data: [
+              { id: "text-embedding-nomic-embed-text-v1.5" },
+              { id: "ggml-org/devstral-small-2-24b-instruct-2512-gguf" },
             ],
           }),
         },
@@ -4069,30 +4104,28 @@ test("workflow run emits adaptive routing dry-run metadata into orchestrator han
     assert.equal(payload.adaptive_routing.requirements.plannerRetainsReasoning, true);
     assert.deepEqual(payload.adaptive_routing.requirements.preferredEndpointTypes, ["local"]);
     assert.deepEqual(payload.adaptive_routing.requirements.writeScope, ["docs/roadmap.md"]);
-    assert.equal(payload.adaptive_routing.gateway.source, "local_orchestrator");
+    const devstralId =
+      "lm-studio:http---127-0-0-1-1234:ggml-org-devstral-small-2-24b-instruct-2512-gguf";
+    assert.equal(payload.adaptive_routing.gateway.source, "companion_local");
     assert.equal(payload.adaptive_routing.gateway.success, true);
+    // The embedding model is not a worker: one candidate, not two.
     assert.equal(payload.adaptive_routing.gateway.candidateCount, 1);
     assert.equal(
       payload.adaptive_routing.runtimeCatalog.workerProfiles["local-devstral-refactor"].profileId,
       "local-devstral-refactor"
     );
+    assert.equal(payload.adaptive_routing.runtimeCatalog.candidates[0].candidateId, devstralId);
     assert.equal(
-      payload.adaptive_routing.runtimeCatalog.candidates[0].candidateId,
-      "local-devstral"
-    );
-    assert.equal(
-      payload.adaptive_routing.runtimeCatalog.workerEndpoints["local-devstral"].model,
+      payload.adaptive_routing.runtimeCatalog.workerEndpoints[devstralId].model,
       "ggml-org/devstral-small-2-24b-instruct-2512-gguf"
     );
-    assert.equal(
-      payload.adaptive_routing.resolution.selected.candidate.candidateId,
-      "local-devstral"
+    assert.equal(payload.adaptive_routing.resolution.status, "resolved");
+    assert.equal(payload.adaptive_routing.resolution.selected.candidate.candidateId, devstralId);
+    assert.equal(payload.adaptive_routing.resolution.policyDecision.mode, "approval_required");
+    assert.match(
+      payload.adaptive_routing.gateway.warnings.join(" "),
+      /high timeout risk; keep execution chunked and checkpointed/
     );
-    assert.deepEqual(payload.adaptive_routing.resolution.selected.scoreBreakdown, {
-      capabilityFit: 0.2,
-      preferredStrengthFit: 0.3,
-      timeoutPenalty: -0.1,
-    });
     assert.equal(payload.orchestrator_handoff.relativePath, ORCHESTRATOR_HANDOFF_RELATIVE_PATH);
     assert.equal(
       payload.orchestrator_handoff.handoff.routing.routingCard.recommendedWorkerClass,
@@ -4104,40 +4137,20 @@ test("workflow run emits adaptive routing dry-run metadata into orchestrator han
     );
     assert.equal(persisted.routing.workProfile.taskType, "documentation");
     assert.equal(persisted.routing.routingCard.humanApprovalRequired, true);
-    assert.equal(persisted.routing.gateway.source, "local_orchestrator");
+    assert.equal(persisted.routing.gateway.source, "companion_local");
     assert.equal(persisted.routing.gateway.candidateCount, 1);
     assert.equal(persisted.routing.runtimeCatalog.candidates[0].endpointType, "local");
-    assert.equal(
-      persisted.routing.runtimeCatalog.workerProfiles["local-devstral-refactor"].profileId,
-      "local-devstral-refactor"
-    );
-    assert.equal(
-      persisted.routing.runtimeCatalog.workerEndpoints["local-devstral"].model,
-      "ggml-org/devstral-small-2-24b-instruct-2512-gguf"
-    );
     assert.equal(persisted.routing.resolution.selected.candidate.endpointType, "local");
-    assert.deepEqual(persisted.routing.resolution.selected.scoreBreakdown, {
-      capabilityFit: 0.2,
-      preferredStrengthFit: 0.3,
-      timeoutPenalty: -0.1,
-    });
     assert.match(
       persisted.routing.routingCard.warnings.join(" "),
       /companion does not launch or claim workers/
     );
-    const orchestratorCalls = fs
-      .readFileSync(orchestratorArgsLog, "utf8")
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line));
-    const catalogCall = orchestratorCalls.find(
-      (entry) =>
-        entry.command === "snipara-orchestrator" && entry.args?.[0] === "local-model-catalog"
-    );
-    assert.ok(catalogCall, "expected local-model-catalog to be invoked");
-    assert.ok(catalogCall.args.includes("--all-models"));
-    assert.doesNotMatch(JSON.stringify(persisted.routing), /api[_-]?key|secret value/i);
+    // The model server was probed in process, never through a subprocess.
+    assert.deepEqual(fs.readFileSync(localModelsLog, "utf8").trim().split("\n"), [
+      "http://127.0.0.1:1234/v1/models",
+    ]);
+    // No key material: requiresApiKey is a boolean flag, a field named apiKey would be a leak.
+    assert.doesNotMatch(JSON.stringify(persisted.routing), /"api[_-]?key"\s*:|secret value/i);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -4397,7 +4410,7 @@ test("local worker declarations feed workflow run routing", () => {
     assert.ok(policy.preferredEndpointTypes.includes("local"));
 
     const preloadPath = writeWorkflowPreload(dir);
-    const orchestratorArgsLog = path.join(dir, "orchestrator-args.jsonl");
+    const localModelsLog = path.join(dir, "local-models.log");
     const result = runCli(
       [
         "workflow",
@@ -4418,53 +4431,14 @@ test("local worker declarations feed workflow run routing", () => {
           SNIPARA_API_KEY: "snp-test",
           SNIPARA_PROJECT_ID: "project_1",
           SNIPARA_API_URL: "https://api.snipara.com",
-          SNIPARA_TEST_ORCHESTRATOR_ARGS_LOG: orchestratorArgsLog,
+          SNIPARA_TEST_LOCAL_MODELS_LOG: localModelsLog,
           SNIPARA_TEST_AUTOMATION_SETTINGS: JSON.stringify({
             adaptiveRoutingMode: "off",
             adaptiveRoutingAllowedEndpointTypes: ["cloud"],
           }),
-          SNIPARA_TEST_LOCAL_ORCHESTRATOR_CATALOG_RESPONSE: JSON.stringify({
-            schemaVersion: "snipara.orchestrator.runtime_catalog.v1",
-            source: "openai_compatible_local",
-            provider: "lm-studio",
-            baseUrl: "http://127.0.0.1:1234",
-            models: ["openai/gpt-oss-20b"],
-            candidates: [
-              {
-                candidateId: "local-gpt-oss-20b-coding",
-                workerClass: "coding",
-                catalogSource: "openai_compatible_local",
-                endpointType: "local",
-                workerRoles: ["coding"],
-                capabilities: ["code", "refactor"],
-                isAvailable: true,
-              },
-            ],
-            workerEndpoints: {
-              "local-gpt-oss-20b-coding": {
-                provider: "lm-studio",
-                baseUrl: "http://127.0.0.1:1234",
-                model: "openai/gpt-oss-20b",
-              },
-            },
-          }),
-          SNIPARA_TEST_LOCAL_ORCHESTRATOR_ROUTE_RESPONSE: JSON.stringify({
-            status: "resolved",
-            selected: {
-              candidate: {
-                candidateId: "local-gpt-oss-20b-coding",
-                workerClass: "coding",
-                endpointType: "local",
-              },
-              score: 0.88,
-              scoreBreakdown: {
-                capabilityFit: 0.4,
-              },
-              reasons: ["declared local coding worker selected"],
-            },
-            fallback: "main_agent",
-            reasons: ["declared local coding worker selected"],
-            warnings: [],
+          // Only the model server is faked: the catalog and the resolver run for real.
+          SNIPARA_TEST_LOCAL_MODELS_RESPONSE: JSON.stringify({
+            data: [{ id: "openai/gpt-oss-20b" }, { id: "qwen/qwen3-coder-30b" }],
           }),
         },
         nodeArgs: ["-r", preloadPath],
@@ -4474,7 +4448,7 @@ test("local worker declarations feed workflow run routing", () => {
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const payload = JSON.parse(result.stdout);
     assert.equal(payload.local_worker.id, "local-gpt-oss-20b-coding");
-    assert.equal(payload.adaptive_routing.gateway.source, "local_orchestrator");
+    assert.equal(payload.adaptive_routing.gateway.source, "companion_local");
     assert.equal(payload.adaptive_routing.gateway.success, true);
     assert.equal(payload.adaptive_routing.requirements.workerRole, "coding");
     assert.deepEqual(payload.adaptive_routing.requirements.allowedEndpointTypes, ["local"]);
@@ -4484,19 +4458,20 @@ test("local worker declarations feed workflow run routing", () => {
       /Declared local worker local-gpt-oss-20b-coding selected/
     );
 
-    const orchestratorCalls = fs
-      .readFileSync(orchestratorArgsLog, "utf8")
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line));
-    const catalogCall = orchestratorCalls.find(
-      (entry) =>
-        entry.command === "snipara-orchestrator" && entry.args?.[0] === "local-model-catalog"
+    // The declared model was the one put in the catalog, out of the two the server offers.
+    assert.deepEqual(
+      payload.adaptive_routing.runtimeCatalog.candidates.map(
+        (candidate) => candidate.workerProfileId
+      ),
+      ["local-gpt-oss-code-strict"]
     );
-    assert.ok(catalogCall, "expected local-model-catalog to be invoked");
-    assert.ok(catalogCall.args.includes("--model"));
-    assert.ok(catalogCall.args.includes("openai/gpt-oss-20b"));
+    assert.equal(
+      payload.adaptive_routing.resolution.selected.candidate.workerProfileId,
+      "local-gpt-oss-code-strict"
+    );
+    assert.deepEqual(fs.readFileSync(localModelsLog, "utf8").trim().split("\n"), [
+      "http://127.0.0.1:1234/v1/models",
+    ]);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -4619,20 +4594,21 @@ test("workers local probe drafts a persisted declaration suggestion", () => {
         cwd: dir,
         nodeArgs: ["-r", preloadPath],
         env: {
-          SNIPARA_TEST_LOCAL_ORCHESTRATOR_CATALOG_RESPONSE: JSON.stringify({
-            schemaVersion: "snipara.orchestrator.runtime_catalog.v1",
-            source: "openai_compatible_local",
-            provider: "lm-studio",
-            baseUrl: "http://127.0.0.1:1234",
-            models: ["openai/gpt-oss-20b"],
-            candidates: [],
-            workerEndpoints: {},
+          // Fake the model server: a real one may be listening on 1234 (LM Studio's default).
+          SNIPARA_TEST_LOCAL_MODELS_RESPONSE: JSON.stringify({
+            data: [{ id: "openai/gpt-oss-20b" }],
           }),
+          SNIPARA_TEST_LOCAL_MODELS_LOG: path.join(dir, "local-models.log"),
         },
       }
     );
     assert.equal(probeResult.status, 0, probeResult.stderr || probeResult.stdout);
+    assert.equal(
+      fs.readFileSync(path.join(dir, "local-models.log"), "utf8").trim(),
+      "http://127.0.0.1:1234/v1/models"
+    );
     const payload = JSON.parse(probeResult.stdout);
+    assert.deepEqual(payload.catalog.models, ["openai/gpt-oss-20b"]);
     assert.equal(payload.suggestion.id, "local-gpt-oss-20b-coding");
     assert.equal(payload.suggestion.model, "tiny-coder");
     assert.equal(payload.suggestion.reasoning, "low");
@@ -4783,47 +4759,61 @@ test("memory guard normalizes guard tags into memory categories", () => {
   assert.equal(normalizeGuardTag(" commit "), "commit");
 });
 
-test("workflow auto mode deterministically selects workflow depth", () => {
-  assert.equal(resolveAutoWorkflowMode("show what changed in this repo"), "lite");
-  assert.equal(resolveAutoWorkflowMode("fix typo in README small diff"), "lite");
-  assert.equal(resolveAutoWorkflowMode("implement login error handling"), "standard");
-  assert.equal(resolveAutoWorkflowMode("why did we choose hosted MCP for memory?"), "standard");
-  assert.equal(resolveAutoWorkflowMode("ship a multi-phase schema migration plan"), "full");
-  assert.equal(
-    resolveAutoWorkflowMode("coordinate production proof gate with workers"),
-    "orchestrate"
-  );
-  assert.equal(resolveAutoWorkflowMode("corriger une faute dans le README"), "lite");
-  assert.equal(resolveAutoWorkflowMode("préparer une migration de schéma en production"), "full");
-  assert.equal(
-    resolveAutoWorkflowMode("coordonner des sous-agents avec une preuve de déploiement"),
-    "orchestrate"
-  );
+test("workflow auto mode is an alias for STANDARD and ignores query keywords", () => {
+  // AGENTS.md: depth is chosen from consequences, never from keywords. These
+  // queries used to be routed to lite, full or orchestrate by their wording.
+  for (const query of [
+    "show what changed in this repo",
+    "fix typo in README small diff",
+    "implement login error handling",
+    "ship a multi-phase schema migration plan",
+    "coordinate production proof gate with workers",
+    "corriger une faute dans le README",
+    "préparer une migration de schéma en production",
+    "coordonner des sous-agents avec une preuve de déploiement",
+  ]) {
+    assert.equal(resolveAutoWorkflowMode(query), "standard", query);
+  }
 });
 
 test("automatic setup selects Companion and hosted memory without silently enabling standalone memory", () => {
-  const lite = resolveAutomaticSetup("corriger une faute", "auto", { hostedConfigured: true });
-  assert.equal(lite.effectiveMode, "lite");
-  assert.equal(lite.companion, "active");
-  assert.equal(lite.memory, "none");
-  assert.equal(lite.standaloneMemory, "not_selected");
+  const auto = resolveAutomaticSetup(
+    "coordonner des sous-agents avec une preuve de déploiement",
+    "auto",
+    {
+      hostedConfigured: true,
+    }
+  );
+  assert.equal(auto.effectiveMode, "standard");
+  assert.equal(auto.companion, "active");
+  assert.equal(auto.memory, "hosted");
+  assert.equal(auto.standaloneMemory, "not_selected");
+  assert.equal(auto.orchestrator, "none");
+  assert.equal(auto.workers, "none");
+  assert.equal(auto.tokenStrategy, "minimal");
+  assert.match(auto.reasons[0], /alias for STANDARD/);
 
-  const full = resolveAutomaticSetup("préparer une migration de schéma", "auto", {
+  const lite = resolveAutomaticSetup("corriger une faute", "lite", { hostedConfigured: true });
+  assert.equal(lite.effectiveMode, "lite");
+  assert.equal(lite.memory, "none");
+
+  const full = resolveAutomaticSetup("préparer une migration de schéma", "full", {
     hostedConfigured: true,
   });
   assert.equal(full.effectiveMode, "full");
   assert.equal(full.memory, "hosted");
   assert.equal(full.tokenStrategy, "budgeted");
   assert.equal(full.orchestrator, "none");
+  assert.match(full.reasons[0], /FULL was declared/);
 
-  const orchestrated = resolveAutomaticSetup(
-    "coordonner des sous-agents avec une preuve de déploiement",
-    "auto",
-    { hostedConfigured: true }
-  );
-  assert.equal(orchestrated.effectiveMode, "orchestrate");
-  assert.equal(orchestrated.orchestrator, "required");
-  assert.equal(orchestrated.workers, "policy_gated");
+  // A declared orchestrate mode still offers the frozen Controller handoff and
+  // flags workers as policy-gated.
+  const declared = resolveAutomaticSetup("coordonner des sous-agents", "orchestrate", {
+    hostedConfigured: true,
+  });
+  assert.equal(declared.effectiveMode, "orchestrate");
+  assert.equal(declared.orchestrator, "required");
+  assert.equal(declared.workers, "policy_gated");
 });
 
 test("workflow lite mode does not require hosted configuration", () => {
@@ -4847,14 +4837,18 @@ test("workflow lite mode does not require hosted configuration", () => {
 });
 
 test("ordinary workflow LITE makes no hosted requests even with hosted routing preferences", () => {
-  for (const mode of ["auto", "lite"]) {
+  // Only a declared LITE: auto is an alias for STANDARD and retrieves context.
+  for (const mode of ["lite"]) {
     for (const localPolicy of [null, { mode: "off" }]) {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-auto-lite-"));
       try {
         fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
         if (localPolicy) {
           fs.mkdirSync(path.join(dir, ".snipara"));
-          fs.writeFileSync(path.join(dir, ".snipara", "adaptive-routing.json"), JSON.stringify(localPolicy));
+          fs.writeFileSync(
+            path.join(dir, ".snipara", "adaptive-routing.json"),
+            JSON.stringify(localPolicy)
+          );
         }
         const preloadPath = writeWorkflowPreload(dir);
         const requestLogPath = path.join(dir, "requests.log");
@@ -4868,7 +4862,9 @@ test("ordinary workflow LITE makes no hosted requests even with hosted routing p
               SNIPARA_PROJECT_ID: "proj_test",
               SNIPARA_API_URL: "https://api.test",
               SNIPARA_TEST_REQUEST_LOG: requestLogPath,
-              SNIPARA_TEST_AUTOMATION_SETTINGS: JSON.stringify({ adaptiveRoutingMode: "recommend" }),
+              SNIPARA_TEST_AUTOMATION_SETTINGS: JSON.stringify({
+                adaptiveRoutingMode: "recommend",
+              }),
             },
           }
         );
@@ -4879,7 +4875,11 @@ test("ordinary workflow LITE makes no hosted requests even with hosted routing p
         assert.deepEqual(payload.retrieval_policy.mandatory_calls, []);
         assert.equal(payload.adaptive_routing, null);
         assert.equal(payload.orchestrator_handoff, null);
-        assert.equal(fs.existsSync(requestLogPath), false, "LITE unexpectedly requested hosted data");
+        assert.equal(
+          fs.existsSync(requestLogPath),
+          false,
+          "LITE unexpectedly requested hosted data"
+        );
         assert.equal(fs.existsSync(path.join(dir, ".snipara", "orchestrator")), false);
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
@@ -4901,13 +4901,25 @@ test("workflow LITE retains hosted routing policy for explicit routing, local de
       fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
       if (entry.localPolicy) {
         fs.mkdirSync(path.join(dir, ".snipara"));
-        fs.writeFileSync(path.join(dir, ".snipara", "adaptive-routing.json"), JSON.stringify(entry.localPolicy));
+        fs.writeFileSync(
+          path.join(dir, ".snipara", "adaptive-routing.json"),
+          JSON.stringify(entry.localPolicy)
+        );
       }
       const preloadPath = writeWorkflowPreload(dir);
       const requestLogPath = path.join(dir, "requests.log");
       const toolLogPath = path.join(dir, "tools.log");
       const result = runCli(
-        ["workflow", "run", "--mode", "lite", "--query", "fix typo in README", ...entry.args, "--json"],
+        [
+          "workflow",
+          "run",
+          "--mode",
+          "lite",
+          "--query",
+          "fix typo in README",
+          ...entry.args,
+          "--json",
+        ],
         {
           cwd: dir,
           nodeArgs: ["--require", preloadPath],
@@ -4934,7 +4946,10 @@ test("workflow LITE retains hosted routing policy for explicit routing, local de
       assert.equal(payload.adaptive_routing.requirements.dailyBudgetCents, 50);
       if (entry.args.includes("--route-local-workers")) {
         assert.notEqual(payload.adaptive_routing.gateway?.source, "hosted_mcp");
-        assert.match(payload.adaptive_routing.routingCard.warnings.join(" "), /does not allow local endpoints/);
+        assert.match(
+          payload.adaptive_routing.routingCard.warnings.join(" "),
+          /does not allow local endpoints/
+        );
       }
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -5242,15 +5257,18 @@ test("workflow resume includes the local session snapshot", () => {
     });
     const preloadPath = writeWorkflowPreload(dir);
 
-    const result = runCli(["workflow", "resume", "--detail", "--include-session-context", "--json"], {
-      cwd: dir,
-      env: {
-        SNIPARA_API_KEY: "test-key",
-        SNIPARA_PROJECT_ID: "snipara",
-        SNIPARA_API_URL: "https://api.snipara.com",
-      },
-      nodeArgs: ["--require", preloadPath],
-    });
+    const result = runCli(
+      ["workflow", "resume", "--detail", "--include-session-context", "--json"],
+      {
+        cwd: dir,
+        env: {
+          SNIPARA_API_KEY: "test-key",
+          SNIPARA_PROJECT_ID: "snipara",
+          SNIPARA_API_URL: "https://api.snipara.com",
+        },
+        nodeArgs: ["--require", preloadPath],
+      }
+    );
 
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const payload = JSON.parse(result.stdout);
@@ -5691,16 +5709,42 @@ for (const preset of ["bugfix", "feature", "legacy"]) {
   });
 }
 
-
 test("workflow sessions separate logical identity from persisted IDs across resumes and actors", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-session-identity-"));
   const planFile = path.join(dir, "plan.json");
-  fs.writeFileSync(planFile, JSON.stringify({ mode: "full", steps: [{id: "fix", title: "Fix", files: ["src/a.ts"]}] }));
+  fs.writeFileSync(
+    planFile,
+    JSON.stringify({ mode: "full", steps: [{ id: "fix", title: "Fix", files: ["src/a.ts"] }] })
+  );
   const preloadPath = writeWorkflowPreload(dir);
   const log = path.join(dir, "calls.jsonl");
-  const baseEnv = { SNIPARA_API_KEY: "test-key", SNIPARA_PROJECT_ID: "project_1", SNIPARA_API_URL: "https://api.example.test", SNIPARA_TEST_COLLAB_LOG: log };
+  const baseEnv = {
+    SNIPARA_API_KEY: "test-key",
+    SNIPARA_PROJECT_ID: "project_1",
+    SNIPARA_API_URL: "https://api.example.test",
+    SNIPARA_TEST_COLLAB_LOG: log,
+  };
   const start = (id, actor) => {
-    const result = runCli(["workflow", "start", "--id", id, "--goal", "Verify identity", "--plan-file", planFile, "--skip-agent-context", "--force", "--json"], {cwd: dir, nodeArgs: ["--require", preloadPath], env: {...baseEnv, SNIPARA_AGENT_ID: actor}});
+    const result = runCli(
+      [
+        "workflow",
+        "start",
+        "--id",
+        id,
+        "--goal",
+        "Verify identity",
+        "--plan-file",
+        planFile,
+        "--skip-agent-context",
+        "--force",
+        "--json",
+      ],
+      {
+        cwd: dir,
+        nodeArgs: ["--require", preloadPath],
+        env: { ...baseEnv, SNIPARA_AGENT_ID: actor },
+      }
+    );
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const receipt = JSON.parse(result.stdout).coordination.startReceipt;
     assert.equal(receipt.hostedSessionStatus, "ok");
@@ -5714,27 +5758,52 @@ test("workflow sessions separate logical identity from persisted IDs across resu
   assert.notEqual(start("alpha", "bob"), a);
   assert.equal(start("alpha", "alice"), a);
   const calls = fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
-  const sessions = calls.filter(c => c.pathname.endsWith("/collaboration/sessions"));
+  const sessions = calls.filter((c) => c.pathname.endsWith("/collaboration/sessions"));
   assert.equal(sessions[0].body.workSessionId, undefined);
   assert.ok(sessions[0].body.sessionId.startsWith("workflow:alpha:"));
   assert.equal(sessions[1].body.workSessionId, a);
   assert.equal(sessions[2].body.workSessionId, undefined);
   assert.equal(sessions[3].body.workSessionId, undefined);
-  for (const c of calls.filter(c => c.pathname.endsWith("/collaboration/leases"))) assert.ok(c.body.workSessionId.startsWith("hosted_"));
+  for (const c of calls.filter((c) => c.pathname.endsWith("/collaboration/leases")))
+    assert.ok(c.body.workSessionId.startsWith("hosted_"));
 });
-
 
 test("workflow does not claim hosted leases when session creation is refused", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-session-refused-"));
   const plan = path.join(dir, "plan.json");
-  fs.writeFileSync(plan, JSON.stringify({mode: "full", steps: [{id: "edit", title: "Edit", files: ["src/a.ts"]}]}));
+  fs.writeFileSync(
+    plan,
+    JSON.stringify({ mode: "full", steps: [{ id: "edit", title: "Edit", files: ["src/a.ts"] }] })
+  );
   const preload = writeWorkflowPreload(dir);
   const log = path.join(dir, "calls.jsonl");
-  const result = runCli(["workflow", "start", "--goal", "Refused session", "--plan-file", plan, "--skip-agent-context", "--json"], {cwd: dir, nodeArgs: ["--require", preload], env: {SNIPARA_API_KEY: "test-key", SNIPARA_PROJECT_ID: "project_1", SNIPARA_API_URL: "https://api.example.test", SNIPARA_TEST_COLLAB_LOG: log, SNIPARA_TEST_SESSION_REFUSED: "1"}});
+  const result = runCli(
+    [
+      "workflow",
+      "start",
+      "--goal",
+      "Refused session",
+      "--plan-file",
+      plan,
+      "--skip-agent-context",
+      "--json",
+    ],
+    {
+      cwd: dir,
+      nodeArgs: ["--require", preload],
+      env: {
+        SNIPARA_API_KEY: "test-key",
+        SNIPARA_PROJECT_ID: "project_1",
+        SNIPARA_API_URL: "https://api.example.test",
+        SNIPARA_TEST_COLLAB_LOG: log,
+        SNIPARA_TEST_SESSION_REFUSED: "1",
+      },
+    }
+  );
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const receipt = JSON.parse(result.stdout).coordination.startReceipt;
   assert.equal(receipt.hostedSessionStatus, "error");
   assert.equal(receipt.hostedClaimStatus, "skipped");
   const calls = fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
-  assert.equal(calls.filter(c => c.pathname.endsWith("/collaboration/leases")).length, 0);
+  assert.equal(calls.filter((c) => c.pathname.endsWith("/collaboration/leases")).length, 0);
 });

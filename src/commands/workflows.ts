@@ -10,6 +10,7 @@
  * the re-exports in index.ts.
  */
 import * as fs from "fs";
+import { buildLocalModelCatalog, resolveWorkerCandidates } from "../runtime/local-worker-routing";
 import * as path from "path";
 import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -197,7 +198,6 @@ const COMPANION_CONTINUITY_CONTRACT_VERSION = "snipara.companion.continuity.v1";
 const FINAL_COMMIT_RETRY_TIMEOUT_MS = 45_000;
 const FINAL_COMMIT_SUMMARY_MAX_CHARS = 600;
 const FINAL_COMMIT_RETRY_SUMMARY_MAX_CHARS = 600;
-const DEFAULT_LOCAL_ORCHESTRATOR_TIMEOUT_MS = 8_000;
 const ADAPTIVE_ROUTING_POLICY_RELATIVE_PATH = path.join(".snipara", "adaptive-routing.json");
 const MEMORY_DECISION_PRODUCER_ACTIONS = new Set([
   "accept",
@@ -6053,53 +6053,18 @@ function phaseQuery(state: ManagedWorkflowState, phase: ManagedWorkflowPhase): s
   return phase.query || `${state.goal}: ${phase.title}`;
 }
 
-export function resolveAutoWorkflowMode(query: string): Exclude<WorkflowMode, "auto"> {
-  const normalized = query.toLowerCase();
-
-  if (
-    /\b(orchestrate|orchestrat|handoff|passation|multi-agent|multi agent|multi-agent|sous-agent|sous agent|worker|travailleur|parall[eè]le|coordonn(?:er|ation)|proof gate|proof-gate|preuve|garde-fou|gate|drift check|d[eé]rive|release gate|production gate|mise en production|contr[oô]le de production)\b/.test(
-      normalized
-    )
-  ) {
-    return "orchestrate";
-  }
-
-  if (
-    /\b(deploy|deployment|d[eé]ployer|d[eé]ploiement|release|livraison|mise en production|merge|fusionner|push|pousser|migration|sch[eé]ma|auth|authentification|billing|facturation|security|s[eé]curit[eé]|architecture|architectural|multi-phase|multiphase|phase commit|commit de phase|final commit|commit final|managed workflow|workflow g[eé]r[eé]|roadmap|feuille de route|plan|chantier)\b/.test(
-      normalized
-    )
-  ) {
-    return "full";
-  }
-
-  if (
-    /\b(why|pourquoi|decision|d[eé]cision|rationale|positioning|positionnement|strategy|strat[eé]gie|contexte|pr[eé]f[eé]rence|cross-session|multi-session|previous decision|prior decision|historical context|contexte historique)\b/.test(
-      normalized
-    )
-  ) {
-    return "standard";
-  }
-
-  if (
-    /\b(status|statut|show|montre|montrer|afficher|list|liste|lister|read|lire|lookup|chercher|retrouver|recall|rappel|brief|r[eé]sum[eé]|summarize|summary|what changed|ce qui a chang[eé]|question|docs?|documentation)\b/.test(
-      normalized
-    ) &&
-    !/\b(implement|change|fix|ship|code|refactor|test|write|create|build)\b/.test(normalized)
-  ) {
-    return "lite";
-  }
-
-  if (
-    /\b(typo|faute|correction de texte|copy edit|petite correction|petit diff|small diff|tiny diff|one-line|one line|une ligne|fichier connu|known file|obvious fix|quick fix|correction rapide|format|formatting|formatage|rename|renommer)\b/.test(
-      normalized
-    ) &&
-    !/\b(architecture|release|deploy|d[eé]ploiement|migration|schema|sch[eé]ma|auth|billing|security|s[eé]curit[eé]|multi-file|multi-fichier|many files|plusieurs fichiers|5\+ files|cross-session|multi-session|decision|d[eé]cision)\b/.test(
-      normalized
-    )
-  ) {
-    return "lite";
-  }
-
+/**
+ * `--mode auto` is an alias for STANDARD.
+ *
+ * It used to pick the depth from keywords in the query ("worker", "gate",
+ * "release", "plan", "typo"...), which AGENTS.md rules out: depth is chosen
+ * from consequences and uncertainty, by whoever owns the task. STANDARD
+ * retrieves only the missing context with no fixed call sequence, the safe
+ * default for a caller that did not choose. Declare `lite`, `full` or
+ * `orchestrate` to get those depths. The query is accepted for compatibility
+ * and ignored.
+ */
+export function resolveAutoWorkflowMode(_query: string): Exclude<WorkflowMode, "auto"> {
   return "standard";
 }
 
@@ -6116,17 +6081,19 @@ export function resolveAutomaticSetup(
 ): AutomaticSetupSelection {
   const effectiveMode = effectiveWorkflowMode(requestedMode, query);
   const hostedMemory = options.hostedConfigured !== false && effectiveMode !== "lite";
-  const orchestratorRequired = effectiveMode === "orchestrate";
-  const hasOrchestratorSignal = getOrchestratorRecommendation(query, effectiveMode) !== null;
+  // Orchestrator was folded into Companion (2026-11-15): an inferred orchestrated
+  // depth runs through Companion, and the frozen Orchestrator is needed only
+  // when the caller declared the orchestrate mode.
+  const orchestratorRequired = requestedMode === "orchestrate";
 
   return {
     requestedMode,
     effectiveMode,
     companion: "active",
     memory: hostedMemory ? "hosted" : "none",
-    orchestrator: orchestratorRequired ? "required" : hasOrchestratorSignal ? "available" : "none",
+    orchestrator: orchestratorRequired ? "required" : "none",
     workers:
-      orchestratorRequired &&
+      effectiveMode === "orchestrate" &&
       /\b(worker|travailleur|sous-agent(?:s)?|sous agent(?:s)?|parall[eè]le(?:s)?)\b/i.test(query)
         ? "policy_gated"
         : "none",
@@ -6134,14 +6101,16 @@ export function resolveAutomaticSetup(
     tokenStrategy:
       effectiveMode === "full" || effectiveMode === "orchestrate" ? "budgeted" : "minimal",
     reasons: [
-      `task intent selected ${effectiveMode.toUpperCase()}`,
+      requestedMode === "auto"
+        ? "auto is an alias for STANDARD; declare lite, full or orchestrate to choose another depth"
+        : `${effectiveMode.toUpperCase()} was declared by the caller`,
       hostedMemory
         ? "hosted memory is used for this workflow depth"
         : "no mandatory memory call for this workflow depth",
       orchestratorRequired
-        ? "orchestrator capabilities are required for proof, coordination, or production gates"
-        : hasOrchestratorSignal
-          ? "orchestrator remains available if the task escalates"
+        ? "the orchestrate mode was declared, so the frozen Orchestrator handoff stays available"
+        : effectiveMode === "orchestrate"
+          ? "the orchestrated depth runs through Companion: one lead plan, one owner per phase"
           : "orchestration is not needed for the detected task scope",
       "standalone snipara-memory is reserved for applications that explicitly choose the autonomous memory package",
     ],
@@ -7741,13 +7710,9 @@ function printOrchestratorHandoffHint(
       console.log(
         "Policy auto-route marked this task for orchestrator handling and prepared the handoff automatically."
       );
-    } else if (recommendation.orchestratorRequired) {
-      console.log(
-        "Companion recommends an explicit orchestrator handoff for production proof gates, drift checks, or multi-agent coordination."
-      );
     } else {
       console.log(
-        "Companion can keep this local for now, but orchestrator is likely to help once proof gates or shared coordination become explicit."
+        "An orchestrator handoff was requested. Orchestrator is frozen and folding into Companion; Companion no longer recommends it on its own."
       );
     }
   } else {
@@ -7792,7 +7757,7 @@ function printAdaptiveRoutingRecommendation(routing: AdaptiveWorkRoutingRecommen
   }
   if (routing.gateway) {
     printKeyValue(
-      routing.gateway.source === "local_orchestrator" ? "Local route:" : "Hosted catalog:",
+      routing.gateway.source === "companion_local" ? "Local route:" : "Hosted catalog:",
       routing.gateway.success
         ? `${routing.gateway.candidateCount} candidate(s), ${routing.gateway.resolutionStatus ?? "ready"}`
         : "unavailable"
@@ -8223,20 +8188,7 @@ function applyLocalWorkerRoutingDefaults<
   };
 }
 
-function runOrchestratorJsonCommand(
-  args: string[],
-  cwd: string = process.cwd()
-): Record<string, unknown> {
-  const output = execFileSync("snipara-orchestrator", args, {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    timeout: DEFAULT_LOCAL_ORCHESTRATOR_TIMEOUT_MS,
-  }).trim();
-  return output ? parseJsonRecord(output, "snipara-orchestrator JSON output") : {};
-}
-
-function enrichAdaptiveRoutingWithLocalOrchestrator(
+async function enrichAdaptiveRoutingLocally(
   routing: AdaptiveWorkRoutingRecommendation,
   options: {
     routeLocalWorkers?: boolean;
@@ -8249,9 +8201,8 @@ function enrichAdaptiveRoutingWithLocalOrchestrator(
     routingLocalProvider?: string;
     routingLocalApiKeyEnv?: string;
     routingLocalApiKeyHeader?: "authorization" | "x-api-key";
-  },
-  cwd: string = process.cwd()
-): AdaptiveWorkRoutingRecommendation {
+  }
+): Promise<AdaptiveWorkRoutingRecommendation> {
   try {
     if (options.routingLocalTransport === "cli") {
       const candidateId =
@@ -8276,25 +8227,16 @@ function enrichAdaptiveRoutingWithLocalOrchestrator(
         },
       };
       const resolution = normalizeAdaptiveRoutingResolution(
-        runOrchestratorJsonCommand(
-          [
-            "route",
-            "--dry-run",
-            "--json",
-            "--work-profile-json",
-            JSON.stringify(routing.workProfile),
-            "--requirements-json",
-            JSON.stringify(routing.requirements),
-            "--candidate-json",
-            JSON.stringify(candidate),
-          ],
-          cwd
-        )
+        resolveWorkerCandidates({
+          workProfile: routing.workProfile,
+          requirements: routing.requirements,
+          candidates: [candidate],
+        })
       );
       return {
         ...routing,
         gateway: {
-          source: "local_orchestrator",
+          source: "companion_local",
           success: true,
           resolutionStatus: resolution?.status ?? "resolved",
           candidateCount: 1,
@@ -8314,53 +8256,28 @@ function enrichAdaptiveRoutingWithLocalOrchestrator(
         resolution,
       };
     }
-    const catalogArgs = [
-      "local-model-catalog",
-      "--json",
-      "--worker-role",
-      routing.requirements.workerRole,
-    ];
-    for (const writeScope of routing.requirements.writeScope ?? []) {
-      catalogArgs.push("--write-scope", writeScope);
-    }
-    if (options.routingLocalBaseUrl) {
-      catalogArgs.push("--base-url", options.routingLocalBaseUrl);
-    }
-    if (options.routingLocalModel) {
-      catalogArgs.push("--model", options.routingLocalModel);
-    } else if (options.routingLocalPreferModel) {
-      catalogArgs.push("--prefer-model", options.routingLocalPreferModel);
-    } else if (options.routeLocalWorkers) {
-      catalogArgs.push("--all-models");
-    }
-    if (options.routingLocalProvider) {
-      catalogArgs.push("--provider", options.routingLocalProvider);
-    }
-    if (options.routingLocalApiKeyEnv) {
-      catalogArgs.push("--api-key-env", options.routingLocalApiKeyEnv);
-    }
-    if (options.routingLocalApiKeyHeader) {
-      catalogArgs.push("--api-key-header", options.routingLocalApiKeyHeader);
-    }
-
     const runtimeCatalog = normalizeAdaptiveRoutingCatalog(
-      runOrchestratorJsonCommand(catalogArgs, cwd)
+      await buildLocalModelCatalog({
+        workerRole: routing.requirements.workerRole,
+        writeScope: routing.requirements.writeScope ?? [],
+        baseUrl: options.routingLocalBaseUrl,
+        model: options.routingLocalModel,
+        preferModel: options.routingLocalModel ? undefined : options.routingLocalPreferModel,
+        allModels:
+          !options.routingLocalModel &&
+          !options.routingLocalPreferModel &&
+          Boolean(options.routeLocalWorkers),
+        provider: options.routingLocalProvider,
+        apiKeyEnv: options.routingLocalApiKeyEnv,
+        apiKeyHeader: options.routingLocalApiKeyHeader,
+      })
     );
-    const routeArgs = [
-      "route",
-      "--dry-run",
-      "--json",
-      "--work-profile-json",
-      JSON.stringify(routing.workProfile),
-      "--requirements-json",
-      JSON.stringify(routing.requirements),
-    ];
-    for (const candidate of runtimeCatalog.candidates) {
-      routeArgs.push("--candidate-json", JSON.stringify(candidate));
-    }
-
     const resolution = normalizeAdaptiveRoutingResolution(
-      runOrchestratorJsonCommand(routeArgs, cwd)
+      resolveWorkerCandidates({
+        workProfile: routing.workProfile,
+        requirements: routing.requirements,
+        candidates: runtimeCatalog.candidates,
+      })
     );
     const selectedCandidate = adaptiveRoutingSelectedCandidate(resolution);
     const selectedEndpoint =
@@ -8379,10 +8296,10 @@ function enrichAdaptiveRoutingWithLocalOrchestrator(
       ...resolutionWarnings,
       ...(selectedCandidate
         ? []
-        : ["Local orchestrator did not select a worker candidate and will fail closed."]),
+        : ["Local routing did not select a worker candidate and will fail closed."]),
     ]);
     const gateway: AdaptiveRoutingGatewayStatus = {
-      source: "local_orchestrator",
+      source: "companion_local",
       success: stringValue(resolution?.status) === "resolved",
       resolutionStatus: stringValue(resolution?.status),
       candidateCount: runtimeCatalog.candidates.length,
@@ -8407,7 +8324,7 @@ function enrichAdaptiveRoutingWithLocalOrchestrator(
           ...resolutionReasons,
           ...(selectedCandidate
             ? [
-                `local orchestrator resolved worker candidate ${selectedCandidate.candidateId}`,
+                `local routing resolved worker candidate ${selectedCandidate.candidateId}`,
                 ...(selectedCandidate.endpointType
                   ? [`selected worker endpoint is ${selectedCandidate.endpointType}`]
                   : []),
@@ -8415,17 +8332,17 @@ function enrichAdaptiveRoutingWithLocalOrchestrator(
                   ? [`selected local model ${String(selectedEndpoint?.model)}`]
                   : []),
               ]
-            : ["local orchestrator could not resolve a concrete worker candidate"]),
+            : ["local routing could not resolve a concrete worker candidate"]),
         ]),
         warnings: uniqueStrings([...routing.routingCard.warnings, ...gatewayWarnings]),
       },
     };
   } catch (error) {
-    const warning = `Local orchestrator routing unavailable; keeping current routing metadata (${toPreview(error)}).`;
+    const warning = `Local routing unavailable; keeping current routing metadata (${toPreview(error)}).`;
     return {
       ...routing,
       gateway: {
-        source: "local_orchestrator",
+        source: "companion_local",
         success: false,
         resolutionStatus: "unavailable",
         candidateCount: 0,
@@ -10600,17 +10517,18 @@ export async function workflowRunCommand(options: {
       )
     : null;
   const adaptiveRouting = shouldResolveAdaptiveRoutingLocally(routingOptions, adaptiveRoutingDryRun)
-    ? enrichAdaptiveRoutingWithLocalOrchestrator(adaptiveRoutingDryRun!, routingOptions)
+    ? await enrichAdaptiveRoutingLocally(adaptiveRoutingDryRun!, routingOptions)
     : adaptiveRoutingDryRun;
   const orchestratorRecommendation = getOrchestratorRecommendation(options.query, effectiveMode, {
+    explicitRequest: Boolean(options.emitOrchestratorHandoff) || options.mode === "orchestrate",
     policyAutoRoute: options.autoRouteOrchestrator,
     policySource: options.orchestratorPolicySource,
     adaptiveRoutingDryRun: Boolean(adaptiveRouting),
   });
+  // An orchestrate depth inferred from the query no longer writes a handoff by
+  // itself; only an explicit request or a workspace policy does.
   const shouldEmitOrchestratorHandoff =
-    options.emitOrchestratorHandoff ||
-    options.autoRouteOrchestrator ||
-    (options.mode === "auto" && effectiveMode === "orchestrate");
+    options.emitOrchestratorHandoff || options.autoRouteOrchestrator;
   const preparedHandoff =
     shouldEmitOrchestratorHandoff && orchestratorRecommendation
       ? writeOrchestratorHandoff({

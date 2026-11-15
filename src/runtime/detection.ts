@@ -1,13 +1,17 @@
 /**
- * Runtime environment detection and orchestrator routing recommendation.
+ * Runtime environment detection and the opt-in orchestrator handoff.
  *
  * Inspects the local environment — companion config, workspace root, and
- * provider keys (OPENAI/ANTHROPIC, from process env or a project env-file) —
- * and scores whether work should be routed to snipara-orchestrator. The
- * recommendation level (suggest | confirm | auto) is derived from signals such
- * as workflow mode, changed-file count, active collisions, and multi-agent
- * intent. Pure logic: it reads state and returns a recommendation; it does not
- * perform any routing itself.
+ * provider keys (OPENAI/ANTHROPIC, from process env or a project env-file).
+ *
+ * Orchestrator was folded into Companion on 2026-11-15, so Companion no longer
+ * recommends it on its own. A handoff recommendation exists only when someone
+ * asked for one: the orchestrate mode declared by the caller, an explicit
+ * handoff request, or a workspace auto-route policy. AGENTS.md rules out
+ * choosing depth from keywords or a file count, so those signals never open a
+ * recommendation; they only annotate one that was requested, which keeps the
+ * handoff to the frozen Controller unchanged until it is removed. Pure logic:
+ * it reads state and returns a recommendation; it does not route anything.
  */
 import * as fs from "fs";
 import * as os from "os";
@@ -23,6 +27,7 @@ type ProviderKeySource = "environment" | "env-file";
 export type OrchestratorRecommendationLevel = "suggest" | "confirm" | "auto";
 export type OrchestratorRecommendationReason =
   | "workflow_mode_orchestrate"
+  | "explicit_handoff_request"
   | "production_validation_intent"
   | "proof_gate_intent"
   | "multi_agent_intent"
@@ -40,6 +45,8 @@ export interface OrchestratorRecommendation {
 }
 
 export interface OrchestratorRecommendationOptions {
+  /** The caller asked for a handoff (an emit flag or a declared orchestrate mode). */
+  explicitRequest?: boolean;
   changedFilesCount?: number;
   hasActiveCollisions?: boolean;
   policyAutoRoute?: boolean;
@@ -180,15 +187,17 @@ export function shouldSuggestRuntimeForWorkflow(query: string, mode: WorkflowMod
 }
 
 /**
- * Recommend whether work should be routed to snipara-orchestrator.
+ * Describe a requested handoff to snipara-orchestrator.
  *
- * Scores intent signals from the query and workflow mode (orchestrate mode,
- * production / proof / multi-agent / parallel patterns) plus contextual
- * signals (changed-file count, active Team Sync collisions, policy auto-route).
- * The returned recommendation's level escalates with the accumulated score
- * (suggest → confirm → auto).
+ * Returns `null` unless the handoff was requested: `explicitRequest` (an emit
+ * flag, or an orchestrate mode the caller declared rather than one inferred
+ * from the query) or a workspace `policyAutoRoute`. Query patterns, changed
+ * files and Team Sync collisions are recorded as reasons on a requested handoff
+ * (they shape its proof requirements) but never create one.
  *
- * @returns A recommendation with its reasons, or `null` when no signal fires.
+ * Level is `auto` under an auto-route policy, otherwise `confirm`.
+ *
+ * @returns A recommendation with its reasons, or `null` when nothing asked for one.
  */
 export function getOrchestratorRecommendation(
   query: string,
@@ -205,6 +214,13 @@ export function getOrchestratorRecommendation(
     }
   };
 
+  if (!options.explicitRequest && !options.policyAutoRoute) {
+    return null;
+  }
+
+  if (options.explicitRequest) {
+    addReason("explicit_handoff_request", 70);
+  }
   if (mode === "orchestrate") {
     addReason("workflow_mode_orchestrate", 70);
   }
@@ -233,29 +249,14 @@ export function getOrchestratorRecommendation(
     addReason("parallel_worker_intent", 20);
   }
 
-  if (reasons.length === 0) {
-    return null;
-  }
-
-  const requiresExplicitOrchestrator =
-    mode === "orchestrate" ||
-    reasons.includes("policy_auto_route") ||
-    reasons.includes("proof_gate_intent") ||
-    reasons.includes("multi_agent_intent") ||
-    reasons.includes("team_sync_collision");
-
-  let level: OrchestratorRecommendationLevel = "suggest";
-  if (options.policyAutoRoute) {
-    level = "auto";
-  } else if (requiresExplicitOrchestrator || score >= 70) {
-    level = "confirm";
-  }
+  // Every recommendation here was asked for, so nothing is left to "suggest".
+  const level: OrchestratorRecommendationLevel = options.policyAutoRoute ? "auto" : "confirm";
 
   return {
     level,
     reasons,
     score,
-    orchestratorRequired: level !== "suggest",
+    orchestratorRequired: true,
     policySource: options.policySource,
   };
 }
@@ -266,6 +267,8 @@ export function formatOrchestratorRecommendationReason(
   switch (reason) {
     case "workflow_mode_orchestrate":
       return "explicit orchestrated workflow mode";
+    case "explicit_handoff_request":
+      return "an orchestrator handoff was explicitly requested";
     case "production_validation_intent":
       return "production, deploy, rollout, or live-validation intent";
     case "proof_gate_intent":
@@ -285,11 +288,20 @@ export function formatOrchestratorRecommendationReason(
   }
 }
 
+/**
+ * Companion no longer suggests Orchestrator on its own (folded 2026-11-15).
+ * Kept as an export for compatibility; true only for a declared orchestrate mode.
+ */
 export function shouldSuggestOrchestratorForWorkflow(query: string, mode: WorkflowMode): boolean {
-  return getOrchestratorRecommendation(query, mode) !== null;
+  return (
+    getOrchestratorRecommendation(query, mode, { explicitRequest: mode === "orchestrate" }) !== null
+  );
 }
 
-function getCommandVersion(command: string, env: RuntimeEnvironment = process.env): string | undefined {
+function getCommandVersion(
+  command: string,
+  env: RuntimeEnvironment = process.env
+): string | undefined {
   try {
     const output = execFileSync(command, ["--version"], {
       encoding: "utf-8",
@@ -321,7 +333,11 @@ function executableExists(filePath: string): boolean {
   }
 }
 
-function detectSandboxCli(env: RuntimeEnvironment): { command?: string; legacyCommand?: boolean; version?: string } {
+function detectSandboxCli(env: RuntimeEnvironment): {
+  command?: string;
+  legacyCommand?: boolean;
+  version?: string;
+} {
   for (const command of SANDBOX_COMMANDS) {
     const version = getCommandVersion(command, env);
     if (version || commandExists(command, env)) {

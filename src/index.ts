@@ -1,7 +1,21 @@
 #!/usr/bin/env node
-export { buildPhaseBrief, assemblePhaseBrief, phasePlanAdvice } from "./commands/workflow-phase-brief";
-export { buildReviewBrief, parseReviewerOutput, computeVerdict, resolveReviewer, reviewCommand, recordCheckCommand, verdictCommand,
-  readCheckReceipts, readReviewReceipt, gitState } from "./commands/review";
+export {
+  buildPhaseBrief,
+  assemblePhaseBrief,
+  phasePlanAdvice,
+} from "./commands/workflow-phase-brief";
+export {
+  buildReviewBrief,
+  parseReviewerOutput,
+  computeVerdict,
+  resolveReviewer,
+  reviewCommand,
+  recordCheckCommand,
+  verdictCommand,
+  readCheckReceipts,
+  readReviewReceipt,
+  gitState,
+} from "./commands/review";
 import { reviewCommand, recordCheckCommand, verdictCommand } from "./commands/review";
 import { createClient as createReviewClient } from "./api/client";
 export { quietCompanionHook } from "./commands/automations";
@@ -11,7 +25,17 @@ export { memoryListPage } from "./commands/memory";
 import { memoryListCommand } from "./commands/memory";
 export { buildWorkflowReceipt } from "./commands/workflow-receipt";
 export { hookGitEnvironment, readStagedPaths } from "./commands/hook-git";
-export { generateClaudeHookConfig, generateClaudeSessionScript, generateClaudeStuckGuardScript } from "./commands/init";
+export {
+  resolveWorkerCandidates,
+  buildLocalModelCatalog,
+  buildLocalModelCatalogFromRecords,
+  sanitizeCandidateId,
+} from "./runtime/local-worker-routing";
+export {
+  generateClaudeHookConfig,
+  generateClaudeSessionScript,
+  generateClaudeStuckGuardScript,
+} from "./commands/init";
 
 /**
  * snipara-companion CLI entry point.
@@ -43,8 +67,8 @@ import { Command, Option } from "commander";
 import { invokeSandboxValidation } from "./runtime/sandbox-validation";
 import { recordVerifiedReceipt } from "./runtime/memory-sources";
 import { validationMetadata } from "./commands/validation-profile";
-import {inspectManagedToolchain, managedTaskRuntime} from "./runtime/managed-toolchain";
-import {launchManagedMcp} from "./runtime/managed-mcp";
+import { inspectManagedToolchain, managedTaskRuntime } from "./runtime/managed-toolchain";
+import { launchManagedMcp } from "./runtime/managed-mcp";
 import { warnIfCompanionUpdateAvailable } from "./runtime/version-check";
 import { initCommand, showConfig } from "./commands/init";
 import { loginCommand } from "./commands/login";
@@ -146,16 +170,32 @@ export {
   formatManagedTaskJourneyCard,
 } from "./commands/task-journey";
 export {
-  buildTaskReference, observeTaskWorkspace, projectManagedProgress, taskVerificationKind,
+  buildTaskReference,
+  observeTaskWorkspace,
+  projectManagedProgress,
+  taskVerificationKind,
 } from "./commands/task-reference";
-export type {TaskReferenceV1, TaskReferenceInput, ManagedProgressV1, ManagedProgressInput} from "./commands/task-reference";
+export type {
+  TaskReferenceV1,
+  TaskReferenceInput,
+  ManagedProgressV1,
+  ManagedProgressInput,
+} from "./commands/task-reference";
 export {
-  resolveManagedToolchain, inspectManagedToolchain, defaultManagedToolchainPath,
-  managedCoordinationRoot, managedToolchainEnvironment, ManagedToolchainError,
-  managedTaskRuntime, assertManagedToolchainCompatibility,
+  resolveManagedToolchain,
+  inspectManagedToolchain,
+  defaultManagedToolchainPath,
+  managedCoordinationRoot,
+  managedToolchainEnvironment,
+  ManagedToolchainError,
+  managedTaskRuntime,
+  assertManagedToolchainCompatibility,
 } from "./runtime/managed-toolchain";
-export {prepareManagedMcpLaunch, launchManagedMcp} from "./runtime/managed-mcp";
-export {parseManagedToolchainManifest, managedValidationScope} from "./contracts/project-intelligence";
+export { prepareManagedMcpLaunch, launchManagedMcp } from "./runtime/managed-mcp";
+export {
+  parseManagedToolchainManifest,
+  managedValidationScope,
+} from "./contracts/project-intelligence";
 let taskPresentationToolchain: ReturnType<typeof inspectManagedToolchain> | undefined;
 function formatSelectedTaskJourney(card: Parameters<typeof formatTaskJourneyCard>[0]): string {
   taskPresentationToolchain ??= inspectManagedToolchain();
@@ -306,7 +346,10 @@ export {
   refreshWorkflowContinuity,
   formatWorkflowContinuity,
 } from "./commands/workflow-continuity";
-export { buildWorkflowResumeOverview, renderWorkflowResumeOverview } from "./commands/workflow-resume-overview";
+export {
+  buildWorkflowResumeOverview,
+  renderWorkflowResumeOverview,
+} from "./commands/workflow-resume-overview";
 export {
   measureWorkflowEfficiency,
   renderWorkflowEfficiency,
@@ -681,8 +724,11 @@ program.showSuggestionAfterError(true);
 program.showHelpAfterError("\nRun the command with --help to see valid options and examples.");
 program.hook("preAction", (_thisCommand, actionCommand) => {
   if (actionCommand.parent?.name() === "toolchain") return;
-  if (actionCommand.name() === "doctor" &&
-      (!actionCommand.opts().deep || inspectManagedToolchain().status !== "not_configured")) return;
+  if (
+    actionCommand.name() === "doctor" &&
+    (!actionCommand.opts().deep || inspectManagedToolchain().status !== "not_configured")
+  )
+    return;
   warnIfCompanionUpdateAvailable(readCliVersion());
 });
 
@@ -770,7 +816,10 @@ program
     "Client type (claude-code|cursor|kimi|codex|gemini|mistral|chatgpt|vscode|continue|custom)"
   )
   .option("-f, --force", "Force overwrite existing configuration")
-  .option("-w, --with-hooks", "Install hooks automatically (quiet Companion pre-tool, no automatic retrieval)")
+  .option(
+    "-w, --with-hooks",
+    "Install hooks automatically (quiet Companion pre-tool, no automatic retrieval)"
+  )
   .option("-d, --dir <directory>", "Project directory for hooks (default: current)")
   .action(async (options) => {
     await initCommand({
@@ -792,21 +841,39 @@ const validation = program
   .description(
     "Use standalone Sandbox validation; unavailable environments require an explicit user choice"
   );
-const toolchain = program.command("toolchain")
-  .description("Inspect the selected local-work installation without running tests or installing tools");
-toolchain.command("mcp")
+const toolchain = program
+  .command("toolchain")
+  .description(
+    "Inspect the selected local-work installation without running tests or installing tools"
+  );
+toolchain
+  .command("mcp")
   .description("Connect the native client to the selected private local-work server over stdio")
-  .requiredOption("--workspace-root <directory>", "Canonical workspace supplied by the native client")
+  .requiredOption(
+    "--workspace-root <directory>",
+    "Canonical workspace supplied by the native client"
+  )
   .option("--manifest <file>", "Explicit operator-owned managed manifest")
   .action(async (options) => {
-    try { process.exitCode = await launchManagedMcp({workspaceRoot: options.workspaceRoot, manifestPath: options.manifest}); }
-    catch { console.error("The managed local-work connection could not start. Run create-snipara repair --profile local-work, then reconnect the client."); process.exitCode = 2; }
+    try {
+      process.exitCode = await launchManagedMcp({
+        workspaceRoot: options.workspaceRoot,
+        manifestPath: options.manifest,
+      });
+    } catch {
+      console.error(
+        "The managed local-work connection could not start. Run create-snipara repair --profile local-work, then reconnect the client."
+      );
+      process.exitCode = 2;
+    }
   });
 for (const action of ["status", "doctor"]) {
-  toolchain.command(action).option("--json", "Print the bounded metadata report")
+  toolchain
+    .command(action)
+    .option("--json", "Print the bounded metadata report")
     .option("--manifest <file>", "Explicit operator-owned managed manifest")
     .action((options) => {
-      const report = inspectManagedToolchain({manifestPath: options.manifest});
+      const report = inspectManagedToolchain({ manifestPath: options.manifest });
       if (options.json) console.log(JSON.stringify(report, null, 2));
       else {
         console.log(String(report.detail));
@@ -815,7 +882,8 @@ for (const action of ["status", "doctor"]) {
       if (report.status === "needs_attention") process.exitCode = 2;
     });
 }
-validation.command("profiles")
+validation
+  .command("profiles")
   .description("List prepared dependency profiles without Docker execution or installation")
   .option("--sandbox-command <path>")
   .option("--toolchain-manifest <file>", "Explicit operator-owned managed manifest")
@@ -824,7 +892,8 @@ validation.command("profiles")
     console.log(JSON.stringify(outcome.result));
     process.exitCode = outcome.exitCode;
   });
-validation.command("inspect")
+validation
+  .command("inspect")
   .description("Inspect authoritative request identity without execution")
   .requiredOption("--request <file>")
   .option("--sandbox-command <path>")
@@ -834,8 +903,11 @@ validation.command("inspect")
     console.log(JSON.stringify(outcome.result));
     process.exitCode = outcome.exitCode;
   });
-validation.command("prepare")
-  .description("Prepare a reviewable request using an already prepared immutable image; never execute it")
+validation
+  .command("prepare")
+  .description(
+    "Prepare a reviewable request using an already prepared immutable image; never execute it"
+  )
   .requiredOption("--profile <name>", "python-ci or node-ci")
   .requiredOption("--workspace <directory>")
   .requiredOption("--image <digest>")
@@ -844,17 +916,23 @@ validation.command("prepare")
   .option("--toolchain-manifest <file>", "Explicit operator-owned managed manifest")
   .argument("[command...]", "Optional explicit command after --")
   .action(async (command, options) => {
-    const outcome = await validationMetadata("prepare", {...options, command});
+    const outcome = await validationMetadata("prepare", { ...options, command });
     console.log(JSON.stringify(outcome.result));
     process.exitCode = outcome.exitCode;
   });
 validation
   .command("preview")
-  .description("Read a bounded local request preview; no engine, validation or execution is performed")
+  .description(
+    "Read a bounded local request preview; no engine, validation or execution is performed"
+  )
   .requiredOption("--request <file>", "In-workspace regular request JSON file")
   .option("--dir <directory>")
   .action((options) => {
-    const bytes = readWorkflowContinuityFile({ cwd: options.dir ?? process.cwd(), path: options.request, maxBytes: 65536 });
+    const bytes = readWorkflowContinuityFile({
+      cwd: options.dir ?? process.cwd(),
+      path: options.request,
+      maxBytes: 65536,
+    });
     console.log(JSON.stringify(previewSandboxValidationRequest(bytes.toString("utf8")), null, 2));
   });
 for (const action of ["gate", "choose", "diagnose", "run", "verify", "status", "cancel"]) {
@@ -871,8 +949,14 @@ for (const action of ["gate", "choose", "diagnose", "run", "verify", "status", "
   if (action === "run") {
     validationCommand
       .option("--no-reuse", "Request a fresh scoped run while retaining the shared validation lock")
-      .option("--coordination-root <directory>", "Use the same operator-approved coordination root as the MCP server")
-      .option("--orchestrator-command <path>", "Compatible Orchestrator executable for scoped validation");
+      .option(
+        "--coordination-root <directory>",
+        "Use the same operator-approved coordination root as the MCP server"
+      )
+      .option(
+        "--orchestrator-command <path>",
+        "Compatible Orchestrator executable for scoped validation"
+      );
   }
   if (["verify", "status", "cancel"].includes(action)) {
     validationCommand.option("--run-id <id>", "Sandbox run identity");
@@ -885,9 +969,17 @@ for (const action of ["gate", "choose", "diagnose", "run", "verify", "status", "
     );
   }
   validationCommand.action(async (options) => {
-    const outcome = await invokeSandboxValidation(action, action === "run" ? {...options, noReuse: options.reuse === false} : options);
+    const outcome = await invokeSandboxValidation(
+      action,
+      action === "run" ? { ...options, noReuse: options.reuse === false } : options
+    );
     // A verified run is the receipt a later phase-commit may cite; only `verify` with a valid receipt counts.
-    if (action === "verify" && outcome.exitCode === 0 && outcome.result.valid === true && typeof outcome.result.run_id === "string")
+    if (
+      action === "verify" &&
+      outcome.exitCode === 0 &&
+      outcome.result.valid === true &&
+      typeof outcome.result.run_id === "string"
+    )
       recordVerifiedReceipt(outcome.result.run_id, options.scope);
     console.log(JSON.stringify(outcome.result));
     process.exitCode = outcome.exitCode;
@@ -1137,17 +1229,29 @@ const taskJourney = program
 const taskList = (value: string, previous: string[]): string[] => [...previous, value];
 taskJourney
   .command("guide <intent>")
-  .description("Preview a decision, continuation, verification or small-edit entry point without calls or writes")
+  .description(
+    "Preview a decision, continuation, verification or small-edit entry point without calls or writes"
+  )
   .option("--query <query>", "Decision question")
   .option("--id <id>", "Exact saved task id")
   .option("--file <path>", "Existing workspace file; repeatable", taskList, [])
   .option("--multi-phase", "Choose the managed workflow for multiple phases")
   .option("--dir <directory>")
   .action((intent, options) => {
-    console.log(JSON.stringify(buildTaskIntentGuide({
-      intent, cwd: options.dir, query: options.query, id: options.id,
-      files: options.file, multiPhase: options.multiPhase,
-    }), null, 2));
+    console.log(
+      JSON.stringify(
+        buildTaskIntentGuide({
+          intent,
+          cwd: options.dir,
+          query: options.query,
+          id: options.id,
+          files: options.file,
+          multiPhase: options.multiPhase,
+        }),
+        null,
+        2
+      )
+    );
   });
 
 taskJourney
@@ -1527,7 +1631,10 @@ program
   .option("-t, --tool <tool>", "Tool name (Read, Glob, Grep, Edit)")
   .option("-m, --max-tokens <number>", "Maximum tokens", "1200")
   .option("--no-cache", "Bypass cache")
-  .option("--stuck-guard-only", "Skip automatic retrieval; post-tool emits hints after three identical failed results")
+  .option(
+    "--stuck-guard-only",
+    "Skip automatic retrieval; post-tool emits hints after three identical failed results"
+  )
   .action(async (toolInput, options) => {
     const resolvedToolInput = toolInput ?? (await readOptionalStdin());
     await preToolCommand({
@@ -1743,7 +1850,10 @@ program
         "--confirmed-by-user <confirmation>",
         "Explicit user confirmation text that permits a strict destructive/contradictory override"
       )
-      .option("--strict", "Block unconfirmed destructive actions or contradictions; missing guidance passes")
+      .option(
+        "--strict",
+        "Block unconfirmed destructive actions or contradictions; missing guidance passes"
+      )
       .option("--category <categories...>", "Additional memory categories to recall")
       .option("--no-context", "Skip source context query")
       .option("--no-recent-failures", "Skip recent Companion event failure inspection")
@@ -1804,12 +1914,21 @@ program
     "Search project documents, parsed files, and current truth through hosted Snipara context"
   )
   .requiredOption("-q, --query <query>", "Search query")
-  .option("-m, --max-tokens <number>", "Source token budget (explicitly raise for broader retrieval)", "800")
+  .option(
+    "-m, --max-tokens <number>",
+    "Source token budget (explicitly raise for broader retrieval)",
+    "800"
+  )
   .option("--search-mode <mode>", "Search mode: keyword|semantic|hybrid", "hybrid")
   .option("--timeout-ms <number>", "Hosted context query timeout in milliseconds", "30000")
   .option("--answer-pack", "Include the derived Answer Pack (off by default)")
   .option("--diagnostics", "Include retrieval diagnostics and timings (off by default)")
-  .addOption(new Option("--no-answer-pack", "Accepted for compatibility; the Answer Pack is already off by default").hideHelp())
+  .addOption(
+    new Option(
+      "--no-answer-pack",
+      "Accepted for compatibility; the Answer Pack is already off by default"
+    ).hideHelp()
+  )
   .option("--minimum-change-mode <mode>", "off|review (opt-in non-blocking review)", "off")
   .option("--no-auto-decompose", "Disable automatic query decomposition")
   .option("--no-shared-context", "Exclude linked shared context")
@@ -2724,7 +2843,10 @@ agentContext
 agentContext
   .command("resolve")
   .description("Resolve one agent's shared and role-specific context for a task")
-  .option("--agent <agent>", "Agent alias; defaults to SNIPARA_AGENT_ID, code agent, then first manifest agent")
+  .option(
+    "--agent <agent>",
+    "Agent alias; defaults to SNIPARA_AGENT_ID, code agent, then first manifest agent"
+  )
   .requiredOption("--task <task>", "Current task")
   .option("--manifest <file>", "Agent Context manifest path", "snipara.agent-context.json")
   .option("--json", "Print raw JSON")
@@ -2939,14 +3061,28 @@ workflow
   .description("Read aggregate local Codex task usage; advisory by default, no account or dispatch")
   .option("--root-thread-id <id>", "Root Codex chat id; defaults to CODEX_THREAD_ID")
   .option("--sessions-dir <directory>", "Local Codex session directory")
-  .option("--since <timestamp>", "Count since ISO timestamp; defaults to workflow start, then root session start")
+  .option(
+    "--since <timestamp>",
+    "Count since ISO timestamp; defaults to workflow start, then root session start"
+  )
   .option("--profile <profile>", "Advisory thresholds: lite|standard|full", "standard")
   .option("--max-responses <number>", "Override recorded response threshold", Number)
-  .option("--max-input-tokens <number>", "Override total input threshold, including cached input", Number)
+  .option(
+    "--max-input-tokens <number>",
+    "Override total input threshold, including cached input",
+    Number
+  )
   .option("--max-uncached-input-tokens <number>", "Override uncached-input threshold", Number)
   .option("--max-output-tokens <number>", "Override output threshold", Number)
-  .option("--max-elapsed-minutes <number>", "Override elapsed-time threshold (includes waiting)", Number)
-  .option("--enforce", "Return nonzero for exceeded limits or incomplete measurement; does not terminate a host")
+  .option(
+    "--max-elapsed-minutes <number>",
+    "Override elapsed-time threshold (includes waiting)",
+    Number
+  )
+  .option(
+    "--enforce",
+    "Return nonzero for exceeded limits or incomplete measurement; does not terminate a host"
+  )
   .option("--json", "Print compact aggregate JSON; never transcripts")
   .action(async (options) => {
     const result = await workflowEfficiencyCommand(options);
@@ -3069,7 +3205,8 @@ workflow
       agent: options.agent,
       manifest: options.agentContextManifest,
       skipAgentContext: Boolean(options.skipAgentContext),
-      detail: Boolean(options.detail), json: options.json,
+      detail: Boolean(options.detail),
+      json: options.json,
     });
   });
 
@@ -3256,7 +3393,12 @@ workflow
   .option("--refresh", "Create a linked successor observation; never refresh historical proof")
   .option("--reason <reason>", "Explicit recovery reason required by --refresh")
   .action(async (options) => {
-    await workflowCheckpointCommand({ json: options.json, repair: options.repair, refresh: options.refresh, reason: options.reason });
+    await workflowCheckpointCommand({
+      json: options.json,
+      repair: options.repair,
+      refresh: options.refresh,
+      reason: options.reason,
+    });
   });
 
 workflow
@@ -3267,8 +3409,13 @@ workflow
   .option("--max-critical-tokens <number>", "Durable memory token budget")
   .option("--max-context-tokens <number>", "Short-lived session context token budget")
   .option("--include-session-context", "Include short-lived session carryover")
-  .option("--detail", "Print the complete compatible resume payload instead of the bounded overview")
-  .option("--max-overview-tokens <number>", "Overview estimate budget, integer 128-2000", value => Number(value))
+  .option(
+    "--detail",
+    "Print the complete compatible resume payload instead of the bounded overview"
+  )
+  .option("--max-overview-tokens <number>", "Overview estimate budget, integer 128-2000", (value) =>
+    Number(value)
+  )
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await workflowResumeCommand({
@@ -3293,7 +3440,12 @@ workflow
   .option("--detail", "Print full detail; default is a compact receipt with artifact paths")
   .option("--json", "Print only JSON on stdout; diagnostics go to stderr")
   .action(async (phaseId, options) => {
-    await workflowPhaseStartCommand({ phaseId, detail: Boolean(options.detail), json: options.json, brief: options.brief });
+    await workflowPhaseStartCommand({
+      phaseId,
+      detail: Boolean(options.detail),
+      json: options.json,
+      brief: options.brief,
+    });
   });
 
 workflow
@@ -3448,9 +3600,7 @@ workflow
 
 workflow
   .command("phase-commit")
-  .description(
-    "Persist a phase outcome; FULL workflows enforce efficiency before advancing"
-  )
+  .description("Persist a phase outcome; FULL workflows enforce efficiency before advancing")
   .argument("<phaseId>", "Workflow phase id")
   .requiredOption("-s, --summary <summary>", "Phase outcome summary")
   .option("--decision <decision>", "Decision text; defaults to summary when --why is set")
@@ -3467,9 +3617,24 @@ workflow
     collectOption,
     []
   )
-  .option("--source <path[#heading]>", "Doc path and exact heading where the decision lives; repeatable", collectOption, [])
-  .option("--memory-helped <id>", "Served memory that helped this phase; repeatable", collectOption, [])
-  .option("--memory-misled <id>", "Served memory that misled this phase; repeatable", collectOption, [])
+  .option(
+    "--source <path[#heading]>",
+    "Doc path and exact heading where the decision lives; repeatable",
+    collectOption,
+    []
+  )
+  .option(
+    "--memory-helped <id>",
+    "Served memory that helped this phase; repeatable",
+    collectOption,
+    []
+  )
+  .option(
+    "--memory-misled <id>",
+    "Served memory that misled this phase; repeatable",
+    collectOption,
+    []
+  )
   .option("--strict", "Require all tasks complete and passed evidence before completing this phase")
   .option("--detail", "Print full detail; default is a compact receipt with artifact paths")
   .option("--json", "Print only JSON on stdout; diagnostics go to stderr")
@@ -3487,7 +3652,8 @@ workflow
       files: options.files,
       evidence: options.evidence,
       strict: Boolean(options.strict),
-      detail: Boolean(options.detail), json: options.json,
+      detail: Boolean(options.detail),
+      json: options.json,
       sources: options.source,
       memoryHelped: options.memoryHelped,
       memoryMisled: options.memoryMisled,
@@ -3514,7 +3680,12 @@ workflow
   )
   .option("--risk <risk>", "Known residual risk; repeatable", collectOption, [])
   .option("--next-step <nextStep>", "Recommended next action")
-  .option("--source <path[#heading]>", "Doc path and exact heading where the decision lives; repeatable", collectOption, [])
+  .option(
+    "--source <path[#heading]>",
+    "Doc path and exact heading where the decision lives; repeatable",
+    collectOption,
+    []
+  )
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await finalCommitCommand({
@@ -3541,7 +3712,7 @@ workflow
   .requiredOption("-q, --query <query>", "Workflow query")
   .option(
     "-M, --mode <mode>",
-    "lite|standard|auto|full|orchestrate (auto selects the smallest effective setup)",
+    "lite|standard|auto|full|orchestrate (auto is an alias for standard; declare the depth you need)",
     "auto"
   )
   .option(
@@ -3944,8 +4115,8 @@ localWorkers
     []
   )
   .option("--json", "Print raw JSON")
-  .action((options) => {
-    workersLocalProbePrintCommand({
+  .action(async (options) => {
+    await workersLocalProbePrintCommand({
       baseUrl: options.baseUrl,
       provider: options.provider,
       model: options.model,
@@ -4286,7 +4457,10 @@ collaboration
 collaboration
   .command("guard")
   .description("Check files or resources against active collaboration sessions and locks")
-  .option("-f, --files <files...>", "Files to guard (pre-commit: staged index only; otherwise dirty files)")
+  .option(
+    "-f, --files <files...>",
+    "Files to guard (pre-commit: staged index only; otherwise dirty files)"
+  )
   .option("-r, --resource <resources...>", "Explicit resources in KIND:id format")
   .option(
     "--profile <profile>",
@@ -5073,14 +5247,16 @@ program
 program
   .command("memory")
   .description("List memory inventory, inspect health, and preview cleanup or compaction")
-  .addCommand(new Command("list")
-    .description("List a bounded hosted memory inventory page with content previews")
-    .option("--limit <number>", "Page size, 1..50", Number, 20)
-    .option("--offset <number>", "Nonnegative page offset", Number, 0)
-    .option("--scope <scope>", "agent|project|team|user")
-    .option("--category <category>", "Filter by category")
-    .option("--json", "Print JSON inventory with next_offset")
-    .action(memoryListCommand))
+  .addCommand(
+    new Command("list")
+      .description("List a bounded hosted memory inventory page with content previews")
+      .option("--limit <number>", "Page size, 1..50", Number, 20)
+      .option("--offset <number>", "Nonnegative page offset", Number, 0)
+      .option("--scope <scope>", "agent|project|team|user")
+      .option("--category <category>", "Filter by category")
+      .option("--json", "Print JSON inventory with next_offset")
+      .action(memoryListCommand)
+  )
   .addCommand(
     new Command("local")
       .description("Delegate to the local snipara-memory OSS engine")
@@ -5309,9 +5485,16 @@ program
   .option("-l, --limit <number>", "Maximum memories to return", "5")
   .option("--min-relevance <number>", "Minimum relevance threshold", "0.5")
   .option("--include-inactive", "Include invalidated or superseded memories in the main result set")
-  .option("--memory-view <view>", "current or retained history; history grants no current authority", "current")
+  .option(
+    "--memory-view <view>",
+    "current or retained history; history grants no current authority",
+    "current"
+  )
   .option("--as-of <timestamp>", "Past ISO timestamp with timezone; requires --memory-view history")
-  .option("--for-task", "The query is a task about to be done: recall what applies to it, from every agent of the project")
+  .option(
+    "--for-task",
+    "The query is a task about to be done: recall what applies to it, from every agent of the project"
+  )
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await recallCommand({
@@ -5391,7 +5574,12 @@ program
   .option("-c, --category <category>", "Category")
   .option("-o, --outcome <outcome>", "Outcome", "completed")
   .option("-f, --files <files...>", "Files touched")
-  .option("--source <path[#heading]>", "Doc path and exact heading where the decision lives; repeatable", collectOption, [])
+  .option(
+    "--source <path[#heading]>",
+    "Doc path and exact heading where the decision lives; repeatable",
+    collectOption,
+    []
+  )
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await taskCommitCommand({
@@ -5424,7 +5612,12 @@ program
   )
   .option("--risk <risk>", "Known residual risk; repeatable", collectOption, [])
   .option("--next-step <nextStep>", "Recommended next action")
-  .option("--source <path[#heading]>", "Doc path and exact heading where the decision lives; repeatable", collectOption, [])
+  .option(
+    "--source <path[#heading]>",
+    "Doc path and exact heading where the decision lives; repeatable",
+    collectOption,
+    []
+  )
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await finalCommitCommand({
@@ -5515,10 +5708,15 @@ function handleCliError(error: unknown): never {
 
 program
   .command("review")
-  .description("Have a separate reviewer (another coding client, read-only) read the current commit's diff; keeps a receipt bound to the commit")
+  .description(
+    "Have a separate reviewer (another coding client, read-only) read the current commit's diff; keeps a receipt bound to the commit"
+  )
   .option("-t, --task <task>", "What the change was meant to do (default: the commit message)")
   .option("--base <ref>", "Review the diff from this ref (default: where the branch left main)")
-  .option("--reviewer <command>", "Command that reads the brief on stdin and prints findings as JSON (default: codex, else claude; or SNIPARA_REVIEW_COMMAND)")
+  .option(
+    "--reviewer <command>",
+    "Command that reads the brief on stdin and prints findings as JSON (default: codex, else claude; or SNIPARA_REVIEW_COMMAND)"
+  )
   .option("--timeout-seconds <seconds>", "Give up after this long", "600")
   .option("--no-memory", "Do not add the project's recorded memories about the task to the brief")
   .option("--json", "Print the receipt as JSON")
@@ -5526,8 +5724,13 @@ program
     let memories: string[] | undefined;
     if (options.memory !== false && options.task) {
       try {
-        const recalled = await createReviewClient(12000).recallMemories(options.task, { limit: 3, task: options.task });
-        memories = recalled.memories.map((memory: { content: string }) => String(memory.content).replace(/\s+/g, " ").slice(0, 400));
+        const recalled = await createReviewClient(12000).recallMemories(options.task, {
+          limit: 3,
+          task: options.task,
+        });
+        memories = recalled.memories.map((memory: { content: string }) =>
+          String(memory.content).replace(/\s+/g, " ").slice(0, 400)
+        );
       } catch {
         memories = undefined; // no hosted project, or it did not answer: the review does not depend on it
       }
@@ -5544,7 +5747,9 @@ program
 
 const verdict = program
   .command("verdict")
-  .description("Say what was checked for the current commit: verified, partial or not verified (it qualifies, it does not block)")
+  .description(
+    "Say what was checked for the current commit: verified, partial or not verified (it qualifies, it does not block)"
+  )
   .option("--require <state>", "Exit 2 unless the commit reaches this state (verified)")
   .option("--json", "Print JSON")
   .action((options) => {
@@ -5558,7 +5763,12 @@ verdict
   .option("--detail <text>", "One line of detail")
   .option("--json", "Print JSON")
   .action((options) => {
-    process.exitCode = recordCheckCommand({ name: options.name, ok: !options.failed, detail: options.detail, json: Boolean(options.json) });
+    process.exitCode = recordCheckCommand({
+      name: options.name,
+      ok: !options.failed,
+      detail: options.detail,
+      json: Boolean(options.json),
+    });
   });
 
 async function main(): Promise<void> {

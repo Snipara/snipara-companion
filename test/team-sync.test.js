@@ -1235,6 +1235,31 @@ test("team-sync what-changed can auto-route orchestrator by policy", () => {
   assert.equal(fs.existsSync(path.join(dir, ORCHESTRATOR_HANDOFF_RELATIVE_PATH)), true);
 });
 
+test("team-sync what-changed does not recommend orchestrator unless asked", () => {
+  // Orchestrator was folded into Companion on 2026-11-15: release or proof
+  // wording and file counts no longer open a recommendation by themselves.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-team-sync-no-orchestrator-"));
+  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+  const state = createEmptyTeamSyncState(new Date("2026-05-25T12:40:00.000Z"));
+  state.work.push(
+    buildTeamSyncStartWorkRecord({
+      summary: "Coordinate multi-agent release validation with proof gates",
+      files: ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts", "f.ts"],
+      branch: "dev",
+      now: new Date("2026-05-25T12:40:00.000Z"),
+    })
+  );
+  saveTeamSyncState(state, dir);
+
+  const result = runCli(["team-sync", "what-changed", "--json"], { cwd: dir });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.orchestratorRecommendation, null);
+  assert.equal(payload.orchestratorHandoff ?? null, null);
+  assert.equal(fs.existsSync(path.join(dir, ORCHESTRATOR_HANDOFF_RELATIVE_PATH)), false);
+});
+
 test("team-sync what-changed accepts include-session-context as a compatibility alias", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-team-sync-session-context-"));
   fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
@@ -1460,14 +1485,27 @@ test("team-sync resume and workflow resume surface the hosted handoff context", 
     env,
     nodeArgs: ["-r", preloadPath],
   });
-  assert.equal(overviewJsonResult.status, 0, overviewJsonResult.stderr || overviewJsonResult.stdout);
+  assert.equal(
+    overviewJsonResult.status,
+    0,
+    overviewJsonResult.stderr || overviewJsonResult.stdout
+  );
   const overview = JSON.parse(overviewJsonResult.stdout);
   assert.equal(overview.version, "snipara.workflow.resume-overview.v1");
   assert.equal(overview.status, "overview");
   assert.equal(overview.continuity.status, "drift_revalidation_required");
   assert.equal(overview.nextAction.dispatchesWork, false);
-  assert.match(overview.required.runtimeBoundary.join(" "), /does not reattach a runtime, restore a live process/);
-  assert.deepEqual(overview.detail.argv, ["snipara-companion", "workflow", "resume", "--detail", "--json"]);
+  assert.match(
+    overview.required.runtimeBoundary.join(" "),
+    /does not reattach a runtime, restore a live process/
+  );
+  assert.deepEqual(overview.detail.argv, [
+    "snipara-companion",
+    "workflow",
+    "resume",
+    "--detail",
+    "--json",
+  ]);
   assert.equal(overview.runtime_resume, undefined);
 
   const workflowResumeResult = runCli(["workflow", "resume", "--detail"], {
@@ -1494,8 +1532,14 @@ test("team-sync resume and workflow resume surface the hosted handoff context", 
     /does not snapshot or exactly restore a live Snipara Sandbox process/
   );
   assert.match(workflowResumeResult.stdout, /Status: drift_revalidation_required/);
-  assert.match(workflowResumeResult.stdout, /Current next action: "snipara-companion" "workflow" "task-status" "--json"/);
-  assert.doesNotMatch(workflowResumeResult.stdout, /snipara-companion workflow phase-start phase-4/);
+  assert.match(
+    workflowResumeResult.stdout,
+    /Current next action: "snipara-companion" "workflow" "task-status" "--json"/
+  );
+  assert.doesNotMatch(
+    workflowResumeResult.stdout,
+    /snipara-companion workflow phase-start phase-4/
+  );
 
   const workflowResult = runCli(["workflow", "resume", "--detail", "--json"], {
     cwd: dir,

@@ -2,6 +2,12 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 5.2.0
+
+- `workflow run --mode auto`, the default, is now an alias for STANDARD. It used to pick LITE, FULL or orchestrate from keywords in the query; declare `--mode lite`, `full` or `orchestrate` to get those depths. A query that used to land on LITE by its wording now makes STANDARD's hosted retrieval, and one that used to land on FULL no longer gets a plan and checkpoints unless `--mode full` is passed.
+- Companion no longer recommends Orchestrator on its own. `team-sync` and `workflow run` return a null `orchestratorRecommendation` / `orchestrator_recommendation` unless a handoff is requested with `--emit-orchestrator-handoff`, a declared `--mode orchestrate`, or a workspace auto-route policy. Keywords, changed-file counts and Team Sync collisions only annotate a requested handoff.
+- `workers local probe` and the adaptive routing of `workflow run` resolve local workers in process, without calling `snipara-orchestrator`. The gateway source is `companion_local`.
+
 ## 5.1.7
 
 - `review` and `verdict`: `review` hands the diff of the current commit to a separate reviewer in a fresh read-only session and keeps its findings in a receipt bound to that commit; `verdict` says whether the commit is `verified`, `partial` or `not verified`. Neither blocks.
