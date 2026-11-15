@@ -247,7 +247,7 @@ export interface SharedContextDocumentResult {
   is_mandatory?: boolean;
   token_count: number;
   collection_name: string;
-  source_type: "TEAM_CONTEXT" | "LINKED_COLLECTION" | string;
+  source_type: "LINKED_COLLECTION" | string;
   tags: string[];
 }
 
@@ -257,7 +257,6 @@ export interface SharedContextResult {
   total_tokens: number;
   collections_loaded: number;
   linked_collections_loaded?: number;
-  team_context_documents_loaded?: number;
   linked_collection_documents_loaded?: number;
   context_hash: string;
 }
@@ -496,7 +495,8 @@ export function normalizeRecallResult(value: RecallResult): RecallResult {
       confidence: typeof memory.confidence === "number" ? memory.confidence : 0,
     })),
     warnings: Array.isArray(value?.warnings) ? value.warnings : [],
-    total_searched: typeof value?.total_searched === "number" ? value.total_searched : memories.length,
+    total_searched:
+      typeof value?.total_searched === "number" ? value.total_searched : memories.length,
     query: typeof value?.query === "string" ? value.query : "",
     timing_ms: typeof value?.timing_ms === "number" ? value.timing_ms : 0,
   };
@@ -1355,7 +1355,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function exactMemoryCutoffKey(value: unknown): string | undefined {
   if (typeof value !== "string" || value.length > 64) return undefined;
-  const iso = /^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}(?::\d{2}(?:\.(\d+))?)?(?:Z|[+-]\d{2}:\d{2})$/i.exec(value);
+  const iso =
+    /^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}(?::\d{2}(?:\.(\d+))?)?(?:Z|[+-]\d{2}:\d{2})$/i.exec(value);
   const milliseconds = Date.parse(value);
   if (!iso || !Number.isFinite(milliseconds)) return undefined;
   // Date.parse handles the timezone but loses fractional digits after millis.
@@ -1609,7 +1610,11 @@ export class RLMClient {
   /**
    * Make an MCP JSON-RPC request
    */
-  private async mcpCall<T>(toolName: string, args: Record<string, unknown>, timeoutMs = this.timeout): Promise<T> {
+  private async mcpCall<T>(
+    toolName: string,
+    args: Record<string, unknown>,
+    timeoutMs = this.timeout
+  ): Promise<T> {
     if (!this.config.apiKey) {
       throw new Error("API key not configured. Run 'npx -y snipara-companion@latest init' first.");
     }
@@ -1672,7 +1677,11 @@ export class RLMClient {
     }
   }
 
-  async callTool<T>(toolName: string, args: Record<string, unknown>, timeoutMs?: number): Promise<T> {
+  async callTool<T>(
+    toolName: string,
+    args: Record<string, unknown>,
+    timeoutMs?: number
+  ): Promise<T> {
     return this.mcpCall<T>(toolName, args, timeoutMs);
   }
 
@@ -1992,29 +2001,43 @@ export class RLMClient {
     } = {}
   ): Promise<RecallResult> {
     const memoryView = options.memoryView ?? "current";
-    if (!["current", "history"].includes(memoryView)) throw new Error("memoryView must be current or history");
-    const requestedCutoff = options.asOf === undefined ? undefined : exactMemoryCutoffKey(options.asOf);
-    if (options.asOf !== undefined && (memoryView !== "history" || options.asOf.length > 64 ||
-        !requestedCutoff || Date.parse(options.asOf) > Date.now())) {
+    if (!["current", "history"].includes(memoryView))
+      throw new Error("memoryView must be current or history");
+    const requestedCutoff =
+      options.asOf === undefined ? undefined : exactMemoryCutoffKey(options.asOf);
+    if (
+      options.asOf !== undefined &&
+      (memoryView !== "history" ||
+        options.asOf.length > 64 ||
+        !requestedCutoff ||
+        Date.parse(options.asOf) > Date.now())
+    ) {
       throw new Error("asOf requires memoryView=history and a past ISO timestamp with timezone");
     }
-    const result = normalizeRecallResult(await this.mcpCall<RecallResult>("snipara_recall", {
-      query,
-      type: options.type,
-      scope: options.scope,
-      category: options.category,
-      limit: options.limit ?? 5,
-      min_relevance: options.minRelevance ?? 0.5,
-      include_inactive: options.includeInactive ?? false,
-      ...(memoryView !== "current" ? { memory_view: memoryView } : {}),
-      ...(options.asOf ? { as_of: options.asOf } : {}),
-      ...(options.task?.trim() ? { task: options.task.trim().slice(0, 512) } : {}),
-    }));
+    const result = normalizeRecallResult(
+      await this.mcpCall<RecallResult>("snipara_recall", {
+        query,
+        type: options.type,
+        scope: options.scope,
+        category: options.category,
+        limit: options.limit ?? 5,
+        min_relevance: options.minRelevance ?? 0.5,
+        include_inactive: options.includeInactive ?? false,
+        ...(memoryView !== "current" ? { memory_view: memoryView } : {}),
+        ...(options.asOf ? { as_of: options.asOf } : {}),
+        ...(options.task?.trim() ? { task: options.task.trim().slice(0, 512) } : {}),
+      })
+    );
     if (memoryView !== "current" || options.asOf) {
       const metadata = result.temporal_context;
-      if (metadata?.contract !== "snipara.memory-temporal.v1" || metadata.view !== memoryView ||
-          (options.asOf && exactMemoryCutoffKey(metadata.as_of) !== requestedCutoff)) {
-        throw new Error("Hosted server did not confirm the requested memory view/cutoff; refusing a silent current-view fallback");
+      if (
+        metadata?.contract !== "snipara.memory-temporal.v1" ||
+        metadata.view !== memoryView ||
+        (options.asOf && exactMemoryCutoffKey(metadata.as_of) !== requestedCutoff)
+      ) {
+        throw new Error(
+          "Hosted server did not confirm the requested memory view/cutoff; refusing a silent current-view fallback"
+        );
       }
     }
     recordServedMemoryIds(servedIdsFromResult(result));
@@ -3163,8 +3186,14 @@ export class RLMClient {
     } catch (error) {
       if (sources.length === 0 || !isSourcesValidationError(error)) throw error;
       // Drop the pointer the server names (or all of them when it names none) and retry once with the same body.
-      const named = rejectedSourceIndexes(error instanceof Error ? error.message : String(error), sources.length);
-      return this.sendEndOfTaskCommit(args, named.length > 0 ? sources.filter((_, index) => !named.includes(index)) : []);
+      const named = rejectedSourceIndexes(
+        error instanceof Error ? error.message : String(error),
+        sources.length
+      );
+      return this.sendEndOfTaskCommit(
+        args,
+        named.length > 0 ? sources.filter((_, index) => !named.includes(index)) : []
+      );
     }
   }
 
