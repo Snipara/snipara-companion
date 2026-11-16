@@ -1863,7 +1863,7 @@ export function buildCompanionEngineeringLeadPlanReport(
     caveats: [
       "Companion Engineering Lead Plan does not spawn workers or approve work.",
       "Use this artifact as a contract for handoff, verification, and candidate Project Brain updates.",
-      "For autonomous execution, use the orchestrator surface only behind explicit policy and approval gates.",
+      "Companion runs each phase with one owner and workflow checkpoints; nothing executes this plan by itself.",
     ],
   };
 }
@@ -2040,12 +2040,6 @@ export async function leadPlanCommand(options: LeadPlanCommandOptions): Promise<
           outputPath: writtenOutput ? path.resolve(writtenOutput) : undefined,
           relativeOutputPath: writtenOutput
             ? path.relative(cwd, path.resolve(writtenOutput))
-            : undefined,
-          nextCommand: writtenOutput
-            ? `snipara-orchestrator team-sync gate --plan ${path.relative(
-                cwd,
-                path.resolve(writtenOutput)
-              )} --json`
             : undefined,
         },
         null,

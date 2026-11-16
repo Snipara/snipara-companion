@@ -12,15 +12,26 @@ import { execFileSync } from "node:child_process";
 import chalk from "chalk";
 import { createClient, type ConnectionProbeResult } from "../api/client";
 import { detectRuntimeEnvironment, type RuntimeDetectionReport } from "../runtime/detection";
-import { diagnosticProbeEnvironment, summarizeRuntimeCapabilities } from "../runtime/capability-status";
-import {inspectManagedToolchain} from "../runtime/managed-toolchain";
+import {
+  diagnosticProbeEnvironment,
+  summarizeRuntimeCapabilities,
+} from "../runtime/capability-status";
+import { inspectManagedToolchain } from "../runtime/managed-toolchain";
 
-export async function doctorCommand(options: { json?: boolean; deep?: boolean } = {}): Promise<void> {
+export async function doctorCommand(
+  options: { json?: boolean; deep?: boolean } = {}
+): Promise<void> {
   const managed = inspectManagedToolchain();
   if (!options.deep || managed.status !== "not_configured") {
     if (options.json) console.log(JSON.stringify(managed, null, 2));
     else {
-      console.log(managed.status === "available" ? "Snipara local work is prepared." : managed.status === "not_configured" ? "Snipara local work is not installed." : "Snipara local work needs attention.");
+      console.log(
+        managed.status === "available"
+          ? "Snipara local work is prepared."
+          : managed.status === "not_configured"
+            ? "Snipara local work is not installed."
+            : "Snipara local work needs attention."
+      );
       console.log(String(managed.detail));
       if (managed.nextAction) console.log(`Next: ${String(managed.nextAction)}`);
     }
@@ -33,7 +44,19 @@ export async function doctorCommand(options: { json?: boolean; deep?: boolean } 
   const toolCatalog = await probeToolCatalog(report, auth);
 
   if (options.json) {
-    console.log(JSON.stringify({ ...report, companionVersion, auth, toolCatalog, capabilities: summarizeRuntimeCapabilities(report) }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          ...report,
+          companionVersion,
+          auth,
+          toolCatalog,
+          capabilities: summarizeRuntimeCapabilities(report),
+        },
+        null,
+        2
+      )
+    );
     return;
   }
 
@@ -340,11 +363,11 @@ function printDoctorReport(
       : "not configured in local/global MCP files"
   );
   printCheck(
-    "Snipara Orchestrator CLI",
+    "Snipara Orchestrator CLI (deprecated)",
     report.orchestrator.cliAvailable,
     report.orchestrator.cliAvailable
       ? orchestratorVersionSummary(report)
-      : "not found on PATH (optional; install only for production gates)"
+      : "not found on PATH (optional; only scoped Sandbox validation still uses it)"
   );
   printCheck(
     "LLM provider key",
@@ -362,7 +385,9 @@ function printDoctorReport(
   printCheck(
     "Docker",
     report.docker.available,
-    report.docker.available ? "CLI found; daemon, prepared image and validation readiness have not been checked" : "CLI not found on PATH"
+    report.docker.available
+      ? "CLI found; daemon, prepared image and validation readiness have not been checked"
+      : "CLI not found on PATH"
   );
 
   console.log("");
@@ -376,10 +401,16 @@ function printDoctorReport(
 
   console.log("");
   console.log(chalk.bold("Snipara Sandbox guidance"));
-  console.log("- Restricted Python snippets, deterministic Docker validation and provider-native sandboxes are separate capabilities.");
-  console.log("- Deterministic validation needs no Snipara account or provider key. CLI or MCP configuration discovery proves no working engine or passing test.");
+  console.log(
+    "- Restricted Python snippets, deterministic Docker validation and provider-native sandboxes are separate capabilities."
+  );
+  console.log(
+    "- Deterministic validation needs no Snipara account or provider key. CLI or MCP configuration discovery proves no working engine or passing test."
+  );
   for (const capability of summarizeRuntimeCapabilities(report).surfaces) {
-    console.log(`- ${capability.id}: executable ${capability.executable}; task ${capability.task_qualification}. ${capability.next_action}`);
+    console.log(
+      `- ${capability.id}: executable ${capability.executable}; task ${capability.task_qualification}. ${capability.next_action}`
+    );
   }
   if (report.runtime.cliAvailable) {
     console.log("- Use MCP execute_python for sandboxed code execution from your AI client.");
@@ -409,14 +440,14 @@ function printDoctorReport(
   }
 
   console.log("");
-  console.log(chalk.bold("Snipara Orchestrator guidance"));
-  if (report.orchestrator.cliAvailable) {
-    console.log("- Use snipara-orchestrator explicitly for production proof gates.");
-  } else {
-    console.log("- Existing project: npx create-snipara repair --with-orchestrator.");
-    console.log("- Manual install: pip install snipara-orchestrator.");
-    console.log("- Companion does not install or run orchestrator automatically.");
-  }
+  console.log(chalk.bold("Snipara Orchestrator (deprecated)"));
+  console.log(
+    "- Folded into Companion: workflows, lead plans, workers and routing run here; no Controller handoff remains."
+  );
+  console.log(
+    "- Only scoped Sandbox validation (validation run --scope) still delegates to it, until the Sandbox CLI accepts --scope."
+  );
+  console.log("- Companion does not install or run orchestrator automatically.");
 }
 
 function printCheck(label: string, ok: boolean, detail: string): void {

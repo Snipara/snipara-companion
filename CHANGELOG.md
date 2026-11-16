@@ -2,6 +2,16 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 6.0.0
+
+Breaking: removes the Companion side of the frozen Orchestrator Controller.
+
+- The Controller integrations left with the frozen Orchestrator (its last release is 2.1.0). Removed: the `controller-cockpit` command; `task decide --refresh-dossier`, `--controller-id`, `--candidate-id` and `--orchestrator-bin`; the `--emit-orchestrator-handoff`, `--auto-route-orchestrator` and `--orchestrator-policy-source` options of `workflow run` and `team-sync`, so Companion no longer writes `.snipara/orchestrator/handoff.json`. Passing one of them is now an unknown-option error.
+- JSON output: `workflow run` no longer carries `orchestrator_recommendation`, `orchestrator_handoff` or `automatic_setup.orchestrator`; `team-sync` no longer carries `orchestratorRecommendation` or `orchestratorHandoff`. The task card no longer has an `orchestrator` capability or a `dossier`, and its managed progress never reports a fresh Controller recommendation.
+- Library exports removed: `buildControllerCockpit`, `getOrchestratorRecommendation`, `formatOrchestratorRecommendationReason`, `shouldSuggestOrchestratorForWorkflow`, `buildOrchestratorHandoff`, `writeOrchestratorHandoff`, `ORCHESTRATOR_HANDOFF_RELATIVE_PATH`, `managedTaskRuntime` and the `AutomaticOrchestratorSetup` type. `buildAdaptiveWorkRoutingRecommendation` stays.
+- `lead-plan --json` no longer suggests `snipara-orchestrator team-sync gate` as its `nextCommand`. `doctor` and the capability status describe Orchestrator as deprecated and no longer suggest installing it; it is still detected because scoped Sandbox validation (`validation run --scope`) delegates to it until the Sandbox CLI accepts `--scope`.
+- The managed local-work toolchain accepts the generation create-snipara installs: Companion 6.x, Orchestrator 2.1 or a later 2.x, Sandbox 3.x. It used to accept only Companion 4.x and Orchestrator 1.x, so a toolchain installed by create-snipara 2.2.12 (Companion 5.2.0, Orchestrator 2.0.0) was refused as incompatible.
+
 ## 5.2.0
 
 - `workflow run --mode auto`, the default, is now an alias for STANDARD. It used to pick LITE, FULL or orchestrate from keywords in the query; declare `--mode lite`, `full` or `orchestrate` to get those depths. A query that used to land on LITE by its wording now makes STANDARD's hosted retrieval, and one that used to land on FULL no longer gets a plan and checkpoints unless `--mode full` is passed.

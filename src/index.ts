@@ -67,7 +67,7 @@ import { Command, Option } from "commander";
 import { invokeSandboxValidation } from "./runtime/sandbox-validation";
 import { recordVerifiedReceipt } from "./runtime/memory-sources";
 import { validationMetadata } from "./commands/validation-profile";
-import { inspectManagedToolchain, managedTaskRuntime } from "./runtime/managed-toolchain";
+import { inspectManagedToolchain } from "./runtime/managed-toolchain";
 import { launchManagedMcp } from "./runtime/managed-mcp";
 import { warnIfCompanionUpdateAvailable } from "./runtime/version-check";
 import { initCommand, showConfig } from "./commands/init";
@@ -146,7 +146,6 @@ import { agentReadinessAuditCommand } from "./commands/agent-readiness";
 import { leadPlanCommand } from "./commands/lead-plan";
 import { controllerBridgeExportCommand } from "./commands/controller-bridge";
 import { controllerBridgeProjectCommand } from "./commands/controller-bridge-project";
-import { controllerCockpitCommand } from "./commands/controller-cockpit";
 import {
   createTaskIntake,
   readTaskIntake,
@@ -188,7 +187,6 @@ export {
   managedCoordinationRoot,
   managedToolchainEnvironment,
   ManagedToolchainError,
-  managedTaskRuntime,
   assertManagedToolchainCompatibility,
 } from "./runtime/managed-toolchain";
 export { prepareManagedMcpLaunch, launchManagedMcp } from "./runtime/managed-mcp";
@@ -205,7 +203,6 @@ function formatSelectedTaskJourney(card: Parameters<typeof formatTaskJourneyCard
     ? `${String(taskPresentationToolchain.detail)}\nNext: ${String(taskPresentationToolchain.nextAction)}\n\n${text}`
     : text;
 }
-export { buildControllerCockpit } from "./commands/controller-cockpit";
 export { exportControllerBridge } from "./commands/controller-bridge";
 export {
   createTaskIntake,
@@ -615,7 +612,6 @@ export {
 export type {
   AutomaticSetupSelection,
   AutomaticMemorySetup,
-  AutomaticOrchestratorSetup,
   AutomaticWorkerSetup,
   GeneratedWorkflowTaskDocument,
   ManagedWorkflowTask,
@@ -674,19 +670,8 @@ export {
   collaborationIdeStatusCommand,
 } from "./commands/collaboration";
 export { buildJournalCheckpointEntry } from "./commands/journal";
-export {
-  detectRuntimeEnvironment,
-  formatOrchestratorRecommendationReason,
-  getOrchestratorRecommendation,
-  shouldSuggestOrchestratorForWorkflow,
-  shouldSuggestRuntimeForWorkflow,
-} from "./runtime/detection";
-export {
-  buildAdaptiveWorkRoutingRecommendation,
-  buildOrchestratorHandoff,
-  ORCHESTRATOR_HANDOFF_RELATIVE_PATH,
-  writeOrchestratorHandoff,
-} from "./runtime/orchestrator-handoff";
+export { detectRuntimeEnvironment, shouldSuggestRuntimeForWorkflow } from "./runtime/detection";
+export { buildAdaptiveWorkRoutingRecommendation } from "./runtime/adaptive-routing";
 
 const CLI_VERSION_FALLBACK = "1.1.23";
 
@@ -1202,25 +1187,6 @@ program
       })
   );
 
-program
-  .command("controller-cockpit")
-  .description("Inspect Controller evidence or invoke an explicit public Controller action")
-  .requiredOption("--dir <directory>")
-  .requiredOption("--controller-id <id>")
-  .option(
-    "--action <action>",
-    "inspect|show|stop|resume|candidate-show|review-show|review-attach|evaluate",
-    "inspect"
-  )
-  .option("--bridge-file <file>")
-  .option("--orchestrator-bin <file>")
-  .option("--candidate-id <id>")
-  .option("--receipt-file <file>")
-  .option("--cancel-active")
-  .option("--timeout-seconds <seconds>")
-  .option("--json")
-  .action(controllerCockpitCommand);
-
 const taskJourney = program
   .command("task")
   .description(
@@ -1286,9 +1252,7 @@ taskJourney
   });
 taskJourney
   .command("start [goal]")
-  .description(
-    "Start a local task with existing feature/workflow artifacts; no account or Orchestrator required"
-  )
+  .description("Start a local task with existing feature/workflow artifacts; no account required")
   .option("--id <id>")
   .option("--brief <file>")
   .option("--accept <criterion>", "Explicit acceptance criterion; repeatable", taskList, [])
@@ -1337,7 +1301,6 @@ taskJourney
         : undefined;
     const card = await executeTaskJourney({
       action: "start",
-      ...managedTaskRuntime(),
       cwd,
       slug: options.id,
       intake,
@@ -1367,13 +1330,6 @@ for (const action of ["show", "work", "verify", "decide", "resume", "close"] as 
     .option("--outcome <outcome>", "completed|partial|blocked|abandoned")
     .option("--why <reason>")
     .option("--evidence <evidence>", "passed|failed|not-run|unknown:text; repeatable", taskList, [])
-    .option(
-      "--refresh-dossier",
-      "Explicit read-only call to an existing selected Controller candidate"
-    )
-    .option("--controller-id <id>")
-    .option("--candidate-id <id>")
-    .option("--orchestrator-bin <file>")
     .option("--json")
     .action(async (id, options) => {
       if (
@@ -1389,10 +1345,6 @@ for (const action of ["show", "work", "verify", "decide", "resume", "close"] as 
         outcome: options.outcome as TaskJourneyOptions["outcome"],
         why: options.why,
         evidence: options.evidence,
-        refreshDossier: options.refreshDossier,
-        controllerId: options.controllerId,
-        candidateId: options.candidateId,
-        ...managedTaskRuntime(options.orchestratorBin),
       });
       console.log(options.json ? JSON.stringify(card, null, 2) : formatSelectedTaskJourney(card));
     });
@@ -1407,7 +1359,7 @@ taskJourney
     if (!["json", "markdown"].includes(options.format))
       throw new Error("Unsupported task export format");
     const cwd = options.dir ?? process.cwd(),
-      card = await executeTaskJourney({ action: "show", cwd, slug: id, ...managedTaskRuntime() });
+      card = await executeTaskJourney({ action: "show", cwd, slug: id });
     if (options.output) {
       if (options.format === "json") writeBridgeImmutable(cwd, options.output, card);
       else
@@ -3723,19 +3675,7 @@ workflow
   .option("--include-session-context", "Include short-lived session carryover for FULL workflow")
   .option("--max-critical-tokens <number>", "Durable memory token budget for FULL workflow")
   .option("--max-context-tokens <number>", "Short-lived session context token budget")
-  .option("--no-runtime-hint", "Hide Snipara Sandbox and Orchestrator suggestions")
-  .option(
-    "--emit-orchestrator-handoff",
-    "Write .snipara/orchestrator/handoff.json when orchestrator routing is recommended"
-  )
-  .option(
-    "--auto-route-orchestrator",
-    "Mark this workflow for orchestrator handling by policy and emit the handoff automatically"
-  )
-  .option(
-    "--orchestrator-policy-source <source>",
-    "Label the workspace or tenant policy that triggered orchestrator routing"
-  )
+  .option("--no-runtime-hint", "Hide Snipara Sandbox suggestions")
   .option(
     "--adaptive-routing-dry-run",
     "Attach Adaptive Work Routing recommendation metadata without launching workers"
@@ -3808,9 +3748,6 @@ workflow
       maxContextTokens:
         options.maxContextTokens !== undefined ? parseInt(options.maxContextTokens, 10) : undefined,
       runtimeHint: options.runtimeHint !== false,
-      emitOrchestratorHandoff: Boolean(options.emitOrchestratorHandoff),
-      autoRouteOrchestrator: Boolean(options.autoRouteOrchestrator),
-      orchestratorPolicySource: options.orchestratorPolicySource,
       adaptiveRoutingDryRun: Boolean(options.adaptiveRoutingDryRun),
       routeLocalWorkers: Boolean(options.routeLocalWorkers),
       routingLocalWorker: options.routingLocalWorker,
@@ -4151,18 +4088,6 @@ teamSync
   .option("-b, --branch <branch>", "Current branch name")
   .option("-a, --actor <actor>", "Developer or agent name")
   .option("-d, --dir <directory>", "Repository directory (default: current)")
-  .option(
-    "--emit-orchestrator-handoff",
-    "Write .snipara/orchestrator/handoff.json for the current Team Sync state"
-  )
-  .option(
-    "--auto-route-orchestrator",
-    "Mark this Team Sync command for orchestrator handling by policy and emit the handoff automatically"
-  )
-  .option(
-    "--orchestrator-policy-source <source>",
-    "Label the workspace or tenant policy that triggered orchestrator routing"
-  )
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await teamSyncStartWorkCommand({
@@ -4171,9 +4096,6 @@ teamSync
       branch: options.branch,
       actor: options.actor,
       dir: options.dir,
-      emitOrchestratorHandoff: Boolean(options.emitOrchestratorHandoff),
-      autoRouteOrchestrator: Boolean(options.autoRouteOrchestrator),
-      orchestratorPolicySource: options.orchestratorPolicySource,
       json: options.json,
     });
   });
@@ -4188,18 +4110,6 @@ teamSync
   .option("-r, --risk <risk>", "Legacy alias for --attention")
   .option("-a, --actor <actor>", "Developer or agent name")
   .option("-d, --dir <directory>", "Repository directory (default: current)")
-  .option(
-    "--emit-orchestrator-handoff",
-    "Write .snipara/orchestrator/handoff.json for the current Team Sync state"
-  )
-  .option(
-    "--auto-route-orchestrator",
-    "Mark this Team Sync command for orchestrator handling by policy and emit the handoff automatically"
-  )
-  .option(
-    "--orchestrator-policy-source <source>",
-    "Label the workspace or tenant policy that triggered orchestrator routing"
-  )
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await teamSyncHandoffCommand({
@@ -4210,9 +4120,6 @@ teamSync
       risk: options.risk,
       actor: options.actor,
       dir: options.dir,
-      emitOrchestratorHandoff: Boolean(options.emitOrchestratorHandoff),
-      autoRouteOrchestrator: Boolean(options.autoRouteOrchestrator),
-      orchestratorPolicySource: options.orchestratorPolicySource,
       json: options.json,
     });
   });
@@ -4260,27 +4167,12 @@ teamSync
     "--include-session-context",
     "Compatibility alias; hosted Team Sync still uses workflow resume for short-lived session carryover"
   )
-  .option(
-    "--emit-orchestrator-handoff",
-    "Write .snipara/orchestrator/handoff.json for the current Team Sync state"
-  )
-  .option(
-    "--auto-route-orchestrator",
-    "Mark this Team Sync command for orchestrator handling by policy and emit the handoff automatically"
-  )
-  .option(
-    "--orchestrator-policy-source <source>",
-    "Label the workspace or tenant policy that triggered orchestrator routing"
-  )
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await teamSyncWhatChangedCommand({
       since: options.since,
       dir: options.dir,
       includeSessionContext: Boolean(options.includeSessionContext),
-      emitOrchestratorHandoff: Boolean(options.emitOrchestratorHandoff),
-      autoRouteOrchestrator: Boolean(options.autoRouteOrchestrator),
-      orchestratorPolicySource: options.orchestratorPolicySource,
       json: options.json,
     });
   });
@@ -4293,26 +4185,11 @@ teamSync
     "--include-session-context",
     "Compatibility alias; hosted Team Sync still uses workflow resume for short-lived session carryover"
   )
-  .option(
-    "--emit-orchestrator-handoff",
-    "Write .snipara/orchestrator/handoff.json for the current Team Sync state"
-  )
-  .option(
-    "--auto-route-orchestrator",
-    "Mark this Team Sync command for orchestrator handling by policy and emit the handoff automatically"
-  )
-  .option(
-    "--orchestrator-policy-source <source>",
-    "Label the workspace or tenant policy that triggered orchestrator routing"
-  )
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await teamSyncResumeCommand({
       dir: options.dir,
       includeSessionContext: Boolean(options.includeSessionContext),
-      emitOrchestratorHandoff: Boolean(options.emitOrchestratorHandoff),
-      autoRouteOrchestrator: Boolean(options.autoRouteOrchestrator),
-      orchestratorPolicySource: options.orchestratorPolicySource,
       json: options.json,
     });
   });

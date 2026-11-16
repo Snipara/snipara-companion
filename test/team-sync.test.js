@@ -15,7 +15,6 @@ const {
   createEmptyTeamSyncState,
   getTeamSyncStatePath,
   loadTeamSyncState,
-  ORCHESTRATOR_HANDOFF_RELATIVE_PATH,
   saveTeamSyncState,
   TEAM_SYNC_STATE_RELATIVE_PATH,
 } = require("../dist/index.js");
@@ -892,7 +891,6 @@ test("team-sync start-work keeps local state and prints hosted brief when config
       "invite-permissions",
       "--files",
       "apps/web/src/lib/auth/permissions.ts",
-      "--emit-orchestrator-handoff",
     ],
     {
       cwd: dir,
@@ -917,15 +915,9 @@ test("team-sync start-work keeps local state and prints hosted brief when config
   assert.match(result.stdout, /Hosted Start Work Brief/);
   assert.match(result.stdout, /Likely files: apps\/web\/src\/lib\/auth\/permissions\.ts/);
   assert.match(result.stdout, /Decisions: Invited users keep personal API keys/);
-  assert.match(result.stdout, /Orchestrator recommendation/);
-  assert.match(result.stdout, /Level: confirm/);
-  assert.match(result.stdout, /Prepared Orchestrator Handoff/);
-  assert.match(
-    result.stdout,
-    /snipara-orchestrator agents execute-gated --plan \.snipara\/orchestrator\/handoff\.json/
-  );
+  assert.doesNotMatch(result.stdout, /Orchestrator/);
   assert.equal(fs.existsSync(path.join(dir, TEAM_SYNC_STATE_RELATIVE_PATH)), true);
-  assert.equal(fs.existsSync(path.join(dir, ORCHESTRATOR_HANDOFF_RELATIVE_PATH)), true);
+  assert.equal(fs.existsSync(path.join(dir, ".snipara", "orchestrator")), false);
 });
 
 test("team-sync start-work appends a hosted journal checkpoint when configured", () => {
@@ -1175,7 +1167,7 @@ test("team-sync what-changed includes hosted continuity evidence in json mode", 
   );
   saveTeamSyncState(state, dir);
 
-  const result = runCli(["team-sync", "what-changed", "--emit-orchestrator-handoff", "--json"], {
+  const result = runCli(["team-sync", "what-changed", "--json"], {
     cwd: dir,
     env: {
       SNIPARA_API_KEY: "snp-test",
@@ -1192,52 +1184,15 @@ test("team-sync what-changed includes hosted continuity evidence in json mode", 
   assert.equal(payload.hosted.status, "ok");
   assert.equal(payload.hosted.data.whatChanged.version, "what-changed-v2");
   assert.equal(payload.hosted.data.whatChanged.summary.changeCount, 2);
-  assert.equal(payload.orchestratorRecommendation.level, "confirm");
-  assert.equal(payload.orchestratorHandoff.relativePath, ORCHESTRATOR_HANDOFF_RELATIVE_PATH);
-  assert.equal(fs.existsSync(path.join(dir, ORCHESTRATOR_HANDOFF_RELATIVE_PATH)), true);
   assert.equal(
     payload.hosted.data.whatChanged.staleAssumptions[0].reason,
     "Billing checkout is still active in PR #182."
   );
 });
 
-test("team-sync what-changed can auto-route orchestrator by policy", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-team-sync-policy-"));
-  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
-  const state = createEmptyTeamSyncState(new Date("2026-05-25T12:40:00.000Z"));
-  state.work.push(
-    buildTeamSyncStartWorkRecord({
-      summary: "Coordinate release validation",
-      files: ["packages/cli/src/commands/team-sync.ts"],
-      branch: "dev",
-      now: new Date("2026-05-25T12:40:00.000Z"),
-    })
-  );
-  saveTeamSyncState(state, dir);
-
-  const result = runCli(
-    [
-      "team-sync",
-      "what-changed",
-      "--auto-route-orchestrator",
-      "--orchestrator-policy-source",
-      "enterprise-proof-gates",
-      "--json",
-    ],
-    { cwd: dir }
-  );
-
-  assert.equal(result.status, 0, result.stderr || result.stdout);
-  const payload = JSON.parse(result.stdout);
-  assert.equal(payload.orchestratorRecommendation.level, "auto");
-  assert.equal(payload.orchestratorRecommendation.policySource, "enterprise-proof-gates");
-  assert.equal(payload.orchestratorHandoff.relativePath, ORCHESTRATOR_HANDOFF_RELATIVE_PATH);
-  assert.equal(fs.existsSync(path.join(dir, ORCHESTRATOR_HANDOFF_RELATIVE_PATH)), true);
-});
-
-test("team-sync what-changed does not recommend orchestrator unless asked", () => {
-  // Orchestrator was folded into Companion on 2026-11-15: release or proof
-  // wording and file counts no longer open a recommendation by themselves.
+test("team-sync no longer offers the Orchestrator handoff", () => {
+  // The handoff to the frozen Controller left Companion in phase 3 of the
+  // Orchestrator fold; its flags are unknown options now.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-team-sync-no-orchestrator-"));
   fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
   const state = createEmptyTeamSyncState(new Date("2026-05-25T12:40:00.000Z"));
@@ -1252,12 +1207,21 @@ test("team-sync what-changed does not recommend orchestrator unless asked", () =
   saveTeamSyncState(state, dir);
 
   const result = runCli(["team-sync", "what-changed", "--json"], { cwd: dir });
-
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const payload = JSON.parse(result.stdout);
-  assert.equal(payload.orchestratorRecommendation, null);
-  assert.equal(payload.orchestratorHandoff ?? null, null);
-  assert.equal(fs.existsSync(path.join(dir, ORCHESTRATOR_HANDOFF_RELATIVE_PATH)), false);
+  assert.equal("orchestratorRecommendation" in payload, false);
+  assert.equal("orchestratorHandoff" in payload, false);
+
+  for (const flag of [
+    "--emit-orchestrator-handoff",
+    "--auto-route-orchestrator",
+    "--orchestrator-policy-source",
+  ]) {
+    const rejected = runCli(["team-sync", "what-changed", flag, "--json"], { cwd: dir });
+    assert.notEqual(rejected.status, 0, flag);
+    assert.match(rejected.stderr, /unknown option/, flag);
+  }
+  assert.equal(fs.existsSync(path.join(dir, ".snipara", "orchestrator")), false);
 });
 
 test("team-sync what-changed accepts include-session-context as a compatibility alias", () => {

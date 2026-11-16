@@ -14,7 +14,6 @@ const {
   buildSessionBootstrapQuality,
   buildTeamSyncStartWorkRecord,
   buildWorkflowImpactGate,
-  buildOrchestratorHandoff,
   buildWorkflowPlanScaffold,
   buildWorkflowPhaseCommitSummary,
   buildSessionBootstrapBrief,
@@ -22,15 +21,11 @@ const {
   createClient,
   detectReleaseSurfacesFromFiles,
   deriveManagedWorkflowJudgmentResolution,
-  formatOrchestratorRecommendationReason,
   formatFinalCommitReport,
   getPlanStepDisplayTitle,
-  getOrchestratorRecommendation,
-  shouldSuggestOrchestratorForWorkflow,
   MEMORY_GUARD_CONTEXT_TIMEOUT_MS,
   MEMORY_GUARD_RECALL_TIMEOUT_MS,
   normalizeGuardTag,
-  ORCHESTRATOR_HANDOFF_RELATIVE_PATH,
   normalizeWorkflowPlanInput,
   packContext,
   PRODUCER_LOOP_ARTIFACT_VERSION,
@@ -47,7 +42,6 @@ const {
   saveTeamSyncState,
   WORKFLOW_PLANS_RELATIVE_DIR,
   WORKFLOW_STATE_RELATIVE_PATH,
-  writeOrchestratorHandoff,
   writeSessionSnapshot,
 } = require("../dist/index.js");
 const fs = require("node:fs");
@@ -3728,217 +3722,7 @@ test("final-commit writes local workflow and handoff fallback when hosted commit
   assert.ok(logged[1].summary.length <= 600);
 });
 
-test("orchestrator recommendation is never opened by keywords or a file count", () => {
-  // AGENTS.md: depth is chosen from consequences, not keywords or a file-count
-  // threshold. Orchestrator was folded into Companion on 2026-11-15.
-  const query = "Coordinate multi-agent rollout with proof gates and live validation";
-  assert.equal(getOrchestratorRecommendation(query, "full", { changedFilesCount: 6 }), null);
-  assert.equal(
-    getOrchestratorRecommendation(query, "orchestrate", { hasActiveCollisions: true }),
-    null
-  );
-  assert.equal(shouldSuggestOrchestratorForWorkflow(query, "full"), false);
-  assert.equal(shouldSuggestOrchestratorForWorkflow(query, "orchestrate"), true);
-});
-
-test("a requested orchestrator handoff keeps proof and multi-agent annotations", () => {
-  const recommendation = getOrchestratorRecommendation(
-    "Coordinate multi-agent rollout with proof gates and live validation",
-    "full",
-    { changedFilesCount: 6, explicitRequest: true }
-  );
-
-  assert.equal(recommendation.level, "confirm");
-  assert.equal(recommendation.orchestratorRequired, true);
-  assert.ok(recommendation.reasons.includes("explicit_handoff_request"));
-  assert.ok(recommendation.reasons.includes("multi_agent_intent"));
-  assert.ok(recommendation.reasons.includes("proof_gate_intent"));
-  assert.ok(recommendation.reasons.includes("changed_files_threshold"));
-  assert.equal(
-    formatOrchestratorRecommendationReason("team_sync_collision"),
-    "Team Sync overlap or collision signals"
-  );
-});
-
-test("orchestrator recommendation can be auto-routed by policy", () => {
-  const recommendation = getOrchestratorRecommendation("Release validation", "full", {
-    policyAutoRoute: true,
-    policySource: "enterprise-proof-gates",
-  });
-
-  assert.equal(recommendation.level, "auto");
-  assert.equal(recommendation.policySource, "enterprise-proof-gates");
-  assert.equal(recommendation.orchestratorRequired, true);
-});
-
-test("orchestrator handoff artifact captures workflow and routing metadata", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-orchestrator-handoff-"));
-  try {
-    fs.mkdirSync(path.join(dir, ".snipara", "workflow"), { recursive: true });
-    fs.writeFileSync(
-      path.join(dir, ".snipara", "workflow", "current.json"),
-      JSON.stringify(
-        {
-          schemaVersion: "snipara.workflow.v2",
-          workflowId: "companion-routing",
-          goal: "Prepare orchestrator handoff",
-          status: "active",
-          currentPhaseId: "phase-3",
-          planSource: "inline",
-          createdAt: "2026-05-28T08:00:00.000Z",
-          updatedAt: "2026-05-28T08:00:00.000Z",
-          phases: [
-            {
-              id: "inventory-and-cutover-contract",
-              title: "Inventory and cutover contract",
-              query: "Map the remaining legacy memory surfaces",
-              status: "completed",
-              files: ["apps/web/src/lib/db/queries/agent-memory.ts"],
-            },
-            {
-              id: "phase-3",
-              title: "Companion handoff artifact",
-              query: "Prepare the handoff artifact",
-              status: "in_progress",
-              files: ["packages/cli/src/commands/team-sync.ts"],
-              acceptance: "Handoff metadata is complete",
-              gates: ["proof-gate"],
-              needsRuntime: true,
-            },
-          ],
-          runtime: {
-            sandbox: {
-              provider: "snipara-sandbox",
-              bindings: [
-                {
-                  phaseId: "phase-3",
-                  sessionId: "sandbox_session_123",
-                  boundAt: "2026-05-28T08:05:00.000Z",
-                  bootstrapQuery: "Resume sandbox validation for handoff phase",
-                  environment: "docker",
-                  profile: "analysis",
-                  artifacts: ["artifacts/memory-health.json"],
-                  lastCheckpoint: {
-                    summary: "Captured repeatable sandbox validation state",
-                    capturedAt: "2026-05-28T08:20:00.000Z",
-                    artifacts: ["artifacts/memory-health.json"],
-                    contextPackReceipts: [
-                      {
-                        version: "snipara.context_pack.receipt.v1",
-                        receipt_id: "cpack_0123456789abcdef:reference:2026-05-28T08:20:00.000Z",
-                        pack_id: "cpack_0123456789abcdef",
-                        operation: "reference",
-                        content_uploaded: false,
-                        policy_decision: "local_only",
-                        privacy_level: "standard",
-                        kind: "tool_output",
-                        tags: [],
-                        bytes: 42,
-                        line_count: 2,
-                        sensitive: false,
-                        created_at: "2026-05-28T08:19:00.000Z",
-                        local_ref: {
-                          base_relative_path: ".snipara/context-pack",
-                          manifest_relative_path:
-                            ".snipara/context-pack/items/cpack_0123456789abcdef.json",
-                        },
-                      },
-                    ],
-                  },
-                },
-              ],
-            },
-          },
-        },
-        null,
-        2
-      ),
-      "utf8"
-    );
-
-    const recommendation = getOrchestratorRecommendation(
-      "Coordinate proof gate validation across multiple files",
-      "full",
-      { changedFilesCount: 6, hasActiveCollisions: true, explicitRequest: true }
-    );
-    const artifact = buildOrchestratorHandoff({
-      sourceCommand: "workflow run",
-      recommendation,
-      query: "Coordinate proof gate validation across multiple files",
-      summary: "Prepare orchestrator handoff",
-      rootDir: dir,
-      changedFiles: ["packages/cli/src/commands/team-sync.ts"],
-    });
-
-    assert.equal(artifact.workflow.workflowId, "companion-routing");
-    assert.equal(artifact.workflow.currentPhaseId, "phase-3");
-    assert.equal(artifact.workflow.phases.length, 2);
-    assert.equal(artifact.workflow.phases[1].needsRuntime, true);
-    assert.equal(artifact.routing.level, "confirm");
-    assert.equal(artifact.validation.requiresProofGate, true);
-    assert.equal(artifact.validation.requiredEvidence[0].type, "proof");
-    assert.deepEqual(artifact.repo.changedFiles, ["packages/cli/src/commands/team-sync.ts"]);
-    assert.equal(artifact.runtime.sandbox.provider, "snipara-sandbox");
-    assert.deepEqual(
-      artifact.runtime.sandbox.phases.map((phase) => phase.phaseId),
-      ["phase-3"]
-    );
-    assert.equal(artifact.runtime.sandbox.phases[0].hasCheckpoint, true);
-    assert.equal(artifact.runtime.sandbox.phases[0].sessionId, "sandbox_session_123");
-    assert.deepEqual(artifact.runtime.sandbox.phases[0].contextPacks, ["cpack_0123456789abcdef"]);
-
-    const written = writeOrchestratorHandoff({
-      sourceCommand: "workflow run",
-      recommendation,
-      query: "Coordinate proof gate validation across multiple files",
-      summary: "Prepare orchestrator handoff",
-      rootDir: dir,
-      changedFiles: ["packages/cli/src/commands/team-sync.ts"],
-    });
-
-    assert.equal(written.relativePath, ORCHESTRATOR_HANDOFF_RELATIVE_PATH);
-    assert.match(written.command, /^snipara-orchestrator agents execute-gated --plan /);
-    assert.equal(fs.existsSync(path.join(dir, ORCHESTRATOR_HANDOFF_RELATIVE_PATH)), true);
-    const persisted = JSON.parse(
-      fs.readFileSync(path.join(dir, ORCHESTRATOR_HANDOFF_RELATIVE_PATH), "utf8")
-    );
-    assert.equal(persisted.schemaVersion, "snipara.orchestrator.handoff.v1");
-    assert.deepEqual(persisted.memory.decisionIds, []);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("orchestrator handoff only emits explicit or referenced decision IDs", () => {
-  const recommendation = getOrchestratorRecommendation("Release validation", "full", {
-    policyAutoRoute: true,
-  });
-
-  const emptyArtifact = buildOrchestratorHandoff({
-    sourceCommand: "workflow run",
-    recommendation,
-    query: "Release validation",
-    summary: "No linked decisions",
-  });
-  assert.deepEqual(emptyArtifact.memory.decisionIds, []);
-
-  const linkedArtifact = buildOrchestratorHandoff({
-    sourceCommand: "workflow run",
-    recommendation,
-    query: "Release validation",
-    summary: "Linked decisions",
-    decisionIds: ["dec-101", "DEC-101", "not-a-decision"],
-    contextRefs: ["team-sync decision DEC-202", "docs/reference/CODE_GRAPH.md"],
-  });
-
-  assert.deepEqual(linkedArtifact.memory.decisionIds, ["DEC-101", "DEC-202"]);
-});
-
-test("adaptive work routing handoff remains recommendation-only and local-capable", () => {
-  const recommendation = getOrchestratorRecommendation("Coordinate local worker coding", "full", {
-    changedFilesCount: 1,
-    explicitRequest: true,
-  });
+test("adaptive work routing remains recommendation-only and local-capable", () => {
   const adaptiveRouting = buildAdaptiveWorkRoutingRecommendation({
     query: "Reason with the main agent, then let a local worker code the docs update",
     mode: "full",
@@ -3947,35 +3731,23 @@ test("adaptive work routing handoff remains recommendation-only and local-capabl
     workerRole: "coding",
   });
 
-  const artifact = buildOrchestratorHandoff({
-    sourceCommand: "workflow run",
-    recommendation,
-    query: "Coordinate local worker coding",
-    summary: "Prepare local worker handoff",
-    changedFiles: ["docs/roadmap.md"],
-    adaptiveRouting,
-  });
-
-  assert.equal(artifact.routing.workProfile.taskType, "documentation");
-  assert.equal(artifact.routing.requirements.workerRole, "coding");
-  assert.equal(artifact.routing.requirements.plannerRetainsReasoning, true);
-  assert.deepEqual(artifact.routing.requirements.preferredEndpointTypes, ["local"]);
-  assert.deepEqual(artifact.routing.requirements.writeScope, ["docs/roadmap.md"]);
-  assert.equal(artifact.routing.routingCard.mode, "dry_run");
-  assert.equal(artifact.routing.routingCard.humanApprovalRequired, true);
-  assert.equal(artifact.routing.routingCard.fallback, "main_agent");
+  const routing = adaptiveRouting;
+  assert.equal(routing.workProfile.taskType, "documentation");
+  assert.equal(routing.requirements.workerRole, "coding");
+  assert.equal(routing.requirements.plannerRetainsReasoning, true);
+  assert.deepEqual(routing.requirements.preferredEndpointTypes, ["local"]);
+  assert.deepEqual(routing.requirements.writeScope, ["docs/roadmap.md"]);
+  assert.equal(routing.routingCard.mode, "dry_run");
+  assert.equal(routing.routingCard.humanApprovalRequired, true);
+  assert.equal(routing.routingCard.fallback, "main_agent");
   assert.match(
-    artifact.routing.routingCard.reasons.join(" "),
+    routing.routingCard.reasons.join(" "),
     /runtime catalog resolution happens before any delegated execution/
   );
-  assert.doesNotMatch(JSON.stringify(artifact.routing), /api[_-]?key|secret value/i);
+  assert.doesNotMatch(JSON.stringify(routing), /api[_-]?key|secret value/i);
 });
 
 test("adaptive routing advertises a bounded strong-repair contract without spawning a worker", () => {
-  const recommendation = getOrchestratorRecommendation("Coordinate local worker coding", "full", {
-    changedFilesCount: 1,
-    explicitRequest: true,
-  });
   const adaptiveRouting = buildAdaptiveWorkRoutingRecommendation({
     query: "Use a local worker for a bounded docs change and repair only failed proof",
     mode: "full",
@@ -3985,15 +3757,7 @@ test("adaptive routing advertises a bounded strong-repair contract without spawn
     strongRepair: true,
   });
 
-  const artifact = buildOrchestratorHandoff({
-    sourceCommand: "workflow run",
-    recommendation,
-    query: "Coordinate local worker coding",
-    summary: "Prepare local worker handoff with strong repair",
-    adaptiveRouting,
-  });
-
-  assert.deepEqual(artifact.routing.strongRepair, {
+  assert.deepEqual(adaptiveRouting.strongRepair, {
     enabled: true,
     maxAttempts: 1,
     finalAuthority: "strong_adapter",
@@ -4001,8 +3765,8 @@ test("adaptive routing advertises a bounded strong-repair contract without spawn
     scopePreserved: true,
     fallback: "main_agent",
   });
-  assert.match(JSON.stringify(artifact), /strong_adapter/);
-  assert.match(JSON.stringify(artifact), /fallback/);
+  assert.match(JSON.stringify(adaptiveRouting), /strong_adapter/);
+  assert.match(JSON.stringify(adaptiveRouting), /fallback/);
 });
 
 test("adaptive routing infers profile strengths and structured output for local coding work", () => {
@@ -4011,7 +3775,7 @@ test("adaptive routing infers profile strengths and structured output for local 
     mode: "full",
     changedFiles: [
       "packages/cli/src/index.ts",
-      "packages/cli/src/runtime/orchestrator-handoff.ts",
+      "packages/cli/src/runtime/adaptive-routing.ts",
       "packages/cli/test/workflows.test.js",
       "packages/agentic-orchestrator/src/snipara_orchestrator/cli.py",
       "packages/agentic-orchestrator/src/snipara_orchestrator/routing/resolver.py",
@@ -4029,7 +3793,7 @@ test("adaptive routing infers profile strengths and structured output for local 
   assert.ok(routing.workProfile.preferredProfileStrengths.includes("repo_scan"));
 });
 
-test("workflow run emits adaptive routing dry-run metadata into orchestrator handoff", () => {
+test("workflow run emits adaptive routing dry-run metadata without writing a handoff", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-adaptive-routing-run-"));
   try {
     fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
@@ -4076,7 +3840,6 @@ test("workflow run emits adaptive routing dry-run metadata into orchestrator han
         "--route-local-workers",
         "--routing-worker-role",
         "coding",
-        "--emit-orchestrator-handoff",
         "--json",
       ],
       {
@@ -4126,31 +3889,27 @@ test("workflow run emits adaptive routing dry-run metadata into orchestrator han
       payload.adaptive_routing.gateway.warnings.join(" "),
       /high timeout risk; keep execution chunked and checkpointed/
     );
-    assert.equal(payload.orchestrator_handoff.relativePath, ORCHESTRATOR_HANDOFF_RELATIVE_PATH);
-    assert.equal(
-      payload.orchestrator_handoff.handoff.routing.routingCard.recommendedWorkerClass,
-      "coding"
-    );
-
-    const persisted = JSON.parse(
-      fs.readFileSync(path.join(dir, ORCHESTRATOR_HANDOFF_RELATIVE_PATH), "utf8")
-    );
-    assert.equal(persisted.routing.workProfile.taskType, "documentation");
-    assert.equal(persisted.routing.routingCard.humanApprovalRequired, true);
-    assert.equal(persisted.routing.gateway.source, "companion_local");
-    assert.equal(persisted.routing.gateway.candidateCount, 1);
-    assert.equal(persisted.routing.runtimeCatalog.candidates[0].endpointType, "local");
-    assert.equal(persisted.routing.resolution.selected.candidate.endpointType, "local");
+    assert.equal(payload.adaptive_routing.routingCard.recommendedWorkerClass, "coding");
+    assert.equal(payload.adaptive_routing.workProfile.taskType, "documentation");
+    assert.equal(payload.adaptive_routing.routingCard.humanApprovalRequired, true);
+    assert.equal(payload.adaptive_routing.runtimeCatalog.candidates[0].endpointType, "local");
+    assert.equal(payload.adaptive_routing.resolution.selected.candidate.endpointType, "local");
     assert.match(
-      persisted.routing.routingCard.warnings.join(" "),
+      payload.adaptive_routing.routingCard.warnings.join(" "),
       /companion does not launch or claim workers/
     );
+    // The Controller handoff left Companion with the frozen Orchestrator.
+    assert.equal("orchestrator_handoff" in payload, false);
+    assert.equal(fs.existsSync(path.join(dir, ".snipara", "orchestrator")), false);
     // The model server was probed in process, never through a subprocess.
     assert.deepEqual(fs.readFileSync(localModelsLog, "utf8").trim().split("\n"), [
       "http://127.0.0.1:1234/v1/models",
     ]);
     // No key material: requiresApiKey is a boolean flag, a field named apiKey would be a leak.
-    assert.doesNotMatch(JSON.stringify(persisted.routing), /"api[_-]?key"\s*:|secret value/i);
+    assert.doesNotMatch(
+      JSON.stringify(payload.adaptive_routing),
+      /"api[_-]?key"\s*:|secret value/i
+    );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -4198,7 +3957,6 @@ test("workflow run applies the hosted project routing policy without a catalog l
         "standard",
         "--query",
         "Reason with the main planner then use a local worker for a docs update",
-        "--emit-orchestrator-handoff",
         "--json",
       ],
       {
@@ -4297,7 +4055,6 @@ test("workflow run explains when project policy blocks requested local routing",
         "http://127.0.0.1:1234",
         "--routing-local-model",
         "qwen/qwen3-coder-30b",
-        "--emit-orchestrator-handoff",
         "--json",
       ],
       {
@@ -4328,9 +4085,8 @@ test("workflow run explains when project policy blocks requested local routing",
     );
     assert.match(
       payload.adaptive_routing.routingCard.warnings.join(" "),
-      /Companion skipped local orchestrator routing/
+      /Companion skipped local worker routing/
     );
-    assert.equal(payload.orchestrator_handoff.relativePath, ORCHESTRATOR_HANDOFF_RELATIVE_PATH);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -4422,7 +4178,6 @@ test("local worker declarations feed workflow run routing", () => {
         "--adaptive-routing-dry-run",
         "--routing-local-worker",
         "local-gpt-oss-20b-coding",
-        "--emit-orchestrator-handoff",
         "--json",
       ],
       {
@@ -4677,7 +4432,6 @@ test("workflow run uses local adaptive routing policy without hosted configurati
         "standard",
         "--query",
         "Reason with the main planner then use a local worker for a docs update",
-        "--emit-orchestrator-handoff",
         "--json",
       ],
       { cwd: dir }
@@ -4690,27 +4444,9 @@ test("workflow run uses local adaptive routing policy without hosted configurati
     assert.equal(payload.adaptive_routing.gateway, undefined);
     assert.equal(payload.adaptive_routing.requirements.workerRole, "documentation");
     assert.deepEqual(payload.adaptive_routing.requirements.preferredEndpointTypes, ["local"]);
-    assert.equal(payload.orchestrator_handoff.relativePath, ORCHESTRATOR_HANDOFF_RELATIVE_PATH);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
-});
-
-test("orchestrator handoff preserves policy source when auto-routed", () => {
-  const recommendation = getOrchestratorRecommendation("Release validation", "full", {
-    policyAutoRoute: true,
-    policySource: "enterprise-proof-gates",
-  });
-
-  const artifact = buildOrchestratorHandoff({
-    sourceCommand: "workflow run",
-    recommendation,
-    query: "Release validation",
-    summary: "Policy auto-route",
-  });
-
-  assert.equal(artifact.routing.level, "auto");
-  assert.equal(artifact.routing.policySource, "enterprise-proof-gates");
 });
 
 test("memory guard detects publishable npm and PyPI release surfaces generically", () => {
@@ -4788,7 +4524,6 @@ test("automatic setup selects Companion and hosted memory without silently enabl
   assert.equal(auto.companion, "active");
   assert.equal(auto.memory, "hosted");
   assert.equal(auto.standaloneMemory, "not_selected");
-  assert.equal(auto.orchestrator, "none");
   assert.equal(auto.workers, "none");
   assert.equal(auto.tokenStrategy, "minimal");
   assert.match(auto.reasons[0], /alias for STANDARD/);
@@ -4803,16 +4538,16 @@ test("automatic setup selects Companion and hosted memory without silently enabl
   assert.equal(full.effectiveMode, "full");
   assert.equal(full.memory, "hosted");
   assert.equal(full.tokenStrategy, "budgeted");
-  assert.equal(full.orchestrator, "none");
   assert.match(full.reasons[0], /FULL was declared/);
 
-  // A declared orchestrate mode still offers the frozen Controller handoff and
-  // flags workers as policy-gated.
+  // A declared orchestrate mode runs through Companion and flags workers as
+  // policy-gated; no setup selects the frozen Orchestrator.
   const declared = resolveAutomaticSetup("coordonner des sous-agents", "orchestrate", {
     hostedConfigured: true,
   });
   assert.equal(declared.effectiveMode, "orchestrate");
-  assert.equal(declared.orchestrator, "required");
+  assert.equal("orchestrator" in declared, false);
+  assert.match(declared.reasons.join(" "), /runs through Companion/);
   assert.equal(declared.workers, "policy_gated");
 });
 
@@ -4874,7 +4609,7 @@ test("ordinary workflow LITE makes no hosted requests even with hosted routing p
         assert.equal(payload.effective_mode, "lite");
         assert.deepEqual(payload.retrieval_policy.mandatory_calls, []);
         assert.equal(payload.adaptive_routing, null);
-        assert.equal(payload.orchestrator_handoff, null);
+        assert.equal("orchestrator_handoff" in payload, false);
         assert.equal(
           fs.existsSync(requestLogPath),
           false,
@@ -4888,13 +4623,11 @@ test("ordinary workflow LITE makes no hosted requests even with hosted routing p
   }
 });
 
-test("workflow LITE retains hosted routing policy for explicit routing, local demand and handoffs", () => {
+test("workflow LITE retains hosted routing policy for explicit routing and local demand", () => {
   for (const entry of [
     { args: ["--adaptive-routing-dry-run"] },
     { args: ["--route-local-workers"] },
     { args: [], localPolicy: { mode: "recommend" } },
-    { args: ["--emit-orchestrator-handoff"] },
-    { args: ["--auto-route-orchestrator"] },
   ]) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-lite-routing-"));
     try {

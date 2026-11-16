@@ -4,9 +4,9 @@
  * Maintains a local Team Sync session at `.snipara/team-sync/session.json`,
  * tracking work items through active -> completed -> archived. Items go stale
  * after TEAM_SYNC_STALE_WORK_MS (48h) and auto-archive after
- * TEAM_SYNC_AUTO_ARCHIVE_WORK_MS (14d). Handoffs also emit an orchestrator
- * handoff artifact and a journal checkpoint so the next session or agent can
- * resume with full context. Hosted calls enrich this state when configured.
+ * TEAM_SYNC_AUTO_ARCHIVE_WORK_MS (14d). Handoffs also write a journal
+ * checkpoint so the next session or agent can resume with full context. Hosted
+ * calls enrich this state when configured.
  */
 import * as fs from "fs";
 import * as path from "path";
@@ -22,15 +22,6 @@ import {
 } from "../api/client";
 import { loadConfig } from "../config/store";
 import { checkpointText } from "../session/checkpoint";
-import {
-  formatOrchestratorRecommendationReason,
-  getOrchestratorRecommendation,
-  type OrchestratorRecommendation,
-} from "../runtime/detection";
-import {
-  writeOrchestratorHandoff,
-  type WrittenOrchestratorHandoff,
-} from "../runtime/orchestrator-handoff";
 import { appendActivityEvent, writeSessionSnapshot } from "./activity";
 import { appendJournalCheckpoint, type JournalWriteResult } from "./journal";
 import { captureCompanionWhy, type CompanionWhyCaptureReceipt } from "./why-capture";
@@ -149,9 +140,6 @@ interface TeamSyncCommandOptions {
   since?: string;
   dir?: string;
   includeSessionContext?: boolean;
-  emitOrchestratorHandoff?: boolean;
-  autoRouteOrchestrator?: boolean;
-  orchestratorPolicySource?: string;
   output?: string;
   days?: string;
   dryRun?: boolean;
@@ -192,8 +180,6 @@ interface TeamSyncHandoffPayload {
   statePath: string;
   summary: TeamSyncSummary;
   hosted: HostedAttempt<TeamSyncHandoffResponse>;
-  orchestratorRecommendation: OrchestratorRecommendation | null;
-  orchestratorHandoff: WrittenOrchestratorHandoff | null;
   whyCapture: CompanionWhyCaptureReceipt;
 }
 
@@ -205,8 +191,6 @@ export interface TeamSyncStartWorkPayload {
   summary: TeamSyncSummary;
   hosted: HostedAttempt<TeamSyncWorkBriefResponse>;
   startWorkBriefStatus: StartWorkBriefStatus;
-  orchestratorRecommendation: OrchestratorRecommendation | null;
-  orchestratorHandoff: WrittenOrchestratorHandoff | null;
 }
 
 export interface TeamSyncSweepResult {
@@ -621,30 +605,6 @@ export async function createTeamSyncStartWorkPayload(
     recentFiles: record.files,
   });
   const startWorkBriefStatus = buildStartWorkBriefStatus(hosted);
-  const shouldEmitOrchestratorHandoff =
-    options.emitOrchestratorHandoff || options.autoRouteOrchestrator;
-  const orchestratorRecommendation = buildTeamSyncOrchestratorRecommendation(
-    "start-work",
-    summary,
-    hosted,
-    {
-      explicitRequest: options.emitOrchestratorHandoff,
-      policyAutoRoute: options.autoRouteOrchestrator,
-      policySource: options.orchestratorPolicySource,
-    }
-  );
-  const orchestratorHandoff = maybeWriteTeamSyncOrchestratorHandoff(
-    rootDir,
-    "team-sync start-work",
-    shouldEmitOrchestratorHandoff,
-    orchestratorRecommendation,
-    {
-      query: record.summary,
-      summary: record.summary,
-      title: record.summary,
-      changedFiles: summary.files,
-    }
-  );
   const journal = await appendJournalCheckpoint({
     action: "team-sync:start-work",
     summary: record.summary,
@@ -666,7 +626,6 @@ export async function createTeamSyncStartWorkPayload(
       branch: record.branch,
       hostedStatus: hosted.status,
       journalStatus: journal.status,
-      orchestratorHandoffPath: orchestratorHandoff?.relativePath,
     },
   });
   writeOptionalTeamSyncSessionSnapshot(rootDir);
@@ -679,8 +638,6 @@ export async function createTeamSyncStartWorkPayload(
     summary,
     hosted,
     startWorkBriefStatus,
-    orchestratorRecommendation,
-    orchestratorHandoff,
   };
 }
 
@@ -727,31 +684,6 @@ async function createTeamSyncHandoffPayload(
     files: record.files,
     attention: mapHostedAttention(record.attention),
   });
-  const shouldEmitOrchestratorHandoff =
-    options.emitOrchestratorHandoff || options.autoRouteOrchestrator;
-  const orchestratorRecommendation = buildTeamSyncOrchestratorRecommendation(
-    "handoff",
-    summary,
-    hosted,
-    {
-      explicitRequest: options.emitOrchestratorHandoff,
-      policyAutoRoute: options.autoRouteOrchestrator,
-      policySource: options.orchestratorPolicySource,
-    }
-  );
-  const orchestratorHandoff = maybeWriteTeamSyncOrchestratorHandoff(
-    rootDir,
-    "team-sync handoff",
-    shouldEmitOrchestratorHandoff,
-    orchestratorRecommendation,
-    {
-      query: [record.summary, record.next].filter(Boolean).join(" | ") || record.summary,
-      summary: record.summary,
-      title: summary.latestActiveWork?.summary ?? record.summary,
-      changedFiles: summary.files,
-      resumeSummary: record.next,
-    }
-  );
   const journal = await appendJournalCheckpoint({
     action: "team-sync:handoff",
     summary: record.summary,
@@ -789,7 +721,6 @@ async function createTeamSyncHandoffPayload(
       journalStatus: journal.status,
       whyCaptureStatus: whyCapture.status,
       whyCaptureCandidateCount: whyCapture.capturedCount,
-      orchestratorHandoffPath: orchestratorHandoff?.relativePath,
     },
   });
   writeOptionalTeamSyncSessionSnapshot(rootDir);
@@ -802,8 +733,6 @@ async function createTeamSyncHandoffPayload(
     summary,
     hosted,
     whyCapture,
-    orchestratorRecommendation,
-    orchestratorHandoff,
   };
 }
 
@@ -1409,31 +1338,6 @@ export async function teamSyncWhatChangedCommand(options: TeamSyncCommandOptions
     since: since?.toISOString(),
     recentFiles: summary.files.slice(0, 12),
   });
-  const shouldEmitOrchestratorHandoff =
-    options.emitOrchestratorHandoff || options.autoRouteOrchestrator;
-  const orchestratorRecommendation = buildTeamSyncOrchestratorRecommendation(
-    "what-changed",
-    summary,
-    hosted,
-    {
-      explicitRequest: options.emitOrchestratorHandoff,
-      policyAutoRoute: options.autoRouteOrchestrator,
-      policySource: options.orchestratorPolicySource,
-    }
-  );
-  const orchestratorHandoff = maybeWriteTeamSyncOrchestratorHandoff(
-    rootDir,
-    "team-sync what-changed",
-    shouldEmitOrchestratorHandoff,
-    orchestratorRecommendation,
-    {
-      query: buildTeamSyncContinuityQuery("what-changed", summary),
-      summary: buildTeamSyncContinuitySummary("what-changed", summary),
-      title: "Team Sync What Changed",
-      changedFiles: summary.files,
-      resumeSummary: summary.latestHandoff?.summary ?? summary.latestActiveWork?.summary,
-    }
-  );
 
   printTeamSyncResult(
     {
@@ -1442,8 +1346,6 @@ export async function teamSyncWhatChangedCommand(options: TeamSyncCommandOptions
       statePath: getTeamSyncStatePath(rootDir),
       summary,
       hosted,
-      orchestratorRecommendation,
-      orchestratorHandoff,
       compatibilityNotes: buildTeamSyncCompatibilityNotes("what-changed", options),
     },
     options.json
@@ -1511,7 +1413,6 @@ export async function teamSyncCompleteWorkCommand(options: TeamSyncCommandOption
       journal,
       statePath: getTeamSyncStatePath(rootDir),
       summary,
-      orchestratorRecommendation: buildTeamSyncOrchestratorRecommendation("complete-work", summary),
     },
     options.json
   );
@@ -1529,31 +1430,6 @@ export async function teamSyncResumeCommand(options: TeamSyncCommandOptions): Pr
     task: summary.latestActiveWork?.summary ?? summary.latestHandoff?.summary,
     recentFiles: summary.files.slice(0, 12),
   });
-  const shouldEmitOrchestratorHandoff =
-    options.emitOrchestratorHandoff || options.autoRouteOrchestrator;
-  const orchestratorRecommendation = buildTeamSyncOrchestratorRecommendation(
-    "resume",
-    summary,
-    hosted,
-    {
-      explicitRequest: options.emitOrchestratorHandoff,
-      policyAutoRoute: options.autoRouteOrchestrator,
-      policySource: options.orchestratorPolicySource,
-    }
-  );
-  const orchestratorHandoff = maybeWriteTeamSyncOrchestratorHandoff(
-    rootDir,
-    "team-sync resume",
-    shouldEmitOrchestratorHandoff,
-    orchestratorRecommendation,
-    {
-      query: buildTeamSyncContinuityQuery("resume", summary),
-      summary: buildTeamSyncContinuitySummary("resume", summary),
-      title: "Team Sync Resume",
-      changedFiles: summary.files,
-      resumeSummary: summary.latestHandoff?.next ?? summary.latestActiveWork?.summary,
-    }
-  );
 
   printTeamSyncResult(
     {
@@ -1561,8 +1437,6 @@ export async function teamSyncResumeCommand(options: TeamSyncCommandOptions): Pr
       statePath: getTeamSyncStatePath(rootDir),
       summary,
       hosted,
-      orchestratorRecommendation,
-      orchestratorHandoff,
       compatibilityNotes: buildTeamSyncCompatibilityNotes("resume", options),
       nextCommands: [
         "snipara-companion workflow resume --include-session-context",
@@ -1712,17 +1586,6 @@ function printTeamSyncResult(payload: Record<string, unknown>, json?: boolean): 
     } else if (action === "resume") {
       printHostedResumeContext(hosted.data as TeamSyncResumeResponse);
     }
-  }
-
-  const orchestratorRecommendation = payload.orchestratorRecommendation as
-    | OrchestratorRecommendation
-    | undefined;
-  if (orchestratorRecommendation) {
-    printTeamSyncOrchestratorRecommendation(orchestratorRecommendation);
-  }
-  const orchestratorHandoff = payload.orchestratorHandoff as WrittenOrchestratorHandoff | undefined;
-  if (orchestratorHandoff) {
-    printPreparedOrchestratorHandoff(orchestratorHandoff);
   }
 
   const compatibilityNotes = Array.isArray(payload.compatibilityNotes)
@@ -1929,144 +1792,6 @@ function printHostedResumeContext(result: TeamSyncResumeResponse): void {
   if (result.caveats.length > 0) {
     console.log(`Caveats: ${formatList(result.caveats, 3)}`);
   }
-}
-
-function printTeamSyncOrchestratorRecommendation(recommendation: OrchestratorRecommendation): void {
-  console.log("");
-  console.log("Orchestrator recommendation");
-  console.log(`Level: ${recommendation.level}`);
-  if (recommendation.policySource) {
-    console.log(`Policy source: ${recommendation.policySource}`);
-  }
-  console.log(
-    `Reasons: ${recommendation.reasons.map((reason) => formatOrchestratorRecommendationReason(reason)).join("; ")}`
-  );
-  if (recommendation.level === "auto") {
-    console.log(
-      "Companion auto-routed this continuity context to an orchestrator handoff by policy, without launching workers."
-    );
-  } else if (recommendation.orchestratorRequired) {
-    console.log(
-      "Companion recommends escalating this continuity context through snipara-orchestrator."
-    );
-  } else {
-    console.log(
-      "Companion can keep this continuity context local for now, with orchestrator as the next escalation path."
-    );
-  }
-}
-
-function printPreparedOrchestratorHandoff(handoff: WrittenOrchestratorHandoff): void {
-  console.log("");
-  console.log("Prepared Orchestrator Handoff");
-  console.log(`Path: ${handoff.relativePath}`);
-  console.log(`Command: ${handoff.command}`);
-}
-
-function maybeWriteTeamSyncOrchestratorHandoff(
-  rootDir: string,
-  sourceCommand: string,
-  enabled: boolean | undefined,
-  recommendation: OrchestratorRecommendation | null,
-  input: {
-    query: string;
-    summary: string;
-    title?: string | null;
-    changedFiles?: string[];
-    resumeSummary?: string;
-  }
-): WrittenOrchestratorHandoff | null {
-  if (!enabled || !recommendation) {
-    return null;
-  }
-
-  return writeOrchestratorHandoff({
-    sourceCommand,
-    recommendation,
-    query: input.query,
-    summary: input.summary,
-    title: input.title ?? undefined,
-    rootDir,
-    changedFiles: input.changedFiles,
-    resumeSummary: input.resumeSummary,
-  });
-}
-
-function buildTeamSyncContinuityQuery(action: string, summary: TeamSyncSummary): string {
-  return [
-    `Review Team Sync ${action}`,
-    summary.latestActiveWork?.summary,
-    summary.latestHandoff?.summary,
-    summary.latestHandoff?.next,
-  ]
-    .filter(Boolean)
-    .join(" | ");
-}
-
-function buildTeamSyncContinuitySummary(action: string, summary: TeamSyncSummary): string {
-  const activeSummary = summary.latestActiveWork?.summary ?? "No active work recorded.";
-  const handoffSummary = summary.latestHandoff?.summary ?? "No handoff recorded.";
-  return `Team Sync ${action}: ${activeSummary} ${handoffSummary}`.trim();
-}
-
-function buildTeamSyncOrchestratorRecommendation(
-  action: string,
-  summary: TeamSyncSummary,
-  hosted?: HostedAttempt<
-    | TeamSyncWorkBriefResponse
-    | TeamSyncChangesResponse
-    | TeamSyncHandoffResponse
-    | TeamSyncResumeResponse
-  >,
-  options: {
-    explicitRequest?: boolean;
-    policyAutoRoute?: boolean;
-    policySource?: string;
-  } = {}
-): OrchestratorRecommendation | null {
-  const queryParts = [summary.latestActiveWork?.summary, summary.latestHandoff?.summary];
-
-  if (action === "handoff" && summary.latestHandoff?.attention === "proof") {
-    queryParts.push("proof gate required");
-  }
-
-  const recommendation = getOrchestratorRecommendation(
-    queryParts.filter(Boolean).join(" | "),
-    "full",
-    {
-      explicitRequest: options.explicitRequest,
-      changedFilesCount: summary.files.length,
-      hasActiveCollisions: hasTeamSyncCollisionSignal(action, hosted),
-      policyAutoRoute: options.policyAutoRoute,
-      policySource: options.policySource,
-    }
-  );
-
-  return recommendation;
-}
-
-function hasTeamSyncCollisionSignal(
-  action: string,
-  hosted?: HostedAttempt<
-    | TeamSyncWorkBriefResponse
-    | TeamSyncChangesResponse
-    | TeamSyncHandoffResponse
-    | TeamSyncResumeResponse
-  >
-): boolean {
-  if (hosted?.status !== "ok") {
-    return false;
-  }
-  if (action === "start-work") {
-    return (hosted.data as TeamSyncWorkBriefResponse).brief.activeCollisions.length > 0;
-  }
-  if (action === "what-changed") {
-    return (hosted.data as TeamSyncChangesResponse).whatChanged.summary.overlapClusters > 0;
-  }
-  if (action === "resume") {
-    return (hosted.data as TeamSyncResumeResponse).match.score >= 0.85;
-  }
-  return false;
 }
 
 async function maybeCreateHostedWorkBrief(

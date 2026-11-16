@@ -1,17 +1,16 @@
 /**
- * Runtime environment detection and the opt-in orchestrator handoff.
+ * Runtime environment detection.
  *
- * Inspects the local environment — companion config, workspace root, and
- * provider keys (OPENAI/ANTHROPIC, from process env or a project env-file).
+ * Inspects the local environment — companion config, workspace root, the
+ * Sandbox and Orchestrator CLIs, and provider keys (OPENAI/ANTHROPIC, from
+ * process env or a project env-file). Pure logic: it reads state and routes
+ * nothing.
  *
- * Orchestrator was folded into Companion on 2026-11-15, so Companion no longer
- * recommends it on its own. A handoff recommendation exists only when someone
- * asked for one: the orchestrate mode declared by the caller, an explicit
- * handoff request, or a workspace auto-route policy. AGENTS.md rules out
- * choosing depth from keywords or a file count, so those signals never open a
- * recommendation; they only annotate one that was requested, which keeps the
- * handoff to the frozen Controller unchanged until it is removed. Pure logic:
- * it reads state and returns a recommendation; it does not route anything.
+ * Orchestrator was folded into Companion on 2026-11-15 and its handoff to the
+ * frozen Controller left with phase 3, so Companion recommends it nowhere. The
+ * Orchestrator CLI is still detected because scoped Sandbox validation
+ * (`validation run --scope`) delegates to it until the Sandbox CLI accepts
+ * `--scope` itself.
  */
 import * as fs from "fs";
 import * as os from "os";
@@ -24,36 +23,6 @@ import { diagnosticProbeEnvironment } from "./capability-status";
 type RuntimeEnvironment = Record<string, string | undefined>;
 type ProviderKeyName = "OPENAI_API_KEY" | "ANTHROPIC_API_KEY";
 type ProviderKeySource = "environment" | "env-file";
-export type OrchestratorRecommendationLevel = "suggest" | "confirm" | "auto";
-export type OrchestratorRecommendationReason =
-  | "workflow_mode_orchestrate"
-  | "explicit_handoff_request"
-  | "production_validation_intent"
-  | "proof_gate_intent"
-  | "multi_agent_intent"
-  | "parallel_worker_intent"
-  | "changed_files_threshold"
-  | "team_sync_collision"
-  | "policy_auto_route";
-
-export interface OrchestratorRecommendation {
-  level: OrchestratorRecommendationLevel;
-  reasons: OrchestratorRecommendationReason[];
-  score: number;
-  orchestratorRequired: boolean;
-  policySource?: string;
-}
-
-export interface OrchestratorRecommendationOptions {
-  /** The caller asked for a handoff (an emit flag or a declared orchestrate mode). */
-  explicitRequest?: boolean;
-  changedFilesCount?: number;
-  hasActiveCollisions?: boolean;
-  policyAutoRoute?: boolean;
-  policySource?: string;
-  adaptiveRoutingDryRun?: boolean;
-}
-
 export interface RuntimeDetectionReport {
   cwd: string;
   workspaceRoot: string | null;
@@ -97,13 +66,6 @@ export interface RuntimeDetectionReport {
 
 const RUNTIME_INTENT_PATTERN =
   /\b(test|tests|validate|validation|verify|evaluate|eval|execute|execution|run|sandbox|sandboxed|isolated|isolation|simulate|script|python|csv|dataframe|notebook|generate report|lint|type-?check|build|benchmark|parse|transform|repeatable|reproducible)\b/i;
-const ORCHESTRATOR_PRODUCTION_PATTERN =
-  /\b(prod|production|deploy|deployment|release|rollout|cutover|drift|live validation|live check|live checks)\b/i;
-const ORCHESTRATOR_PROOF_PATTERN =
-  /\b(proof|proofs|gate|gates|gatekeeper|evidence|proof[- ]?required)\b/i;
-const ORCHESTRATOR_MULTI_AGENT_PATTERN =
-  /\b(multi-agent|multi agent|parallel agent|parallel agents|agent coordination|coordinate agents)\b/i;
-const ORCHESTRATOR_PARALLEL_WORKER_PATTERN = /\b(worker|workers|parallel work)\b/i;
 const SANDBOX_COMMANDS = ["snipara-sandbox", "rlm"] as const;
 const SANDBOX_MCP_SERVER_NAMES = new Set(["snipara-sandbox", "rlm-runtime", "rlm"]);
 const ORCHESTRATOR_COMMAND = "snipara-orchestrator";
@@ -184,118 +146,6 @@ export function detectRuntimeEnvironment(
 
 export function shouldSuggestRuntimeForWorkflow(query: string, mode: WorkflowMode): boolean {
   return mode === "full" || mode === "orchestrate" || RUNTIME_INTENT_PATTERN.test(query);
-}
-
-/**
- * Describe a requested handoff to snipara-orchestrator.
- *
- * Returns `null` unless the handoff was requested: `explicitRequest` (an emit
- * flag, or an orchestrate mode the caller declared rather than one inferred
- * from the query) or a workspace `policyAutoRoute`. Query patterns, changed
- * files and Team Sync collisions are recorded as reasons on a requested handoff
- * (they shape its proof requirements) but never create one.
- *
- * Level is `auto` under an auto-route policy, otherwise `confirm`.
- *
- * @returns A recommendation with its reasons, or `null` when nothing asked for one.
- */
-export function getOrchestratorRecommendation(
-  query: string,
-  mode: WorkflowMode,
-  options: OrchestratorRecommendationOptions = {}
-): OrchestratorRecommendation | null {
-  const reasons: OrchestratorRecommendationReason[] = [];
-  let score = 0;
-
-  const addReason = (reason: OrchestratorRecommendationReason, points: number): void => {
-    if (!reasons.includes(reason)) {
-      reasons.push(reason);
-      score += points;
-    }
-  };
-
-  if (!options.explicitRequest && !options.policyAutoRoute) {
-    return null;
-  }
-
-  if (options.explicitRequest) {
-    addReason("explicit_handoff_request", 70);
-  }
-  if (mode === "orchestrate") {
-    addReason("workflow_mode_orchestrate", 70);
-  }
-  if (ORCHESTRATOR_PRODUCTION_PATTERN.test(query)) {
-    addReason("production_validation_intent", 25);
-  }
-  if (ORCHESTRATOR_PROOF_PATTERN.test(query)) {
-    addReason("proof_gate_intent", 30);
-  }
-  if (ORCHESTRATOR_MULTI_AGENT_PATTERN.test(query)) {
-    addReason("multi_agent_intent", 35);
-  }
-  if (ORCHESTRATOR_PARALLEL_WORKER_PATTERN.test(query)) {
-    addReason("parallel_worker_intent", 20);
-  }
-  if ((options.changedFilesCount ?? 0) >= 5) {
-    addReason("changed_files_threshold", 15);
-  }
-  if (options.hasActiveCollisions) {
-    addReason("team_sync_collision", 25);
-  }
-  if (options.policyAutoRoute) {
-    addReason("policy_auto_route", 100);
-  }
-  if (options.adaptiveRoutingDryRun) {
-    addReason("parallel_worker_intent", 20);
-  }
-
-  // Every recommendation here was asked for, so nothing is left to "suggest".
-  const level: OrchestratorRecommendationLevel = options.policyAutoRoute ? "auto" : "confirm";
-
-  return {
-    level,
-    reasons,
-    score,
-    orchestratorRequired: true,
-    policySource: options.policySource,
-  };
-}
-
-export function formatOrchestratorRecommendationReason(
-  reason: OrchestratorRecommendationReason
-): string {
-  switch (reason) {
-    case "workflow_mode_orchestrate":
-      return "explicit orchestrated workflow mode";
-    case "explicit_handoff_request":
-      return "an orchestrator handoff was explicitly requested";
-    case "production_validation_intent":
-      return "production, deploy, rollout, or live-validation intent";
-    case "proof_gate_intent":
-      return "proof, gate, or evidence requirements";
-    case "multi_agent_intent":
-      return "explicit multi-agent coordination intent";
-    case "parallel_worker_intent":
-      return "parallel worker execution language";
-    case "changed_files_threshold":
-      return "changed file count crossed the escalation threshold";
-    case "team_sync_collision":
-      return "Team Sync overlap or collision signals";
-    case "policy_auto_route":
-      return "workspace policy requires orchestrator routing";
-    default:
-      return reason;
-  }
-}
-
-/**
- * Companion no longer suggests Orchestrator on its own (folded 2026-11-15).
- * Kept as an export for compatibility; true only for a declared orchestrate mode.
- */
-export function shouldSuggestOrchestratorForWorkflow(query: string, mode: WorkflowMode): boolean {
-  return (
-    getOrchestratorRecommendation(query, mode, { explicitRequest: mode === "orchestrate" }) !== null
-  );
 }
 
 function getCommandVersion(

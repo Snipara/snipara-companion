@@ -5,7 +5,7 @@
  * runtime checkpoints, resume, final-commit, timeline, and impact gates. State
  * persists under `.snipara/` (see WORKFLOW_STATE_RELATIVE_PATH and
  * WORKFLOW_PLANS_RELATIVE_DIR) so progress survives context compaction. Phase
- * commits reconcile with Team Sync work items and emit orchestrator handoffs.
+ * commits reconcile with Team Sync work items.
  * The many `build*` / `normalize*` helpers here are pure and unit-tested via
  * the re-exports in index.ts.
  */
@@ -63,21 +63,13 @@ import {
 } from "../api/client";
 import { createLocalQueryCache } from "../cache/query-cache";
 import { findWorkspaceRoot, isConfigured, loadConfig } from "../config/store";
-import {
-  detectRuntimeEnvironment,
-  formatOrchestratorRecommendationReason,
-  getOrchestratorRecommendation,
-  type OrchestratorRecommendation,
-  shouldSuggestRuntimeForWorkflow,
-} from "../runtime/detection";
+import { detectRuntimeEnvironment, shouldSuggestRuntimeForWorkflow } from "../runtime/detection";
 import {
   buildAdaptiveWorkRoutingRecommendation,
-  writeOrchestratorHandoff,
   type AdaptiveRoutingGatewayStatus,
   type AdaptiveRoutingRuntimeCatalog,
   type AdaptiveWorkRoutingRecommendation,
-  type WrittenOrchestratorHandoff,
-} from "../runtime/orchestrator-handoff";
+} from "../runtime/adaptive-routing";
 import {
   buildCanonicalEvent,
   buildLocalContextPackReceipts,
@@ -275,7 +267,6 @@ const REUPLOAD_REASONS = new Set([
 
 export type WorkflowMode = "lite" | "standard" | "auto" | "full" | "orchestrate";
 export type AutomaticMemorySetup = "none" | "hosted";
-export type AutomaticOrchestratorSetup = "none" | "available" | "required";
 export type AutomaticWorkerSetup = "none" | "policy_gated";
 
 export interface AutomaticSetupSelection {
@@ -283,7 +274,6 @@ export interface AutomaticSetupSelection {
   effectiveMode: Exclude<WorkflowMode, "auto">;
   companion: "active";
   memory: AutomaticMemorySetup;
-  orchestrator: AutomaticOrchestratorSetup;
   workers: AutomaticWorkerSetup;
   standaloneMemory: "not_selected";
   tokenStrategy: "minimal" | "budgeted";
@@ -6072,7 +6062,7 @@ export function resolveAutoWorkflowMode(_query: string): Exclude<WorkflowMode, "
  * Describe the smallest effective Snipara setup selected for a task.
  * This is deliberately a decision card: it never enables standalone memory
  * or executes a worker by itself. Worker execution remains policy-gated and
- * requires an explicit orchestrator path or project policy.
+ * requires an explicit project policy.
  */
 export function resolveAutomaticSetup(
   query: string,
@@ -6081,17 +6071,14 @@ export function resolveAutomaticSetup(
 ): AutomaticSetupSelection {
   const effectiveMode = effectiveWorkflowMode(requestedMode, query);
   const hostedMemory = options.hostedConfigured !== false && effectiveMode !== "lite";
-  // Orchestrator was folded into Companion (2026-11-15): an inferred orchestrated
-  // depth runs through Companion, and the frozen Orchestrator is needed only
-  // when the caller declared the orchestrate mode.
-  const orchestratorRequired = requestedMode === "orchestrate";
+  // Orchestrator was folded into Companion (2026-11-15): the orchestrated depth
+  // runs through Companion, and no setup ever selects the frozen Orchestrator.
 
   return {
     requestedMode,
     effectiveMode,
     companion: "active",
     memory: hostedMemory ? "hosted" : "none",
-    orchestrator: orchestratorRequired ? "required" : "none",
     workers:
       effectiveMode === "orchestrate" &&
       /\b(worker|travailleur|sous-agent(?:s)?|sous agent(?:s)?|parall[eè]le(?:s)?)\b/i.test(query)
@@ -6107,11 +6094,9 @@ export function resolveAutomaticSetup(
       hostedMemory
         ? "hosted memory is used for this workflow depth"
         : "no mandatory memory call for this workflow depth",
-      orchestratorRequired
-        ? "the orchestrate mode was declared, so the frozen Orchestrator handoff stays available"
-        : effectiveMode === "orchestrate"
-          ? "the orchestrated depth runs through Companion: one lead plan, one owner per phase"
-          : "orchestration is not needed for the detected task scope",
+      effectiveMode === "orchestrate"
+        ? "the orchestrated depth runs through Companion: one lead plan, one owner per phase"
+        : "orchestration is not needed for the detected task scope",
       "standalone snipara-memory is reserved for applications that explicitly choose the autonomous memory package",
     ],
   };
@@ -6265,9 +6250,11 @@ function printManagedWorkflowDiscipline(): void {
   console.log(
     "- FULL: use this managed workflow with phases/chunks for multi-file, risky, release/deploy, architectural, or compaction-prone coding work."
   );
-  console.log("- --mode auto routes by task intent; a nudge is advisory, not a gate.");
   console.log(
-    "- FULL + ORCHESTRATED: use explicit snipara-orchestrator handoff only for production gates, drift checks, or multi-agent coordination."
+    "- --mode auto is an alias for STANDARD; declare lite, full or orchestrate to choose another depth."
+  );
+  console.log(
+    "- ORCHESTRATED: only for actual parallel ownership, through Companion: one lead plan (snipara-companion lead-plan), one owner per phase, workflow checkpoints."
   );
   console.log(
     "- Before concluding on routes/services/jobs, risky changes, or what is missing, run the code impact gate."
@@ -7651,14 +7638,6 @@ function printAutomaticSetup(selection: AutomaticSetupSelection): void {
     selection.memory === "hosted" ? "hosted Snipara memory" : "none required"
   );
   printKeyValue(
-    "Orchestrator:",
-    selection.orchestrator === "required"
-      ? "required"
-      : selection.orchestrator === "available"
-        ? "available on escalation"
-        : "not selected"
-  );
-  printKeyValue(
     "Workers:",
     selection.workers === "policy_gated" ? "policy-gated recommendation" : "not selected"
   );
@@ -7681,57 +7660,6 @@ function runtimeHintVersionLabel(report: ReturnType<typeof detectRuntimeEnvironm
   }
 
   return ` (CLI ${report.runtime.cliVersion})`;
-}
-
-function printOrchestratorHandoffHint(
-  query: string,
-  mode: WorkflowMode,
-  recommendation: OrchestratorRecommendation | null = getOrchestratorRecommendation(query, mode)
-): void {
-  if (!recommendation) {
-    return;
-  }
-
-  const report = detectRuntimeEnvironment();
-  console.log("");
-  console.log(chalk.bold("Snipara Orchestrator hint"));
-  console.log(`Routing level: ${recommendation.level}`);
-  if (recommendation.policySource) {
-    console.log(`Policy source: ${recommendation.policySource}`);
-  }
-  console.log(
-    `Reasons: ${recommendation.reasons.map((reason) => formatOrchestratorRecommendationReason(reason)).join("; ")}`
-  );
-
-  if (report.orchestrator.cliAvailable) {
-    const versionLabel = report.orchestrator.version ? ` (${report.orchestrator.version})` : "";
-    console.log(`snipara-orchestrator is installed${versionLabel}.`);
-    if (recommendation.level === "auto") {
-      console.log(
-        "Policy auto-route marked this task for orchestrator handling and prepared the handoff automatically."
-      );
-    } else {
-      console.log(
-        "An orchestrator handoff was requested. Orchestrator is frozen and folding into Companion; Companion no longer recommends it on its own."
-      );
-    }
-  } else {
-    console.log(
-      "For production proof gates, drift checks, or multi-agent coordination, install explicitly with: npx create-snipara repair --with-orchestrator"
-    );
-    console.log("Manual install: pip install snipara-orchestrator");
-  }
-
-  console.log(
-    "Companion keeps workflow state and phase commits; it does not spawn orchestrator workers automatically."
-  );
-}
-
-function printPreparedOrchestratorHandoff(handoff: WrittenOrchestratorHandoff): void {
-  console.log("");
-  console.log(chalk.bold("Prepared Orchestrator Handoff"));
-  console.log(`Path: ${handoff.relativePath}`);
-  console.log(`Command: ${handoff.command}`);
 }
 
 function printAdaptiveRoutingRecommendation(routing: AdaptiveWorkRoutingRecommendation): void {
@@ -10444,9 +10372,6 @@ export async function workflowRunCommand(options: {
   maxCriticalTokens?: number;
   maxContextTokens?: number;
   runtimeHint?: boolean;
-  emitOrchestratorHandoff?: boolean;
-  autoRouteOrchestrator?: boolean;
-  orchestratorPolicySource?: string;
   adaptiveRoutingDryRun?: boolean;
   routeLocalWorkers?: boolean;
   routingLocalWorker?: string;
@@ -10486,13 +10411,11 @@ export async function workflowRunCommand(options: {
 
   const client = hostedConfigured ? createClient(20000) : null;
   // A plain LITE task does not need hosted routing discovery. Explicit routing,
-  // local policy demand and handoffs retain the existing hosted policy path.
+  // and local policy demand retain the existing hosted policy path.
   const needsHostedRoutingPolicy =
     effectiveMode !== "lite" ||
     localAdaptiveRoutingRequested ||
-    (localAdaptiveRoutingPolicy !== null && localAdaptiveRoutingPolicy.mode !== "off") ||
-    options.emitOrchestratorHandoff ||
-    options.autoRouteOrchestrator;
+    (localAdaptiveRoutingPolicy !== null && localAdaptiveRoutingPolicy.mode !== "off");
   const loadedAdaptiveRoutingPolicy =
     hostedConfigured && needsHostedRoutingPolicy
       ? await loadAdaptiveRoutingProjectPolicy(client, localAdaptiveRoutingPolicy)
@@ -10519,28 +10442,6 @@ export async function workflowRunCommand(options: {
   const adaptiveRouting = shouldResolveAdaptiveRoutingLocally(routingOptions, adaptiveRoutingDryRun)
     ? await enrichAdaptiveRoutingLocally(adaptiveRoutingDryRun!, routingOptions)
     : adaptiveRoutingDryRun;
-  const orchestratorRecommendation = getOrchestratorRecommendation(options.query, effectiveMode, {
-    explicitRequest: Boolean(options.emitOrchestratorHandoff) || options.mode === "orchestrate",
-    policyAutoRoute: options.autoRouteOrchestrator,
-    policySource: options.orchestratorPolicySource,
-    adaptiveRoutingDryRun: Boolean(adaptiveRouting),
-  });
-  // An orchestrate depth inferred from the query no longer writes a handoff by
-  // itself; only an explicit request or a workspace policy does.
-  const shouldEmitOrchestratorHandoff =
-    options.emitOrchestratorHandoff || options.autoRouteOrchestrator;
-  const preparedHandoff =
-    shouldEmitOrchestratorHandoff && orchestratorRecommendation
-      ? writeOrchestratorHandoff({
-          sourceCommand: "workflow run",
-          recommendation: orchestratorRecommendation,
-          query: options.query,
-          summary: options.query,
-          title: options.query,
-          mode: effectiveMode,
-          adaptiveRouting,
-        })
-      : null;
 
   if (!hostedConfigured) {
     const payload = {
@@ -10558,8 +10459,6 @@ export async function workflowRunCommand(options: {
               persistence: "Use task-commit only when reusable durable knowledge was learned.",
             }
           : undefined,
-      orchestrator_recommendation: orchestratorRecommendation,
-      orchestrator_handoff: preparedHandoff,
       adaptive_routing: adaptiveRouting,
       local_worker: localWorkerRoutingDefaults?.worker,
       warnings:
@@ -10587,9 +10486,6 @@ export async function workflowRunCommand(options: {
     if (adaptiveRouting) {
       printAdaptiveRoutingRecommendation(adaptiveRouting);
     }
-    if (preparedHandoff) {
-      printPreparedOrchestratorHandoff(preparedHandoff);
-    }
     return;
   }
 
@@ -10603,8 +10499,6 @@ export async function workflowRunCommand(options: {
         escalation: "Run recall, context_query, or code impact only when the task needs them.",
         persistence: "Use task-commit only when reusable durable knowledge was learned.",
       },
-      orchestrator_recommendation: orchestratorRecommendation,
-      orchestrator_handoff: preparedHandoff,
       adaptive_routing: adaptiveRouting,
       local_worker: localWorkerRoutingDefaults?.worker,
     };
@@ -10622,9 +10516,6 @@ export async function workflowRunCommand(options: {
     if (adaptiveRouting) {
       printAdaptiveRoutingRecommendation(adaptiveRouting);
     }
-    if (preparedHandoff) {
-      printPreparedOrchestratorHandoff(preparedHandoff);
-    }
     return;
   }
 
@@ -10639,8 +10530,6 @@ export async function workflowRunCommand(options: {
         mode: options.mode,
         automatic_setup: automaticSetup,
         orchestrate: result,
-        orchestrator_recommendation: orchestratorRecommendation,
-        orchestrator_handoff: preparedHandoff,
         adaptive_routing: adaptiveRouting,
         local_worker: localWorkerRoutingDefaults?.worker,
       });
@@ -10650,13 +10539,9 @@ export async function workflowRunCommand(options: {
     printAutomaticSetup(automaticSetup);
     if (options.runtimeHint !== false) {
       printRuntimeHint(options.query, effectiveMode);
-      printOrchestratorHandoffHint(options.query, effectiveMode, orchestratorRecommendation);
     }
     if (adaptiveRouting) {
       printAdaptiveRoutingRecommendation(adaptiveRouting);
-    }
-    if (preparedHandoff) {
-      printPreparedOrchestratorHandoff(preparedHandoff);
     }
     return;
   }
@@ -10678,8 +10563,6 @@ export async function workflowRunCommand(options: {
     mode: options.mode,
     effective_mode: effectiveMode,
     automatic_setup: automaticSetup,
-    orchestrator_recommendation: orchestratorRecommendation,
-    orchestrator_handoff: preparedHandoff,
     adaptive_routing: adaptiveRouting,
     local_worker: localWorkerRoutingDefaults?.worker,
   };
@@ -10845,13 +10728,9 @@ export async function workflowRunCommand(options: {
 
   if (options.runtimeHint !== false) {
     printRuntimeHint(options.query, effectiveMode);
-    printOrchestratorHandoffHint(options.query, effectiveMode, orchestratorRecommendation);
   }
   if (adaptiveRouting) {
     printAdaptiveRoutingRecommendation(adaptiveRouting);
-  }
-  if (preparedHandoff) {
-    printPreparedOrchestratorHandoff(preparedHandoff);
   }
 }
 
@@ -10945,7 +10824,7 @@ function buildWorkflowAdaptiveRouting(
     ...intentWarnings,
     ...(localRoutingRequested && !localRoutingAllowed
       ? [
-          "Local worker routing was requested, but the effective Adaptive Work Routing policy does not allow local endpoints; Companion skipped local orchestrator routing and will use fallback main_agent.",
+          "Local worker routing was requested, but the effective Adaptive Work Routing policy does not allow local endpoints; Companion skipped local worker routing and will use fallback main_agent.",
         ]
       : []),
     ...(requestedAllowedEndpointTypes.length > 0 &&

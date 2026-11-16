@@ -35,7 +35,9 @@ export function diagnosticProbeEnvironment(
   return result;
 }
 
-export function summarizeRuntimeCapabilities(report: RuntimeDetectionReport): RuntimeCapabilityStatus {
+export function summarizeRuntimeCapabilities(
+  report: RuntimeDetectionReport
+): RuntimeCapabilityStatus {
   const common = {
     endpoint: "not_checked" as const,
     permissions: "not_checked" as const,
@@ -48,16 +50,24 @@ export function summarizeRuntimeCapabilities(report: RuntimeDetectionReport): Ru
     execution_authorized: false,
     surfaces: [
       {
-        ...common, id: "restricted_python", executable: "not_checked",
+        ...common,
+        id: "restricted_python",
+        executable: "not_checked",
         configuration: report.runtime.mcpConfigured ? "observed" : "not_observed",
         authentication: "not_checked",
-        next_action: "Probe the configured Sandbox MCP execute_python surface; restricted snippets do not qualify repository tests.",
+        next_action:
+          "Probe the configured Sandbox MCP execute_python surface; restricted snippets do not qualify repository tests.",
       },
       {
-        ...common, id: "deterministic_validation", executable: validationCli ? "found" : "missing",
-        configuration: "not_checked", authentication: "not_required",
+        ...common,
+        id: "deterministic_validation",
+        executable: validationCli ? "found" : "missing",
+        configuration: "not_checked",
+        authentication: "not_required",
         docker_cli: report.docker.available ? "found" : "missing",
-        prepared_image: "not_checked", workspace_binding: "not_checked", verified_test: "not_checked",
+        prepared_image: "not_checked",
+        workspace_binding: "not_checked",
+        verified_test: "not_checked",
         qualification_scope: "macOS/Linux with a local Docker daemon",
         next_action: !validationCli
           ? "Locate the standalone snipara-sandbox validation CLI; installing or configuring it requires an explicit choice."
@@ -66,16 +76,23 @@ export function summarizeRuntimeCapabilities(report: RuntimeDetectionReport): Ru
             : "Review an immutable request, then run validation diagnose --request <file> and validation gate --request <file> --scope <lot>; readiness is not a passing test.",
       },
       {
-        ...common, id: "provider_native", executable: "not_checked", configuration: "not_checked",
+        ...common,
+        id: "provider_native",
+        executable: "not_checked",
+        configuration: "not_checked",
         authentication: "not_checked",
-        next_action: "Discover the selected native client, then separately verify its endpoint, authentication, permissions and a bounded task receipt.",
+        next_action:
+          "Discover the selected native client, then separately verify its endpoint, authentication, permissions and a bounded task receipt.",
       },
       {
-        ...common, id: "orchestrator", executable: report.orchestrator.cliAvailable ? "found" : "missing",
-        configuration: "not_checked", authentication: "not_checked",
+        ...common,
+        id: "orchestrator",
+        executable: report.orchestrator.cliAvailable ? "found" : "missing",
+        configuration: "not_checked",
+        authentication: "not_checked",
         next_action: report.orchestrator.cliAvailable
           ? "Inspect the selected adapter and its exact task preflight; CLI discovery grants no endpoint, permission or execution qualification."
-          : "Locate snipara-orchestrator on PATH or in the workspace environment; installation remains an explicit choice.",
+          : "Only scoped Sandbox validation uses the deprecated snipara-orchestrator; locate it on PATH or in the workspace environment if that is needed. Installation remains an explicit choice.",
       },
     ],
   };

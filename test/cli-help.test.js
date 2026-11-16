@@ -12,8 +12,13 @@ const cliVersion = JSON.parse(
 
 function runCli(args, options = {}) {
   // Legacy envelope assertions opt in to full detail; default receipts have separate regressions.
-  if (args[0] === "workflow" && ["start", "phase-start", "phase-commit"].includes(args[1]) &&
-      args.includes("--json") && !args.includes("--detail")) args = [...args, "--detail"];
+  if (
+    args[0] === "workflow" &&
+    ["start", "phase-start", "phase-commit"].includes(args[1]) &&
+    args.includes("--json") &&
+    !args.includes("--detail")
+  )
+    args = [...args, "--detail"];
   // FULL phase commits require actual authoritative usage records, even in isolated fixtures.
   if (args[0] === "workflow" && args[1] === "phase-commit" && options.usage !== false) {
     const home = options.env?.HOME ?? fs.mkdtempSync(path.join(os.tmpdir(), "snipara-usage-home-"));
@@ -21,13 +26,29 @@ function runCli(args, options = {}) {
     fs.mkdirSync(sessions, { recursive: true });
     const thread = "companion-fixture";
     const timestamp = new Date().toISOString();
-    fs.writeFileSync(path.join(sessions, "fixture.jsonl"), [
-      { type: "session_meta", payload: { id: thread, timestamp, source: "cli" } },
-      { type: "response_item", timestamp, payload: { role: "user" } },
-      { type: "token_usage_record", payload: { thread_id: thread, response_id: "fixture-response",
-        usage: { input_tokens: 10, cached_input_tokens: 5, output_tokens: 1,
-          reasoning_output_tokens: 0, total_tokens: 11 } } },
-    ].map(JSON.stringify).join("\n") + "\n");
+    fs.writeFileSync(
+      path.join(sessions, "fixture.jsonl"),
+      [
+        { type: "session_meta", payload: { id: thread, timestamp, source: "cli" } },
+        { type: "response_item", timestamp, payload: { role: "user" } },
+        {
+          type: "token_usage_record",
+          payload: {
+            thread_id: thread,
+            response_id: "fixture-response",
+            usage: {
+              input_tokens: 10,
+              cached_input_tokens: 5,
+              output_tokens: 1,
+              reasoning_output_tokens: 0,
+              total_tokens: 11,
+            },
+          },
+        },
+      ]
+        .map(JSON.stringify)
+        .join("\n") + "\n"
+    );
     options = { ...options, env: { ...options.env, HOME: home, CODEX_THREAD_ID: thread } };
   }
   const env = {
@@ -1207,25 +1228,15 @@ test("memory audit combines health and the compact dry-run", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-companion-memory-"));
   const preloadPath = writeMemoryPreload(dir);
 
-  const result = runCli(
-    [
-      "memory",
-      "audit",
-      "--scope",
-      "project",
-      "--include-inactive",
-      "--json",
-    ],
-    {
-      cwd: dir,
-      env: {
-        SNIPARA_API_KEY: "test-key",
-        SNIPARA_PROJECT_ID: "snipara",
-        SNIPARA_API_URL: "https://api.snipara.com",
-      },
-      nodeArgs: ["--require", preloadPath],
-    }
-  );
+  const result = runCli(["memory", "audit", "--scope", "project", "--include-inactive", "--json"], {
+    cwd: dir,
+    env: {
+      SNIPARA_API_KEY: "test-key",
+      SNIPARA_PROJECT_ID: "snipara",
+      SNIPARA_API_URL: "https://api.snipara.com",
+    },
+    nodeArgs: ["--require", preloadPath],
+  });
 
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
@@ -1325,14 +1336,21 @@ test("memory lifecycle commands call hosted invalidate and supersede tools", () 
   assert.equal(restorePayload.received.reason, "still true");
   assert.equal(restorePayload.received.undo_supersede, true);
 
-  const outcome = runCli(["memory", "outcome", "refuted", "mem_a", "mem_b", "--count", "3", "--json"], {
-    cwd: dir,
-    env,
-    nodeArgs: ["--require", preloadPath],
-  });
+  const outcome = runCli(
+    ["memory", "outcome", "refuted", "mem_a", "mem_b", "--count", "3", "--json"],
+    {
+      cwd: dir,
+      env,
+      nodeArgs: ["--require", preloadPath],
+    }
+  );
   assert.equal(outcome.status, 0, outcome.stderr);
   const outcomePayload = JSON.parse(outcome.stdout);
-  assert.deepEqual(outcomePayload.received, { memory_ids: ["mem_a", "mem_b"], outcome: "refuted", count: 3 });
+  assert.deepEqual(outcomePayload.received, {
+    memory_ids: ["mem_a", "mem_b"],
+    outcome: "refuted",
+    count: 3,
+  });
   assert.equal(outcomePayload.memories[0].retirement_candidate, true);
 });
 
@@ -2840,7 +2858,10 @@ test("deep doctor json reports runtime readiness", () => {
     "utf8"
   );
 
-  const result = runCli(["doctor", "--deep", "--json"], { cwd: dir, nodeArgs: ["-r", preloadPath] });
+  const result = runCli(["doctor", "--deep", "--json"], {
+    cwd: dir,
+    nodeArgs: ["-r", preloadPath],
+  });
   assert.equal(result.status, 0);
   const report = JSON.parse(result.stdout);
   assert.equal(typeof report.companion.configured, "boolean");
@@ -3014,7 +3035,10 @@ test("deep doctor json flags unauthorized snipara auth explicitly", () => {
     "utf8"
   );
 
-  const result = runCli(["doctor", "--deep", "--json"], { cwd: dir, nodeArgs: ["-r", preloadPath] });
+  const result = runCli(["doctor", "--deep", "--json"], {
+    cwd: dir,
+    nodeArgs: ["-r", preloadPath],
+  });
   assert.equal(result.status, 0);
   const report = JSON.parse(result.stdout);
   assert.equal(report.auth.checked, true);
@@ -3101,14 +3125,24 @@ test("query surfaces a friendly auth hint on HTTP 401", () => {
   assert.match(result.stderr, /npx -y snipara-companion@latest init --force/);
 });
 
-
 test("memory list emits bounded previews and navigable filtered inventory pages", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-memory-list-"));
   const preload = writeMemoryPreload(dir);
-  const options = { cwd: dir, nodeArgs: ["-r", preload], env: { HOME: dir,
-    SNIPARA_API_KEY: "test-key", SNIPARA_PROJECT_ID: "project_1", SNIPARA_API_URL: "https://api.example.test" } };
+  const options = {
+    cwd: dir,
+    nodeArgs: ["-r", preload],
+    env: {
+      HOME: dir,
+      SNIPARA_API_KEY: "test-key",
+      SNIPARA_PROJECT_ID: "project_1",
+      SNIPARA_API_URL: "https://api.example.test",
+    },
+  };
   try {
-    const first = runCli(["memory", "list", "--scope", "project", "--category", "decisions", "--json"], options);
+    const first = runCli(
+      ["memory", "list", "--scope", "project", "--category", "decisions", "--json"],
+      options
+    );
     assert.equal(first.status, 0, first.stderr || first.stdout);
     const page = JSON.parse(first.stdout);
     assert.equal(page.memories[0].preview.length, 240);
@@ -3122,5 +3156,26 @@ test("memory list emits bounded previews and navigable filtered inventory pages"
     const invalid = runCli(["memory", "list", "--limit", "51", "--json"], options);
     assert.notEqual(invalid.status, 0);
     assert.match(invalid.stderr, /limit 1..50/);
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the Controller integrations left Companion with the frozen Orchestrator", () => {
+  // Phase 3 of docs/planning/orchestrator-fold-20261115/PLAN.md.
+  const help = runCli(["--help"]);
+  assert.equal(help.status, 0, help.stderr);
+  assert.doesNotMatch(help.stdout, /controller-cockpit/);
+  for (const args of [
+    ["controller-cockpit", "--dir", ".", "--controller-id", "c1"],
+    ["workflow", "run", "--mode", "lite", "--query", "x", "--emit-orchestrator-handoff"],
+    ["workflow", "run", "--mode", "lite", "--query", "x", "--auto-route-orchestrator"],
+    ["team-sync", "start-work", "--summary", "x", "--emit-orchestrator-handoff"],
+    ["task", "decide", "--refresh-dossier"],
+    ["task", "decide", "--orchestrator-bin", "/bin/true"],
+  ]) {
+    const result = runCli(args);
+    assert.notEqual(result.status, 0, args.join(" "));
+    assert.match(result.stderr, /unknown (command|option)/, args.join(" "));
+  }
 });

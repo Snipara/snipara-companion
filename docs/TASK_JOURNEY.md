@@ -117,7 +117,7 @@ loaded context, export exact bodies with an explicit mapping rather than
 replacing source references with claims of delivery:
 
 ```json
-[{"workPackageId":"customer:code","phaseId":"code","taskId":"code"}]
+[{ "workPackageId": "customer:code", "phaseId": "code", "taskId": "code" }]
 ```
 
 ```sh
@@ -134,11 +134,11 @@ The original workflow/task identity is preserved; the explicit consumer mapping
 is separate. A changed body, source, scope, policy or candidate requires fresh
 validation. Legacy reference-only exports remain readable without new fields.
 
-To inspect an existing candidate decision, use `task decide <id>
---refresh-dossier --controller-id <id> --candidate-id <id>
---orchestrator-bin /absolute/path/snipara-orchestrator`. This is a read-only,
-explicit call. The goal and criteria must bind the selected task. Eligibility
-does not authorize integration, publication or deployment.
+`task decide` no longer reads a Controller candidate dossier: that call
+(`--refresh-dossier`, `--controller-id`, `--candidate-id`, `--orchestrator-bin`)
+left Companion with the frozen Orchestrator. `decide` reviews the recorded
+evidence and asks for the missing checks; it never authorizes integration,
+publication or deployment.
 
 ## Evidence and next action
 

@@ -540,7 +540,6 @@ snipara-companion workflow run \
   --mode standard \
   --adaptive-routing-dry-run \
   --routing-local-worker local-gpt-oss-20b-coding \
-  --emit-orchestrator-handoff \
   "Implement a scoped coding change"
 ```
 
@@ -2074,9 +2073,13 @@ paths and the LLM-authored simple tasks, for example:
 ```json
 {
   "goal": "Preserve query scope",
-  "steps": [{
-    "id": "fix", "title": "Fix query routing", "files": ["src/query.ts"],
-    "tasks": [{ "id": "route", "title": "Preserve the query scope", "files": ["src/query.ts"] }]
-  }]
+  "steps": [
+    {
+      "id": "fix",
+      "title": "Fix query routing",
+      "files": ["src/query.ts"],
+      "tasks": [{ "id": "route", "title": "Preserve the query scope", "files": ["src/query.ts"] }]
+    }
+  ]
 }
 ```
