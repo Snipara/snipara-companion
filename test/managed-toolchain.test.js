@@ -59,7 +59,7 @@ function fixture(t, suffix = "") {
     fs.writeFileSync(command, bytes, { mode: 0o700 });
     components[name] = {
       command,
-      version: name === "sandbox" ? "3.0.0" : name === "orchestrator" ? "2.1.0" : "6.0.0",
+      version: name === "sandbox" ? "3.0.0" : name === "orchestrator" ? "2.1.0" : "7.0.0",
       sha256: hash(bytes),
     };
   }
@@ -143,6 +143,13 @@ test("native launch preparation pins a stable generation and operator root witho
     /canonical/
   );
   f.manifest.components.sandbox.version = "2.5.0";
+  f.write();
+  assert.throws(
+    () => prepareManagedMcpLaunch({ workspaceRoot: f.base, manifestPath: f.active }),
+    (error) => error.code === "toolchain_version_incompatible"
+  );
+  f.manifest.components.sandbox.version = "3.0.0";
+  f.manifest.components.companion.version = "6.0.0";
   f.write();
   assert.throws(
     () => prepareManagedMcpLaunch({ workspaceRoot: f.base, manifestPath: f.active }),

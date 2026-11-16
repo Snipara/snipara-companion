@@ -191,7 +191,7 @@ export function managedToolchainEnvironment(
 /** The managed façade supports this reviewed generation of the three local components. */
 export function assertManagedToolchainCompatibility(toolchain: ManagedToolchainManifest): void {
   for (const [name, major, minimumMinor] of [
-    ["companion", 6, 0],
+    ["companion", 7, 0],
     ["orchestrator", 2, 1],
     ["sandbox", 3, 0],
   ] as const) {

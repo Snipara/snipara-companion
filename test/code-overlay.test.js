@@ -6,8 +6,10 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 
 const {
+  buildCodeImpactCard,
   buildHostedCodeOverlayUploadPayload,
   buildLocalCodeOverlay,
+  buildLocalImpactResult,
   getLocalCodeOverlayCachePath,
   getLocalCodePromotionStatePath,
   mergeHybridCodeResults,
@@ -542,7 +544,7 @@ test("semantic overlay explains contracts, architecture roles, and dependency cr
   const contract = manifest.symbols.find((symbol) => symbol.name === "SessionContract");
   const repository = manifest.symbols.find((symbol) => symbol.name === "SessionRepository");
 
-  assert.equal(manifest.extractorVersion, 3);
+  assert.equal(manifest.extractorVersion, 4);
   assert.equal(contract.exported, true);
   assert.equal(repository.exported, true);
   assert.equal(manifest.semantic.version, "snipara.semantic.v1");
@@ -583,6 +585,7 @@ test("semantic overlay explains contracts, architecture roles, and dependency cr
       "--depth",
       "4",
       "--json",
+      "--detail",
     ],
     { cwd: repo }
   );
@@ -670,6 +673,7 @@ test("local callers, neighbors, and impact traverse bounded transitive paths", (
       "3",
       "--transitive",
       "--json",
+      "--detail",
     ],
     { cwd: repo }
   );
@@ -697,6 +701,7 @@ test("local callers, neighbors, and impact traverse bounded transitive paths", (
       "--max-nodes",
       "2",
       "--json",
+      "--detail",
     ],
     { cwd: repo }
   );
@@ -848,7 +853,7 @@ test("code unified commands can force local overlay source", () => {
 test("top-level impact runs locally by default without project auth", () => {
   const repo = makeTempRepo();
 
-  const result = runCli(["impact", "src/helper.ts", "--json"], { cwd: repo });
+  const result = runCli(["impact", "src/helper.ts", "--json", "--detail"], { cwd: repo });
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout);
 
@@ -874,7 +879,8 @@ test("top-level impact prints a human-readable local blast radius by default", (
   assert.match(result.stdout, /Incoming \(1\) - files that depend on this/);
   assert.match(result.stdout, /  src\/index\.ts/);
   assert.match(result.stdout, /Outgoing \(0\) - files this depends on/);
-  assert.match(result.stdout, /Use --json for full overlay details\./);
+  assert.match(result.stdout, /Tests \(0\) - existing test files to run/);
+  assert.match(result.stdout, /Detail: \.snipara\/code-impact\/latest\.json/);
   assert.doesNotMatch(result.stdout, /"scope"/);
   assert.doesNotMatch(result.stdout, /"files"/);
 });
@@ -1207,11 +1213,24 @@ test("code mcp exposes snipara_local_code tools over stdio JSON-RPC", async () =
   }
 });
 
-
 test("requested impact target precedes unrelated files but a capped graph remains uncertain", () => {
   const repo = makeTempRepo();
   fs.writeFileSync(path.join(repo, "src", "zzz.ts"), "export const lateTarget = 1;\n");
-  const result = runCli(["code", "impact", "--source", "local", "--changed-files", "src/zzz.ts", "--max-files", "1", "--json"], { cwd: repo });
+  const result = runCli(
+    [
+      "code",
+      "impact",
+      "--source",
+      "local",
+      "--changed-files",
+      "src/zzz.ts",
+      "--max-files",
+      "1",
+      "--json",
+      "--detail",
+    ],
+    { cwd: repo }
+  );
   assert.equal(result.status, 0, result.stderr);
   const payload = JSON.parse(result.stdout).result;
   assert.deepEqual(payload.changedFiles, ["src/zzz.ts"]);
@@ -1230,8 +1249,13 @@ test("nested worktrees do not consume the main repository overlay budget", () =>
     fs.writeFileSync(path.join(nested, `noise-${i}.ts`), `export const noise${i} = 1;\n`);
   }
   const manifest = buildLocalCodeOverlay({ cwd: repo, mode: "working_tree", maxFiles: 2 });
-  assert.deepEqual(manifest.files.map((file) => file.path).sort(), ["src/helper.ts", "src/index.ts"]);
-  assert.ok(!manifest.warnings.some((warning) => warning.code === "local_overlay_file_limit_reached"));
+  assert.deepEqual(manifest.files.map((file) => file.path).sort(), [
+    "src/helper.ts",
+    "src/index.ts",
+  ]);
+  assert.ok(
+    !manifest.warnings.some((warning) => warning.code === "local_overlay_file_limit_reached")
+  );
 });
 
 test("working tree overlay refuses a source symlink outside the repository", () => {
@@ -1246,17 +1270,20 @@ test("working tree overlay refuses a source symlink outside the repository", () 
 });
 
 test("hybrid impact retains unknown local applicability over a known hosted score", () => {
-  const merged = mergeHybridCodeResults("impact", {
-    missingTargetFiles: ["src/new.ts"],
-    coverage: { status: "incomplete" },
-    risk: { level: "unknown", score: null, status: "incomplete" },
-  }, { risk: { level: "low", score: 0 } });
+  const merged = mergeHybridCodeResults(
+    "impact",
+    {
+      missingTargetFiles: ["src/new.ts"],
+      coverage: { status: "incomplete" },
+      risk: { level: "unknown", score: null, status: "incomplete" },
+    },
+    { risk: { level: "low", score: 0 } }
+  );
   assert.equal(merged.risk.level, "unknown");
   assert.equal(merged.risk.score, null);
   assert.equal(merged.coverage.status, "incomplete");
   assert.deepEqual(merged.missingTargetFiles, ["src/new.ts"]);
 });
-
 
 test("hybrid impact refuses incomplete applicability from either input while preserving known complete scores", () => {
   const complete = { risk: { level: "low", score: 0 }, coverage: { status: "complete" } };
@@ -1264,20 +1291,36 @@ test("hybrid impact refuses incomplete applicability from either input while pre
     { risk: { level: "unknown", score: null } },
     { risk: { level: "unrecognized", score: 0 } },
     { risk: { level: "low", score: 0, status: "incomplete" } },
-    ...["unknown", "partial", "unassessed", null].map((status) => ({ risk: { level: "low", score: 0, status } })),
-    ...["unknown", "partial", "unassessed", null].map((status) => ({ risk: { level: "low", score: 0 }, coverage: { status } })),
+    ...["unknown", "partial", "unassessed", null].map((status) => ({
+      risk: { level: "low", score: 0, status },
+    })),
+    ...["unknown", "partial", "unassessed", null].map((status) => ({
+      risk: { level: "low", score: 0 },
+      coverage: { status },
+    })),
     { risk: { level: "low", score: 0 }, coverage: { status: "incomplete" } },
     { risk: { level: "low", score: 0 }, coverage: { missingTargetFiles: ["src/missing.ts"] } },
     { risk: { level: "low", score: 0 }, coverage: { missing_target_files: ["src/missing.ts"] } },
     { risk: { level: "low", score: 0 }, missingTargetFiles: ["src/missing.ts"] },
     { risk: { level: "low", score: 0 }, missing_target_files: ["src/missing.ts"] },
     { risk: { level: "low", score: 0 }, degraded: true },
-    { risk: { level: "low", score: 0 }, mode: "hybrid_degraded_local", provenance: { canonicalBase: "unavailable" } },
-    { risk: { level: "low", score: 0 }, mode: "hybrid", provenance: { canonicalBase: "unavailable" } },
+    {
+      risk: { level: "low", score: 0 },
+      mode: "hybrid_degraded_local",
+      provenance: { canonicalBase: "unavailable" },
+    },
+    {
+      risk: { level: "low", score: 0 },
+      mode: "hybrid",
+      provenance: { canonicalBase: "unavailable" },
+    },
     {},
   ];
   for (const incomplete of incompleteVariants) {
-    for (const inputs of [[complete, incomplete], [incomplete, complete]]) {
+    for (const inputs of [
+      [complete, incomplete],
+      [incomplete, complete],
+    ]) {
       const merged = mergeHybridCodeResults("impact", ...inputs);
       assert.equal(merged.risk.level, "unknown");
       assert.equal(merged.risk.score, null);
@@ -1306,4 +1349,238 @@ test("hybrid impact refuses incomplete applicability from either input while pre
       assert.equal(compatible.coverage.status, "combined");
     }
   }
+});
+
+test("impact prints a compact card by default and writes the full result to the detail file", () => {
+  const repo = makeTempRepo();
+  const result = runCli(["impact", "src/helper.ts", "--source", "local", "--json"], { cwd: repo });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.length < 4000, `card is ${result.stdout.length} bytes`);
+  const card = JSON.parse(result.stdout);
+  assert.equal(card.version, "snipara.code_impact.card.v1");
+  assert.equal(card.source, "local_overlay");
+  assert.deepEqual(card.targets, ["src/helper.ts"]);
+  assert.deepEqual(card.dependents, { count: 1, files: [{ file: "src/index.ts", line: 1 }] });
+  assert.deepEqual(card.dependencies, { count: 0, files: [] });
+  assert.equal(card.coverage.status, "complete");
+  assert.equal(card.detail, ".snipara/code-impact/latest.json");
+  const detail = JSON.parse(fs.readFileSync(path.join(repo, card.detail), "utf8"));
+  assert.equal(detail.sourceSelection.selected, "local_overlay");
+  assert.deepEqual(detail.result.changedFiles, ["src/helper.ts"]);
+});
+
+test("impact card lists existing tests named after the target that the graph cannot link", () => {
+  const repo = makeTempRepo();
+  fs.writeFileSync(path.join(repo, "package.json"), "{}\n");
+  fs.mkdirSync(path.join(repo, "test"));
+  fs.writeFileSync(path.join(repo, "test", "helper.test.js"), "require('../dist/index.js');\n");
+  fs.writeFileSync(path.join(repo, "test", "other.test.js"), "\n");
+  const result = runCli(["impact", "src/helper.ts", "--source", "local", "--json"], { cwd: repo });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).tests, {
+    count: 1,
+    files: ["test/helper.test.js"],
+    basis: "linked",
+  });
+});
+
+test("impact card keeps hosted dependents and drops recommended tests that do not exist", () => {
+  const repo = makeTempRepo();
+  fs.mkdirSync(path.join(repo, "test"));
+  fs.writeFileSync(path.join(repo, "test", "index.test.ts"), "\n");
+  const card = buildCodeImpactCard(
+    {
+      title: "Code impact",
+      sourceSelection: { selected: "hosted_graph", reason: "clean_indexed" },
+      result: {
+        changed_files: ["src/helper.ts"],
+        dependents: {
+          total_dependents: 2,
+          dependents: [
+            { file_path: "src/index.ts", symbols: ["run"] },
+            { file_path: "test/index.test.ts", is_test: true },
+          ],
+        },
+        risk: { level: "low", status: "assessed", factors: [{ code: "missing_tests" }] },
+        tests_to_run: ["src/helper.test.ts"],
+      },
+    },
+    { repoRoot: repo, detailPath: ".snipara/code-impact/latest.json" }
+  );
+  assert.deepEqual(card.dependents.files, [
+    { file: "src/index.ts", symbols: ["run"] },
+    { file: "test/index.test.ts" },
+  ]);
+  assert.deepEqual(card.tests, { count: 1, files: ["test/index.test.ts"], basis: "linked" });
+  assert.deepEqual(card.risk, { level: "low", score: null, reasons: ["missing_tests"] });
+  assert.equal(card.coverage.status, "indexed");
+});
+
+test("the file cap drops the files farthest from the target, not the target's neighbours", () => {
+  const repo = makeTempRepo();
+  fs.mkdirSync(path.join(repo, "aaa"));
+  for (let i = 0; i < 5; i++) {
+    fs.writeFileSync(path.join(repo, "aaa", `noise-${i}.ts`), `export const noise${i} = ${i};\n`);
+  }
+  const manifest = buildLocalCodeOverlay({
+    cwd: repo,
+    mode: "working_tree",
+    maxFiles: 2,
+    priorityFiles: ["src/helper.ts"],
+  });
+  assert.deepEqual(manifest.files.map((file) => file.path).sort(), [
+    "src/helper.ts",
+    "src/index.ts",
+  ]);
+  const limit = manifest.warnings.find(
+    (warning) => warning.code === "local_overlay_file_limit_reached"
+  );
+  assert.match(limit.message, /5 supported files farther from the targets were not indexed/);
+});
+
+test("a file over the size cap is indexed for its imports, so it stays a dependent", () => {
+  const repo = makeTempRepo();
+  fs.appendFileSync(path.join(repo, "src", "index.ts"), "// padding\n".repeat(20));
+  const manifest = buildLocalCodeOverlay({ cwd: repo, mode: "working_tree", maxFileBytes: 120 });
+  const index = manifest.files.find((file) => file.path === "src/index.ts");
+  assert.equal(index.importsOnly, true);
+  assert.equal(index.symbolCount, 0);
+  assert.equal(manifest.excluded.byReason.too_large, 0);
+  writeLocalCodeOverlayCache(manifest);
+  const impact = buildLocalImpactResult({
+    dir: repo,
+    cached: true,
+    changedFiles: ["src/helper.ts"],
+  });
+  assert.ok(impact.incoming.some((edge) => edge.from === "src/index.ts"));
+  assert.equal(impact.coverage.status, "complete");
+  assert.ok(
+    impact.warnings.some(
+      (warning) =>
+        warning.code === "local_overlay_imports_only" && warning.message.includes("src/index.ts")
+    )
+  );
+});
+
+test("Companion's own .snipara state is never indexed as source", () => {
+  const repo = makeTempRepo();
+  const copy = path.join(repo, ".snipara", "release", "repo");
+  fs.mkdirSync(copy, { recursive: true });
+  fs.writeFileSync(path.join(copy, "copy.ts"), "import { helper } from '../../../src/helper';\n");
+  const manifest = buildLocalCodeOverlay({ cwd: repo, mode: "working_tree" });
+  assert.ok(!manifest.files.some((file) => file.path.startsWith(".snipara/")));
+});
+
+test("impact risk counts dependents only, not the files the target depends on", () => {
+  const repo = makeTempRepo();
+  const impact = buildLocalImpactResult({ dir: repo, changedFiles: ["src/index.ts"] });
+  assert.ok(impact.impactedFiles.includes("src/helper.ts"));
+  assert.deepEqual(impact.dependentFiles, []);
+  assert.equal(impact.risk.directDependentFiles, 0);
+  assert.equal(impact.risk.transitiveDependentFiles, 0);
+});
+
+test("hybrid merge keeps the dependents of a compact hosted brief", () => {
+  const merged = mergeHybridCodeResults(
+    "impact",
+    { changedFiles: ["src/a.ts"], impactedFiles: [] },
+    {
+      changed_files: ["src/a.ts"],
+      dependents: { total_dependents: 1, dependents: [{ file_path: "src/b.ts" }] },
+    }
+  );
+  assert.ok(merged.impactedFiles.includes("src/b.ts"));
+});
+
+test("code mcp answers snipara_local_code_impact with the compact card, and the full result on detail", async () => {
+  const repo = makeTempRepo();
+  const mcp = spawn(process.execPath, [cliPath, "code", "mcp"], {
+    cwd: repo,
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, SNIPARA_API_KEY: "", SNIPARA_PROJECT_ID: "", SNIPARA_API_URL: "" },
+  });
+  const readNext = createJsonLineReader(mcp.stdout);
+  const call = async (id, args) => {
+    mcp.stdin.write(
+      `${JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "snipara_local_code_impact", arguments: args } })}\n`
+    );
+    return readNext();
+  };
+  try {
+    mcp.stdin.write(
+      `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } } })}\n`
+    );
+    await readNext();
+    mcp.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
+
+    const card = (await call(2, { changedFiles: ["src/helper.ts"] })).result.structuredContent;
+    assert.equal(card.version, "snipara.code_impact.card.v1");
+    assert.deepEqual(
+      card.dependents.files.map((dependent) => dependent.file),
+      ["src/index.ts"]
+    );
+    assert.equal(card.detail, ".snipara/code-impact/latest.json");
+
+    const full = (await call(3, { changedFiles: ["src/helper.ts"], detail: true })).result
+      .structuredContent;
+    assert.equal(full.title, "Local impact");
+    assert.ok(full.incoming.some((edge) => edge.from === "src/index.ts"));
+  } finally {
+    const exited = waitForExit(mcp);
+    mcp.kill("SIGTERM");
+    await exited;
+  }
+});
+
+test("local impact resolves tsconfig path aliases and Python imports", () => {
+  const repo = makeTempRepo();
+  fs.writeFileSync(
+    path.join(repo, "tsconfig.json"),
+    `{
+  // comments are allowed
+  "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["./src/*"], "@lib": ["./lib/index.ts"] } }
+}
+`
+  );
+  fs.mkdirSync(path.join(repo, "lib"));
+  fs.writeFileSync(path.join(repo, "lib", "index.ts"), "export const lib = 1;\n");
+  fs.writeFileSync(
+    path.join(repo, "src", "page.ts"),
+    "import { helper } from '@/helper';\nimport { lib } from '@lib';\nexport const page = () => helper() + lib;\n"
+  );
+  const api = path.join(repo, "apps", "api");
+  fs.mkdirSync(path.join(api, "src", "services"), { recursive: true });
+  fs.writeFileSync(path.join(api, "src", "__init__.py"), "");
+  fs.writeFileSync(
+    path.join(api, "src", "services", "__init__.py"),
+    "from .billing import charge\n"
+  );
+  fs.writeFileSync(
+    path.join(api, "src", "services", "billing.py"),
+    "def charge():\n    return 1\n"
+  );
+  fs.writeFileSync(path.join(api, "src", "worker.py"), "from src.services.billing import charge\n");
+  fs.writeFileSync(path.join(api, "src", "jobs.py"), "from .services import billing\n");
+
+  const aliased = buildLocalImpactResult({ dir: repo, changedFiles: ["src/helper.ts"] });
+  assert.ok(
+    aliased.incoming.some((edge) => edge.from === "src/page.ts"),
+    "@/helper resolves through paths"
+  );
+  const exact = buildLocalImpactResult({ dir: repo, changedFiles: ["lib/index.ts"] });
+  assert.ok(
+    exact.incoming.some((edge) => edge.from === "src/page.ts"),
+    "@lib resolves through an exact path"
+  );
+
+  const python = buildLocalImpactResult({
+    dir: repo,
+    changedFiles: ["apps/api/src/services/billing.py"],
+  });
+  const importers = python.incoming.map((edge) => edge.from).sort();
+  assert.deepEqual(importers, [
+    "apps/api/src/jobs.py",
+    "apps/api/src/services/__init__.py",
+    "apps/api/src/worker.py",
+  ]);
 });

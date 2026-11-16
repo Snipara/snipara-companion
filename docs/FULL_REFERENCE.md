@@ -739,10 +739,15 @@ snipara-companion verify --file-path src/auth.ts --json
 snipara-companion verify --skip-impact --changed-files src/auth.ts
 ```
 
-Output includes:
+Output is a compact plan (`snipara.verification_plan.compact.v1`); `--detail`
+prints the full plan, which is also written to `.snipara/verify/latest.json`.
+It includes:
 
-- recommended checks from code impact and local package scripts
-- impacted files
+- recommended checks in the order to run them: the tests linked to the change
+  first, as one command per package that runs only them with the package's own
+  runner (after its `pretest`), then type-check and lint, then the package's
+  whole suite and build
+- the code impact card (dependents with lines, existing tests, coverage, risk)
 - risk level and score when code impact is available
 - missing checks and caveats
 - suggested next commands
@@ -1717,7 +1722,7 @@ Semantics:
 - `snipara-companion team-sync sweep` = archives stale local work items after an inactivity threshold; default is 14 days and `--dry-run` previews candidates, actual archive count, and remaining stale work
 - `snipara-companion team-sync resume` = reloads local carryover plus the hosted latest handoff and checkpoint-aware resume guidance when available
 - `snipara-companion final-commit` (canonical) / `workflow final-commit` (compatibility alias) = final hosted handoff plus a redacted seven-section closeout report in human output and `.snipara/workflow/final-report.json`; stored phase outcomes, pending Why Capture candidates, non-persisted items, evidence statuses, risks, and the next step remain visibly distinct
-- `snipara-companion code callers/imports/neighbors/shortest-path/impact` = primary code graph surface for agents with shell access. These commands use `--source auto` by default; clean configured checkouts use hosted MCP, dirty/ahead worktrees use a hosted-base plus local-delta hybrid, and unconfigured projects stay local. Every response reports `sourceSelection` and provenance. The canonical impact spelling is `code impact`; root `impact` remains an alias.
+- `snipara-companion code callers/imports/neighbors/shortest-path/impact` = primary code graph surface for agents with shell access. These commands use `--source auto` by default; clean configured checkouts use hosted MCP, dirty/ahead worktrees use a hosted-base plus local-delta hybrid, and unconfigured projects stay local. Every response reports `sourceSelection` and provenance, except `impact`, which prints a compact card (`source`, `reason`, dependents with lines, existing tests, coverage, risk) and writes the full response to `.snipara/code-impact/latest.json`; `--detail` prints the full response. The canonical impact spelling is `code impact`; root `impact` remains an alias.
 - `snipara-companion code symbol-card` = direct `snipara_code_symbol_card` for an important symbol before editing, with an agent guidance summary before raw JSON
 - `snipara-companion code impact --source hosted|local|hybrid` = optional source override. `--fallback-hosted` augments a local query when hosted auth is available; failures remain explicit degraded-local results.
 - `snipara-companion code local impact` = explicit repository-local bounded transitive impact. TypeScript uses compiler-AST calls/references/imports; Python and Go use import fallback. Use `--depth`, `--direction`, `--edge-kinds`, and `--max-nodes` to control expansion.

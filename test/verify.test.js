@@ -6,8 +6,12 @@ const test = require("node:test");
 const { spawnSync } = require("node:child_process");
 
 const {
-  buildLocalImpactResult, buildLocalCodeOverlay, writeLocalCodeOverlayCache,
-  mergeHybridCodeResults, buildProjectJudgmentCard, buildVerificationPlan,
+  buildLocalImpactResult,
+  buildLocalCodeOverlay,
+  writeLocalCodeOverlayCache,
+  mergeHybridCodeResults,
+  buildProjectJudgmentCard,
+  buildVerificationPlan,
   deriveManagedWorkflowJudgmentResolution,
 } = require("../dist/index.js");
 
@@ -93,15 +97,30 @@ test("missing local target stays unknown from the real producer through verifica
     fs.writeFileSync(path.join(dir, "src", "known.ts"), "export function known() { return 1; }\n");
     runGit(dir, ["init"]);
     runGit(dir, ["add", "src/known.ts"]);
-    runGit(dir, ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "fixture"]);
+    runGit(dir, [
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.com",
+      "commit",
+      "-m",
+      "fixture",
+    ]);
     const impact = buildLocalImpactResult({ cwd: dir, changedFiles: ["src/missing.ts"] });
     assert.equal(impact.risk.level, "unknown");
     assert.equal(impact.risk.score, null);
     assert.deepEqual(impact.missingTargetFiles, ["src/missing.ts"]);
-    const direct = buildProjectJudgmentCard({ changedFiles: ["src/missing.ts"], codeImpact: impact });
+    const direct = buildProjectJudgmentCard({
+      changedFiles: ["src/missing.ts"],
+      codeImpact: impact,
+    });
     assert.equal(direct.state, "proof_required");
     assert.equal(direct.canProceed, "review");
-    const plan = buildVerificationPlan({ cwd: dir, changedFiles: ["src/missing.ts"], codeImpact: impact });
+    const plan = buildVerificationPlan({
+      cwd: dir,
+      changedFiles: ["src/missing.ts"],
+      codeImpact: impact,
+    });
     assert.equal(plan.risk.level, "unknown");
     assert.equal(plan.risk.score, undefined);
     const gap = plan.missingChecks.find((item) => item.code === "impact_applicability_incomplete");
@@ -119,13 +138,29 @@ test("verification merges hosted gaps with local completeness reasons and missin
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-verify-composed-gaps-"));
   try {
     const plan = buildVerificationPlan({
-      cwd: dir, changedFiles: ["src/known.ts"],
+      cwd: dir,
+      changedFiles: ["src/known.ts"],
       codeImpact: {
         risk: { level: "low", score: 0 },
-        coverage: { status: "incomplete", reasons: ["overlay_file_limit_reached"], missingTargetFiles: ["src/local.ts"] },
+        coverage: {
+          status: "incomplete",
+          reasons: ["overlay_file_limit_reached"],
+          missingTargetFiles: ["src/local.ts"],
+        },
         coverage_gaps: [
-          { code: "impact_applicability_incomplete", severity: "medium", message: "Hosted traversal is incomplete.", reasons: ["traversal_truncated"], missing_target_files: ["src/hosted.ts"] },
-          { code: "impact_applicability_incomplete", severity: "medium", message: "Hosted traversal is incomplete.", reasons: ["traversal_truncated"] },
+          {
+            code: "impact_applicability_incomplete",
+            severity: "medium",
+            message: "Hosted traversal is incomplete.",
+            reasons: ["traversal_truncated"],
+            missing_target_files: ["src/hosted.ts"],
+          },
+          {
+            code: "impact_applicability_incomplete",
+            severity: "medium",
+            message: "Hosted traversal is incomplete.",
+            reasons: ["traversal_truncated"],
+          },
           { code: "existing_gap", severity: "low", message: "Keep this independent coverage gap." },
         ],
       },
@@ -141,10 +176,17 @@ test("verification merges hosted gaps with local completeness reasons and missin
     assert.equal(plan.risk.level, "unknown");
     assert.equal(plan.risk.score, undefined);
     assert.equal(plan.judgmentCard.canProceed, "review");
-    const low = buildVerificationPlan({ cwd: dir, changedFiles: ["src/known.ts"], codeImpact: { risk: { level: "low", score: 0 }, coverage: { status: "complete" } } });
+    const low = buildVerificationPlan({
+      cwd: dir,
+      changedFiles: ["src/known.ts"],
+      codeImpact: { risk: { level: "low", score: 0 }, coverage: { status: "complete" } },
+    });
     assert.equal(low.risk.level, "low");
     assert.equal(low.risk.score, 0);
-    assert.equal(low.missingChecks.some((gap) => gap.code === "impact_applicability_incomplete"), false);
+    assert.equal(
+      low.missingChecks.some((gap) => gap.code === "impact_applicability_incomplete"),
+      false
+    );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -157,7 +199,12 @@ test("present impact without a recognized assessed risk cannot become a ready ve
       const plan = buildVerificationPlan({ cwd: dir, changedFiles: ["src/known.ts"], codeImpact });
       assert.equal(plan.risk.level, "unknown");
       assert.equal(plan.risk.score, undefined);
-      assert.ok(plan.missingChecks.some((gap) => gap.code === "impact_applicability_incomplete" && gap.reasons.includes("risk_unknown")));
+      assert.ok(
+        plan.missingChecks.some(
+          (gap) =>
+            gap.code === "impact_applicability_incomplete" && gap.reasons.includes("risk_unknown")
+        )
+      );
       assert.equal(plan.judgmentCard.state, "proof_required");
       assert.equal(plan.judgmentCard.canProceed, "review");
     }
@@ -181,6 +228,7 @@ test("buildVerificationPlan combines code impact, coverage gaps, and local scrip
       build: "tsup src/index.ts --format cjs --dts",
     },
   });
+  fs.writeFileSync(path.join(dir, "packages", "cli", "test", "verify.test.js"), "\n");
 
   const plan = buildVerificationPlan({
     cwd: dir,
@@ -190,7 +238,10 @@ test("buildVerificationPlan combines code impact, coverage gaps, and local scrip
       changed_files: ["packages/cli/src/index.ts"],
       matched_targets: [{ file_path: "packages/cli/src/commands/verify.ts" }],
       risk: { level: "medium", score: 45 },
-      recommended_tests: [{ title: "verify unit test", file: "packages/cli/test/verify.test.js" }],
+      recommended_tests: [
+        { title: "verify unit test", file: "packages/cli/test/verify.test.js" },
+        { title: "guessed test", file: "packages/cli/src/index.test.ts" },
+      ],
       recommended_actions: [{ action: "run_type_check", reason: "CLI TypeScript surface changed" }],
       coverage_gaps: [{ code: "no_browser_check", severity: "low", message: "No UI check needed" }],
       index_freshness: {
@@ -209,6 +260,10 @@ test("buildVerificationPlan combines code impact, coverage gaps, and local scrip
   ]);
   assert.ok(
     plan.recommendedChecks.some((check) => check.file === "packages/cli/test/verify.test.js")
+  );
+  // A recommended test that does not exist on disk is a guess and is not proposed.
+  assert.ok(
+    !plan.recommendedChecks.some((check) => check.file === "packages/cli/src/index.test.ts")
   );
   assert.ok(
     plan.recommendedChecks.some((check) => check.command === "pnpm --filter snipara-companion test")
@@ -294,7 +349,15 @@ test("verify command returns JSON from mocked code impact", () => {
   const preloadPath = writeVerifyPreload(dir);
 
   const result = runCli(
-    ["verify", "--task", "ship auth hardening", "--changed-files", "src/auth.ts", "--json"],
+    [
+      "verify",
+      "--task",
+      "ship auth hardening",
+      "--changed-files",
+      "src/auth.ts",
+      "--json",
+      "--detail",
+    ],
     {
       cwd: dir,
       env: {
@@ -337,7 +400,15 @@ test("verify command auto-selects hybrid graph for configured dirty worktrees", 
   const preloadPath = writeVerifyPreload(dir);
 
   const result = runCli(
-    ["verify", "--task", "ship auth hardening", "--changed-files", "src/auth.ts", "--json"],
+    [
+      "verify",
+      "--task",
+      "ship auth hardening",
+      "--changed-files",
+      "src/auth.ts",
+      "--json",
+      "--detail",
+    ],
     {
       cwd: dir,
       env: {
@@ -384,24 +455,45 @@ test("verify command can run in local fallback mode without hosted impact", () =
   assert.ok(payload.missingChecks.some((gap) => gap.code === "impact_skipped"));
 });
 
-
 function riskConsumerRepo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-risk-consumer-"));
   fs.mkdirSync(path.join(dir, "src"));
   fs.writeFileSync(path.join(dir, "src/target.ts"), "export function target() { return 1; }\n");
   runGit(dir, ["init"]);
   runGit(dir, ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "add", "."]);
-  runGit(dir, ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "fixture"]);
+  runGit(dir, [
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "commit",
+    "-m",
+    "fixture",
+  ]);
   return dir;
 }
 
 function riskConsumerProjection(dir, impact, label = "code impact") {
-  const plan = buildVerificationPlan({ cwd: dir, changedFiles: impact.changedFiles ?? [], codeImpact: impact });
-  const card = buildProjectJudgmentCard({ task: "Inspect source applicability", codeImpact: impact });
-  const judgment = { version: "snipara.workflow.judgment.v1", generatedAt: card.generatedAt,
-    runEnvelope: {}, brief: {}, card, responses: [] };
+  const plan = buildVerificationPlan({
+    cwd: dir,
+    changedFiles: impact.changedFiles ?? [],
+    codeImpact: impact,
+  });
+  const card = buildProjectJudgmentCard({
+    task: "Inspect source applicability",
+    codeImpact: impact,
+  });
+  const judgment = {
+    version: "snipara.workflow.judgment.v1",
+    generatedAt: card.generatedAt,
+    runEnvelope: {},
+    brief: {},
+    card,
+    responses: [],
+  };
   const resolution = deriveManagedWorkflowJudgmentResolution(judgment, {
-    outcome: "completed", evidence: [{ source: "manual", label, status: "passed" }],
+    outcome: "completed",
+    evidence: [{ source: "manual", label, status: "passed" }],
   });
   return { plan, card, resolution };
 }
@@ -415,7 +507,9 @@ function assertIncompleteConsumers(dir, impact) {
   assert.ok(plan.missingChecks.some((item) => item.code === "impact_applicability_incomplete"));
   assert.notEqual(card.canProceed, "yes");
   assert.notEqual(resolution.canProceed, "yes");
-  assert.ok(resolution.evidence.unsatisfiedRequiredActions.includes("Resolve code impact applicability"));
+  assert.ok(
+    resolution.evidence.unsatisfiedRequiredActions.includes("Resolve code impact applicability")
+  );
 }
 
 test("risk consumers: free-text passed impact cannot clear an incomplete producer", () => {
@@ -426,7 +520,9 @@ test("risk consumers: free-text passed impact cannot clear an incomplete produce
       const { card, resolution } = riskConsumerProjection(dir, impact, label);
       const original = JSON.stringify(card);
       assert.notEqual(resolution.canProceed, "yes", label);
-      assert.ok(resolution.evidence.unsatisfiedRequiredActions.includes("Resolve code impact applicability"));
+      assert.ok(
+        resolution.evidence.unsatisfiedRequiredActions.includes("Resolve code impact applicability")
+      );
       assert.ok(resolution.reasonCodes.includes("unresolved_review_signal"));
       assert.equal(JSON.stringify(card), original);
     }
@@ -434,7 +530,9 @@ test("risk consumers: free-text passed impact cannot clear an incomplete produce
     const refreshed = buildLocalImpactResult({ dir, changedFiles: ["src/missing.ts"] });
     assert.equal(refreshed.coverage.status, "complete");
     assert.equal(riskConsumerProjection(dir, refreshed).resolution.canProceed, "yes");
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("risk consumers: requested hybrid hosted failure is incomplete through closeout", () => {
@@ -443,10 +541,17 @@ test("risk consumers: requested hybrid hosted failure is incomplete through clos
     const local = buildLocalImpactResult({ dir, changedFiles: ["src/target.ts"] });
     assert.equal(local.coverage.status, "complete");
     assert.equal(local.risk.level, "low");
-    const hybrid = mergeHybridCodeResults("impact", local, null, "HTTP 503: hosted graph unavailable");
+    const hybrid = mergeHybridCodeResults(
+      "impact",
+      local,
+      null,
+      "HTTP 503: hosted graph unavailable"
+    );
     assert.equal(hybrid.mode, "hybrid_degraded_local");
     assertIncompleteConsumers(dir, hybrid);
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 for (const exclusion of ["too_large", "read_error"]) {
@@ -454,12 +559,26 @@ for (const exclusion of ["too_large", "read_error"]) {
     const dir = riskConsumerRepo();
     const caller = path.join(dir, "src/caller.ts");
     try {
-      fs.writeFileSync(caller, "import { target } from './target';\nexport const value = target();\n" + "// retained caller context\n".repeat(10));
+      fs.writeFileSync(
+        caller,
+        "import { target } from './target';\nexport const value = target();\n" +
+          "// retained caller context\n".repeat(10)
+      );
       const complete = buildLocalImpactResult({ dir, changedFiles: ["src/target.ts"] });
-      assert.ok(complete.incoming.some((edge) => edge.from === "src/caller.ts"), "The omitted supported file is an actual caller");
+      assert.ok(
+        complete.incoming.some((edge) => edge.from === "src/caller.ts"),
+        "The omitted supported file is an actual caller"
+      );
       if (exclusion === "read_error") fs.chmodSync(caller, 0);
-      const manifest = buildLocalCodeOverlay({ cwd: dir, maxFileBytes: exclusion === "too_large" ? 80 : 4096 });
-      t.diagnostic(JSON.stringify({ exclusion, excluded: manifest.excluded, uid: process.getuid?.() }));
+      // Over maxFileBytes a file keeps its imports; only past the imports-only ceiling is it excluded.
+      const manifest = buildLocalCodeOverlay({
+        cwd: dir,
+        maxFileBytes: exclusion === "too_large" ? 40 : 4096,
+        ...(exclusion === "too_large" ? { maxImportsOnlyFileBytes: 80 } : {}),
+      });
+      t.diagnostic(
+        JSON.stringify({ exclusion, excluded: manifest.excluded, uid: process.getuid?.() })
+      );
       assert.equal(manifest.excluded.byReason[exclusion], 1);
       writeLocalCodeOverlayCache(manifest);
       const impact = buildLocalImpactResult({ dir, cached: true, changedFiles: ["src/target.ts"] });
@@ -483,23 +602,32 @@ test("risk consumers: unsupported extension alone does not invalidate supported 
     const impact = buildLocalImpactResult({ dir, cached: true, changedFiles: ["src/target.ts"] });
     assert.equal(impact.coverage.status, "complete");
     assert.equal(impact.risk.level, "low");
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("risk consumers: fully applicable hybrid evidence retains the known low compatibility path", () => {
   const dir = riskConsumerRepo();
   try {
     const local = buildLocalImpactResult({ dir, changedFiles: ["src/target.ts"] });
-    const hybrid = mergeHybridCodeResults("impact", local, { risk: { level: "low", score: 0, status: "assessed" }, coverage: { status: "complete" } });
+    const hybrid = mergeHybridCodeResults("impact", local, {
+      risk: { level: "low", score: 0, status: "assessed" },
+      coverage: { status: "complete" },
+    });
     const { plan, card, resolution } = riskConsumerProjection(dir, hybrid);
     assert.equal(hybrid.risk.level, "low");
     assert.equal(hybrid.coverage.status, "combined");
-    assert.equal(plan.missingChecks.some((item) => item.code === "impact_applicability_incomplete"), false);
+    assert.equal(
+      plan.missingChecks.some((item) => item.code === "impact_applicability_incomplete"),
+      false
+    );
     assert.equal(card.canProceed, "yes");
     assert.equal(resolution.canProceed, "yes");
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
-
 
 test("risk consumers: retained legacy v1 degraded card needs refresh even without a modern applicability action", () => {
   const dir = riskConsumerRepo();
@@ -509,22 +637,48 @@ test("risk consumers: retained legacy v1 degraded card needs refresh even withou
     assert.equal(completeProjection.resolution.canProceed, "yes");
     // 29f6dc19's public producer emitted this reason and caveat without a new
     // applicability action. A stored card keeps that observed degradation.
-    const card = { ...completeProjection.card, state: "proof_required", canProceed: "review",
-      reasons: [{ code: "code_impact_degraded", severity: "high", message: "Code impact returned degraded results.", source: "code_impact" }],
-      requiredActions: [], caveats: ["Code impact was degraded; local reads and broader checks should override confidence."] };
-    const judgment = { version: "snipara.workflow.judgment.v1", generatedAt: card.generatedAt,
-      runEnvelope: {}, brief: {}, card, responses: [] };
-    for (const label of ["code impact", "local inspection", "code impact applicability inspection"]) {
+    const card = {
+      ...completeProjection.card,
+      state: "proof_required",
+      canProceed: "review",
+      reasons: [
+        {
+          code: "code_impact_degraded",
+          severity: "high",
+          message: "Code impact returned degraded results.",
+          source: "code_impact",
+        },
+      ],
+      requiredActions: [],
+      caveats: [
+        "Code impact was degraded; local reads and broader checks should override confidence.",
+      ],
+    };
+    const judgment = {
+      version: "snipara.workflow.judgment.v1",
+      generatedAt: card.generatedAt,
+      runEnvelope: {},
+      brief: {},
+      card,
+      responses: [],
+    };
+    for (const label of [
+      "code impact",
+      "local inspection",
+      "code impact applicability inspection",
+    ]) {
       const resolution = deriveManagedWorkflowJudgmentResolution(judgment, {
-        outcome: "completed", evidence: [{ source: "manual", label, status: "passed" }],
+        outcome: "completed",
+        evidence: [{ source: "manual", label, status: "passed" }],
       });
       assert.equal(resolution.canProceed, "review");
       assert.ok(resolution.reasonCodes.includes("unresolved_review_signal"));
     }
     assert.equal(riskConsumerProjection(dir, complete).resolution.canProceed, "yes");
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
-
 
 for (const [source, fallbackHosted, expectedReason] of [
   ["hybrid", false, "hybrid_hosted_not_configured"],
@@ -534,14 +688,35 @@ for (const [source, fallbackHosted, expectedReason] of [
     const dir = riskConsumerRepo();
     try {
       for (const controlSource of ["auto", "local"]) {
-        const local = runCli(["code", "impact", "--source", controlSource, "--changed-files", "src/target.ts", "--json"], { cwd: dir });
+        const local = runCli(
+          [
+            "code",
+            "impact",
+            "--source",
+            controlSource,
+            "--changed-files",
+            "src/target.ts",
+            "--json",
+            "--detail",
+          ],
+          { cwd: dir }
+        );
         assert.equal(local.status, 0, local.stderr || local.stdout);
         const complete = JSON.parse(local.stdout);
         assert.equal(complete.sourceSelection.selected, "local_overlay");
         assert.equal(complete.result.coverage.status, "complete");
         assert.equal(complete.result.risk.level, "low");
       }
-      const args = ["code", "impact", "--source", source, "--changed-files", "src/target.ts", "--json"];
+      const args = [
+        "code",
+        "impact",
+        "--source",
+        source,
+        "--changed-files",
+        "src/target.ts",
+        "--json",
+        "--detail",
+      ];
       if (fallbackHosted) args.push("--fallback-hosted");
       const requested = runCli(args, { cwd: dir });
       assert.equal(requested.status, 0, requested.stderr || requested.stdout);
@@ -549,7 +724,9 @@ for (const [source, fallbackHosted, expectedReason] of [
       assert.equal(payload.sourceSelection.hosted.configured, false);
       assert.equal(payload.sourceSelection.reason, expectedReason);
       assertIncompleteConsumers(dir, payload.result);
-    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 }
 
@@ -560,12 +737,149 @@ test("risk consumers: merging retained legacy hybrid degradation cannot launder 
     for (const mode of ["hybrid_degraded_local", "hybrid"]) {
       const legacy = { ...complete, mode, provenance: { canonicalBase: "unavailable" } };
       assert.notEqual(riskConsumerProjection(dir, legacy).card.canProceed, "yes");
-      for (const inputs of [[legacy, complete], [complete, legacy]]) {
+      for (const inputs of [
+        [legacy, complete],
+        [complete, legacy],
+      ]) {
         const merged = mergeHybridCodeResults("impact", ...inputs);
         assertIncompleteConsumers(dir, merged);
-        assert.equal(merged.provenance.canonicalBase, inputs[1] === legacy ? "unavailable" : "hosted_graph");
+        assert.equal(
+          merged.provenance.canonicalBase,
+          inputs[1] === legacy ? "unavailable" : "hosted_graph"
+        );
         assert.equal(merged.mode, inputs[1] === legacy ? "hybrid_degraded_local" : "hybrid");
       }
     }
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function makeVerifyRepo(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  runGit(dir, ["init"]);
+  runGit(dir, ["config", "user.email", "agent@example.com"]);
+  runGit(dir, ["config", "user.name", "Agent"]);
+  return dir;
+}
+
+test("verify proposes the targeted test first, with the package's pretest and environment", () => {
+  const dir = makeVerifyRepo("snipara-verify-targeted-");
+  try {
+    const pkg = path.join(dir, "packages", "cli");
+    fs.mkdirSync(path.join(pkg, "src"), { recursive: true });
+    fs.mkdirSync(path.join(pkg, "test"), { recursive: true });
+    writePackageJson(pkg, {
+      name: "sample-cli",
+      scripts: {
+        pretest: "pnpm build",
+        test: "SAMPLE_FLAG=1 node --test test/*.test.js",
+        lint: "eslint src",
+        build: "tsup",
+      },
+    });
+    fs.writeFileSync(path.join(pkg, "src", "verify.ts"), "export const value = 1;\n");
+    fs.writeFileSync(path.join(pkg, "test", "verify.test.js"), "\n");
+    const plan = buildVerificationPlan({
+      cwd: dir,
+      changedFiles: ["packages/cli/src/verify.ts"],
+      skipImpact: true,
+    });
+    const [first] = plan.recommendedChecks;
+    assert.equal(first.file, "packages/cli/test/verify.test.js");
+    assert.equal(
+      first.command,
+      "pnpm --filter sample-cli pretest && SAMPLE_FLAG=1 pnpm --filter sample-cli exec node --test test/verify.test.js"
+    );
+    // The whole suite comes after the cheaper checks once a targeted test exists.
+    assert.deepEqual(
+      plan.recommendedChecks.map((check) => check.command ?? check.file),
+      [
+        first.command,
+        "pnpm --filter sample-cli lint",
+        "pnpm --filter sample-cli test",
+        "pnpm --filter sample-cli build",
+      ]
+    );
+    assert.ok(!plan.missingChecks.some((gap) => gap.code === "no_direct_tests"));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("verify targets one file with vitest or pytest when the package uses them", () => {
+  const dir = makeVerifyRepo("snipara-verify-runners-");
+  try {
+    writePackageJson(dir, { name: "web", scripts: { test: "vitest" } });
+    fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "src", "cart.ts"), "export const cart = 1;\n");
+    fs.writeFileSync(path.join(dir, "src", "cart.test.ts"), "\n");
+    const web = buildVerificationPlan({
+      cwd: dir,
+      changedFiles: ["src/cart.ts"],
+      skipImpact: true,
+    });
+    assert.equal(web.recommendedChecks[0].command, "pnpm exec vitest run src/cart.test.ts");
+
+    fs.mkdirSync(path.join(dir, "api", "tests"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "api", "pyproject.toml"), "[project]\nname = 'api'\n");
+    fs.writeFileSync(path.join(dir, "api", "billing.py"), "value = 1\n");
+    fs.writeFileSync(path.join(dir, "api", "tests", "test_billing.py"), "\n");
+    const api = buildVerificationPlan({
+      cwd: dir,
+      changedFiles: ["api/billing.py"],
+      skipImpact: true,
+    });
+    assert.equal(
+      api.recommendedChecks[0].command,
+      "cd 'api' && python -m pytest tests/test_billing.py"
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("verify prints a compact plan by default and writes the full plan to its detail file", () => {
+  const dir = makeVerifyRepo("snipara-verify-compact-");
+  try {
+    fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "test"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "src", "auth.ts"), "export const auth = true;\n");
+    fs.writeFileSync(
+      path.join(dir, "src", "index.ts"),
+      "import { auth } from './auth';\nexport const ready = auth;\n"
+    );
+    fs.writeFileSync(path.join(dir, "test", "auth.test.js"), "\n");
+    writePackageJson(dir, {
+      name: "sample-project",
+      scripts: { test: "node --test", "type-check": "tsc --noEmit" },
+    });
+    runGit(dir, ["add", "."]);
+    runGit(dir, ["commit", "-m", "initial"]);
+
+    const result = runCli(["verify", "--changed-files", "src/auth.ts", "--json"], { cwd: dir });
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.stdout.length < 6000, `compact plan is ${result.stdout.length} bytes`);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.version, "snipara.verification_plan.compact.v1");
+    assert.equal(payload.impact.version, "snipara.code_impact.card.v1");
+    assert.deepEqual(
+      payload.impact.dependents.files.map((dependent) => dependent.file),
+      ["src/index.ts"]
+    );
+    assert.equal(payload.codeImpact, undefined);
+    assert.equal(payload.recommendedChecks[0].file, "test/auth.test.js");
+    assert.equal(payload.recommendedChecks[0].command, "pnpm exec node --test test/auth.test.js");
+    assert.ok(
+      !payload.suggestedCommands.some((command) =>
+        command.startsWith("snipara-companion code impact")
+      )
+    );
+    assert.equal(payload.detail, ".snipara/verify/latest.json");
+    const detail = JSON.parse(fs.readFileSync(path.join(dir, payload.detail), "utf8"));
+    assert.equal(detail.version, "snipara.verification_plan.v1");
+    assert.ok(detail.codeImpact);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

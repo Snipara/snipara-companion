@@ -456,7 +456,7 @@ export {
   resolveContextPackRecord,
   retrieveContextPack,
 } from "./commands/context-pack";
-export { buildVerificationPlan, verifyCommand } from "./commands/verify";
+export { buildVerificationPlan, compactVerificationPlan, verifyCommand } from "./commands/verify";
 export {
   buildAgentReadinessAuditReport,
   collectAgentReadinessLocalSignals,
@@ -516,6 +516,12 @@ export {
   writeLocalCodeOverlayCache,
   writeLocalCodePromotionState,
 } from "./commands/code";
+export {
+  buildCodeImpactCard,
+  CODE_IMPACT_CARD_VERSION,
+  CODE_IMPACT_DETAIL_RELATIVE_PATH,
+} from "./commands/code-impact-card";
+export type { CodeImpactCard } from "./commands/code-impact-card";
 export {
   buildLocalSourceSnapshot,
   buildLocalSourceStatus,
@@ -1057,7 +1063,8 @@ program
   .option("--diff-summary <summary>", "Natural-language summary for code impact")
   .option("-l, --limit <number>", "Maximum impact entries", "50")
   .option("--skip-impact", "Skip code impact and infer local package checks only")
-  .option("--json", "Print raw JSON")
+  .option("--json", "Print the compact plan as JSON")
+  .option("--detail", "Print the full plan, with the full code impact")
   .action(async (options) => {
     await verifyCommand({
       task: options.task,
@@ -1069,6 +1076,7 @@ program
       limit: options.limit ? parseInt(options.limit, 10) : undefined,
       skipImpact: Boolean(options.skipImpact),
       json: Boolean(options.json),
+      detail: Boolean(options.detail),
     });
   });
 
@@ -3230,7 +3238,7 @@ workflow
   .command("impact-gate")
   .description("Audit committed local workflow phases that have not been pushed yet")
   .option("--base <ref>", "Base ref to compare against (default: upstream branch)")
-  .option("--max-files <number>", "Maximum supported code files to inspect", "2000")
+  .option("--max-files <number>", "Maximum supported code files to inspect", "5000")
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await workflowImpactGateCommand({
@@ -4248,7 +4256,7 @@ collaboration
   .option("--ttl-seconds <seconds>", "Lease TTL in seconds")
   .option("--heartbeat-ttl-seconds <seconds>", "Session heartbeat TTL in seconds")
   .option("--interval-seconds <seconds>", "Polling interval", "15")
-  .option("--max-files <number>", "Maximum files for local code resource expansion", "2000")
+  .option("--max-files <number>", "Maximum files for local code resource expansion", "5000")
   .option("--once", "Run one watch tick and exit")
   .option("--no-auto-claim", "Publish presence without creating or heartbeating leases")
   .option("--no-release-stale", "Keep local active leases even when files are no longer dirty")
@@ -4354,7 +4362,7 @@ collaboration
   .option("--repository <repository>", "Repository id")
   .option("-b, --branch <branch>", "Current branch name")
   .option("--worktree <worktree>", "Worktree path")
-  .option("--max-files <number>", "Maximum files for local code resource expansion", "2000")
+  .option("--max-files <number>", "Maximum files for local code resource expansion", "5000")
   .option("--no-persist", "Evaluate without storing a guard event")
   .option("--enforce", "Exit non-zero for REVIEW_REQUIRED or REQUIRES_ACK, not only BLOCKED")
   .option(
@@ -4502,8 +4510,9 @@ program
   )
   .option("--fallback-hosted", "Augment the local result with hosted graph context")
   .option("--cached", "When local is selected, use the cached overlay if present")
-  .option("--max-files <number>", "Maximum supported code files for local overlay", "2000")
-  .option("--json", "Print raw JSON")
+  .option("--max-files <number>", "Maximum supported code files for local overlay", "5000")
+  .option("--json", "Print the compact impact card as JSON")
+  .option("--detail", "Print the full result instead of the compact card")
   .action(async (filePath, options) => {
     await codeGraphAutoSourceCommand("impact", {
       qualifiedName: options.qualifiedName,
@@ -4524,6 +4533,7 @@ program
       cached: Boolean(options.cached),
       maxFiles: parseInt(options.maxFiles, 10),
       json: options.json,
+      detail: Boolean(options.detail),
     });
   });
 
@@ -4536,7 +4546,7 @@ code
     new Command("status")
       .description("Inspect the non-canonical local code overlay for this working tree")
       .option("-d, --dir <directory>", "Repository directory (default: current)")
-      .option("--max-files <number>", "Maximum supported code files to inspect", "2000")
+      .option("--max-files <number>", "Maximum supported code files to inspect", "5000")
       .option("--include-graph", "Include full files, symbols, and imports in JSON output")
       .option("--json", "Print raw JSON")
       .action(async (options) => {
@@ -4555,7 +4565,7 @@ code
       .option("--working-tree", "Index the current working tree")
       .option("--commit <commit>", "Index a local commit instead of the working tree")
       .option("--only-if-head <sha>", "Skip cache writes if repository HEAD moved")
-      .option("--max-files <number>", "Maximum supported code files to inspect", "2000")
+      .option("--max-files <number>", "Maximum supported code files to inspect", "5000")
       .option("--include-graph", "Include full files, symbols, and imports in JSON output")
       .option("--json", "Print raw JSON")
       .action(async (options) => {
@@ -4579,7 +4589,7 @@ code
       .option("--source-client <name>", "Source client label", "snipara-companion")
       .option("--session-id <id>", "Optional agent/session identifier")
       .option("--no-retire-previous", "Keep older active overlays for the same repository/branch")
-      .option("--max-files <number>", "Maximum supported code files to inspect", "2000")
+      .option("--max-files <number>", "Maximum supported code files to inspect", "5000")
       .option("--json", "Print raw JSON")
       .action(async (options) => {
         await codeUploadCommand({
@@ -4603,7 +4613,7 @@ code
         new Command("install")
           .description("Install managed post-commit and pre-push hooks for local code overlays")
           .option("-d, --dir <directory>", "Repository directory (default: current)")
-          .option("--max-files <number>", "Maximum supported code files to inspect", "2000")
+          .option("--max-files <number>", "Maximum supported code files to inspect", "5000")
           .option("--synchronous", "Run hook work in the foreground instead of background")
           .option(
             "--reindex-delay-seconds <number>",
@@ -4640,7 +4650,7 @@ code
       .option("--request-reindex", "Request hosted code reindex for this project")
       .option("--from-hook <hook>", "Read hook stdin; currently supports pre-push")
       .option("--strict", "Fail when hosted reindex fails instead of recording a warning")
-      .option("--max-files <number>", "Maximum supported code files to inspect", "2000")
+      .option("--max-files <number>", "Maximum supported code files to inspect", "5000")
       .option("--json", "Print raw JSON")
       .action(async (options) => {
         await codePromoteCommand({
@@ -4663,7 +4673,7 @@ code
       .option("--host <host>", "HTTP host", "127.0.0.1")
       .option("--port <number>", "HTTP port", "4747")
       .option("--cached", "Use the cached overlay for query tools instead of rebuilding")
-      .option("--max-files <number>", "Maximum supported code files to inspect", "2000")
+      .option("--max-files <number>", "Maximum supported code files to inspect", "5000")
       .option("--include-graph", "Include full files, symbols, and imports in status/sync output")
       .option(
         "--ready-file <file>",
@@ -4691,7 +4701,7 @@ code
       .description("Run a local MCP stdio server exposing snipara_local_code_* tools")
       .option("-d, --dir <directory>", "Repository directory (default: current)")
       .option("--cached", "Use the cached overlay for query tools instead of rebuilding")
-      .option("--max-files <number>", "Maximum supported code files to inspect", "2000")
+      .option("--max-files <number>", "Maximum supported code files to inspect", "5000")
       .option("--include-graph", "Include full files, symbols, and imports in status/sync output")
       .action(async (options) => {
         await codeMcpCommand({
@@ -4715,7 +4725,7 @@ code
           .option("-d, --depth <number>", "Traversal depth", "1")
           .option("--max-nodes <number>", "Maximum graph nodes to visit", "200")
           .option("--cached", "Use the cached overlay instead of rebuilding from the working tree")
-          .option("--max-files <number>", "Maximum supported code files to inspect", "2000")
+          .option("--max-files <number>", "Maximum supported code files to inspect", "5000")
           .option("--json", "Print raw JSON")
           .action(async (options) => {
             await codeLocalCallersCommand({
@@ -4737,7 +4747,7 @@ code
           .option("--symbol-key <symbolKey>", "Local overlay symbol key")
           .option("-f, --file-path <filePath>", "File path to inspect")
           .option("--cached", "Use the cached overlay instead of rebuilding from the working tree")
-          .option("--max-files <number>", "Maximum supported code files to inspect", "2000")
+          .option("--max-files <number>", "Maximum supported code files to inspect", "5000")
           .option("--json", "Print raw JSON")
           .action(async (options) => {
             await codeLocalImportsCommand({
@@ -4761,7 +4771,7 @@ code
           .option("-e, --edge-kinds <edgeKinds...>", "Edge kinds to traverse")
           .option("--max-nodes <number>", "Maximum graph nodes to visit", "200")
           .option("--cached", "Use the cached overlay instead of rebuilding from the working tree")
-          .option("--max-files <number>", "Maximum supported code files to inspect", "2000")
+          .option("--max-files <number>", "Maximum supported code files to inspect", "5000")
           .option("--json", "Print raw JSON")
           .action(async (options) => {
             await codeLocalNeighborsCommand({
@@ -4793,7 +4803,7 @@ code
           .option("-e, --edge-kinds <edgeKinds...>", "Edge kinds to traverse")
           .option("--max-nodes <number>", "Maximum graph nodes to visit", "500")
           .option("--cached", "Use the cached overlay instead of rebuilding from the working tree")
-          .option("--max-files <number>", "Maximum supported code files to inspect", "2000")
+          .option("--max-files <number>", "Maximum supported code files to inspect", "5000")
           .option("--json", "Print raw JSON")
           .action(async (options) => {
             await codeLocalImpactCommand({
@@ -4822,7 +4832,7 @@ code
           .option("-e, --edge-kinds <edgeKinds...>", "Edge kinds to traverse")
           .option("--max-nodes <number>", "Maximum graph nodes to visit", "500")
           .option("--cached", "Use the cached overlay instead of rebuilding from the working tree")
-          .option("--max-files <number>", "Maximum supported code files to inspect", "2000")
+          .option("--max-files <number>", "Maximum supported code files to inspect", "5000")
           .option("--json", "Print raw JSON")
           .action(async (options) => {
             await codeLocalShortestPathCommand({
@@ -4849,7 +4859,7 @@ code
       .option("-l, --limit <number>", "Maximum callers", "50")
       .option("--source <source>", "auto|local|hosted|hybrid", "auto")
       .option("--cached", "When local is selected, use the cached overlay if present")
-      .option("--max-files <number>", "Maximum supported code files for local overlay", "2000")
+      .option("--max-files <number>", "Maximum supported code files for local overlay", "5000")
       .option("--json", "Print raw JSON")
       .action(async (options) => {
         await codeGraphAutoSourceCommand("callers", {
@@ -4876,7 +4886,7 @@ code
       .option("-l, --limit <number>", "Maximum imports", "50")
       .option("--source <source>", "auto|local|hosted (auto defaults to local)", "auto")
       .option("--cached", "When local is selected, use the cached overlay if present")
-      .option("--max-files <number>", "Maximum supported code files for local overlay", "2000")
+      .option("--max-files <number>", "Maximum supported code files for local overlay", "5000")
       .option("--json", "Print raw JSON")
       .action(async (options) => {
         await codeGraphAutoSourceCommand("imports", {
@@ -4905,7 +4915,7 @@ code
       .option("--max-nodes <number>", "Maximum graph nodes to visit", "200")
       .option("--source <source>", "auto|local|hosted|hybrid", "auto")
       .option("--cached", "When local is selected, use the cached overlay if present")
-      .option("--max-files <number>", "Maximum supported code files for local overlay", "2000")
+      .option("--max-files <number>", "Maximum supported code files for local overlay", "5000")
       .option("--json", "Print raw JSON")
       .action(async (options) => {
         await codeGraphAutoSourceCommand("neighbors", {
@@ -4934,7 +4944,7 @@ code
       .option("--max-nodes <number>", "Maximum graph nodes to visit", "500")
       .option("--source <source>", "auto|local|hosted|hybrid", "auto")
       .option("--cached", "When local is selected, use the cached overlay if present")
-      .option("--max-files <number>", "Maximum supported code files for local overlay", "2000")
+      .option("--max-files <number>", "Maximum supported code files for local overlay", "5000")
       .option("--json", "Print raw JSON")
       .action(async (options) => {
         await codeGraphAutoSourceCommand("shortest-path", {
@@ -4990,8 +5000,9 @@ code
       )
       .option("--fallback-hosted", "Augment the local result with hosted graph context")
       .option("--cached", "When local is selected, use the cached overlay if present")
-      .option("--max-files <number>", "Maximum supported code files for local overlay", "2000")
-      .option("--json", "Print raw JSON")
+      .option("--max-files <number>", "Maximum supported code files for local overlay", "5000")
+      .option("--json", "Print the compact impact card as JSON")
+      .option("--detail", "Print the full result instead of the compact card")
       .action(async (filePath, options) => {
         await codeGraphAutoSourceCommand("impact", {
           qualifiedName: options.qualifiedName,
@@ -5012,6 +5023,7 @@ code
           cached: Boolean(options.cached),
           maxFiles: parseInt(options.maxFiles, 10),
           json: options.json,
+          detail: Boolean(options.detail),
         });
       })
   );

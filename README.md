@@ -61,11 +61,20 @@ npx -y snipara-companion@latest code impact \
   --changed-files src/auth/session.ts --source local
 ```
 
-Local impact reads your checkout. TypeScript and JavaScript analysis includes
-symbols and call/import relationships; Python and Go have import-level
-fallbacks. Missing files and truncated traversal remain explicit limitations.
-With Hosted configured, automatic selection can combine the indexed graph with
-local changes; use `--source local` for an offline query.
+The answer is a short card: the files that depend on the target (with the
+importing line), the files that reach it through others, what it depends on,
+the existing test files to run, coverage and risk. The full result is written
+to `.snipara/code-impact/latest.json`; `--detail` prints it instead.
+
+Local impact reads your checkout. TypeScript analysis includes symbols and
+call/import relationships, through `tsconfig` path aliases; Python (absolute
+and relative imports) and Go have import-level analysis. JavaScript files are
+not parsed, but test files named after a target, such as
+`test/session.test.js`, are listed. `verify` turns the card into checks, with
+a command that runs only the linked tests first. Missing files and truncated traversal
+remain explicit limitations. With Hosted configured, automatic selection can
+combine the indexed graph with local changes; use `--source local` for an
+offline query.
 
 <a id="agent-continuity"></a>
 

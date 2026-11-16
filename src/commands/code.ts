@@ -19,6 +19,11 @@ import ts from "typescript";
 import { createClient, type MinimumChangeEvidence, type MinimumChangeMode } from "../api/client";
 import { findWorkspaceRoot, isConfigured, loadConfig } from "../config/store";
 import { emitCanonicalEvent } from "./events";
+import {
+  buildCodeImpactCard,
+  printCodeImpactCard,
+  writeCodeImpactDetail,
+} from "./code-impact-card";
 import { codeImpactApplicabilityGap } from "./judgment-card";
 import {
   buildInstalledDependencyEvidence,
@@ -34,8 +39,12 @@ export interface LocalCodeOverlayOptions {
   commit?: string;
   maxFiles?: number;
   maxFileBytes?: number;
+  /** Files between `maxFileBytes` and this size are indexed for imports only; larger ones are excluded. */
+  maxImportsOnlyFileBytes?: number;
   /** Query targets are indexed before unrelated files within the same bounded root. */
   priorityFiles?: string[];
+  /** `git status --porcelain` already read by the caller for this repository, to avoid a second read. */
+  gitStatus?: string;
 }
 
 export interface LocalCodeOverlayFile {
@@ -47,6 +56,12 @@ export interface LocalCodeOverlayFile {
   importCount: number;
   referenceCount: number;
   edgeCount: number;
+  /** Over the per-file size cap: only its imports are indexed, so file edges stay complete. */
+  importsOnly?: boolean;
+  /** Working tree only: modification time when read; with the size, it lets a rebuild skip the file. */
+  mtimeMs?: number;
+  /** Secret-like lines redacted from this file, kept so a rebuild that skips it still reports them. */
+  secretFindings?: Array<{ line: number; reason: "private_key" | "secret_assignment" }>;
 }
 
 export interface LocalCodeOverlaySymbol {
@@ -203,7 +218,7 @@ export interface LocalCodeOverlayExcludedFile {
 
 export interface LocalCodeOverlayManifest {
   version: "snipara.local_code_overlay.v2";
-  extractorVersion: 2 | 3;
+  extractorVersion: 2 | 3 | 4;
   generatedAt: string;
   indexedAt: string;
   repoRoot: string;
@@ -224,6 +239,10 @@ export interface LocalCodeOverlayManifest {
   references: LocalCodeOverlayReference[];
   edges: LocalCodeOverlayEdge[];
   semantic?: LocalSemanticModel;
+  /** Fingerprint of what edges depend on besides file contents (resolver version, tsconfig files). */
+  graphInputsFingerprint?: string;
+  /** Hash of the semantic rules the semantic model was built with. */
+  semanticRulesHash?: string;
   incremental: {
     reusedFiles: number;
     parsedFiles: number;
@@ -274,6 +293,8 @@ export interface LocalCodeQueryCommandOptions extends CodeStatusCommandOptions {
   edgeKinds?: string[];
   maxNodes?: number;
   transitive?: boolean;
+  /** Internal: the caller's `git status --porcelain`, passed to the overlay build. */
+  gitStatus?: string;
 }
 
 export type CodeGraphSource = "auto" | "hosted" | "local" | "hybrid";
@@ -289,6 +310,8 @@ export interface CodeGraphAutoSourceOptions extends LocalCodeQueryCommandOptions
   minimumChangeMode?: MinimumChangeMode;
   minimumChangeDependency?: string;
   minimumChangeEvidence?: MinimumChangeEvidence;
+  /** `impact` only: print the full result instead of the compact card. */
+  detail?: boolean;
 }
 
 export interface CodeGraphSourceSelection {
@@ -434,8 +457,12 @@ const SUPPORTED_EXTENSIONS = new Map<string, LocalCodeOverlayFile["language"]>([
   [".go", "go"],
 ]);
 
-const DEFAULT_MAX_FILES = 2000;
+const DEFAULT_MAX_FILES = 5000;
+/** 4: Python relative imports and imported submodules are extracted. */
+const LOCAL_EXTRACTOR_VERSION = 4;
 const DEFAULT_MAX_FILE_BYTES = 1024 * 1024;
+/** Above the per-file cap a file is indexed for imports only, up to this size; beyond it, it is excluded. */
+const MAX_IMPORTS_ONLY_FILE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_HOSTED_OVERLAY_TTL_HOURS = 48;
 const MAX_HOSTED_OVERLAY_TTL_HOURS = 168;
 const DEFAULT_HOOK_REINDEX_DELAY_SECONDS = 5;
@@ -444,8 +471,8 @@ const PROMOTION_RELATIVE_PATH = path.join(".snipara", "code-overlay", "promotion
 const HOOK_BLOCK_PREFIX = "snipara:code-overlay";
 const DEFAULT_EXCLUDED_PREFIXES = [
   ".git/",
-  ".snipara/code-overlay/",
-  ".snipara/source/",
+  // Companion's own state, as the filesystem fallback already treats it.
+  ".snipara/",
   "node_modules/",
   "dist/",
   "build/",
@@ -582,11 +609,21 @@ function splitNul(buffer: Buffer | null): string[] {
     .filter(Boolean);
 }
 
-function resolveRepoRoot(cwd: string): string {
+const gitRootCache = new Map<string, string>();
+
+/**
+ * The Git top level of `cwd`, else its Snipara workspace root, else `cwd` itself. A Git answer is
+ * cached for the process: one impact used to ask Git six times for the same root.
+ */
+export function resolveRepoRoot(cwd: string): string {
   const resolvedCwd = path.resolve(cwd);
+  const cached = gitRootCache.get(resolvedCwd);
+  if (cached) return cached;
   const gitRoot = runGit(["rev-parse", "--show-toplevel"], resolvedCwd);
   if (gitRoot) {
-    return path.resolve(gitRoot);
+    const root = path.resolve(gitRoot);
+    gitRootCache.set(resolvedCwd, root);
+    return root;
   }
   return findWorkspaceRoot(resolvedCwd, true) ?? resolvedCwd;
 }
@@ -791,7 +828,11 @@ function formatSecretRedactionWarning(samples: SecretRedactionSample[]): LocalCo
 }
 
 function listWorkingTreeFiles(repoRoot: string): string[] {
-  const files = splitNul(runGitBuffer(["ls-files", "-co", "--exclude-standard", "-z"], repoRoot));
+  // Excluding the default prefixes in the pathspec keeps Git from walking large untracked state folders.
+  const excludes = DEFAULT_EXCLUDED_PREFIXES.map((prefix) => `:(top,exclude)${prefix}`);
+  const files = splitNul(
+    runGitBuffer(["ls-files", "-co", "--exclude-standard", "-z", "--", ".", ...excludes], repoRoot)
+  );
   if (files.length > 0) {
     return [...new Set(files.map(normalizeRepoPath))].sort();
   }
@@ -1149,7 +1190,9 @@ function extractPython(content: string, filePath: string): ExtractedLocalCode {
   const symbols: LocalCodeOverlaySymbol[] = [];
   const imports: LocalCodeOverlayImport[] = [];
   const symbolPattern = /^(\s*)(class|def|async\s+def)\s+([A-Za-z_][\w]*)/gm;
-  const importPattern = /^\s*(?:from\s+([A-Za-z_][\w.]*|\.)\s+import|import\s+([A-Za-z_][\w.]*))/gm;
+  // `from .mod import a`, `from .. import b`, `from pkg.mod import (c`, `import x, y.z as w`.
+  const importPattern =
+    /^[ \t]*(?:from[ \t]+(\.+(?:[A-Za-z_][\w.]*)?|[A-Za-z_][\w.]*)[ \t]+import[ \t]+([^\n#]*)|import[ \t]+([^\n#]+))/gm;
 
   for (const match of content.matchAll(symbolPattern)) {
     const name = match[3];
@@ -1178,12 +1221,43 @@ function extractPython(content: string, filePath: string): ExtractedLocalCode {
     });
   }
 
+  const identifier = /^[A-Za-z_]\w*$/;
+  const names = (list: string): string[] =>
+    list
+      .replace(/[()\\]/g, " ")
+      .split(",")
+      .map(
+        (item) =>
+          item
+            .trim()
+            .split(/\s+as\s+/)[0]
+            ?.trim() ?? ""
+      )
+      .filter(Boolean);
   for (const match of content.matchAll(importPattern)) {
-    const specifier = match[1] ?? match[2];
-    if (!specifier || match.index === undefined) {
+    if (match.index === undefined) {
       continue;
     }
-    imports.push({ filePath, specifier, line: lineNumberFromIndex(content, match.index) });
+    const line = lineNumberFromIndex(content, match.index);
+    const specifiers = new Set<string>();
+    if (match[1]) {
+      const module = match[1];
+      const dotsOnly = /^\.+$/.test(module);
+      if (!dotsOnly) specifiers.add(module);
+      // An imported name may be a submodule (`from . import views`); one that is not stays unresolved.
+      for (const name of names(match[2] ?? "")) {
+        if (identifier.test(name))
+          specifiers.add(dotsOnly ? `${module}${name}` : `${module}.${name}`);
+      }
+      if (dotsOnly && specifiers.size === 0) specifiers.add(module);
+    } else if (match[3]) {
+      for (const name of names(match[3])) {
+        if (/^[A-Za-z_][\w.]*$/.test(name)) specifiers.add(name);
+      }
+    }
+    for (const specifier of specifiers) {
+      imports.push({ filePath, specifier, line });
+    }
   }
 
   return { symbols, imports, references: [], edges: [] };
@@ -1253,6 +1327,129 @@ function extractCode(
   }
 }
 
+/** Bump when import or reference resolution changes, so cached edges are recomputed. */
+const LOCAL_RESOLVER_VERSION = 1;
+
+/**
+ * What resolved edges depend on besides file contents: the resolver version and the tsconfig files
+ * whose aliases it reads. Same fingerprint, same files: the cached edges are still right.
+ */
+function graphInputsFingerprint(
+  repoRoot: string,
+  candidateFiles: string[],
+  mode: LocalCodeOverlayMode,
+  commit: string
+): string {
+  const configs = candidateFiles
+    .filter((file) => /^(?:ts|js)config(?:\..+)?\.json$/.test(path.posix.basename(file)))
+    .sort()
+    .map((file) => {
+      if (mode === "local_commit") return file;
+      try {
+        const stat = fs.lstatSync(path.join(repoRoot, file));
+        return `${file}:${stat.size}:${stat.mtimeMs}`;
+      } catch {
+        return `${file}:missing`;
+      }
+    });
+  return shortHash(
+    JSON.stringify({
+      resolver: LOCAL_RESOLVER_VERSION,
+      mode,
+      commit: mode === "local_commit" ? commit : null,
+      configs,
+    })
+  );
+}
+
+/**
+ * The cached record of a working-tree file when its size and modification time are unchanged and it is
+ * still a regular file inside the repository; null when it must be read again.
+ */
+function unchangedCachedFile(
+  repoRoot: string,
+  realRepoRoot: string,
+  filePath: string,
+  cached: LocalCodeOverlayFile | undefined
+): LocalCodeOverlayFile | null {
+  if (!cached || cached.mtimeMs === undefined) return null;
+  try {
+    const target = path.join(repoRoot, filePath);
+    const stat = fs.lstatSync(target);
+    if (!stat.isFile() || stat.size !== cached.sizeBytes || stat.mtimeMs !== cached.mtimeMs)
+      return null;
+    const relative = path.relative(realRepoRoot, fs.realpathSync(target));
+    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
+      return null;
+    return cached;
+  } catch {
+    return null;
+  }
+}
+
+/** Keeps a file's imports only, so its file edges survive while symbols and calls are skipped. */
+function importsOnlyExtraction(
+  extracted: ExtractedLocalCode,
+  importsOnly: boolean
+): ExtractedLocalCode {
+  return importsOnly
+    ? { symbols: [], imports: extracted.imports, references: [], edges: [] }
+    : extracted;
+}
+
+/** One pass over a cached overlay, so reusing a file costs a lookup instead of a scan of every row. */
+function groupExtractedByFile(manifest: LocalCodeOverlayManifest): Map<string, ExtractedLocalCode> {
+  const grouped = new Map<string, ExtractedLocalCode>();
+  const entry = (filePath: string): ExtractedLocalCode => {
+    let value = grouped.get(filePath);
+    if (!value) {
+      value = { symbols: [], imports: [], references: [], edges: [] };
+      grouped.set(filePath, value);
+    }
+    return value;
+  };
+  for (const item of manifest.symbols) entry(item.filePath).symbols.push(item);
+  for (const item of manifest.imports) entry(item.filePath).imports.push(item);
+  for (const item of manifest.references) entry(item.filePath).references.push(item);
+  for (const item of manifest.edges) {
+    if (item.kind === "CONTAINS") entry(item.filePath).edges.push(item);
+  }
+  return grouped;
+}
+
+/**
+ * Targets first, then the files sharing the most leading directories with a target, then the rest in
+ * path order. When the file cap is reached it therefore drops the files farthest from the query, never
+ * the target's own package because of where it sorts alphabetically.
+ */
+function sortCandidatesByProximity(candidates: string[], priorityFiles: Set<string>): void {
+  if (priorityFiles.size === 0) return;
+  const targetDirectories = [...priorityFiles].map((filePath) => filePath.split("/").slice(0, -1));
+  const proximity = new Map<string, number>();
+  for (const candidate of candidates) {
+    const directories = candidate.split("/").slice(0, -1);
+    let best = 0;
+    for (const target of targetDirectories) {
+      let shared = 0;
+      while (
+        shared < target.length &&
+        shared < directories.length &&
+        target[shared] === directories[shared]
+      ) {
+        shared += 1;
+      }
+      if (shared > best) best = shared;
+    }
+    proximity.set(candidate, best);
+  }
+  candidates.sort(
+    (left, right) =>
+      Number(priorityFiles.has(right)) - Number(priorityFiles.has(left)) ||
+      (proximity.get(right) ?? 0) - (proximity.get(left) ?? 0) ||
+      (left < right ? -1 : left > right ? 1 : 0)
+  );
+}
+
 function incrementReason(
   counts: Record<LocalCodeOverlayExcludedFile["reason"], number>,
   reason: LocalCodeOverlayExcludedFile["reason"]
@@ -1319,19 +1516,32 @@ export function buildLocalCodeOverlay(
     DEFAULT_MAX_FILE_BYTES,
     "--max-file-bytes"
   );
+  const maxImportsOnlyFileBytes = Math.max(
+    maxFileBytes,
+    positiveInteger(
+      options.maxImportsOnlyFileBytes,
+      MAX_IMPORTS_ONLY_FILE_BYTES,
+      "maxImportsOnlyFileBytes"
+    )
+  );
   const now = new Date().toISOString();
   const branch = readBranch(repoRoot);
   const localHeadSha = readHeadSha(repoRoot);
   const baseSha = readBaseSha(repoRoot, branch);
-  const dirtyStatus = readGitStatus(repoRoot);
+  const dirtyStatus = options.gitStatus ?? readGitStatus(repoRoot);
   const sniparaIgnore = readSniparaIgnore(repoRoot);
   const candidateFiles =
     mode === "local_commit" ? listCommitFiles(repoRoot, commit) : listWorkingTreeFiles(repoRoot);
   const priorityFiles = new Set((options.priorityFiles ?? []).map(normalizeRepoPath));
-  candidateFiles.sort((left, right) => Number(priorityFiles.has(right)) - Number(priorityFiles.has(left)));
+  sortCandidatesByProximity(candidateFiles, priorityFiles);
   const nestedRepositoryMarkers = new Map<string, boolean>();
   const previous = readLocalCodeOverlayCache(repoRoot);
   const previousFiles = new Map((previous?.files ?? []).map((file) => [file.path, file]));
+  const previousByFile =
+    previous?.version === "snipara.local_code_overlay.v2" &&
+    previous.extractorVersion === LOCAL_EXTRACTOR_VERSION
+      ? groupExtractedByFile(previous)
+      : null;
   const files: LocalCodeOverlayFile[] = [];
   const symbols: LocalCodeOverlaySymbol[] = [];
   const imports: LocalCodeOverlayImport[] = [];
@@ -1349,6 +1559,8 @@ export function buildLocalCodeOverlay(
     read_error: 0,
   };
   const warnings: LocalCodeOverlayManifest["warnings"] = [];
+  let notIndexedForLimit = 0;
+  const importsOnlyFiles: string[] = [];
 
   const addExcluded = (filePath: string, reason: LocalCodeOverlayExcludedFile["reason"]) => {
     incrementReason(byReason, reason);
@@ -1357,8 +1569,18 @@ export function buildLocalCodeOverlay(
     }
   };
 
+  let realRepoRoot = repoRoot;
+  try {
+    realRepoRoot = fs.realpathSync(repoRoot);
+  } catch {
+    // Keep the given root; files outside it are refused either way.
+  }
+
   for (const filePath of candidateFiles) {
-    if (isIgnored(filePath, sniparaIgnore) || isNestedRepositoryFile(repoRoot, filePath, mode, nestedRepositoryMarkers)) {
+    if (
+      isIgnored(filePath, sniparaIgnore) ||
+      isNestedRepositoryFile(repoRoot, filePath, mode, nestedRepositoryMarkers)
+    ) {
       addExcluded(filePath, "ignored");
       continue;
     }
@@ -1370,24 +1592,62 @@ export function buildLocalCodeOverlay(
     }
 
     if (files.length >= maxFiles) {
-      warnings.push({
-        code: "local_overlay_file_limit_reached",
-        severity: "warning",
-        message: `Stopped after ${maxFiles} included files. Increase --max-files for larger repos.`,
-      });
-      break;
+      // Candidates are ordered nearest-first, so what is left is farthest from the targets.
+      notIndexedForLimit += 1;
+      continue;
     }
 
+    const previousFile = previousFiles.get(filePath);
+    // Unchanged since the cached build (size and modification time): reuse it without reading it.
+    const unchanged =
+      mode === "working_tree" && previousByFile !== null
+        ? unchangedCachedFile(repoRoot, realRepoRoot, filePath, previousFile)
+        : null;
+    if (
+      unchanged &&
+      unchanged.language === language &&
+      unchanged.sizeBytes <= maxImportsOnlyFileBytes &&
+      Boolean(unchanged.importsOnly) === unchanged.sizeBytes > maxFileBytes
+    ) {
+      const extracted = previousByFile?.get(filePath) ?? {
+        symbols: [],
+        imports: [],
+        references: [],
+        edges: [],
+      };
+      reusedFiles += 1;
+      if (unchanged.importsOnly) importsOnlyFiles.push(filePath);
+      if (unchanged.secretFindings?.length) {
+        secretRedactionSamples.push({ path: filePath, findings: unchanged.secretFindings });
+      }
+      files.push({ ...unchanged });
+      symbols.push(...extracted.symbols);
+      imports.push(...extracted.imports);
+      references.push(...extracted.references);
+      extractedEdges.push(...extracted.edges);
+      continue;
+    }
+
+    // Taken before reading, so a write during the read leaves a newer time and forces a re-read.
+    let mtimeMs: number | undefined;
+    if (mode === "working_tree") {
+      try {
+        mtimeMs = fs.lstatSync(path.join(repoRoot, filePath)).mtimeMs;
+      } catch {
+        mtimeMs = undefined;
+      }
+    }
     const contentBuffer = readFileContent(repoRoot, filePath, mode, commit);
     if (!contentBuffer) {
       addExcluded(filePath, "read_error");
       continue;
     }
 
-    if (contentBuffer.length > maxFileBytes) {
+    if (contentBuffer.length > maxImportsOnlyFileBytes) {
       addExcluded(filePath, "too_large");
       continue;
     }
+    const importsOnly = contentBuffer.length > maxFileBytes;
 
     const content = contentBuffer.toString("utf8");
     const redaction = redactSecretLikeContentForOverlay(content);
@@ -1397,24 +1657,17 @@ export function buildLocalCodeOverlay(
     }
 
     const contentHash = sha256(indexedContent);
-    const previousFile = previousFiles.get(filePath);
     const canReuse =
-      previous?.version === "snipara.local_code_overlay.v2" &&
-      previous.extractorVersion === 3 &&
+      previousByFile !== null &&
       previousFile?.sha256 === contentHash &&
-      previousFile.language === language;
+      previousFile.language === language &&
+      Boolean(previousFile.importsOnly) === importsOnly;
     const extracted: ExtractedLocalCode = canReuse
-      ? {
-          symbols: previous.symbols.filter((item) => item.filePath === filePath),
-          imports: previous.imports.filter((item) => item.filePath === filePath),
-          references: previous.references.filter((item) => item.filePath === filePath),
-          edges: previous.edges.filter(
-            (item) => item.filePath === filePath && item.kind === "CONTAINS"
-          ),
-        }
-      : extractCode(indexedContent, filePath, language);
+      ? (previousByFile.get(filePath) ?? { symbols: [], imports: [], references: [], edges: [] })
+      : importsOnlyExtraction(extractCode(indexedContent, filePath, language), importsOnly);
     if (canReuse) reusedFiles += 1;
     else parsedFiles += 1;
+    if (importsOnly) importsOnlyFiles.push(filePath);
     files.push({
       path: filePath,
       language,
@@ -1424,6 +1677,9 @@ export function buildLocalCodeOverlay(
       importCount: extracted.imports.length,
       referenceCount: extracted.references.length,
       edgeCount: extracted.edges.length,
+      ...(importsOnly ? { importsOnly: true } : {}),
+      ...(mtimeMs !== undefined ? { mtimeMs } : {}),
+      ...(redaction.findings.length ? { secretFindings: redaction.findings } : {}),
     });
     symbols.push(...extracted.symbols);
     imports.push(...extracted.imports);
@@ -1431,13 +1687,50 @@ export function buildLocalCodeOverlay(
     extractedEdges.push(...extracted.edges);
   }
 
-  const edges = resolveLocalGraphEdges(files, symbols, imports, references, extractedEdges);
-  const semantic = buildLocalSemanticModel(
-    { symbols, edges },
-    { semanticRules: loadLocalSemanticRuleConfig(repoRoot) }
-  );
+  if (notIndexedForLimit > 0) {
+    warnings.push({
+      code: "local_overlay_file_limit_reached",
+      severity: "warning",
+      message: `Stopped after ${maxFiles} included files; ${notIndexedForLimit} supported files farther from the targets were not indexed. Increase --max-files for larger repos.`,
+    });
+  }
+  if (importsOnlyFiles.length > 0) {
+    warnings.push({
+      code: "local_overlay_imports_only",
+      severity: "info",
+      message: `${importsOnlyFiles.length} file(s) over ${maxFileBytes} bytes were indexed for imports only (no symbols or calls): ${importsOnlyFiles.slice(0, 3).join(", ")}${importsOnlyFiles.length > 3 ? ", ..." : ""}`,
+    });
+  }
+
+  // Nothing the graph depends on changed (same files, same contents, same tsconfig files and
+  // resolver): the cached edges and semantic model are still right, and recomputing them was a third
+  // of a warm impact.
+  const inputsFingerprint = graphInputsFingerprint(repoRoot, candidateFiles, mode, commit);
+  const previousPaths = new Set((previous?.files ?? []).map((file) => file.path));
+  const sameGraphInputs =
+    previousByFile !== null &&
+    previous !== null &&
+    parsedFiles === 0 &&
+    previous.files.length === files.length &&
+    files.every((file) => previousPaths.has(file.path)) &&
+    previous.graphInputsFingerprint === inputsFingerprint &&
+    Array.isArray(previous.edges);
+  const semanticRules = loadLocalSemanticRuleConfig(repoRoot);
+  const semanticRulesHash = shortHash(JSON.stringify(semanticRules));
+  const edges =
+    sameGraphInputs && previous
+      ? previous.edges
+      : resolveLocalGraphEdges(files, symbols, imports, references, extractedEdges, repoRoot);
+  const semantic =
+    sameGraphInputs && previous?.semantic && previous.semanticRulesHash === semanticRulesHash
+      ? previous.semantic
+      : buildLocalSemanticModel({ symbols, edges }, { semanticRules });
+  const edgeCounts = new Map<string, number>();
+  for (const edge of edges) {
+    edgeCounts.set(edge.filePath, (edgeCounts.get(edge.filePath) ?? 0) + 1);
+  }
   for (const file of files) {
-    file.edgeCount = edges.filter((edge) => edge.filePath === file.path).length;
+    file.edgeCount = edgeCounts.get(file.path) ?? 0;
   }
   const currentFilePaths = new Set(files.map((file) => file.path));
   const deletedFiles = previous
@@ -1482,7 +1775,7 @@ export function buildLocalCodeOverlay(
 
   return {
     version: "snipara.local_code_overlay.v2",
-    extractorVersion: 3,
+    extractorVersion: LOCAL_EXTRACTOR_VERSION,
     generatedAt: now,
     indexedAt: now,
     repoRoot,
@@ -1509,6 +1802,8 @@ export function buildLocalCodeOverlay(
     references,
     edges,
     semantic,
+    graphInputsFingerprint: inputsFingerprint,
+    semanticRulesHash,
     incremental: {
       reusedFiles,
       parsedFiles,
@@ -1660,7 +1955,11 @@ function loadQueryManifest(options: LocalCodeQueryCommandOptions): LocalCodeOver
     mode: options.mode ?? "working_tree",
     commit: options.commit,
     maxFiles: options.maxFiles,
-    priorityFiles: [...(options.changedFiles ?? []), ...(options.filePath ? [options.filePath] : [])],
+    priorityFiles: [
+      ...(options.changedFiles ?? []),
+      ...(options.filePath ? [options.filePath] : []),
+    ],
+    gitStatus: options.gitStatus,
   });
 }
 
@@ -1700,29 +1999,208 @@ function findSymbol(
   return null;
 }
 
-function resolveImportTarget(
-  manifest: Pick<LocalCodeOverlayManifest, "files">,
+/** Path aliases of the nearest tsconfig (`paths`, `baseUrl`, following relative `extends`). */
+interface TsAliasConfig {
+  /** Repository-relative directory `paths` targets are joined to. */
+  pathsBase: string;
+  paths: Array<{ prefix: string; suffix: string; wildcard: boolean; targets: string[] }>;
+  /** Repository-relative `baseUrl`, when set. */
+  baseUrl: string | null;
+}
+
+/** Resolves a non-relative TypeScript specifier through tsconfig aliases to candidate base paths. */
+type ImportAliases = (fromFile: string, specifier: string) => string[];
+
+function repoRelative(repoRoot: string, absolutePath: string): string | null {
+  const relative = normalizeRepoPath(path.relative(repoRoot, absolutePath));
+  return relative.startsWith("..") ? null : relative;
+}
+
+/**
+ * Reads tsconfig aliases lazily, one nearest config per directory. Only relative `extends` are
+ * followed; a package `extends` (such as `@tsconfig/node18`) contributes nothing here.
+ */
+function createImportAliases(repoRoot: string): ImportAliases {
+  const parsed = new Map<
+    string,
+    { options: Record<string, unknown>; dir: string; parents: string[] } | null
+  >();
+  const readConfig = (file: string) => {
+    if (parsed.has(file)) return parsed.get(file) ?? null;
+    let value: { options: Record<string, unknown>; dir: string; parents: string[] } | null = null;
+    try {
+      const result = ts.readConfigFile(file, ts.sys.readFile);
+      const config = (result.config ?? {}) as Record<string, unknown>;
+      const extendsValue = config.extends;
+      const parents = (Array.isArray(extendsValue) ? extendsValue : [extendsValue])
+        .filter((item): item is string => typeof item === "string" && item.startsWith("."))
+        .map((item) =>
+          path.resolve(path.dirname(file), item.endsWith(".json") ? item : `${item}.json`)
+        );
+      value = {
+        options: (config.compilerOptions ?? {}) as Record<string, unknown>,
+        dir: path.dirname(file),
+        parents,
+      };
+    } catch {
+      value = null;
+    }
+    parsed.set(file, value);
+    return value;
+  };
+  /** `baseUrl` and `paths` are each taken from the nearest config in the extends chain defining them. */
+  const effective = (file: string): TsAliasConfig | null => {
+    let baseUrl: string | null | undefined;
+    let paths: { value: Record<string, unknown>; dir: string } | undefined;
+    const seen = new Set<string>();
+    const queue = [file];
+    while (queue.length > 0 && (baseUrl === undefined || paths === undefined)) {
+      const current = queue.shift() as string;
+      if (seen.has(current)) continue;
+      seen.add(current);
+      const config = readConfig(current);
+      if (!config) continue;
+      if (baseUrl === undefined && typeof config.options.baseUrl === "string") {
+        baseUrl = repoRelative(repoRoot, path.resolve(config.dir, config.options.baseUrl));
+      }
+      if (paths === undefined && config.options.paths && typeof config.options.paths === "object") {
+        paths = { value: config.options.paths as Record<string, unknown>, dir: config.dir };
+      }
+      queue.push(...config.parents);
+    }
+    if (!paths && !baseUrl) return null;
+    const pathsBase = baseUrl ?? (paths ? repoRelative(repoRoot, paths.dir) : null) ?? "";
+    const entries = Object.entries(paths?.value ?? {})
+      .map(([pattern, targets]) => {
+        const star = pattern.indexOf("*");
+        return {
+          prefix: star === -1 ? pattern : pattern.slice(0, star),
+          suffix: star === -1 ? "" : pattern.slice(star + 1),
+          wildcard: star !== -1,
+          targets: Array.isArray(targets)
+            ? targets.filter((item): item is string => typeof item === "string")
+            : [],
+        };
+      })
+      // The most specific pattern wins, as in TypeScript.
+      .sort((left, right) => right.prefix.length - left.prefix.length);
+    return { pathsBase, paths: entries, baseUrl: baseUrl ?? null };
+  };
+  const nearest = new Map<string, TsAliasConfig | null>();
+  const configFor = (directory: string): TsAliasConfig | null => {
+    if (nearest.has(directory)) return nearest.get(directory) ?? null;
+    const candidate = path.join(repoRoot, directory, "tsconfig.json");
+    const value = fs.existsSync(candidate)
+      ? effective(candidate)
+      : directory === "." || directory === ""
+        ? null
+        : configFor(path.posix.dirname(directory));
+    nearest.set(directory, value);
+    return value;
+  };
+  return (fromFile, specifier) => {
+    const config = configFor(path.posix.dirname(fromFile));
+    if (!config) return [];
+    const bases: string[] = [];
+    for (const entry of config.paths) {
+      const matches = entry.wildcard
+        ? specifier.startsWith(entry.prefix) &&
+          specifier.endsWith(entry.suffix) &&
+          specifier.length >= entry.prefix.length + entry.suffix.length
+        : specifier === entry.prefix;
+      if (!matches) continue;
+      const star = specifier.slice(entry.prefix.length, specifier.length - entry.suffix.length);
+      for (const target of entry.targets) {
+        bases.push(
+          normalizeRepoPath(
+            path.posix.join(
+              config.pathsBase || ".",
+              entry.wildcard ? target.replace("*", star) : target
+            )
+          )
+        );
+      }
+      break;
+    }
+    if (config.baseUrl !== null)
+      bases.push(normalizeRepoPath(path.posix.join(config.baseUrl || ".", specifier)));
+    return bases.filter((base) => !base.startsWith(".."));
+  };
+}
+
+const PYTHON_MODULE_SUFFIXES = [".py", ".pyi", "/__init__.py", "/__init__.pyi"];
+
+/**
+ * Python imports: relative ones (`.mod`, `..pkg.mod`, `.` + name) from the importing package, and
+ * absolute ones (`src.services.x`) from the nearest ancestor directory where the module exists, since
+ * a project's import root is usually its own folder, not the repository root.
+ */
+function resolvePythonImport(
+  files: Set<string>,
   fromFile: string,
   specifier: string
 ): string | null {
-  const files = new Set(manifest.files.map((file) => file.path));
-  return resolveImportTargetFromSet(files, fromFile, specifier);
+  const dots = specifier.match(/^\.+/)?.[0].length ?? 0;
+  const rest = specifier.slice(dots).replace(/\./g, "/");
+  const find = (base: string): string | null =>
+    PYTHON_MODULE_SUFFIXES.map((suffix) => `${base}${suffix}`).find((candidate) =>
+      files.has(candidate)
+    ) ?? null;
+  if (dots > 0) {
+    let directory = path.posix.dirname(fromFile);
+    for (let level = 1; level < dots; level += 1) directory = path.posix.dirname(directory);
+    const prefix = directory === "." ? "" : `${directory}/`;
+    if (rest) {
+      const module = find(`${prefix}${rest}`);
+      // `from . import name`: a single name that is not a module belongs to the package itself.
+      if (module || rest.includes("/")) return module;
+    }
+    return (
+      ["__init__.py", "__init__.pyi"]
+        .map((name) => `${prefix}${name}`)
+        .find((candidate) => files.has(candidate)) ?? null
+    );
+  }
+  if (!rest) return null;
+  let directory = path.posix.dirname(fromFile);
+  for (;;) {
+    const module = find(directory === "." ? rest : `${directory}/${rest}`);
+    if (module) return module;
+    if (directory === "." || directory === "") return null;
+    directory = path.posix.dirname(directory);
+  }
+}
+
+function typeScriptCandidates(base: string): string[] {
+  const candidates = [base];
+  // ESM TypeScript imports `./x.js` for `./x.ts`.
+  const compiled = base.match(/^(.*)\.(c|m)?jsx?$/);
+  if (compiled) {
+    const stem = compiled[1];
+    candidates.push(`${stem}.ts`, `${stem}.tsx`, `${stem}.mts`, `${stem}.cts`);
+  }
+  for (const extension of SUPPORTED_EXTENSIONS.keys()) {
+    candidates.push(`${base}${extension}`);
+    candidates.push(`${base}/index${extension}`);
+  }
+  return candidates;
 }
 
 function resolveImportTargetFromSet(
   files: Set<string>,
   fromFile: string,
-  specifier: string
+  specifier: string,
+  aliases?: ImportAliases | null
 ): string | null {
+  if (/\.pyi?$/.test(fromFile)) return resolvePythonImport(files, fromFile, specifier);
   const candidates: string[] = [];
   if (specifier.startsWith(".")) {
-    const base = normalizeRepoPath(path.join(path.dirname(fromFile), specifier));
-    candidates.push(base);
-    for (const extension of SUPPORTED_EXTENSIONS.keys()) {
-      candidates.push(`${base}${extension}`);
-      candidates.push(`${base}/index${extension}`);
-    }
+    candidates.push(
+      ...typeScriptCandidates(normalizeRepoPath(path.join(path.dirname(fromFile), specifier)))
+    );
   } else {
+    for (const base of aliases ? aliases(fromFile, specifier) : [])
+      candidates.push(...typeScriptCandidates(base));
     const modulePath = specifier.replace(/\./g, "/");
     for (const extension of SUPPORTED_EXTENSIONS.keys()) {
       candidates.push(`${modulePath}${extension}`);
@@ -1738,8 +2216,11 @@ function buildLocalFileEdges(manifest: LocalCodeOverlayManifest): Array<{
   specifier: string;
   line: number;
 }> {
+  // One set for every import: building it per import made this quadratic in the repository size.
+  const files = new Set(manifest.files.map((file) => file.path));
+  const aliases = createImportAliases(manifest.repoRoot);
   return manifest.imports.flatMap((item) => {
-    const target = resolveImportTarget(manifest, item.filePath, item.specifier);
+    const target = resolveImportTargetFromSet(files, item.filePath, item.specifier, aliases);
     return target
       ? [{ from: item.filePath, to: target, specifier: item.specifier, line: item.line }]
       : [];
@@ -1760,6 +2241,7 @@ function normalizedReferenceParts(name: string): { root: string; member: string 
 
 interface LocalGraphResolutionIndex {
   filePaths: Set<string>;
+  aliases: ImportAliases | null;
   symbolsByFile: Map<string, LocalCodeOverlaySymbol[]>;
   symbolsByKey: Map<string, LocalCodeOverlaySymbol>;
   importsByFile: Map<string, LocalCodeOverlayImport[]>;
@@ -1794,7 +2276,8 @@ function resolveReferenceTarget(
     const targetFile = resolveImportTargetFromSet(
       index.filePaths,
       reference.filePath,
-      item.specifier
+      item.specifier,
+      index.aliases
     );
     if (!targetFile) continue;
     const targetName =
@@ -1833,21 +2316,27 @@ function resolveLocalGraphEdges(
   symbols: LocalCodeOverlaySymbol[],
   imports: LocalCodeOverlayImport[],
   references: LocalCodeOverlayReference[],
-  extractedEdges: LocalCodeOverlayEdge[]
+  extractedEdges: LocalCodeOverlayEdge[],
+  repoRoot?: string
 ): LocalCodeOverlayEdge[] {
   const edges: LocalCodeOverlayEdge[] = [...extractedEdges];
   const symbolsByFile = new Map<string, LocalCodeOverlaySymbol[]>();
   const symbolsByKey = new Map<string, LocalCodeOverlaySymbol>();
   const importsByFile = new Map<string, LocalCodeOverlayImport[]>();
   for (const symbol of symbols) {
-    symbolsByFile.set(symbol.filePath, [...(symbolsByFile.get(symbol.filePath) ?? []), symbol]);
+    const list = symbolsByFile.get(symbol.filePath);
+    if (list) list.push(symbol);
+    else symbolsByFile.set(symbol.filePath, [symbol]);
     symbolsByKey.set(symbol.localKey, symbol);
   }
   for (const item of imports) {
-    importsByFile.set(item.filePath, [...(importsByFile.get(item.filePath) ?? []), item]);
+    const list = importsByFile.get(item.filePath);
+    if (list) list.push(item);
+    else importsByFile.set(item.filePath, [item]);
   }
   const resolutionIndex: LocalGraphResolutionIndex = {
     filePaths: new Set(files.map((file) => file.path)),
+    aliases: repoRoot ? createImportAliases(repoRoot) : null,
     symbolsByFile,
     symbolsByKey,
     importsByFile,
@@ -1872,7 +2361,8 @@ function resolveLocalGraphEdges(
     const target = resolveImportTargetFromSet(
       resolutionIndex.filePaths,
       item.filePath,
-      item.specifier
+      item.specifier,
+      resolutionIndex.aliases
     );
     if (!target) continue;
     edges.push({
@@ -1941,7 +2431,14 @@ function upgradeLegacyLocalCodeOverlay(parsed: Record<string, unknown>): LocalCo
     referenceCount: 0,
     edgeCount: 0,
   }));
-  const edges = resolveLocalGraphEdges(files, symbols, imports, [], []);
+  const edges = resolveLocalGraphEdges(
+    files,
+    symbols,
+    imports,
+    [],
+    [],
+    typeof legacy.repoRoot === "string" ? legacy.repoRoot : undefined
+  );
   for (const file of files) {
     file.edgeCount = edges.filter((edge) => edge.filePath === file.path).length;
   }
@@ -2082,6 +2579,83 @@ function traverseLocalGraph(
     truncated,
     visitedCount: visited.size,
   };
+}
+
+const EDGE_KIND_RANK: Record<LocalCodeOverlayEdge["kind"], number> = {
+  CALLS: 3,
+  IMPORTS: 2,
+  REFERENCES: 1,
+  CONTAINS: 0,
+};
+
+/**
+ * Upstream traversal over files: the files that import or call into the targets, then the files that
+ * reach those, up to `depth`. `maxNodes` bounds files, so a module used by many files is not cut short
+ * by the number of its call sites. Each file keeps the strongest edge that reached it.
+ */
+function traverseDependentFiles(
+  manifest: LocalCodeOverlayManifest,
+  targetFiles: string[],
+  options: { depth: number; edgeKinds: string[]; maxNodes: number }
+): LocalGraphTraversalResult {
+  const allowed = new Set(options.edgeKinds.map((kind) => kind.toUpperCase()));
+  const symbolFiles = new Map(manifest.symbols.map((symbol) => [symbol.localKey, symbol.filePath]));
+  const fileOf = (key: string): string | null =>
+    key.startsWith("local-file::")
+      ? key.slice("local-file::".length)
+      : (symbolFiles.get(key) ?? null);
+  const incoming = new Map<string, Map<string, LocalCodeOverlayEdge>>();
+  for (const edge of manifest.edges) {
+    if (!allowed.has(edge.kind)) continue;
+    const toFile = fileOf(edge.to);
+    const fromFile = edge.filePath || fileOf(edge.from);
+    if (!toFile || !fromFile || toFile === fromFile) continue;
+    let sources = incoming.get(toFile);
+    if (!sources) {
+      sources = new Map();
+      incoming.set(toFile, sources);
+    }
+    const known = sources.get(fromFile);
+    if (!known || EDGE_KIND_RANK[edge.kind] > EDGE_KIND_RANK[known.kind])
+      sources.set(fromFile, edge);
+  }
+
+  const seeds = [...new Set(targetFiles)];
+  const visited = new Set(seeds);
+  const queue: LocalGraphTraversalNode[] = seeds.map((file) => ({
+    key: buildFileNodeKey(file),
+    depth: 0,
+    filePath: file,
+    path: [buildFileNodeKey(file)],
+    edges: [],
+  }));
+  const nodes: LocalGraphTraversalNode[] = [];
+  const traversedEdges: LocalCodeOverlayEdge[] = [];
+  let truncated = false;
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || current.depth >= options.depth || !current.filePath) continue;
+    for (const [fromFile, edge] of incoming.get(current.filePath) ?? []) {
+      if (visited.has(fromFile)) continue;
+      if (visited.size >= options.maxNodes) {
+        truncated = true;
+        queue.length = 0;
+        break;
+      }
+      visited.add(fromFile);
+      const next = {
+        key: buildFileNodeKey(fromFile),
+        depth: current.depth + 1,
+        filePath: fromFile,
+        path: [...current.path, buildFileNodeKey(fromFile)],
+        edges: [...current.edges, edge],
+      };
+      nodes.push(next);
+      traversedEdges.push(edge);
+      queue.push(next);
+    }
+  }
+  return { nodes, traversedEdges, truncated, visitedCount: visited.size };
 }
 
 function uniqueTraversalFiles(nodes: LocalGraphTraversalNode[], excluded: Set<string>): string[] {
@@ -2772,22 +3346,37 @@ function buildLocalRisk(
       criticalMatches.push(rule.pattern);
     }
   }
+  // A target's own symbols and a file already counted as direct are not dependents a second time.
+  const targetFiles = new Set(changedFiles);
   const directFiles = new Set(
     traversal.nodes
       .filter((node) => node.depth === 1)
-      .flatMap((node) => (node.filePath ? [node.filePath] : []))
+      .flatMap((node) => (node.filePath && !targetFiles.has(node.filePath) ? [node.filePath] : []))
   );
   const transitiveFiles = new Set(
     traversal.nodes
       .filter((node) => node.depth > 1)
-      .flatMap((node) => (node.filePath ? [node.filePath] : []))
+      .flatMap((node) =>
+        node.filePath && !targetFiles.has(node.filePath) && !directFiles.has(node.filePath)
+          ? [node.filePath]
+          : []
+      )
   );
-  let propagation = 0;
+  // One weight per dependent file: the strongest edge that reached it, decayed by depth. Summing
+  // symbol nodes instead made one file with many call sites weigh like many files.
+  const fileWeights = new Map<string, number>();
   for (const node of traversal.nodes) {
+    if (!node.filePath || targetFiles.has(node.filePath)) continue;
     const lastEdge = node.edges.at(-1);
-    const weight = lastEdge ? (config.edgeWeights[lastEdge.kind] ?? 1) : 1;
-    propagation += weight * Math.pow(config.depthDecay, Math.max(0, node.depth - 1));
+    const weight =
+      (lastEdge ? (config.edgeWeights[lastEdge.kind] ?? 1) : 1) *
+      Math.pow(config.depthDecay, Math.max(0, node.depth - 1));
+    fileWeights.set(node.filePath, Math.max(fileWeights.get(node.filePath) ?? 0, weight));
   }
+  const weightOf = (files: Set<string>): number =>
+    [...files].reduce((sum, file) => sum + (fileWeights.get(file) ?? 0), 0);
+  const directWeight = weightOf(directFiles);
+  const transitiveWeight = weightOf(transitiveFiles);
   const resolvedReferenceKeys = new Set(
     manifest.edges
       .filter((edge) => edge.kind === "CALLS" || edge.kind === "REFERENCES")
@@ -2798,7 +3387,9 @@ function buildLocalRisk(
       changedFiles.includes(reference.filePath) &&
       !resolvedReferenceKeys.has(`${reference.from}:${reference.line}`)
   ).length;
-  const uncertaintyPenalty = Math.min(15, unresolvedReferences * 2 + (traversal.truncated ? 8 : 0));
+  // Unresolved references are the target's own outgoing calls (libraries, dynamic dispatch): they say
+  // nothing about what depends on it, so they are reported but not scored. A cut traversal is.
+  const uncertaintyPenalty = traversal.truncated ? 10 : 0;
   const criticalSemanticDependencies = semantic.summary.criticalEdgeCount;
   const changedSymbolKeys = new Set(
     manifest.symbols
@@ -2813,20 +3404,18 @@ function buildLocalRisk(
       (assertion) =>
         assertion.predicate === "public_api" || assertion.predicate === "implicit_contract"
     ).length;
+  // Public contracts matter only when someone depends on them.
   const semanticRiskPoints =
-    Math.min(20, criticalSemanticDependencies * 3) + Math.min(10, changedContracts * 2);
-  const rawScore =
-    criticality * (directFiles.size * 8 + propagation * 4) +
-    uncertaintyPenalty +
-    semanticRiskPoints;
+    Math.min(20, criticalSemanticDependencies * 3) +
+    (directFiles.size > 0 ? Math.min(10, changedContracts * 2) : 0);
+  // Logarithmic in the dependents, so 3 dependents and 30 land apart instead of both saturating.
+  const dependencyImpact = 16 * Math.log2(1 + directWeight) + 6 * Math.log2(1 + transitiveWeight);
+  const rawScore = criticality * dependencyImpact + uncertaintyPenalty + semanticRiskPoints;
   const score = Math.max(0, Math.min(100, Math.round(rawScore)));
   const reasons = [
     `${directFiles.size} direct dependent file${directFiles.size === 1 ? "" : "s"}`,
     `${transitiveFiles.size} transitive dependent file${transitiveFiles.size === 1 ? "" : "s"}`,
     ...(criticalMatches.length ? [`critical-surface multiplier ${criticality.toFixed(2)}`] : []),
-    ...(unresolvedReferences
-      ? [`${unresolvedReferences} unresolved reference${unresolvedReferences === 1 ? "" : "s"}`]
-      : []),
     ...(criticalSemanticDependencies
       ? [
           `${criticalSemanticDependencies} critical semantic dependenc${
@@ -2834,7 +3423,7 @@ function buildLocalRisk(
           }`,
         ]
       : []),
-    ...(changedContracts
+    ...(changedContracts && directFiles.size > 0
       ? [
           `${changedContracts} public or implicit contract assertion${changedContracts === 1 ? "" : "s"}`,
         ]
@@ -2847,15 +3436,18 @@ function buildLocalRisk(
     depth,
     directDependentFiles: directFiles.size,
     transitiveDependentFiles: transitiveFiles.size,
+    directWeight: Math.round(directWeight * 100) / 100,
+    transitiveWeight: Math.round(transitiveWeight * 100) / 100,
     criticality,
     uncertaintyPenalty,
     semanticRiskPoints,
     criticalSemanticDependencies,
     changedContracts,
+    // Reported for inspection; not part of the score (see uncertaintyPenalty).
     unresolvedReferences,
     reasons,
     formula:
-      "criticality * (directImpact + decayedEdgePropagation) + uncertaintyPenalty + semanticRiskPoints",
+      "criticality * (16*log2(1+directWeight) + 6*log2(1+transitiveWeight)) + truncationPenalty + semanticRiskPoints; directWeight and transitiveWeight sum one decayed edge weight per dependent file",
   };
 }
 
@@ -3262,7 +3854,9 @@ function hybridRisk(local: Record<string, unknown>, hosted: Record<string, unkno
       level: "unknown",
       status: "incomplete",
       source: incomplete.source,
-      sourceScores: Object.fromEntries(candidates.map((candidate) => [candidate.source, candidate.value.score ?? null])),
+      sourceScores: Object.fromEntries(
+        candidates.map((candidate) => [candidate.source, candidate.value.score ?? null])
+      ),
     };
   }
   const rank = (candidate: (typeof candidates)[number]): number => {
@@ -3345,6 +3939,8 @@ export function mergeHybridCodeResults(
     "changedFiles",
     "test_files",
     "testFiles",
+    // The hosted brief lists dependents as `dependents.dependents[].file_path`.
+    "dependents",
   ]);
   collectStringValues(local, affectedKeys, affectedFiles);
   collectStringValues(hosted, affectedKeys, affectedFiles);
@@ -3353,24 +3949,40 @@ export function mergeHybridCodeResults(
   collectStringValues(hosted, new Set(["changed_files", "changedFiles"]), changedFiles);
   const assessedRisk = hybridRisk(local, hosted);
   const inputApplicability = [local, hosted].map(codeImpactApplicabilityGap);
-  const hostedUnavailable = hostedError !== undefined ||
+  const hostedUnavailable =
+    hostedError !== undefined ||
     inputApplicability[1]?.reasons.includes("hosted_graph_unavailable") === true;
   const incompleteReasons = [
     ...(hostedUnavailable ? ["hosted_graph_unavailable"] : []),
-    ...([local, hosted].flatMap((result, index) => {
+    ...[local, hosted].flatMap((result, index) => {
       const coverage = asUnknownRecord(result.coverage);
-      const missing = [result.missingTargetFiles, result.missing_target_files,
-        coverage.missingTargetFiles, coverage.missing_target_files]
-        .some((value) => Array.isArray(value) && value.length > 0);
+      const missing = [
+        result.missingTargetFiles,
+        result.missing_target_files,
+        coverage.missingTargetFiles,
+        coverage.missing_target_files,
+      ].some((value) => Array.isArray(value) && value.length > 0);
       const applicability = inputApplicability[index];
       const incompleteImpact = verb === "impact" && applicability !== undefined;
-      const unavailableHybrid = applicability?.reasons.includes("hosted_graph_unavailable") === true;
-      return coverage.status === "incomplete" || result.degraded === true || missing || incompleteImpact || unavailableHybrid
-        ? [index === 0 ? "local_coverage_incomplete" : "hosted_coverage_incomplete"] : [];
-    })),
+      const unavailableHybrid =
+        applicability?.reasons.includes("hosted_graph_unavailable") === true;
+      return coverage.status === "incomplete" ||
+        result.degraded === true ||
+        missing ||
+        incompleteImpact ||
+        unavailableHybrid
+        ? [index === 0 ? "local_coverage_incomplete" : "hosted_coverage_incomplete"]
+        : [];
+    }),
   ];
   const risk = incompleteReasons.length
-    ? { ...asUnknownRecord(assessedRisk), level: "unknown", score: null, status: "incomplete", reasons: incompleteReasons }
+    ? {
+        ...asUnknownRecord(assessedRisk),
+        level: "unknown",
+        score: null,
+        status: "incomplete",
+        reasons: incompleteReasons,
+      }
     : assessedRisk;
   const semantic = hybridSemantic(local, hosted);
   const recommendedTests = mergeResultArrays(
@@ -3383,7 +3995,8 @@ export function mergeHybridCodeResults(
   );
   const coverageGaps = mergeResultArrays([hosted, local], ["coverage_gaps", "coverageGaps"]);
   const missingTargetFiles = mergeResultArrays(
-    [local, hosted], ["missingTargetFiles", "missing_target_files"]
+    [local, hosted],
+    ["missingTargetFiles", "missing_target_files"]
   );
   const warnings = mergeResultArrays([hosted, local], ["warnings"]);
   const minimumSafeChange =
@@ -3407,8 +4020,10 @@ export function mergeHybridCodeResults(
     impactedFiles: [...affectedFiles].sort(),
     missingTargetFiles,
     coverage: {
-      status: asUnknownRecord(risk).status === "incomplete" || missingTargetFiles.length > 0
-        ? "incomplete" : "combined",
+      status:
+        asUnknownRecord(risk).status === "incomplete" || missingTargetFiles.length > 0
+          ? "incomplete"
+          : "combined",
       reasons: incompleteReasons,
       local: local.coverage ?? null,
       hosted: hosted.coverage ?? null,
@@ -3564,28 +4179,44 @@ function printCompactGraphAnswer(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
   const rows = (input: unknown): Record<string, unknown>[] =>
-    Array.isArray(input) ? input.filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === "object") : [];
+    Array.isArray(input)
+      ? input.filter(
+          (row): row is Record<string, unknown> => Boolean(row) && typeof row === "object"
+        )
+      : [];
   const callers = Array.isArray(record.callers) ? rows(record.callers) : null;
-  const dependents = record.dependents && typeof record.dependents === "object"
-    ? record.dependents as Record<string, unknown> : null;
+  const dependents =
+    record.dependents && typeof record.dependents === "object"
+      ? (record.dependents as Record<string, unknown>)
+      : null;
   if (!callers && !dependents) return false;
   if (callers) {
     console.log(`Callers: ${record.total_callers ?? callers.length}`);
     for (const caller of callers) {
-      console.log(`- ${caller.file_path}:${caller.start_line} ${caller.local_name ?? caller.qualified_name}`);
+      console.log(
+        `- ${caller.file_path}:${caller.start_line} ${caller.local_name ?? caller.qualified_name}`
+      );
     }
   }
   if (dependents) {
-    console.log(`Dependent files: ${dependents.total_dependents ?? 0} (${dependents.test_files ?? 0} tests)`);
+    console.log(
+      `Dependent files: ${dependents.total_dependents ?? 0} (${dependents.test_files ?? 0} tests)`
+    );
     for (const file of rows(dependents.dependents)) {
       const users = Array.isArray(file.used_by) ? file.used_by.slice(0, 3).join(", ") : "";
-      console.log(`- ${file.file_path}${file.is_test ? " [test]" : ""}${users ? `: ${users}` : ""}`);
+      console.log(
+        `- ${file.file_path}${file.is_test ? " [test]" : ""}${users ? `: ${users}` : ""}`
+      );
     }
   }
-  const freshness = record.index_freshness && typeof record.index_freshness === "object"
-    ? record.index_freshness as Record<string, unknown> : null;
+  const freshness =
+    record.index_freshness && typeof record.index_freshness === "object"
+      ? (record.index_freshness as Record<string, unknown>)
+      : null;
   if (freshness) {
-    console.log(`Index: ${freshness.status ?? "unknown"} at ${String(freshness.indexed_commit_sha ?? "unknown").slice(0, 12)}`);
+    console.log(
+      `Index: ${freshness.status ?? "unknown"} at ${String(freshness.indexed_commit_sha ?? "unknown").slice(0, 12)}`
+    );
   }
   console.log("Use --json for the full answer.");
   return true;
@@ -3819,11 +4450,13 @@ export async function resolveCodeGraphAutoSourceResult(
       ...options,
       dir: repoRoot,
       mode: options.mode ?? "working_tree",
+      gitStatus: dirtyStatus,
     });
     writeLocalCodeOverlayCache(manifest);
     const localOptions = { ...effectiveOptions, cached: true };
     const rawResult = buildLocalResultForVerb(verb, localOptions);
-    const requestedHostedUnavailable = decision.reason === "hybrid_hosted_not_configured" ||
+    const requestedHostedUnavailable =
+      decision.reason === "hybrid_hosted_not_configured" ||
       decision.reason === "fallback_hosted_not_configured";
     const localEvidence =
       options.minimumChangeMode === "review" && verb === "impact"
@@ -3831,10 +4464,14 @@ export async function resolveCodeGraphAutoSourceResult(
         : undefined;
     const result = {
       ...rawResult,
-      ...(requestedHostedUnavailable ? mergeHybridCodeResults(
-        verb, rawResult, null,
-        "Hosted enrichment was requested but this workspace is not configured"
-      ) : {}),
+      ...(requestedHostedUnavailable
+        ? mergeHybridCodeResults(
+            verb,
+            rawResult,
+            null,
+            "Hosted enrichment was requested but this workspace is not configured"
+          )
+        : {}),
       ...(localEvidence ? { minimum_change_evidence: { smallest_safe_diff: localEvidence } } : {}),
     };
     autoResult = {
@@ -3866,6 +4503,7 @@ export async function resolveCodeGraphAutoSourceResult(
       ...options,
       dir: repoRoot,
       mode: options.mode ?? "working_tree",
+      gitStatus: dirtyStatus,
     });
     writeLocalCodeOverlayCache(manifest);
     const rawLocalResult = buildLocalResultForVerb(verb, {
@@ -3918,6 +4556,24 @@ export async function codeGraphAutoSourceCommand(
   options: CodeGraphAutoSourceOptions
 ): Promise<void> {
   const autoResult = await resolveCodeGraphAutoSourceResult(verb, options);
+  if (verb === "impact" && !options.detail) {
+    // An agent reads the card; the full result goes to a file it can open when it needs more.
+    const repoRoot = resolveRepoRoot(options.dir ?? process.cwd());
+    const detailPath = writeCodeImpactDetail(repoRoot, autoResult);
+    const card = buildCodeImpactCard(autoResult, {
+      repoRoot,
+      detailPath,
+      ...(options.json ? {} : { warningChars: 2000 }),
+    });
+    const result = asUnknownRecord(autoResult.result);
+    const local = asUnknownRecord(result.local);
+    printCodeImpactCard(
+      card,
+      options.json,
+      extractMissingTargetDetails(result.missingTargetDetails ?? local.missingTargetDetails)
+    );
+    return;
+  }
   printCodeGraphAutoSourceResult(autoResult, options.json);
 }
 
@@ -4239,6 +4895,21 @@ export function buildLocalImpactResult(
     edgeKinds: options.edgeKinds?.length ? options.edgeKinds : ["IMPORTS", "CALLS", "REFERENCES"],
     maxNodes,
   });
+  // What can break is upstream only: the files reached against the edges, whatever --direction asked
+  // for, counted as files so a widely used module is not cut short by its call sites.
+  const upstream = traverseDependentFiles(manifest, changedFiles, {
+    depth,
+    edgeKinds: options.edgeKinds?.length ? options.edgeKinds : ["IMPORTS", "CALLS", "REFERENCES"],
+    maxNodes,
+  });
+  // Nearest first: the traversal is breadth-first, so this is ordered by distance to the targets.
+  const dependentFiles = [
+    ...new Set(
+      upstream.nodes.flatMap((node) =>
+        node.filePath && !selectedFiles.has(node.filePath) ? [node.filePath] : []
+      )
+    ),
+  ];
   const traversalEdges = [
     ...new Map(
       traversal.nodes
@@ -4269,21 +4940,36 @@ export function buildLocalImpactResult(
     ...outgoing.map((edge) => edge.to),
   ]);
   const missingTargetsWarning = buildMissingTargetsWarning(manifest, missingTargetFiles);
+  const importsOnlyRelevant = manifest.files
+    .filter((file) => file.importsOnly && relevantWarningFiles.has(file.path))
+    .map((file) => file.path);
   const warnings = [
     ...(missingTargetsWarning ? [missingTargetsWarning] : []),
     ...impactOverlayWarnings(manifest.warnings, relevantWarningFiles),
+    ...(importsOnlyRelevant.length
+      ? [
+          {
+            code: "local_overlay_imports_only",
+            severity: "info" as const,
+            message: `Indexed for imports only (over the per-file size cap), so their calls are not traced: ${importsOnlyRelevant.slice(0, 5).join(", ")}${importsOnlyRelevant.length > 5 ? ", ..." : ""}`,
+          },
+        ]
+      : []),
   ];
   const incompleteReasons = [
     ...(requestedFiles.length === 0 ? ["no_matching_targets"] : []),
     ...(missingTargetFiles.length ? ["requested_targets_missing"] : []),
     ...(manifest.warnings.some((warning) => warning.code === "local_overlay_file_limit_reached")
-      ? ["overlay_file_limit_reached"] : []),
-    ...(traversal.truncated ? ["traversal_truncated"] : []),
+      ? ["overlay_file_limit_reached"]
+      : []),
+    // Only a cut in the dependents leaves "what breaks" incomplete; a cut among dependencies does not.
+    ...(upstream.truncated ? ["traversal_truncated"] : []),
     ...(manifest.excluded.byReason.too_large > 0 ? ["supported_source_size_limit"] : []),
     ...(manifest.excluded.byReason.read_error > 0 ? ["supported_source_read_error"] : []),
   ];
   const complete = incompleteReasons.length === 0;
-  const assessedRisk = buildLocalRisk(manifest, changedFiles, traversal, depth, semantic);
+  // Risk counts dependents, so it reads the upstream traversal, not the files the target depends on.
+  const assessedRisk = buildLocalRisk(manifest, changedFiles, upstream, depth, semantic);
 
   return {
     title: "Local impact",
@@ -4311,6 +4997,8 @@ export function buildLocalImpactResult(
     outgoing,
     impactedFiles,
     transitiveFiles,
+    dependentFiles,
+    dependentsTruncated: upstream.truncated,
     depth,
     direction,
     impactChains: traversal.nodes.map((node) => ({
@@ -4327,7 +5015,13 @@ export function buildLocalImpactResult(
     semantic,
     risk: complete
       ? { ...assessedRisk, status: "assessed" }
-      : { ...assessedRisk, score: null, level: "unknown", status: "incomplete", reasons: incompleteReasons },
+      : {
+          ...assessedRisk,
+          score: null,
+          level: "unknown",
+          status: "incomplete",
+          reasons: incompleteReasons,
+        },
   };
 }
 
@@ -4865,10 +5559,12 @@ const LOCAL_CODE_MCP_TOOLS: LocalCodeToolDefinition[] = [
   },
   {
     name: "snipara_local_code_impact",
-    description: "Summarize bounded transitive local impact with explainable risk.",
+    description:
+      "Compact local impact card: files that depend on the target (with the importing line), transitive dependents, existing tests to run, coverage and risk. detail: true returns the full result.",
     inputSchema: {
       type: "object",
       properties: {
+        detail: { type: "boolean", default: false },
         changedFiles: { type: "array", items: { type: "string" } },
         qualifiedName: { type: "string" },
         symbolKey: { type: "string" },
@@ -4991,8 +5687,24 @@ function executeLocalCodeTool(
       return buildLocalNeighborsResult(localQueryOptionsFromArgs(args, defaults));
     case "snipara_local_code_shortest_path":
       return buildLocalShortestPathResult(localQueryOptionsFromArgs(args, defaults));
-    case "snipara_local_code_impact":
-      return buildLocalImpactResult(localQueryOptionsFromArgs(args, defaults));
+    case "snipara_local_code_impact": {
+      const queryOptions = localQueryOptionsFromArgs(args, defaults);
+      const result = buildLocalImpactResult(queryOptions);
+      if (booleanFromUnknown(args.detail, false)) return result;
+      // An agent reads the card; the full result is in the detail file.
+      const repoRoot = resolveRepoRoot(queryOptions.dir ?? process.cwd());
+      const auto = {
+        title: "Code impact",
+        sourceSelection: { selected: "local_overlay" as const, reason: "local_code_tool" },
+        result,
+      };
+      return {
+        ...buildCodeImpactCard(auto, {
+          repoRoot,
+          detailPath: writeCodeImpactDetail(repoRoot, auto),
+        }),
+      };
+    }
     default:
       throw new Error(`Unknown local code tool: ${name}`);
   }

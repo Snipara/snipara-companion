@@ -10,7 +10,17 @@
 import fs from "fs";
 import path from "path";
 import chalk from "chalk";
-import { resolveCodeGraphAutoSourceResult, type CodeGraphSourceSelection } from "./code";
+import {
+  resolveCodeGraphAutoSourceResult,
+  resolveRepoRoot,
+  type CodeGraphSourceSelection,
+} from "./code";
+import {
+  buildCodeImpactCard,
+  conventionTests,
+  writeCodeImpactDetail,
+  type CodeImpactCard,
+} from "./code-impact-card";
 import {
   buildProjectJudgmentCard,
   codeImpactApplicabilityGap,
@@ -28,6 +38,8 @@ export interface VerifyCommandOptions {
   limit?: number;
   skipImpact?: boolean;
   json?: boolean;
+  /** Print the full plan, with the full code impact, instead of the compact one. */
+  detail?: boolean;
 }
 
 export interface VerificationCheck {
@@ -35,6 +47,8 @@ export interface VerificationCheck {
   title: string;
   command?: string;
   file?: string;
+  /** Every test file a grouped targeted check runs; `file` is the first. */
+  files?: string[];
   source: "code-impact" | "package-script" | "fallback";
   reason?: string;
 }
@@ -79,6 +93,11 @@ interface BuildVerificationPlanOptions extends VerifyCommandOptions {
   cwd?: string;
   codeImpact?: Record<string, unknown>;
   codeImpactSourceSelection?: CodeGraphSourceSelection;
+  /**
+   * Existing test files linked to the change, relative to `cwd` (the impact card's tests). Without it,
+   * the test files named after the changed files are used.
+   */
+  linkedTests?: string[];
   errors?: Array<{ surface: string; message: string }>;
 }
 
@@ -327,6 +346,148 @@ function commandInDirectory(root: string, cwd: string, command: string): string 
   return `cd ${shellQuote(relativeRoot)} && ${command}`;
 }
 
+/** Quotes a shell argument only when it needs it, so ordinary paths stay readable. */
+function shellArgument(value: string): string {
+  return /^[A-Za-z0-9_./@:+=-]+$/.test(value) ? value : shellQuote(value);
+}
+
+const TEST_RUNNERS: Array<{ name: string; pattern: RegExp; command: (file: string) => string }> = [
+  { name: "vitest", pattern: /\bvitest\b/, command: (file) => `vitest run ${file}` },
+  { name: "jest", pattern: /\bjest\b/, command: (file) => `jest ${file}` },
+  {
+    name: "node --test",
+    pattern: /\bnode\b[^&|;]*\s--test\b/,
+    command: (file) => `node --test ${file}`,
+  },
+  { name: "mocha", pattern: /\bmocha\b/, command: (file) => `mocha ${file}` },
+];
+
+/** `A=1 B=2 node --test ...` keeps `A=1 B=2 ` so a targeted run sees the same environment. */
+function leadingEnvironment(script: string): string {
+  const match = script.match(/^\s*((?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+)/);
+  return match ? `${match[1].trim()} ` : "";
+}
+
+function findUpward(startPath: string, cwd: string, marker: string): string | null {
+  let current = path.dirname(path.resolve(cwd, startPath));
+  const stop = path.parse(current).root;
+  while (current !== stop) {
+    const candidate = path.join(current, marker);
+    if (fs.existsSync(candidate)) return candidate;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return null;
+}
+
+/** How to run test files of one package with the runner it already uses. */
+interface TargetedRun {
+  /** Files sharing a key run in one command. */
+  key: string;
+  runner: string;
+  /** Path of the file as the command sees it. */
+  argument: string;
+  command: (argumentsList: string[]) => string;
+}
+
+/**
+ * The run for one test file: the package's `pretest` first (it often builds what the test loads), the
+ * test script's leading environment, then the runner on the selected files only. Null when no known
+ * runner is found.
+ */
+function targetedTestRun(testFile: string, cwd: string): TargetedRun | null {
+  if (testFile.endsWith(".py")) {
+    const pyproject = findPyproject(testFile, cwd);
+    const root = pyproject ? path.dirname(pyproject) : path.resolve(cwd);
+    return {
+      key: `pytest:${root}`,
+      runner: "pytest",
+      argument: path.relative(root, path.resolve(cwd, testFile)).split(path.sep).join("/"),
+      command: (files) =>
+        commandInDirectory(root, cwd, `python -m pytest ${files.map(shellArgument).join(" ")}`),
+    };
+  }
+  if (testFile.endsWith("_test.go")) {
+    const goMod = findUpward(testFile, cwd, "go.mod");
+    const root = goMod ? path.dirname(goMod) : path.resolve(cwd);
+    const directory = path
+      .relative(root, path.dirname(path.resolve(cwd, testFile)))
+      .split(path.sep)
+      .join("/");
+    return {
+      key: `go:${root}`,
+      runner: "go test",
+      argument: `./${directory}`,
+      command: (packages) => commandInDirectory(root, cwd, `go test ${unique(packages).join(" ")}`),
+    };
+  }
+  const packageJson = findPackageJson(testFile, cwd);
+  const info = packageJson ? readPackageInfo(packageJson) : null;
+  const script = info?.scripts.test;
+  if (!info || !script) return null;
+  const runner = TEST_RUNNERS.find((candidate) => candidate.pattern.test(script));
+  if (!runner) return null;
+  const exec =
+    info.name && path.resolve(info.root) !== path.resolve(cwd)
+      ? `pnpm --filter ${info.name} exec `
+      : "pnpm exec ";
+  const pretest = info.scripts.pretest
+    ? `${commandForPackageScript(info, "pretest", cwd)} && `
+    : "";
+  return {
+    key: `${runner.name}:${info.root}`,
+    runner: runner.name,
+    argument: path.relative(info.root, path.resolve(cwd, testFile)).split(path.sep).join("/"),
+    command: (files) =>
+      `${pretest}${leadingEnvironment(script)}${exec}${runner.command(files.map(shellArgument).join(" "))}`,
+  };
+}
+
+/** One check per package and runner, so related test files run in a single targeted command. */
+function linkedTestChecks(
+  testFiles: string[],
+  cwd: string,
+  fromImpact: boolean
+): VerificationCheck[] {
+  const source = fromImpact ? ("code-impact" as const) : ("fallback" as const);
+  const groups = new Map<string, { run: TargetedRun; files: string[]; argumentsList: string[] }>();
+  const checks: VerificationCheck[] = [];
+  for (const file of testFiles) {
+    const run = targetedTestRun(file, cwd);
+    if (!run) {
+      checks.push({
+        kind: "test",
+        title: `targeted test ${file}`,
+        file,
+        source,
+        reason:
+          "Linked to the change; no known test runner was found in its package, run it with the package's runner.",
+      });
+      continue;
+    }
+    const group = groups.get(run.key) ?? { run, files: [], argumentsList: [] };
+    group.files.push(file);
+    group.argumentsList.push(run.argument);
+    groups.set(run.key, group);
+  }
+  const grouped = [...groups.values()].map(
+    (group): VerificationCheck => ({
+      kind: "test",
+      title:
+        group.files.length === 1
+          ? `targeted test ${group.files[0]}`
+          : `targeted tests (${group.files.length})`,
+      file: group.files[0],
+      ...(group.files.length > 1 ? { files: group.files } : {}),
+      command: group.run.command(group.argumentsList),
+      source,
+      reason: `Linked to the change; run first (${group.run.runner}).`,
+    })
+  );
+  return [...grouped, ...checks];
+}
+
 function isPythonSurface(filePath: string): boolean {
   const basename = path.basename(filePath);
   return (
@@ -431,7 +592,11 @@ function inferPythonChecks(changedFiles: string[], cwd: string): VerificationChe
   });
 }
 
-function inferPackageScriptChecks(changedFiles: string[], cwd: string): VerificationCheck[] {
+function inferPackageScriptChecks(
+  changedFiles: string[],
+  cwd: string,
+  fullSuiteLast = false
+): VerificationCheck[] {
   const packageFiles = unique(
     changedFiles
       .filter((file) => !(isPythonSurface(file) && findPyproject(file, cwd)))
@@ -441,12 +606,20 @@ function inferPackageScriptChecks(changedFiles: string[], cwd: string): Verifica
   const packages = packageFiles
     .map(readPackageInfo)
     .filter((info): info is PackageInfo => Boolean(info));
-  const scriptKinds: Array<[string, VerificationCheck["kind"]]> = [
-    ["test", "test"],
-    ["type-check", "type-check"],
-    ["lint", "lint"],
-    ["build", "build"],
-  ];
+  // With targeted tests first, the package's whole suite comes after the cheaper checks.
+  const scriptKinds: Array<[string, VerificationCheck["kind"]]> = fullSuiteLast
+    ? [
+        ["type-check", "type-check"],
+        ["lint", "lint"],
+        ["test", "test"],
+        ["build", "build"],
+      ]
+    : [
+        ["test", "test"],
+        ["type-check", "type-check"],
+        ["lint", "lint"],
+        ["build", "build"],
+      ];
 
   return packages.flatMap((info) =>
     scriptKinds.flatMap(([scriptName, kind]) => {
@@ -459,7 +632,10 @@ function inferPackageScriptChecks(changedFiles: string[], cwd: string): Verifica
           title: `${scriptName} script${info.name ? ` for ${info.name}` : ""}`,
           command: commandForPackageScript(info, scriptName, cwd),
           source: "package-script" as const,
-          reason: "Detected from nearest package.json scripts for the changed files.",
+          reason:
+            fullSuiteLast && scriptName === "test"
+              ? "The package's whole suite: run it once the targeted tests pass."
+              : "Detected from nearest package.json scripts for the changed files.",
         },
       ];
     })
@@ -488,37 +664,43 @@ function buildRisk(impact: Record<string, unknown> | undefined): VerificationRis
   const risk = impact && isRecord(impact.risk) ? impact.risk : {};
   const incomplete = codeImpactApplicabilityGap(impact);
   return {
-    level: incomplete ? "unknown" : stringValue(risk.level) ?? "unknown",
-    ...(!incomplete && numberValue(risk.score) !== undefined ? { score: numberValue(risk.score) } : {}),
+    level: incomplete ? "unknown" : (stringValue(risk.level) ?? "unknown"),
+    ...(!incomplete && numberValue(risk.score) !== undefined
+      ? { score: numberValue(risk.score) }
+      : {}),
     source: impact ? "code-impact" : "fallback",
   };
 }
 
 function collectCoverageGaps(impact: Record<string, unknown> | undefined): VerificationGap[] {
-  const strings = (value: unknown): string[] => Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string" && !!item.trim()) : [];
-  const gaps = (Array.isArray(impact?.coverage_gaps) ? impact.coverage_gaps : []).map((gap: unknown): VerificationGap => {
-    if (!isRecord(gap)) {
+  const strings = (value: unknown): string[] =>
+    Array.isArray(value)
+      ? value.filter((item): item is string => typeof item === "string" && !!item.trim())
+      : [];
+  const gaps = (Array.isArray(impact?.coverage_gaps) ? impact.coverage_gaps : []).map(
+    (gap: unknown): VerificationGap => {
+      if (!isRecord(gap)) {
+        return {
+          code: "coverage_gap",
+          severity: "medium",
+          message: preview(gap, 220),
+        };
+      }
+
+      const severity = stringValue(gap.severity);
+      const reasons = strings(gap.reasons);
+      const missingTargetFiles = [
+        ...new Set([...strings(gap.missingTargetFiles), ...strings(gap.missing_target_files)]),
+      ];
       return {
-        code: "coverage_gap",
-        severity: "medium",
-        message: preview(gap, 220),
+        code: stringValue(gap.code) ?? "coverage_gap",
+        severity: severity === "low" || severity === "high" ? severity : "medium",
+        message: stringValue(gap.message) ?? stringValue(gap.reason) ?? preview(gap, 220),
+        ...(reasons.length ? { reasons } : {}),
+        ...(missingTargetFiles.length ? { missingTargetFiles } : {}),
       };
     }
-
-    const severity = stringValue(gap.severity);
-    const reasons = strings(gap.reasons);
-    const missingTargetFiles = [...new Set([
-      ...strings(gap.missingTargetFiles), ...strings(gap.missing_target_files),
-    ])];
-    return {
-      code: stringValue(gap.code) ?? "coverage_gap",
-      severity: severity === "low" || severity === "high" ? severity : "medium",
-      message: stringValue(gap.message) ?? stringValue(gap.reason) ?? preview(gap, 220),
-      ...(reasons.length ? { reasons } : {}),
-      ...(missingTargetFiles.length ? { missingTargetFiles } : {}),
-    };
-  });
+  );
   const applicability = codeImpactApplicabilityGap(impact);
   if (applicability) gaps.push(applicability);
   const merged = new Map<string, VerificationGap>();
@@ -526,9 +708,15 @@ function collectCoverageGaps(impact: Record<string, unknown> | undefined): Verif
   const rank = { low: 0, medium: 1, high: 2 };
   for (const gap of gaps) {
     const previous = merged.get(gap.code);
-    if (!previous) { merged.set(gap.code, gap); messages.set(gap.code, [gap.message]); continue; }
+    if (!previous) {
+      merged.set(gap.code, gap);
+      messages.set(gap.code, [gap.message]);
+      continue;
+    }
     const reasons = [...new Set([...(previous.reasons ?? []), ...(gap.reasons ?? [])])];
-    const missingTargetFiles = [...new Set([...(previous.missingTargetFiles ?? []), ...(gap.missingTargetFiles ?? [])])];
+    const missingTargetFiles = [
+      ...new Set([...(previous.missingTargetFiles ?? []), ...(gap.missingTargetFiles ?? [])]),
+    ];
     const messageParts = [...new Set([...(messages.get(gap.code) ?? []), gap.message])];
     messages.set(gap.code, messageParts);
     merged.set(gap.code, {
@@ -627,17 +815,30 @@ export function buildVerificationPlan(options: BuildVerificationPlanOptions): Ve
   const changedFiles = unique(options.changedFiles ?? []);
   const errors = options.errors ?? [];
   const impactedFiles = collectImpactedFiles(options.codeImpact, changedFiles, options.filePath);
-  const directChecks = collectDirectTestChecks(options.codeImpact);
+  const exists = (file: string): boolean => fs.existsSync(path.resolve(cwd, file));
+  const linkedTests = unique(
+    options.linkedTests ??
+      conventionTests(cwd, [...changedFiles, ...(options.filePath ? [options.filePath] : [])])
+  ).filter(exists);
+  // A recommended test file that does not exist is a guess, not a check.
+  const directChecks = [
+    ...linkedTestChecks(linkedTests, cwd, options.linkedTests !== undefined),
+    ...collectDirectTestChecks(options.codeImpact).filter(
+      (check) => !check.file || exists(check.file)
+    ),
+  ];
   const actionChecks = collectActionChecks(options.codeImpact);
   const pythonChecks = inferPythonChecks(impactedFiles, cwd);
-  const packageChecks = inferPackageScriptChecks(impactedFiles, cwd);
+  const packageChecks = inferPackageScriptChecks(impactedFiles, cwd, linkedTests.length > 0);
   const recommendedChecks = dedupeChecks([
     ...directChecks,
     ...actionChecks,
     ...pythonChecks,
     ...packageChecks,
   ]);
-  const missingChecks = collectCoverageGaps(options.codeImpact);
+  const missingChecks = collectCoverageGaps(options.codeImpact).filter(
+    (gap) => !(gap.code === "no_related_tests" && directChecks.length > 0)
+  );
 
   if (!options.codeImpact) {
     missingChecks.push({
@@ -714,6 +915,9 @@ export async function verifyCommand(options: VerifyCommandOptions): Promise<void
   const errors: VerificationPlan["errors"] = [];
   let codeImpact: Record<string, unknown> | undefined;
   let codeImpactSourceSelection: CodeGraphSourceSelection | undefined;
+  let impactCard: CodeImpactCard | undefined;
+  const cwd = process.cwd();
+  const repoRoot = resolveRepoRoot(cwd);
 
   if (!options.skipImpact) {
     if (
@@ -736,6 +940,10 @@ export async function verifyCommand(options: VerifyCommandOptions): Promise<void
       });
       codeImpact = autoResult.result as Record<string, unknown>;
       codeImpactSourceSelection = autoResult.sourceSelection;
+      impactCard = buildCodeImpactCard(autoResult, {
+        repoRoot,
+        detailPath: writeCodeImpactDetail(repoRoot, autoResult),
+      });
     } catch (error) {
       errors.push({
         surface: "code_impact",
@@ -746,13 +954,33 @@ export async function verifyCommand(options: VerifyCommandOptions): Promise<void
 
   const plan = buildVerificationPlan({
     ...options,
+    cwd,
     changedFiles,
     codeImpact,
     codeImpactSourceSelection,
+    // The card's tests are repository-relative; the plan's paths are relative to where it runs.
+    ...(impactCard
+      ? {
+          linkedTests: impactCard.tests.files.map((file) =>
+            path.relative(cwd, path.join(repoRoot, file)).split(path.sep).join("/")
+          ),
+        }
+      : {}),
     errors,
   });
+  const detailPath = writeVerificationDetail(repoRoot, plan);
 
   if (options.json) {
+    console.log(
+      JSON.stringify(
+        options.detail ? plan : compactVerificationPlan(plan, impactCard, detailPath),
+        null,
+        2
+      )
+    );
+    return;
+  }
+  if (options.detail) {
     console.log(JSON.stringify(plan, null, 2));
     return;
   }
@@ -779,12 +1007,29 @@ export async function verifyCommand(options: VerifyCommandOptions): Promise<void
     console.log("");
   }
 
-  console.log(chalk.bold("Impacted Files"));
-  if (plan.impactedFiles.length === 0) {
-    console.log(chalk.yellow("No impacted files available"));
+  if (impactCard) {
+    console.log(chalk.bold("Impact"));
+    console.log(
+      `${impactCard.dependents.count} dependent file(s), ${impactCard.transitiveDependents.count} transitive; coverage ${impactCard.coverage.status}`
+    );
+    for (const dependent of impactCard.dependents.files) {
+      console.log(
+        `- ${dependent.line !== undefined ? `${dependent.file}:${dependent.line}` : dependent.file}`
+      );
+    }
+    if (impactCard.dependents.count > impactCard.dependents.files.length) {
+      console.log(`- ... ${impactCard.dependents.count - impactCard.dependents.files.length} more`);
+    }
   } else {
-    for (const file of plan.impactedFiles) {
-      console.log(`- ${file}`);
+    console.log(chalk.bold("Impacted Files"));
+    if (plan.impactedFiles.length === 0) {
+      console.log(chalk.yellow("No impacted files available"));
+    } else {
+      for (const file of plan.impactedFiles.slice(0, 20)) {
+        console.log(`- ${file}`);
+      }
+      if (plan.impactedFiles.length > 20)
+        console.log(`- ... ${plan.impactedFiles.length - 20} more`);
     }
   }
   console.log("");
@@ -815,10 +1060,73 @@ export async function verifyCommand(options: VerifyCommandOptions): Promise<void
   }
   console.log("");
 
-  if (plan.suggestedCommands.length > 0) {
+  const commands = suggestedCommandsFor(plan, impactCard);
+  if (commands.length > 0) {
     console.log(chalk.bold("Suggested Commands"));
-    for (const command of plan.suggestedCommands) {
+    for (const command of commands) {
       console.log(command);
     }
+    console.log("");
   }
+  console.log(`Detail: ${detailPath} (--detail prints the full plan)`);
+}
+
+export const VERIFICATION_DETAIL_RELATIVE_PATH = ".snipara/verify/latest.json";
+
+/** Writes the full plan, code impact included, and returns its repository-relative path. */
+function writeVerificationDetail(repoRoot: string, plan: VerificationPlan): string {
+  const file = path.join(repoRoot, VERIFICATION_DETAIL_RELATIVE_PATH);
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${JSON.stringify(plan, null, 2)}\n`);
+  } catch {
+    // The plan is still printed; only the detail file is missing.
+  }
+  return VERIFICATION_DETAIL_RELATIVE_PATH;
+}
+
+/** With an impact card in hand, re-running code impact is not a next step. */
+function suggestedCommandsFor(plan: VerificationPlan, card: CodeImpactCard | undefined): string[] {
+  return card
+    ? plan.suggestedCommands.filter(
+        (command) => !command.startsWith("snipara-companion code impact ")
+      )
+    : plan.suggestedCommands;
+}
+
+/**
+ * What an agent reads by default: the checks in the order to run them, the gaps, the impact card in
+ * place of the full impact, a short judgment, and where the full plan was written.
+ */
+export function compactVerificationPlan(
+  plan: VerificationPlan,
+  card: CodeImpactCard | undefined,
+  detailPath: string
+): Record<string, unknown> {
+  const judgment = plan.judgmentCard as unknown as Record<string, unknown> | undefined;
+  return {
+    version: "snipara.verification_plan.compact.v1",
+    generatedAt: plan.generatedAt,
+    ...(plan.task ? { task: plan.task } : {}),
+    target: plan.target,
+    risk: plan.risk,
+    impact: card ?? null,
+    recommendedChecks: plan.recommendedChecks,
+    missingChecks: plan.missingChecks,
+    caveats: plan.caveats,
+    suggestedCommands: suggestedCommandsFor(plan, card),
+    ...(judgment
+      ? {
+          judgment: {
+            score: judgment.score,
+            band: judgment.band,
+            state: judgment.state,
+            canProceed: judgment.canProceed,
+            summary: judgment.summary,
+          },
+        }
+      : {}),
+    errors: plan.errors,
+    detail: detailPath,
+  };
 }
