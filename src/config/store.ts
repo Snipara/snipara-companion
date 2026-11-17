@@ -117,10 +117,55 @@ export function findWorkspaceRoot(
   return allowCurrentDirFallback ? path.resolve(startDir) : null;
 }
 
+/**
+ * Nearest ancestor of startDir (itself included) that holds the given file.
+ * A package inside a monorepo has its own markers (package.json, sometimes a
+ * .snipara state folder) while the project identity lives at the repository
+ * root, so the nearest marker is not always the directory to read from.
+ * The home directory and anything above it are never searched: ~/.snipara is
+ * the global scope, not a workspace.
+ */
+function findAncestorWithFile(startDir: string, relativeFile: string): string | null {
+  const home = path.resolve(os.homedir());
+  let current = path.resolve(startDir);
+
+  if (!fs.existsSync(current)) {
+    current = path.dirname(current);
+  }
+
+  while (true) {
+    if (current === home) {
+      return null;
+    }
+    const candidate = path.join(current, relativeFile);
+    try {
+      if (fs.statSync(candidate).isFile()) {
+        return current;
+      }
+    } catch {
+      // Absent or unreadable here: keep climbing.
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
+}
+
+const WORKSPACE_CONFIG_FILE = path.join(".snipara", "companion", "config.json");
+const WORKSPACE_PROJECT_FILE = path.join(".snipara", "project");
+
 function getWorkspaceConfigFile(
   cwd: string = process.cwd(),
   allowCurrentDirFallback: boolean = false
 ): string | null {
+  const existingRoot = findAncestorWithFile(cwd, WORKSPACE_CONFIG_FILE);
+  if (existingRoot) {
+    return path.join(existingRoot, WORKSPACE_CONFIG_FILE);
+  }
+
   const workspaceRoot = findWorkspaceRoot(cwd, allowCurrentDirFallback);
   if (!workspaceRoot) {
     return null;
@@ -145,15 +190,12 @@ function readConfigFile(configFile: string): Partial<RLMConfig> {
 }
 
 function readWorkspaceProjectFile(cwd: string = process.cwd()): string | undefined {
-  const workspaceRoot = findWorkspaceRoot(cwd);
+  const workspaceRoot = findAncestorWithFile(cwd, WORKSPACE_PROJECT_FILE);
   if (!workspaceRoot) {
     return undefined;
   }
 
-  const projectFile = path.join(workspaceRoot, ".snipara", "project");
-  if (!fs.existsSync(projectFile)) {
-    return undefined;
-  }
+  const projectFile = path.join(workspaceRoot, WORKSPACE_PROJECT_FILE);
 
   try {
     const content = fs.readFileSync(projectFile, "utf-8").trim();

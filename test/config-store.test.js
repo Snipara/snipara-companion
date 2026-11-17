@@ -337,3 +337,56 @@ test("loading an existing companion config repairs permissive secret permissions
     assert.equal(fs.statSync(workspaceConfigPath).mode & 0o777, 0o600);
   });
 });
+
+test("a monorepo package with its own markers still reads the repository root config", () => {
+  withTempHome(({ tmpDir }) => {
+    fs.mkdirSync(path.join(tmpDir, ".git"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, ".snipara", "companion"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".snipara", "project"), "root-project\n");
+    fs.writeFileSync(
+      path.join(tmpDir, ".snipara", "companion", "config.json"),
+      JSON.stringify({ apiKey: "rlm_root_key" })
+    );
+
+    // The package carries the same markers a real one does: package.json and a
+    // .snipara state folder with no identity in it.
+    const packageDir = path.join(tmpDir, "apps", "web");
+    fs.mkdirSync(path.join(packageDir, ".snipara", "activity"), { recursive: true });
+    fs.writeFileSync(path.join(packageDir, "package.json"), "{}");
+    const nestedDir = path.join(packageDir, "src", "lib");
+    fs.mkdirSync(nestedDir, { recursive: true });
+
+    for (const cwd of [packageDir, nestedDir]) {
+      const config = loadConfig({ cwd });
+      assert.equal(config.projectId, "root-project");
+      assert.equal(config.apiKey, "rlm_root_key");
+      assert.equal(
+        fs.realpathSync(getConfigPath({ cwd })),
+        fs.realpathSync(path.join(tmpDir, ".snipara", "companion", "config.json"))
+      );
+    }
+  });
+});
+
+test("a package that declares its own project keeps it over the repository root", () => {
+  withTempHome(({ tmpDir }) => {
+    fs.mkdirSync(path.join(tmpDir, ".snipara"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".snipara", "project"), "root-project\n");
+    const packageDir = path.join(tmpDir, "packages", "other");
+    fs.mkdirSync(path.join(packageDir, ".snipara"), { recursive: true });
+    fs.writeFileSync(path.join(packageDir, ".snipara", "project"), "package-project\n");
+
+    assert.equal(loadConfig({ cwd: packageDir }).projectId, "package-project");
+  });
+});
+
+test("the home directory is never read as a workspace", () => {
+  withTempHome(({ homeDir }) => {
+    fs.mkdirSync(path.join(homeDir, ".snipara"), { recursive: true });
+    fs.writeFileSync(path.join(homeDir, ".snipara", "project"), "home-project\n");
+    const workDir = path.join(homeDir, "work", "repo");
+    fs.mkdirSync(workDir, { recursive: true });
+
+    assert.equal(loadConfig({ cwd: workDir }).projectId, undefined);
+  });
+});

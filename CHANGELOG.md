@@ -2,6 +2,10 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 7.0.1
+
+- Companion finds the project configuration from a package inside a monorepo. The lookup stopped at the nearest directory holding any workspace marker, so a package with its own `package.json` or `.snipara` state folder (`apps/web`, for example) reported "Not configured" while the configuration sits at the repository root. It now climbs to the nearest ancestor that holds `.snipara/companion/config.json` or `.snipara/project`. A package that declares its own project keeps it, and the home directory is never read as a workspace.
+
 ## 7.0.0
 
 Breaking: `code impact` (and its `impact` alias), `verify` and the `snipara_local_code_impact` tool answer with a compact card by default.
