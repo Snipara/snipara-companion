@@ -1584,3 +1584,66 @@ test("local impact resolves tsconfig path aliases and Python imports", () => {
     "apps/api/src/worker.py",
   ]);
 });
+
+function writeFileIn(repo, relativePath, content = "export const value = 1;\n") {
+  const target = path.join(repo, relativePath);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, content);
+}
+
+test("a generic file name links only the test in the matching folder", () => {
+  const repo = makeTempRepo();
+  fs.writeFileSync(path.join(repo, "package.json"), "{}\n");
+  for (const folder of ["hooks", "users", "billing", "teams", "health"]) {
+    writeFileIn(repo, `src/api/${folder}/route.ts`);
+    writeFileIn(repo, `src/api/${folder}/route.test.ts`, "import './route';\n");
+  }
+  // A copy of the repository kept in Companion state is not a test of the repository.
+  writeFileIn(repo, ".snipara/snapshot/repo/src/api/hooks/route.test.ts", "\n");
+  const result = runCli(["impact", "src/api/hooks/route.ts", "--source", "local", "--json"], {
+    cwd: repo,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).tests, {
+    count: 1,
+    files: ["src/api/hooks/route.test.ts"],
+    basis: "linked",
+  });
+});
+
+test("a generic file name with no test in a matching folder links none by name", () => {
+  const repo = makeTempRepo();
+  fs.writeFileSync(path.join(repo, "package.json"), "{}\n");
+  writeFileIn(repo, "src/api/hooks/route.ts");
+  for (const folder of ["users", "billing", "teams", "health"]) {
+    writeFileIn(repo, `src/pages/${folder}/route.test.ts`, "\n");
+  }
+  const result = runCli(["impact", "src/api/hooks/route.ts", "--source", "local", "--json"], {
+    cwd: repo,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).tests.count, 0);
+});
+
+test("impact resolves a target typed from a package folder", () => {
+  const repo = makeTempRepo();
+  writeFileIn(repo, "apps/web/package.json", "{}\n");
+  writeFileIn(repo, "apps/web/src/api/hooks/route.ts");
+  writeFileIn(repo, "apps/web/src/api/hooks/route.test.ts", "import './route';\n");
+  writeFileIn(repo, "apps/web/src/api/users/route.test.ts", "\n");
+  const fromRoot = runCli(
+    ["impact", "apps/web/src/api/hooks/route.ts", "--source", "local", "--json"],
+    { cwd: repo }
+  );
+  const fromPackage = runCli(["impact", "src/api/hooks/route.ts", "--source", "local", "--json"], {
+    cwd: path.join(repo, "apps", "web"),
+  });
+  assert.equal(fromRoot.status, 0, fromRoot.stderr);
+  assert.equal(fromPackage.status, 0, fromPackage.stderr);
+  const expected = JSON.parse(fromRoot.stdout);
+  const actual = JSON.parse(fromPackage.stdout);
+  assert.deepEqual(actual.targets, ["apps/web/src/api/hooks/route.ts"]);
+  assert.deepEqual(actual.missingTargets, []);
+  assert.deepEqual(actual.tests, expected.tests);
+  assert.deepEqual(actual.tests.files, ["apps/web/src/api/hooks/route.test.ts"]);
+});

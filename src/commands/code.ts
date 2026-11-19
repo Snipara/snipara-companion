@@ -4400,13 +4400,53 @@ function emitCodeSourceTelemetry(
   }
 }
 
+/**
+ * A target path as the graph knows it: relative to the repository root, with forward slashes.
+ * A path typed from a package folder (`src/app/route.ts` inside `apps/web`) or given absolute is
+ * rewritten; a path that already resolves from the root, or that exists nowhere, is kept as given.
+ */
+export function toRepoRelativePath(repoRoot: string, invocationDir: string, value: string): string {
+  const toPosix = (target: string): string => target.split(path.sep).join("/");
+  const inside = (absolute: string): string | null => {
+    const relative = path.relative(repoRoot, absolute);
+    return relative && !relative.startsWith("..") && !path.isAbsolute(relative)
+      ? toPosix(relative)
+      : null;
+  };
+  if (path.isAbsolute(value)) {
+    return inside(value) ?? value;
+  }
+  if (fs.existsSync(path.join(repoRoot, value))) {
+    return toPosix(path.normalize(value));
+  }
+  const fromInvocation = path.resolve(invocationDir, value);
+  if (fs.existsSync(fromInvocation)) {
+    return inside(fromInvocation) ?? value;
+  }
+  return value;
+}
+
 export async function resolveCodeGraphAutoSourceResult(
   verb: CodeGraphVerb,
-  options: CodeGraphAutoSourceOptions
+  rawOptions: CodeGraphAutoSourceOptions
 ): Promise<CodeGraphAutoSourceResult> {
   const startedAt = Date.now();
+  const invocationDir = path.resolve(rawOptions.dir ?? process.cwd());
+  const repoRoot = resolveRepoRoot(invocationDir);
+  const options: CodeGraphAutoSourceOptions = {
+    ...rawOptions,
+    ...(rawOptions.changedFiles
+      ? {
+          changedFiles: rawOptions.changedFiles.map((file) =>
+            toRepoRelativePath(repoRoot, invocationDir, file)
+          ),
+        }
+      : {}),
+    ...(rawOptions.filePath
+      ? { filePath: toRepoRelativePath(repoRoot, invocationDir, rawOptions.filePath) }
+      : {}),
+  };
   const requested = resolveRequestedCodeGraphSource(options.source);
-  const repoRoot = resolveRepoRoot(options.dir ?? process.cwd());
   const dirtyStatus = readGitStatus(repoRoot);
   const dirtyFiles = parseDirtyFiles(dirtyStatus);
   const requestedChangedFiles =

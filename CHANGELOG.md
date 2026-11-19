@@ -2,6 +2,11 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## Unreleased
+
+- `code impact` and `verify` resolve a target typed from a package folder. From `apps/web`, `--changed-files src/app/route.ts` used to match nothing: no dependents, coverage unknown, and hundreds of unrelated tests, with a success exit code. The path is now rewritten relative to the repository root, as is an absolute path.
+- A generic file name no longer links every test of that name. `route.ts` used to list every `route.test.ts` of the package (77 in this repository); it now lists the ones in the matching folder, and none by name when no folder matches and more than three files share the name. Copies of the repository under `.snipara/` and `node_modules/` are never listed as tests.
+
 ## 7.0.1
 
 - Companion finds the project configuration from a package inside a monorepo. The lookup stopped at the nearest directory holding any workspace marker, so a package with its own `package.json` or `.snipara` state folder (`apps/web`, for example) reported "Not configured" while the configuration sits at the repository root. It now climbs to the nearest ancestor that holds `.snipara/companion/config.json` or `.snipara/project`. A package that declares its own project keeps it, and the home directory is never read as a workspace.

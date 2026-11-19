@@ -168,11 +168,58 @@ export function conventionTests(repoRoot: string, targets: string[]): string[] {
     );
     const root = nearestPackageRoot(repoRoot, target);
     if (!listings.has(root)) listings.set(root, listFilesUnder(repoRoot, root));
-    for (const candidate of listings.get(root) ?? []) {
-      if (pattern.test(path.posix.basename(candidate))) found.push(candidate);
-    }
+    const candidates = (listings.get(root) ?? []).filter(
+      (candidate) =>
+        pattern.test(path.posix.basename(candidate)) && !isWorkspaceStatePath(candidate)
+    );
+    found.push(...nearestByFolder(target, candidates));
   }
   return found;
+}
+
+/** Companion state folders hold copies of the repository; a test in one is not a test of it. */
+function isWorkspaceStatePath(filePath: string): boolean {
+  return /(^|\/)(\.snipara|node_modules)\//.test(filePath);
+}
+
+const TEST_FOLDER_NAMES = new Set(["test", "tests", "__tests__", "spec", "specs", "src", "lib"]);
+
+function folderSegments(filePath: string): string[] {
+  return path.posix
+    .dirname(filePath)
+    .split("/")
+    .filter((segment) => segment && segment !== "." && !TEST_FOLDER_NAMES.has(segment));
+}
+
+function sharedTrailingFolders(left: string[], right: string[]): number {
+  let shared = 0;
+  while (
+    shared < left.length &&
+    shared < right.length &&
+    left[left.length - 1 - shared] === right[right.length - 1 - shared]
+  ) {
+    shared += 1;
+  }
+  return shared;
+}
+
+const AMBIGUOUS_NAME_LIMIT = 3;
+
+/**
+ * A file name alone links one test to a target only when it is unique. Several tests share the
+ * name of a generic file (`route.ts`, `page.tsx`, `utils.py`): keep the ones whose folder matches
+ * the target's best, and none when no folder matches and the name is too common to mean anything.
+ */
+function nearestByFolder(target: string, candidates: string[]): string[] {
+  if (candidates.length <= 1) return candidates;
+  const targetFolders = folderSegments(target);
+  const scored = candidates.map((candidate) => ({
+    candidate,
+    score: sharedTrailingFolders(targetFolders, folderSegments(candidate)),
+  }));
+  const best = Math.max(...scored.map((entry) => entry.score));
+  if (best === 0) return candidates.length > AMBIGUOUS_NAME_LIMIT ? [] : candidates;
+  return scored.filter((entry) => entry.score === best).map((entry) => entry.candidate);
 }
 
 function localDependents(local: UnknownRecord | null): CodeImpactCardDependent[] {
