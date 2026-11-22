@@ -12,15 +12,14 @@ const { expectedSandboxScope } = loadSource(
   path.resolve(__dirname, "../src/runtime/sandbox-identity.ts")
 );
 
-function fixture(t, { help = "Options: --no-reuse", run } = {}) {
+function fixture(t, { help = "Options: --scope --no-reuse", run } = {}) {
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), "companion reuse quotes' $-"));
   t.after(() => fs.rmSync(folder, { recursive: true, force: true }));
   const request = path.join(folder, 'request "quoted".json');
   const store = path.join(folder, "evidence $literal");
   const sandboxCommand = path.join(folder, 'sandbox "quoted"');
-  const orchestratorCommand = path.join(folder, "orchestrator $literal");
   const callsFile = path.join(folder, "calls.jsonl");
-  const sandboxCallsFile = path.join(folder, "sandbox-calls.jsonl");
+  const executionsFile = path.join(folder, "executions.jsonl");
   const savedFile = path.join(folder, "saved.json");
   fs.writeFileSync(request, "{}");
   const receipt = {
@@ -31,63 +30,42 @@ function fixture(t, { help = "Options: --no-reuse", run } = {}) {
     exit_code: 0,
     backend: "docker",
   };
-  fs.writeFileSync(
-    sandboxCommand,
-    `#!${process.execPath}
-const fs=require('node:fs');
-fs.appendFileSync(${JSON.stringify(sandboxCallsFile)},JSON.stringify({args:process.argv.slice(2),env:Object.keys(process.env)})+'\\n');
-console.log(${JSON.stringify(JSON.stringify(receipt))});
-`,
-    { mode: 0o755 }
-  );
+  // Stand-in for Sandbox 3.2+: it coordinates a scoped run itself and reuses a saved receipt.
   const defaultRun = `
 const savedFile=${JSON.stringify(savedFile)};
 if(fs.existsSync(savedFile)&&!args.includes('--no-reuse')) {
   console.log(JSON.stringify({...JSON.parse(fs.readFileSync(savedFile,'utf8')),work_reuse:{state:'reused'}}));
 } else {
-  const value=flag=>args[args.indexOf(flag)+1];
-  const child=require('node:child_process').spawnSync(value('--sandbox-command'),['validation','run','--request',value('--request'),'--store',value('--store')],{encoding:'utf8',env:process.env,shell:false});
-  const receipt=JSON.parse(child.stdout);
+  fs.appendFileSync(${JSON.stringify(executionsFile)},'run\\n');
   fs.writeFileSync(savedFile,JSON.stringify(receipt));
   console.log(JSON.stringify({...receipt,work_reuse:{state:'executed'}}));
 }`;
   fs.writeFileSync(
-    orchestratorCommand,
+    sandboxCommand,
     `#!${process.execPath}
 const fs=require('node:fs');const args=process.argv.slice(2);
+const receipt=${JSON.stringify(receipt)};
 fs.appendFileSync(${JSON.stringify(callsFile)},JSON.stringify({args,env:Object.keys(process.env)})+'\\n');
 if(args.includes('--help')) {console.log(${JSON.stringify(help)});process.exit(0);}
+if(!args.includes('--scope')) {fs.appendFileSync(${JSON.stringify(executionsFile)},'run\\n');console.log(JSON.stringify(receipt));process.exit(0);}
 ${run ?? defaultRun}
 `,
     { mode: 0o755 }
   );
-  const readCalls = (file) =>
-    fs.existsSync(file)
-      ? fs
-          .readFileSync(file, "utf8")
-          .trim()
-          .split("\n")
-          .map((line) => JSON.parse(line))
-      : [];
+  const readLines = (file) =>
+    fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim().split("\n") : [];
   return {
     request,
     store,
     sandboxCommand,
-    orchestratorCommand,
     receipt,
-    options: {
-      request,
-      store,
-      sandboxCommand,
-      orchestratorCommand,
-      scope: 'lot "quoted" $literal',
-    },
-    calls: () => readCalls(callsFile),
-    sandboxCalls: () => readCalls(sandboxCallsFile),
+    options: { request, store, sandboxCommand, scope: 'lot "quoted" $literal' },
+    calls: () => readLines(callsFile).map((line) => JSON.parse(line)),
+    executions: () => readLines(executionsFile).length,
   };
 }
 
-test("scoped runs delegate safely and preserve shared reuse receipts with a clean environment", async (t) => {
+test("scoped runs go to Sandbox directly and preserve shared reuse receipts with a clean environment", async (t) => {
   const f = fixture(t);
   const previous = {
     OPENAI_API_KEY: process.env.OPENAI_API_KEY,
@@ -119,12 +97,9 @@ test("scoped runs delegate safely and preserve shared reuse receipts with a clea
       f.options.scope,
       "--store",
       f.store,
-      "--sandbox-command",
-      f.sandboxCommand,
     ]);
-    assert.equal(f.sandboxCalls().length, 1);
-    assert.equal(f.sandboxCalls()[0].args.includes("--scope"), false);
-    for (const call of [...calls, ...f.sandboxCalls()]) {
+    assert.equal(f.executions(), 1);
+    for (const call of calls) {
       for (const name of Object.keys(previous)) assert.equal(call.env.includes(name), false);
     }
   } finally {
@@ -135,13 +110,13 @@ test("scoped runs delegate safely and preserve shared reuse receipts with a clea
   }
 });
 
-test("no-reuse delegates a fresh request through the same coordinator", async (t) => {
+test("no-reuse asks the same coordinator for a fresh run", async (t) => {
   const f = fixture(t);
   await invokeSandboxValidation("run", f.options);
   const outcome = await invokeSandboxValidation("run", { ...f.options, noReuse: true });
   assert.equal(outcome.exitCode, 0);
   assert.equal(outcome.result.work_reuse.state, "executed");
-  assert.equal(f.sandboxCalls().length, 2);
+  assert.equal(f.executions(), 2);
   assert.equal(f.calls().filter((call) => call.args.includes("--no-reuse")).length, 1);
   const cli = path.resolve(__dirname, "../dist/index.js");
   const cliRun = spawnSync(
@@ -158,15 +133,13 @@ test("no-reuse delegates a fresh request through the same coordinator", async (t
       f.store,
       "--sandbox-command",
       f.sandboxCommand,
-      "--orchestrator-command",
-      f.orchestratorCommand,
       "--no-reuse",
     ],
     { encoding: "utf8", env: { ...process.env, SNIPARA_COMPANION_SKIP_NPM_VERSION_CHECK: "1" } }
   );
   assert.equal(cliRun.status, 0, cliRun.stderr);
   assert.equal(JSON.parse(cliRun.stdout).work_reuse.state, "executed");
-  assert.equal(f.sandboxCalls().length, 3);
+  assert.equal(f.executions(), 3);
   assert.equal(f.calls().filter((call) => call.args.includes("--no-reuse")).length, 2);
 });
 
@@ -183,7 +156,7 @@ test("busy and interrupted coordination remain nonpassing without a fabricated r
     assert.equal(outcome.exitCode, 2);
     assert.deepEqual(outcome.result, response);
     assert.equal(outcome.result.run_id, undefined);
-    assert.equal(f.sandboxCalls().length, 0);
+    assert.equal(f.executions(), 0);
   }
 });
 
@@ -241,29 +214,26 @@ test("unavailable gates preserve a safe choice prompt while saved choices requir
         assert.equal(outcome.result.prompt, "Choose an environment token=[REDACTED]");
         assert.equal(outcome.result.reason, "Docker unavailable token=[REDACTED]");
       } else assert.deepEqual(outcome.result.choice, choice);
-    } else assert.equal(outcome.result.reason_code, "orchestrator_response_invalid");
-    assert.equal(f.sandboxCalls().length, 0);
+    } else assert.equal(outcome.result.reason_code, "sandbox_response_invalid");
+    assert.equal(f.executions(), 0);
     assert.equal(f.calls().length, 2);
   }
 });
 
-test("missing or incompatible coordinator fails before execution without Sandbox fallback", async (t) => {
-  const f = fixture(t, { help: "Old validation run options" });
-  for (const orchestratorCommand of [
-    f.orchestratorCommand,
-    path.join(path.dirname(f.request), "missing"),
-  ]) {
-    const outcome = await invokeSandboxValidation("run", { ...f.options, orchestratorCommand });
+test("a missing Sandbox or one older than 3.2 fails before execution, without an unscoped fallback", async (t) => {
+  const f = fixture(t, { help: "Options: --request --store" });
+  for (const sandboxCommand of [f.sandboxCommand, path.join(path.dirname(f.request), "missing")]) {
+    const outcome = await invokeSandboxValidation("run", { ...f.options, sandboxCommand });
     assert.equal(outcome.exitCode, 2);
-    assert.equal(outcome.result.status, "orchestrator_update_required");
+    assert.equal(outcome.result.status, "sandbox_update_required");
     assert.equal(outcome.result.execution_authorized_by_gate, false);
   }
   assert.equal(f.calls().length, 1);
   assert.equal(f.calls()[0].args.includes("--help"), true);
-  assert.equal(f.sandboxCalls().length, 0);
+  assert.equal(f.executions(), 0);
 });
 
-test("malformed delegated responses never retry or fall back to direct Sandbox", async (t) => {
+test("malformed scoped responses never retry or fall back to an unscoped run", async (t) => {
   for (const response of [
     "not-json",
     JSON.stringify({ status: "passed", work_reuse: { state: "reused" } }),
@@ -271,14 +241,14 @@ test("malformed delegated responses never retry or fall back to direct Sandbox",
     const f = fixture(t, { run: `console.log(${JSON.stringify(response)});` });
     const outcome = await invokeSandboxValidation("run", f.options);
     assert.equal(outcome.exitCode, 2);
-    assert.equal(outcome.result.reason_code, "orchestrator_response_invalid");
+    assert.equal(outcome.result.reason_code, "sandbox_response_invalid");
     assert.equal(outcome.result.work_reuse.state, "needs_review");
     assert.equal(f.calls().length, 2);
-    assert.equal(f.sandboxCalls().length, 0);
+    assert.equal(f.executions(), 0);
   }
 });
 
-test("delegated failed receipts retain Sandbox evidence and cannot pass", async (t) => {
+test("scoped failed receipts retain Sandbox evidence and cannot pass", async (t) => {
   const receipt = {
     schema_version: "snipara.sandbox.validation.v1",
     run_id: "a".repeat(32),
@@ -299,7 +269,7 @@ test("delegated failed receipts retain Sandbox evidence and cannot pass", async 
   }
 });
 
-test("delegated timeout leaves review evidence and never starts a replacement execution", async (t) => {
+test("scoped timeout leaves review evidence and never starts a replacement execution", async (t) => {
   const f = fixture(t, { run: "setInterval(()=>{},1000);" });
   const original = global.setTimeout;
   global.setTimeout = (callback, delay, ...args) =>
@@ -311,10 +281,10 @@ test("delegated timeout leaves review evidence and never starts a replacement ex
     global.setTimeout = original;
   }
   assert.equal(outcome.exitCode, 2);
-  assert.equal(outcome.result.reason_code, "orchestrator_process_timeout");
+  assert.equal(outcome.result.reason_code, "sandbox_process_timeout");
   assert.equal(outcome.result.work_reuse.state, "needs_review");
   assert.equal(f.calls().length, 2);
-  assert.equal(f.sandboxCalls().length, 0);
+  assert.equal(f.executions(), 0);
 });
 
 test("legacy unscoped runs invoke standalone Sandbox without coordinator or scope flags", async (t) => {
@@ -326,8 +296,8 @@ test("legacy unscoped runs invoke standalone Sandbox without coordinator or scop
   });
   assert.equal(outcome.exitCode, 0);
   assert.deepEqual(outcome.result, f.receipt);
-  assert.equal(f.calls().length, 0);
-  assert.deepEqual(f.sandboxCalls()[0].args, [
+  assert.equal(f.calls().length, 1);
+  assert.deepEqual(f.calls()[0].args, [
     "validation",
     "run",
     "--request",
@@ -410,14 +380,13 @@ console.log(JSON.stringify(${JSON.stringify(responses)}[args[1]]));
     assert.equal(args.includes("--request"), !["status", "cancel"].includes(action), action);
     if (args.includes("--store")) assert.equal(args[args.indexOf("--store") + 1], f.store);
   }
-  assert.equal(f.calls().length, 0);
 });
 
 test("coordinated controls need explicit scope and appear only on run help", async (t) => {
   const f = fixture(t);
   for (const [action, options] of [
     ["run", { noReuse: true }],
-    ["run", { orchestratorCommand: f.orchestratorCommand }],
+    ["run", { coordinationRoot: path.dirname(f.request) }],
     ["gate", { scope: "lot", noReuse: true }],
   ]) {
     const outcome = await invokeSandboxValidation(action, {
@@ -429,7 +398,6 @@ test("coordinated controls need explicit scope and appear only on run help", asy
     assert.equal(outcome.result.reason_code, "explicit_scope_required");
   }
   assert.equal(f.calls().length, 0);
-  assert.equal(f.sandboxCalls().length, 0);
   const cli = path.resolve(__dirname, "../dist/index.js");
   for (const action of ["run", "gate", "choose", "diagnose", "verify", "status", "cancel"]) {
     const help = spawnSync(process.execPath, [cli, "validation", action, "--help"], {
@@ -438,7 +406,8 @@ test("coordinated controls need explicit scope and appear only on run help", asy
     });
     assert.equal(help.status, 0, help.stderr);
     assert.equal(help.stdout.includes("--no-reuse"), action === "run");
-    assert.equal(help.stdout.includes("--orchestrator-command"), action === "run");
+    assert.equal(help.stdout.includes("--coordination-root"), action === "run");
+    assert.equal(help.stdout.includes("--orchestrator-command"), false);
   }
 });
 

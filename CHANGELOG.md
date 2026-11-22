@@ -2,7 +2,15 @@
 
 Release notes for `snipara-companion`, newest first.
 
-## Unreleased
+## 8.0.0
+
+Breaking: scoped validation no longer goes through Orchestrator.
+
+- `validation run --scope` calls `snipara-sandbox validation run --scope` directly; Sandbox 3.2 or newer coordinates the lock, the reuse index and the receipt itself. Companion no longer starts `snipara-orchestrator`, and a managed toolchain's Orchestrator component is no longer run.
+- Removed: the `--orchestrator-command` option of `validation run`.
+- Changed outcomes: a missing Sandbox, or one older than 3.2 (no `--scope`), answers `sandbox_update_required` before anything runs (was `orchestrator_update_required`). After a launch, a timeout, an oversized output, a process failure or a malformed answer keep the status `validation_reuse_needs_review`, with the reason codes `sandbox_process_timeout`, `sandbox_output_limit`, `sandbox_process_failed` and `sandbox_response_invalid` (were `orchestrator_*`).
+- Sandbox does not read the reuse index written by Orchestrator (`.snipara/orchestrator/validation-reuse/`), so the first scoped run after the upgrade executes fresh.
+- The managed local-work toolchain no longer needs Orchestrator: a bundle is Companion 8.x and Sandbox 3.4 or a later 3.x. A bundle that still declares Orchestrator 2.1 or a later 2.x is accepted, its file is verified like the others, and it is never run. Bundles with Companion 7.x or a Sandbox older than 3.4 are refused as `toolchain_version_incompatible`; reinstall with the current create-snipara.
 
 - `code impact` and `verify` resolve a target typed from a package folder. From `apps/web`, `--changed-files src/app/route.ts` used to match nothing: no dependents, coverage unknown, and hundreds of unrelated tests, with a success exit code. The path is now rewritten relative to the repository root, as is an absolute path.
 - A generic file name no longer links every test of that name. `route.ts` used to list every `route.test.ts` of the package (77 in this repository); it now lists the ones in the matching folder, and none by name when no folder matches and more than three files share the name. Copies of the repository under `.snipara/` and `node_modules/` are never listed as tests.

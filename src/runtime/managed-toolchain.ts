@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { createHash } from "node:crypto";
 import {
   MANAGED_TOOLCHAIN_COMPONENTS,
+  MANAGED_TOOLCHAIN_RETIRED_COMPONENTS,
   parseManagedToolchainManifest,
   type ManagedToolchainManifest,
 } from "../contracts/project-intelligence";
@@ -127,8 +128,10 @@ export function resolveManagedToolchain(
     ownedDirectory(manifest.root, true);
     if (!within(manifest.root, manifestPath))
       throw new Error("Manifest is outside its immutable bundle");
-    for (const name of MANAGED_TOOLCHAIN_COMPONENTS) {
+    // A retired component an older bundle still declares is verified like the others, never run.
+    for (const name of [...MANAGED_TOOLCHAIN_COMPONENTS, ...MANAGED_TOOLCHAIN_RETIRED_COMPONENTS]) {
       const component = manifest.components[name];
+      if (!component) continue;
       if (
         fs.realpathSync(component.command) !== component.command ||
         !within(manifest.root, component.command)
@@ -188,14 +191,18 @@ export function managedToolchainEnvironment(
   return env;
 }
 
-/** The managed façade supports this reviewed generation of the three local components. */
+/**
+ * The managed façade supports this reviewed generation: Companion 8.x and Sandbox 3.4 or a later
+ * 3.x. Orchestrator is retired: a bundle may still declare 2.1 or a later 2.x, and it is never run.
+ */
 export function assertManagedToolchainCompatibility(toolchain: ManagedToolchainManifest): void {
   for (const [name, major, minimumMinor] of [
-    ["companion", 7, 0],
+    ["companion", 8, 0],
     ["orchestrator", 2, 1],
-    ["sandbox", 3, 0],
+    ["sandbox", 3, 4],
   ] as const) {
-    const version = toolchain.components[name].version;
+    const version = toolchain.components[name]?.version;
+    if (version === undefined) continue;
     const parts = version.split(".").map(Number);
     if (
       parts[0] !== major ||
@@ -205,7 +212,7 @@ export function assertManagedToolchainCompatibility(toolchain: ManagedToolchainM
     ) {
       throw new ManagedToolchainError(
         "toolchain_version_incompatible",
-        "Repair local-work with a compatible stable Companion, Orchestrator and Sandbox bundle"
+        "Repair local-work with a compatible stable Companion and Sandbox bundle"
       );
     }
   }

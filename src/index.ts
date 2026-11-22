@@ -943,10 +943,6 @@ for (const action of ["gate", "choose", "diagnose", "run", "verify", "status", "
       .option(
         "--coordination-root <directory>",
         "Use the same operator-approved coordination root as the MCP server"
-      )
-      .option(
-        "--orchestrator-command <path>",
-        "Compatible Orchestrator executable for scoped validation"
       );
   }
   if (["verify", "status", "cancel"].includes(action)) {

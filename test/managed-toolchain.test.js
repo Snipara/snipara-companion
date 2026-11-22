@@ -45,7 +45,7 @@ const { invokeSandboxValidation } = load(
 const { prepareManagedMcpLaunch } = load(path.resolve(__dirname, "../src/runtime/managed-mcp.ts"));
 const hash = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
 
-function fixture(t, suffix = "") {
+function fixture(t, suffix = "", names = ["companion", "sandbox"]) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "snipara-managed-")));
   fs.chmodSync(base, 0o700);
   t.after(() => fs.rmSync(base, { recursive: true, force: true }));
@@ -53,13 +53,13 @@ function fixture(t, suffix = "") {
   fs.mkdirSync(root, { mode: 0o700 });
   const marker = path.join(base, "should-not-run");
   const components = {};
-  for (const name of ["companion", "orchestrator", "sandbox"]) {
+  for (const name of names) {
     const command = path.join(root, name);
     const bytes = `#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(marker)},'ran');\n`;
     fs.writeFileSync(command, bytes, { mode: 0o700 });
     components[name] = {
       command,
-      version: name === "sandbox" ? "3.0.0" : name === "orchestrator" ? "2.1.0" : "7.0.0",
+      version: name === "sandbox" ? "3.4.0" : name === "orchestrator" ? "2.1.0" : "8.0.0",
       sha256: hash(bytes),
     };
   }
@@ -148,13 +148,47 @@ test("native launch preparation pins a stable generation and operator root witho
     () => prepareManagedMcpLaunch({ workspaceRoot: f.base, manifestPath: f.active }),
     (error) => error.code === "toolchain_version_incompatible"
   );
-  f.manifest.components.sandbox.version = "3.0.0";
-  f.manifest.components.companion.version = "6.0.0";
+  f.manifest.components.sandbox.version = "3.3.0";
   f.write();
   assert.throws(
     () => prepareManagedMcpLaunch({ workspaceRoot: f.base, manifestPath: f.active }),
     (error) => error.code === "toolchain_version_incompatible"
   );
+  f.manifest.components.sandbox.version = "3.4.0";
+  f.manifest.components.companion.version = "7.0.1";
+  f.write();
+  assert.throws(
+    () => prepareManagedMcpLaunch({ workspaceRoot: f.base, manifestPath: f.active }),
+    (error) => error.code === "toolchain_version_incompatible"
+  );
+});
+
+test("a bundle that still declares the retired Orchestrator is accepted, verified and never needs it", (t) => {
+  const old = fixture(t, "-old", ["companion", "orchestrator", "sandbox"]);
+  const value = subject.resolveManagedToolchain({ manifestPath: old.active });
+  assert.equal(value.components.orchestrator.version, "2.1.0");
+  assert.equal(subject.inspectManagedToolchain({ manifestPath: old.active }).status, "available");
+  old.manifest.components.orchestrator.version = "1.16.0";
+  old.write();
+  assert.equal(
+    subject.inspectManagedToolchain({ manifestPath: old.active }).status,
+    "needs_attention"
+  );
+  old.manifest.components.orchestrator.version = "2.1.0";
+  old.write();
+  fs.appendFileSync(old.manifest.components.orchestrator.command, "\n// changed");
+  assert.throws(
+    () => subject.resolveManagedToolchain({ manifestPath: old.active }),
+    (error) => error.code === "toolchain_component_changed"
+  );
+  const current = fixture(t, "-current");
+  const resolved = subject.resolveManagedToolchain({ manifestPath: current.active });
+  assert.deepEqual(Object.keys(resolved.components).sort(), ["companion", "sandbox"]);
+  assert.equal(
+    subject.inspectManagedToolchain({ manifestPath: current.active }).status,
+    "available"
+  );
+  assert.equal(fs.existsSync(old.marker) || fs.existsSync(current.marker), false);
 });
 
 function runNativeHarness(f, input) {
@@ -296,17 +330,14 @@ function runnableFixture(t) {
   fs.writeFileSync(
     f.manifest.components.sandbox.command,
     `#!${process.execPath}\n${record}
-console.log(JSON.stringify({schema_version:'snipara.validation.inspection.v1',execution_authorized:false,requirements_qualified:false,request_sha256:'${"b".repeat(64)}',canonical_request:{workspace:${JSON.stringify(f.base)}}}));`,
+if(a.includes('--help'))console.log('Options: --scope --no-reuse');
+else if(a[1]==='inspect')console.log(JSON.stringify({schema_version:'snipara.validation.inspection.v1',execution_authorized:false,requirements_qualified:false,request_sha256:'${"b".repeat(64)}',canonical_request:{workspace:${JSON.stringify(f.base)}}}));
+else console.log(${JSON.stringify(JSON.stringify({ ...receipt, work_reuse: { state: "executed" } }))});`,
     { mode: 0o700 }
   );
-  fs.writeFileSync(
-    f.manifest.components.orchestrator.command,
-    `#!${process.execPath}\n${record}
-if(a.includes('--help'))console.log('Options: --no-reuse');else console.log(${JSON.stringify(JSON.stringify({ ...receipt, work_reuse: { state: "executed" } }))});`,
-    { mode: 0o700 }
+  f.manifest.components.sandbox.sha256 = hash(
+    fs.readFileSync(f.manifest.components.sandbox.command)
   );
-  for (const name of ["sandbox", "orchestrator"])
-    f.manifest.components[name].sha256 = hash(fs.readFileSync(f.manifest.components[name].command));
   f.write();
   return { ...f, request, calls };
 }
@@ -329,16 +360,13 @@ test("managed scope omission reaches only the pinned coordinator with a canonica
     assert.equal(outcome.exitCode, 0);
     assert.equal(outcome.result.work_reuse.state, "executed");
     const calls = fs.readFileSync(f.calls, "utf8").trim().split("\n").map(JSON.parse);
-    assert.equal(
-      calls.filter((c) => c.command === f.manifest.components.sandbox.command).length,
-      1
-    );
-    const run = calls.find(
-      (c) => c.command === f.manifest.components.orchestrator.command && !c.args.includes("--help")
-    );
+    // Only the pinned Sandbox runs: inspection, capability probe, then the scoped run.
+    assert.equal(calls.length, 3);
+    assert(calls.every((c) => c.command === f.manifest.components.sandbox.command));
+    const run = calls.find((c) => c.args[1] === "run" && !c.args.includes("--help"));
     const flag = (name) => run.args[run.args.indexOf(name) + 1];
     assert.equal(flag("--scope"), "snipara-validation:" + "b".repeat(64));
-    assert.equal(flag("--sandbox-command"), f.manifest.components.sandbox.command);
+    assert.equal(run.args.includes("--sandbox-command"), false);
     assert.equal(flag("--store"), path.join(f.base, ".snipara", "validation"));
     assert.equal(flag("--coordination-root"), f.base);
     for (const c of calls) {
