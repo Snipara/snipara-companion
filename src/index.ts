@@ -744,8 +744,10 @@ function configureRealityCheckCommand(command: Command): Command {
     .option("--enforce", "Exit non-zero for review-required or blocking findings")
     .option("-d, --dir <directory>", "Project directory (default: current)")
     .option("--json", "Print raw JSON")
+    .option("--detail", "With --json, print every finding instead of the first ones")
     .action(async (options) => {
       await realityCheckCommand({
+        detail: Boolean(options.detail),
         task: options.task,
         branch: options.branch,
         base: options.base,
@@ -1862,7 +1864,16 @@ program
   )
   .option("--minimum-change-mode <mode>", "off|review (opt-in non-blocking review)", "off")
   .option("--no-auto-decompose", "Disable automatic query decomposition")
-  .option("--no-shared-context", "Exclude linked shared context")
+  .option(
+    "--shared-context",
+    "Include the shared collections linked to the project (off by default, as on the hosted tool)"
+  )
+  .addOption(
+    new Option(
+      "--no-shared-context",
+      "Accepted for compatibility; shared context is already off by default"
+    ).hideHelp()
+  )
   .option(
     "--follow-recommendation",
     "Automatically execute the recommended structural tool when Snipara returns one"
@@ -1878,7 +1889,7 @@ program
       includeMetadata: options.diagnostics === true,
       minimumChangeMode: resolveMinimumChangeMode(options.minimumChangeMode),
       autoDecompose: options.autoDecompose !== false,
-      includeSharedContext: options.sharedContext !== false,
+      includeSharedContext: options.sharedContext === true,
       followRecommendation: Boolean(options.followRecommendation),
       json: options.json,
     });

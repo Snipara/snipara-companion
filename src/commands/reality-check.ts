@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { boundJson } from "../runtime/bounded-output";
 import fs from "node:fs";
 import path from "node:path";
 import chalk from "chalk";
@@ -19,6 +20,8 @@ import {
 import { findWorkspaceRoot, isConfigured } from "../config/store";
 
 export interface RealityCheckCommandOptions {
+  /** With --json: print every finding and registry entry instead of the first ones. */
+  detail?: boolean;
   task?: string;
   branch?: string;
   base?: string;
@@ -572,7 +575,13 @@ export async function realityCheckCommand(options: RealityCheckCommandOptions): 
       ? buildLocalProjectRealityCheck(options)
       : await buildLocalProjectRealityCheckWithAutoContext(options);
   if (options.json) {
-    console.log(JSON.stringify(result, null, 2));
+    console.log(
+      JSON.stringify(
+        options.detail ? result : boundJson(result, { maxItems: 5, maxChars: 400 }),
+        null,
+        2
+      )
+    );
   } else {
     printRealityCheck(result);
   }

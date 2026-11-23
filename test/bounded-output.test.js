@@ -39,6 +39,7 @@ test("the commands that used to print megabytes expose --detail for the full ans
     ["session-bootstrap"],
     ["collaboration", "status"],
     ["team-sync", "what-changed"],
+    ["reality-check"],
   ]) {
     const help = spawnSync(process.execPath, [cli, ...args, "--help"], {
       encoding: "utf8",
@@ -52,4 +53,20 @@ test("the commands that used to print megabytes expose --detail for the full ans
     env: { ...process.env, SNIPARA_COMPANION_SKIP_NPM_VERSION_CHECK: "1" },
   });
   assert.doesNotMatch(root.stdout, /controller-bridge/);
+});
+
+test("query leaves shared context out unless asked, like the hosted tool", () => {
+  const cli = path.resolve(__dirname, "../dist/index.js");
+  const help = spawnSync(process.execPath, [cli, "query", "--help"], {
+    encoding: "utf8",
+    env: { ...process.env, SNIPARA_COMPANION_SKIP_NPM_VERSION_CHECK: "1" },
+  });
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /--shared-context\s+Include the shared collections/);
+  assert.doesNotMatch(help.stdout, /--no-shared-context/);
+  const source = require("node:fs").readFileSync(
+    path.resolve(__dirname, "../src/index.ts"),
+    "utf8"
+  );
+  assert.match(source, /includeSharedContext: options\.sharedContext === true/);
 });

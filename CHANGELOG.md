@@ -2,6 +2,11 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 9.1.0
+
+- `query` no longer adds the project's linked shared collections to every answer. It was on by default, so a question with nothing to find came back with the team standards instead of an empty result, and each answer spent budget on text that was not ranked against the question. The hosted tool has excluded it by default since 2026-11-13. `--shared-context` asks for it; `--no-shared-context` is still accepted.
+- `reality-check --json` prints the first findings and registry entries (23 KB instead of 36 KB on this repository); `--detail` prints them all.
+
 ## 9.0.0
 
 Breaking: the commands that printed megabytes are compact by default, and `controller-bridge` is removed.
