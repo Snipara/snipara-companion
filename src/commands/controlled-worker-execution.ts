@@ -21,6 +21,7 @@ import {
 } from "../contracts/project-intelligence";
 import { findWorkspaceRoot } from "../config/store";
 import { listResolvedDecisionRecords } from "./decision-requests";
+import { isLocalStatePath, LOCAL_STATE_STATUS_PATHSPEC } from "../runtime/local-state-path";
 
 const CONTROLLED_WORKER_EXECUTIONS_DIR = path.join(".snipara", "worker-executions");
 const UNIFIED_RECEIPTS_DIR = path.join(".snipara", "unified-receipts");
@@ -310,11 +311,15 @@ function normalizeComparableText(value: string): string {
 }
 
 function gitScopeSnapshot(workspaceRoot: string): GitScopeSnapshot | null {
-  const status = spawnSync("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
-    cwd: workspaceRoot,
-    encoding: "utf8",
-    maxBuffer: 8 * 1024 * 1024,
-  });
+  const status = spawnSync(
+    "git",
+    ["status", "--porcelain=v1", "-z", "--untracked-files=all", ...LOCAL_STATE_STATUS_PATHSPEC],
+    {
+      cwd: workspaceRoot,
+      encoding: "utf8",
+      maxBuffer: 8 * 1024 * 1024,
+    }
+  );
   if (status.status !== 0) return null;
   const paths = new Set<string>();
   const entries = String(status.stdout ?? "").split("\0");
@@ -322,7 +327,7 @@ function gitScopeSnapshot(workspaceRoot: string): GitScopeSnapshot | null {
     const entry = entries[index];
     if (entry.length < 4) continue;
     const state = entry.slice(0, 2);
-    paths.add(entry.slice(3).replace(/\\/g, "/"));
+    if (!isLocalStatePath(entry.slice(3))) paths.add(entry.slice(3).replace(/\\/g, "/"));
     if (/[RC]/.test(state) && entries[index + 1]) {
       paths.add(entries[index + 1].replace(/\\/g, "/"));
       index += 1;

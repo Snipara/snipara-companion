@@ -3,6 +3,10 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { CompanionWhyCaptureReceipt } from "./why-capture";
+import {
+  withoutLocalStateStatusLines,
+  LOCAL_STATE_STATUS_PATHSPEC,
+} from "../runtime/local-state-path";
 
 export const FINAL_COMMIT_REPORT_VERSION = "snipara.final_commit_report.v1" as const;
 export const FINAL_COMMIT_REPORT_RELATIVE_PATH = path.join(
@@ -323,15 +327,14 @@ function readGitState(cwd: string): FinalCommitReportV1["changed"]["repository"]
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 2000,
     }).trim();
-    const status = execFileSync("git", ["status", "--porcelain"], {
+    const status = execFileSync("git", ["status", "--porcelain", ...LOCAL_STATE_STATUS_PATHSPEC], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 2000,
     });
     const dirtyFiles = uniqueStrings(
-      status
-        .split("\n")
+      withoutLocalStateStatusLines(status.split("\n"))
         .map((line) => line.slice(3).trim())
         .filter(Boolean)
     );

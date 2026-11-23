@@ -19,7 +19,14 @@ export {
 import { reviewCommand, recordCheckCommand, verdictCommand } from "./commands/review";
 import { createClient as createReviewClient } from "./api/client";
 export { quietCompanionHook } from "./commands/automations";
-export { readWorkflowPlanIdentity } from "./commands/workflows";
+export { readWorkflowPlanIdentity, readLocalGitState } from "./commands/workflows";
+export {
+  isLocalStatePath,
+  isLocalStateStatusLine,
+  withoutLocalStateStatusLines,
+  withoutLocalStatePaths,
+} from "./runtime/local-state-path";
+export { normalizeRecallResult } from "./api/client";
 export { defaultContextAgent } from "./commands/agent-context";
 export { memoryListPage } from "./commands/memory";
 import { memoryListCommand } from "./commands/memory";

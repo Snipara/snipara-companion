@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import fs from "fs";
 import path from "path";
 import type { MinimumChangeAdapterReceipt, MinimumChangeEvidenceCheck } from "../api/client";
+import { isLocalStatePath, LOCAL_STATE_STATUS_PATHSPEC } from "../runtime/local-state-path";
 
 export const MINIMUM_SAFE_CHANGE_ADAPTER_VERSION = "snipara.minimum-safe-change-adapter.v1";
 
@@ -264,14 +265,14 @@ function normalizeRepoPath(value: string): string {
 }
 
 function readWorkingTreeDiff(cwd: string): Array<Record<string, string>> | undefined {
-  const status = runGit(cwd, ["status", "--porcelain=v1", "-z"]);
+  const status = runGit(cwd, ["status", "--porcelain=v1", "-z", ...LOCAL_STATE_STATUS_PATHSPEC]);
   if (status === undefined) return undefined;
 
   const paths = new Set<string>();
   for (const entry of status.split("\0")) {
     if (entry.length < 4) continue;
     const filePath = normalizeRepoPath(entry.slice(3));
-    if (filePath) paths.add(filePath);
+    if (filePath && !isLocalStatePath(filePath)) paths.add(filePath);
   }
 
   const facts = new Map<string, string>();

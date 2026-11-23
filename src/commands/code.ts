@@ -29,6 +29,7 @@ import {
   buildInstalledDependencyEvidence,
   buildSmallestSafeDiffEvidence,
 } from "./minimum-change-evidence";
+import { isLocalStatePath } from "../runtime/local-state-path";
 
 export type LocalCodeOverlayMode = "working_tree" | "local_commit";
 export type LocalCodeOverlayKind = "none" | "local_commit" | "working_tree" | "mixed";
@@ -693,7 +694,7 @@ function parseDirtyFiles(status: string): string[] {
       })
       .filter(Boolean)
       // Local Snipara state (`.snipara/` folders) is not part of the work being changed.
-      .filter((file) => !file.split("/").includes(".snipara"))
+      .filter((file) => !isLocalStatePath(file))
   );
 }
 

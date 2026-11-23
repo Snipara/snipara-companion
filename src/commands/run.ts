@@ -43,6 +43,10 @@ import {
   type ProjectPolicyGatesResult,
 } from "./policy-gates";
 import { writeDecisionRequest, type DecisionRequestWriteResult } from "./decision-requests";
+import {
+  withoutLocalStateStatusLines,
+  LOCAL_STATE_STATUS_PATHSPEC,
+} from "../runtime/local-state-path";
 
 export interface ProjectRunCommandOptions {
   task?: string;
@@ -262,11 +266,12 @@ function localCodeContext(branch?: string): {
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
     if (localHeadSha) context.localHeadSha = localHeadSha;
-    const status = execFileSync("git", ["status", "--porcelain"], {
+    const status = execFileSync("git", ["status", "--porcelain", ...LOCAL_STATE_STATUS_PATHSPEC], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
-    context.workingTreeDirty = status.length > 0;
+    context.workingTreeDirty =
+      withoutLocalStateStatusLines(status.split(/\r?\n/).filter(Boolean)).length > 0;
   } catch {
     // The run command also supports non-git workspaces. Missing local identity
     // remains explicit because the hosted impact response carries no match.

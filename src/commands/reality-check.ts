@@ -18,6 +18,7 @@ import {
   type TeamSyncChangesResponse,
 } from "../api/client";
 import { findWorkspaceRoot, isConfigured } from "../config/store";
+import { isLocalStateStatusLine, LOCAL_STATE_STATUS_PATHSPEC } from "../runtime/local-state-path";
 
 export interface RealityCheckCommandOptions {
   /** With --json: print every finding and registry entry instead of the first ones. */
@@ -130,9 +131,11 @@ function buildLocalGitScope(options: RealityCheckCommandOptions): LocalRealityCh
   const baseRef = resolveBaseRef(root, options.base);
   const headRef = runGit(["rev-parse", "--verify", "HEAD"], root);
   const statusLines =
-    runGit(["status", "--short"], root, { preserveLeadingWhitespace: true })
+    runGit(["status", "--short", ...LOCAL_STATE_STATUS_PATHSPEC], root, {
+      preserveLeadingWhitespace: true,
+    })
       ?.split(/\r?\n/g)
-      .filter((line) => line.trim()) ?? [];
+      .filter((line) => line.trim() && !isLocalStateStatusLine(line)) ?? [];
   const dirtyFiles = unique(statusLines.map(parseDirtyFile));
   const committedFiles = baseRef
     ? splitLines(runGit(["diff", "--name-only", `${baseRef}...HEAD`], root))

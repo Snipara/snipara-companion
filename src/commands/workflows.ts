@@ -176,6 +176,10 @@ import {
   type ProjectJudgmentCanProceed,
   type ProjectJudgmentState,
 } from "./judgment-card";
+import {
+  withoutLocalStateStatusLines,
+  LOCAL_STATE_STATUS_PATHSPEC,
+} from "../runtime/local-state-path";
 
 const DEFAULT_SESSION_CONTEXT_TOKENS = 1000;
 const DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS = 2000;
@@ -6528,7 +6532,7 @@ function recordArrayField(record: Record<string, unknown>, key: string): Record<
   return Array.isArray(value) ? value.filter(isRecord) : [];
 }
 
-function readLocalGitState(cwd: string = process.cwd()): {
+export function readLocalGitState(cwd: string = process.cwd()): {
   head?: string;
   statusLines?: string[];
   error?: string;
@@ -6541,10 +6545,16 @@ function readLocalGitState(cwd: string = process.cwd()): {
       timeout: 1000,
     };
     const head = execFileSync("git", ["rev-parse", "HEAD"], execOptions).trim();
-    const status = execFileSync("git", ["status", "--short"], execOptions).trim();
+    const status = execFileSync(
+      "git",
+      ["status", "--short", ...LOCAL_STATE_STATUS_PATHSPEC],
+      execOptions
+    ).trim();
     return {
       head,
-      statusLines: status ? status.split(/\r?\n/).filter(Boolean) : [],
+      statusLines: status
+        ? withoutLocalStateStatusLines(status.split(/\r?\n/).filter(Boolean))
+        : [],
     };
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };

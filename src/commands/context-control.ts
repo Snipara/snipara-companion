@@ -27,6 +27,7 @@ import {
 } from "../contracts/project-intelligence";
 import { createClient } from "../api/client";
 import { writeDecisionRequest } from "./decision-requests";
+import { isLocalStateStatusLine, LOCAL_STATE_STATUS_PATHSPEC } from "../runtime/local-state-path";
 
 export const CONTEXT_CONTROL_RELATIVE_DIR = path.join(".snipara", "context-control");
 export const CONTEXT_CONTROL_PLANS_RELATIVE_DIR = path.join(CONTEXT_CONTROL_RELATIVE_DIR, "plans");
@@ -127,8 +128,11 @@ function resolveGitBaseRevision(cwd: string): ContextMutationBaseRevision {
   const branch = runGit(["rev-parse", "--abbrev-ref", "HEAD"], cwd);
   const headSha = runGit(["rev-parse", "--verify", "HEAD"], cwd);
   const dirtyFiles =
-    runGit(["status", "--short"], cwd, { preserveLeadingWhitespace: true })
+    runGit(["status", "--short", ...LOCAL_STATE_STATUS_PATHSPEC], cwd, {
+      preserveLeadingWhitespace: true,
+    })
       ?.split(/\r?\n/g)
+      .filter((line) => !isLocalStateStatusLine(line))
       .map(parseDirtyFile)
       .filter((file): file is string => Boolean(file)) ?? [];
 

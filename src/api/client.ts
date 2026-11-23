@@ -484,7 +484,7 @@ export interface RecallResult {
 }
 
 /** Compact recall omits empty warnings, timing, query and the default status; fill them so callers see one shape. */
-export function normalizeRecallResult(value: RecallResult): RecallResult {
+export function normalizeRecallResult(value: RecallResult, requestedQuery = ""): RecallResult {
   const memories = Array.isArray(value?.memories) ? value.memories : [];
   return {
     ...value,
@@ -497,7 +497,7 @@ export function normalizeRecallResult(value: RecallResult): RecallResult {
     warnings: Array.isArray(value?.warnings) ? value.warnings : [],
     total_searched:
       typeof value?.total_searched === "number" ? value.total_searched : memories.length,
-    query: typeof value?.query === "string" ? value.query : "",
+    query: typeof value?.query === "string" && value.query ? value.query : requestedQuery,
     timing_ms: typeof value?.timing_ms === "number" ? value.timing_ms : 0,
   };
 }
@@ -2026,7 +2026,8 @@ export class RLMClient {
         ...(memoryView !== "current" ? { memory_view: memoryView } : {}),
         ...(options.asOf ? { as_of: options.asOf } : {}),
         ...(options.task?.trim() ? { task: options.task.trim().slice(0, 512) } : {}),
-      })
+      }),
+      query
     );
     if (memoryView !== "current" || options.asOf) {
       const metadata = result.temporal_context;

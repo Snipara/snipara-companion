@@ -26,6 +26,10 @@ import { checkpointText } from "../session/checkpoint";
 import { appendActivityEvent, writeSessionSnapshot } from "./activity";
 import { appendJournalCheckpoint, type JournalWriteResult } from "./journal";
 import { captureCompanionWhy, type CompanionWhyCaptureReceipt } from "./why-capture";
+import {
+  withoutLocalStateStatusLines,
+  LOCAL_STATE_STATUS_PATHSPEC,
+} from "../runtime/local-state-path";
 
 export const TEAM_SYNC_STATE_RELATIVE_PATH = path.join(".snipara", "team-sync", "session.json");
 const TEAM_SYNC_STALE_WORK_MS = 48 * 60 * 60 * 1000;
@@ -776,8 +780,8 @@ function readWorkflowSnapshot(rootDir: string):
 }
 
 function readGitStatusLines(rootDir: string): string[] {
-  const status = readGitValue(rootDir, ["status", "--short"]);
-  return status ? status.split(/\r?\n/).filter(Boolean) : [];
+  const status = readGitValue(rootDir, ["status", "--short", ...LOCAL_STATE_STATUS_PATHSPEC]);
+  return status ? withoutLocalStateStatusLines(status.split(/\r?\n/).filter(Boolean)) : [];
 }
 
 function resolveAgenticHandoffSummary(rootDir: string, explicitSummary?: string): string {

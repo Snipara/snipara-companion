@@ -8,6 +8,7 @@ import fs from "fs";
 import path from "path";
 import chalk from "chalk";
 import type { CodeGraphAutoSourceResult, CodeGraphSourceSelection } from "./code";
+import { isLocalStatePath } from "../runtime/local-state-path";
 
 /** What the card reads from a result: the answer and which source gave it, for any caller. */
 export type CodeImpactCardInput = Pick<CodeGraphAutoSourceResult, "result"> & {
@@ -224,7 +225,7 @@ function testsReferencing(
 
 /** Companion state folders hold copies of the repository; a test in one is not a test of it. */
 function isWorkspaceStatePath(filePath: string): boolean {
-  return /(^|\/)(\.snipara|node_modules)\//.test(filePath);
+  return isLocalStatePath(filePath) || /(^|\/)node_modules\//.test(filePath);
 }
 
 const TEST_FOLDER_NAMES = new Set(["test", "tests", "__tests__", "spec", "specs", "src", "lib"]);

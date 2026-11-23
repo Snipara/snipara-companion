@@ -446,6 +446,8 @@ export async function buildProjectIntelligenceBrief(
     task: options.task,
     changedFiles,
     diffSummary: options.diffSummary,
+    // No changed files means impact was never asked for, not that it failed.
+    skipImpact: options.skipImpact || changedFiles.length === 0,
     codeImpact: brief.codeImpact,
     codeImpactSourceSelection: brief.codeImpactSourceSelection,
     errors: brief.errors.filter((error) => error.surface === "code_impact"),

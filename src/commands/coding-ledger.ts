@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { isLocalStateStatusLine, LOCAL_STATE_STATUS_PATHSPEC } from "../runtime/local-state-path";
 
 export const CODING_INTELLIGENCE_LEDGER_VERSION = "snipara.coding_intelligence_ledger.v0" as const;
 
@@ -626,10 +627,10 @@ function detectGitState(rootDir: string): {
   return {
     branch: gitOutput(rootDir, ["rev-parse", "--abbrev-ref", "HEAD"]),
     commit: gitOutput(rootDir, ["rev-parse", "--short=12", "HEAD"]),
-    statusLines: gitOutput(rootDir, ["status", "--short"])
+    statusLines: gitOutput(rootDir, ["status", "--short", ...LOCAL_STATE_STATUS_PATHSPEC])
       ?.split("\n")
       .map((line) => line.trimEnd())
-      .filter(Boolean),
+      .filter((line) => Boolean(line) && !isLocalStateStatusLine(line)),
   };
 }
 

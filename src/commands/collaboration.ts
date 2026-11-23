@@ -38,6 +38,7 @@ import {
   type CollaborationStateResponse,
 } from "../api/client";
 import { loadConfig, type RLMConfig } from "../config/store";
+import { withoutLocalStatePaths, LOCAL_STATE_STATUS_PATHSPEC } from "../runtime/local-state-path";
 
 export const COLLABORATION_STATE_RELATIVE_PATH = path.join(
   ".snipara",
@@ -1664,12 +1665,17 @@ function deriveContextResources(context: ResolvedCollaborationContext): Collabor
 }
 
 function readGitDirtyFiles(rootDir: string): string[] {
-  const status = readGitRawValue(rootDir, ["status", "--porcelain=v1", "-z"]);
+  const status = readGitRawValue(rootDir, [
+    "status",
+    "--porcelain=v1",
+    "-z",
+    ...LOCAL_STATE_STATUS_PATHSPEC,
+  ]);
   if (!status) {
     return [];
   }
 
-  return normalizeFiles(parseGitPorcelainZ(status));
+  return normalizeFiles(withoutLocalStatePaths(parseGitPorcelainZ(status)));
 }
 
 function parseGitPorcelainZ(output: string): string[] {
