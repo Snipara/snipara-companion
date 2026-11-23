@@ -29,8 +29,8 @@ snipara-companion validation gate --request request.json --scope feature-tests
 snipara-companion validation run --request request.json --scope feature-tests
 ```
 
-MCP `validation_run` accepts that request object plus `scope`. It uses Orchestrator
-1.15 coordination inside its operator-approved root. Match that root with CLI
+MCP `validation_run` accepts that request object plus `scope`. It uses Sandbox 3.2 or
+later coordination inside its operator-approved root. Match that root with CLI
 `--coordination-root` when working from a different repository subdirectory.
 Omitting scope remains legacy raw execution outside coordination. Pure request
 inspection normalizes defaults/formatting; fresh verification still determines
@@ -141,7 +141,7 @@ command, remove isolation or qualify a failed cleanup.
 If a capability is unavailable, retain its actual stage/reason and ask for the
 scoped explicit choice: configure Sandbox, use another environment, or continue
 without it. Do not install, download, execute on the host, or waive a required
-Controller proof gate automatically. Distinguish local tests from no tests.
+proof gate automatically. Distinguish local tests from no tests.
 
 ## Display historical verification in a task card
 
@@ -181,7 +181,6 @@ verifier result can be consumed by the existing proof gate; the historical card
 itself never promotes saved JSON into that authority. Changed source, command,
 request, image, log or artifact must retain its refusal reason or receive new
 proof under the same authorization.
-
 
 ## Prepared Companion preview command
 

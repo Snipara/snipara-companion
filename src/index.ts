@@ -5374,9 +5374,11 @@ program
     "--for-task",
     "The query is a task about to be done: recall what applies to it, from every agent of the project"
   )
+  .option("--timeout-ms <number>", "Hosted recall timeout in milliseconds", "30000")
   .option("--json", "Print raw JSON")
   .action(async (options) => {
     await recallCommand({
+      timeoutMs: parseInt(options.timeoutMs, 10),
       forTask: Boolean(options.forTask),
       query: options.query,
       type: options.type,

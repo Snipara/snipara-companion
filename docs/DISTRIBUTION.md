@@ -16,8 +16,8 @@ Registry state, plugin pins and the installed executable are separate observatio
 | Reproduce an exact candidate                   | Install its reviewed tarball and retain its hash                        |
 
 Standalone Companion requires Node.js 18+. Managed local work also requires
-the Python runtime supported by the installer. It prepares Companion,
-Orchestrator and Sandbox; it does not install Docker, dependency images or a
+the Python runtime supported by the installer. It prepares Companion
+and Sandbox; it does not install Docker, dependency images or a
 model, and does not execute repository checks. Hosted context remains optional.
 
 <a id="installer-un-artefact-préparé"></a>
@@ -41,13 +41,11 @@ configuration access. A local source build is not proof of a published package.
 
 ## Choose your path
 
-| Tools                      | Entry point                                      | Boundary                                                         |
-| -------------------------- | ------------------------------------------------ | ---------------------------------------------------------------- |
-| Hosted MCP only            | Source and memory queries in the existing client | No local task tracking or implicit Controller                    |
-| Companion only             | `task start/work/verify/decide/resume`           | No account or Orchestrator required; missing checks stay visible |
-| Orchestrator only          | `task intake/start/show/resume`                  | Independent Controller and proof controls                        |
-| Managed local work         | `create-snipara init --profile local-work`       | Compatible tools; no automatic test or worker launch             |
-| Explicit combined workflow | Context export and reviewed Controller bridge    | Exact identities, policy, evidence and consumer compatibility    |
+| Tools              | Entry point                                      | Boundary                                             |
+| ------------------ | ------------------------------------------------ | ---------------------------------------------------- |
+| Hosted MCP only    | Source and memory queries in the existing client | No local task tracking                               |
+| Companion only     | `task start/work/verify/decide/resume`           | No account required; missing checks stay visible     |
+| Managed local work | `create-snipara init --profile local-work`       | Compatible tools; no automatic test or worker launch |
 
 See [task journey](TASK_JOURNEY.md), [task context](TASK_CONTEXT.md) and
 [continuity](WORK_CONTINUITY.md). Repository checks require a prepared
@@ -62,10 +60,10 @@ See [task journey](TASK_JOURNEY.md), [task context](TASK_CONTEXT.md) and
 - **Managed tools:** use the installer's selected versions and
   `toolchain status`; do not infer compatibility by mixing arbitrary latest
   releases. Plugin pins have their own delivery lifecycle.
-- **Scoped validation:** needs a compatible Orchestrator and Sandbox contract.
-  The gate and coordinator establish scope; the Sandbox receipt binds the
-  request, source, image and artifacts. Reuse requires fresh verification. A
-  missing coordinator cannot silently
+- **Scoped validation:** needs Sandbox 3.2 or later, which Companion calls
+  directly (`snipara-sandbox validation run --scope`). The Sandbox receipt binds
+  the request, source, image and artifacts. Reuse requires fresh verification. A
+  missing or older Sandbox answers `sandbox_update_required` and cannot silently
   fall back to uncoordinated execution.
 - **Task context:** `source-context-v1` retains references and context;
   `runtime-source-context-v1` additionally binds exact task bodies. Older
@@ -88,7 +86,6 @@ An explicitly empty, absent or invalid target fails instead of falling back to
 the checkout build. Without the variable, suites use their normal source path.
 Run executable repository checks through the reviewed validation environment.
 
-Retain source, request, image and artifact identities with the results. Verify
-Python import origin separately when testing an installed Orchestrator bridge.
+Retain source, request, image and artifact identities with the results.
 Static documentation review, package installation, runtime checks, independent
 review, human pilots and publication each establish different evidence.

@@ -1,8 +1,8 @@
 # Resume useful work
 
-Companion is optional. This path works without Orchestrator, a running model or
-a surviving conversation. Snipara Hosted MCP can also be used without either
-local module. Orchestrator has its own independent `controller brief` command.
+Companion is optional. This path works without a running model or a
+surviving conversation. Snipara Hosted MCP can also be used without the
+local module.
 
 ```sh
 snipara-companion workflow checkpoint --json
@@ -33,11 +33,11 @@ bytes with the checkpoint. It checks bound relative artifacts and hashes before
 using them, and checks scoped local decisions for expiry, invalidation and newly
 pending authority. Original dirty files and subsequent changes are separate.
 
-| Status | Meaning |
-| --- | --- |
-| `exact_snapshot` | Compared local state and bound artifacts match; functional success and remote freshness remain separate. |
+| Status                        | Meaning                                                                                                                                |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `exact_snapshot`              | Compared local state and bound artifacts match; functional success and remote freshness remain separate.                               |
 | `drift_revalidation_required` | Repository, contract, decision or source state changed, or older attempt history is incomplete. Inspect the changes before continuing. |
-| `blocked` | A required artifact, repository observation or required decision cannot be verified. Repair that prerequisite first. |
+| `blocked`                     | A required artifact, repository observation or required decision cannot be verified. Repair that prerequisite first.                   |
 
 Copy the project folder including `.snipara` and referenced artifacts to move a
 checkpoint. Matching relative paths, repository ancestry and contents are still

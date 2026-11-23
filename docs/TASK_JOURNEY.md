@@ -1,10 +1,10 @@
 # One task, five steps
 
-Use your existing coding agent. Companion adds a local task card; Orchestrator
-adds its own optional execution and integration controls. Neither requires the
-other. Hosted MCP context also works directly in your agent with neither CLI.
-The Companion facade never starts a worker. Orchestrator has an explicit
-advancement command governed by its existing execution policy.
+Use your existing coding agent. Companion adds a local task card that records
+the task, its checks and its next action. Hosted MCP context also works
+directly in your agent without the CLI.
+The Companion facade never starts a worker; it records and reports, and the
+coding agent you already use does the work.
 
 ## Companion alone
 
@@ -49,11 +49,11 @@ Managed views use `managedProgress` (`snipara.task_progress.v1`) while preservin
 the legacy `status`. Saved running markers and recorded closure are historical,
 not observed execution or verified completion. A closure remains visible through
 `recordedClosure`. Static review, no runtime checks and missing runtime proof have
-distinct reasons, without changing proof policy. A Controller dossier can supply
-managed proof only when its task reference matches the intake/worktree identity
-and effective verification contract; matching a title or objective alone is
-insufficient. Standalone consumers can use the exported pure `buildTaskReference`
-and `projectManagedProgress` helpers without creating a Controller.
+distinct reasons, without changing proof policy. Managed proof counts only when
+its task reference matches the intake/worktree identity and effective
+verification contract; matching a title or objective alone is insufficient.
+Standalone consumers can use the exported pure `buildTaskReference` and
+`projectManagedProgress` helpers.
 
 ## Select a GitHub issue, or stay local
 
@@ -106,6 +106,5 @@ into the short task-title field. A source snapshot does not establish remote
 freshness. A transport acknowledgement does not prove the model used the source
 correctly. User comprehension and time savings require separate observation.
 The simplified card does not restart a runtime or automatically adopt a new
-Git base after integration. Existing Controller landing and health receipts
-remain the source for that advanced lifecycle; a changed base requires an
-explicit continuation decision rather than silent acceptance of drift.
+Git base after integration; a changed base requires an explicit continuation
+decision rather than silent acceptance of drift.

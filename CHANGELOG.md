@@ -2,6 +2,13 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## Unreleased
+
+- `code impact` now links more tests to a changed file. A test whose name starts with the file's name followed by `-` or `.` (`sandbox-validation-reuse.test.js` for `sandbox-validation.ts`) is listed, and so is a test of the same package that names the file's path in a string literal, as tests that load a source file by path do. Only the package's own tests are scanned, at most 400 files and 64 KB of each, and only files that exist are listed. A generic name such as `route.ts` still links only the tests in its own folder.
+- `code impact` no longer reports a dirty working tree because of local Snipara state. Untracked or modified files under any `.snipara/` folder are left out, so a checkout whose only change is `.snipara/collaboration/` selects the graph by its commits and not by `working_tree_dirty`. Untracked folders are now listed file by file, so a `.snipara/` folder inside a new untracked folder is seen for what it is.
+- `doctor` always reports. It printed only the managed toolchain status unless `--deep` was given and no toolchain was configured. It now adds a `checks` list (`name`, `status` of `pass`, `warn` or `fail`, `detail`) and `companionVersion`: the Companion version, the project configuration and where it was found, whether the hosted endpoint answers (5 second limit, a failure is a finding), the `snipara-sandbox` on `PATH` with its version and whether `validation run` has `--scope` (3.2 or newer), and whether Docker answers. The existing toolchain fields are unchanged.
+- `recall` waits 30 seconds instead of 15 for the hosted answer, because it took up to 11 seconds with eight calls at once and timed out under load. `--timeout-ms <number>` sets the wait, as `query` does.
+
 ## 9.1.0
 
 - `query` no longer adds the project's linked shared collections to every answer. It was on by default, so a question with nothing to find came back with the team standards instead of an empty result, and each answer spent budget on text that was not ranked against the question. The hosted tool has excluded it by default since 2026-11-13. `--shared-context` asks for it; `--no-shared-context` is still accepted.

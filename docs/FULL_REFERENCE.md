@@ -219,7 +219,6 @@ earlier policy revision.
 | MCP tools, OAuth login, project-scoped context and memory | `snipara-mcp`            |
 | One-command Hosted MCP + companion setup                  | `create-snipara`         |
 | Git-style local continuity, workflow modes, and hooks     | `snipara-companion`      |
-| Production gates, drift checks, and orchestration         | `snipara-orchestrator`   |
 | OpenClaw-specific automation hooks                        | `snipara-openclaw-hooks` |
 
 ### Codex Note
@@ -234,7 +233,7 @@ For Codex, the primary integration remains Hosted MCP plus `AGENTS.md`.
 
 ## Configuring MCP Tool Surfaces
 
-The MCP server advertises different tool surfaces depending on the `SNIPARA_EXPOSED_SURFACES` environment variable. Hosted MCP defaults to the lean agent contract: context, search, read, stats, help, memory recall/capture, and end-of-task commit. Specialist inline, companion, and orchestrator tools stay discoverable via `snipara_help`, which now marks them as `routed_or_opt_in`; standard agents should usually stay on the simple verbs and let Snipara route internally. To expose companion tools directly in the advertised manifest, set `SNIPARA_EXPOSED_SURFACES=inline,companion` on the MCP server. To expose the adaptive routing orchestrator catalog, use `SNIPARA_EXPOSED_SURFACES=inline,orchestrator`. Standard MCP agents only receive schemas for tools returned by `tools/list`.
+The MCP server advertises different tool surfaces depending on the `SNIPARA_EXPOSED_SURFACES` environment variable. Hosted MCP defaults to the lean agent contract: context, search, read, stats, help, memory recall/capture, and end-of-task commit. Specialist inline and companion tools stay discoverable via `snipara_help`, which now marks them as `routed_or_opt_in`; standard agents should usually stay on the simple verbs and let Snipara route internally. To expose companion tools directly in the advertised manifest, set `SNIPARA_EXPOSED_SURFACES=inline,companion` on the MCP server. Standard MCP agents only receive schemas for tools returned by `tools/list`.
 
 ## Installation
 
@@ -322,7 +321,7 @@ snipara-companion workflow resume --include-session-context
   Producer Loop, Decision Request, Team Sync, and journal-adjacent events. Add `--export md`
   for a compact redacted Markdown artifact suitable for handoff or publication.
 - `workflow session` writes `.snipara/activity/session.json`, a fast Session
-  Snapshot V0 for local resume and Orchestrator dogfood. It includes latest
+  Snapshot V0 for local resume. It includes latest
   activity, risk reasons, touched files, next action, and advisory Intent
   Detection V0. Intent Detection V0 reports intent, confidence, evidence
   counts, reason-code signals, and an advisory suggested workflow mode. It is
@@ -490,8 +489,7 @@ snipara-companion workflow run \
 ```
 
 The output is a routing card and handoff metadata. Companion does not call a
-hosted catalog; local worker resolution goes through `snipara-orchestrator`. It
-does not silently spawn workers. The stable contract is
+hosted catalog. It does not silently spawn workers. The stable contract is
 provider-neutral requirements such as worker role, reasoning depth, context
 budget, endpoint type, write scope, and fallback.
 
@@ -512,12 +510,11 @@ Project credentials stay server-side behind the hosted gateway; local endpoints
 such as Ollama, LM Studio, AnythingLLM, or other OpenAI-compatible servers must
 be reachable from the worker execution environment.
 
-For a local worker, use Companion to emit the handoff, then let
-`snipara-orchestrator` resolve that handoff against an explicit local runtime
-catalog. In the Codex workflow, Codex remains the chief architect, lead
-orchestrator, and quality verifier; local workers (including LM Studio, Ollama,
-OpenAI-compatible endpoints, and declared CLI workers) are bounded candidates
-whose outputs still need Codex review and proof gates.
+For a local worker, use Companion to emit the handoff. In the Codex workflow,
+Codex remains the chief architect, lead, and quality verifier; local workers
+(including LM Studio, Ollama, OpenAI-compatible endpoints, and declared CLI
+workers) are bounded candidates whose outputs still need Codex review and proof
+gates.
 
 Declare a reusable local LM Studio GPT-OSS-20B coding worker once:
 
@@ -581,9 +578,9 @@ snipara-companion workers local probe \
 
 `--routing-local-worker` loads the local declaration, pins the configured model.
 The result is still a bounded
-routing/handoff contract: Companion resolves the local candidate through
-`snipara-orchestrator`, records metadata, and leaves execution plus proof review
-to the supervising agent workflow.
+routing/handoff contract: Companion resolves the local candidate, records
+metadata, and leaves execution plus proof review to the supervising agent
+workflow.
 
 Add `--strong-repair` when the supervising workflow should permit one strong
 adapter repair after a local proof or output failure. The handoff records the
@@ -603,76 +600,7 @@ snipara-companion workflow run \
   --routing-allowed-endpoint local \
   --planner-retains-reasoning \
   "Update a scoped docs surface"
-
-snipara-orchestrator local-model-catalog \
-  --base-url http://127.0.0.1:1234 \
-  --model qwen/qwen3-30b-a3b-2507 \
-  --worker-role documentation \
-  --capability documentation \
-  --capability architecture_review \
-  --capability planning \
-  --json > .snipara/local-qwen-docs-runtime-catalog.json
-
-snipara-orchestrator route --dry-run \
-  --work-profile-json '{"taskType":"documentation","risk":"low","scope":["docs/**"],"contextBudget":"small","reasoningDepth":"low"}' \
-  --requirements-json '{"workerRole":"documentation","plannerRetainsReasoning":true,"preferredEndpointTypes":["local"],"allowedEndpointTypes":["local"],"writeScope":["docs/**"],"capabilities":["documentation"]}' \
-  --catalog-file .snipara/local-qwen-docs-runtime-catalog.json \
-  --json
 ```
-
-Use Devstral for development and refactoring work:
-
-```bash
-snipara-orchestrator local-model-catalog \
-  --base-url http://127.0.0.1:1234 \
-  --prefer-model devstral \
-  --worker-role coding \
-  --capability code_edit \
-  --capability refactor \
-  --json > .snipara/local-devstral-runtime-catalog.json
-```
-
-For a remote OpenAI-compatible runtime, use an explicit allowlist and an
-environment-backed key when running the native host:
-
-```bash
-snipara-orchestrator host run \
-  --adapter openai_compatible \
-  --base-url https://provider.example.com --allow-remote \
-  --api-key-env PROVIDER_API_KEY --api-key-header authorization \
-  --model provider/coder --task "Bounded task" --workspace . \
-  --write-scope docs/** --proof "git diff --check" --execute
-```
-
-For a loopback local worker with one explicit strong repair attempt:
-
-```bash
-snipara-orchestrator host run \
-  --adapter openai_compatible --base-url http://127.0.0.1:1234 \
-  --model local/coder --task "Bounded task" --workspace . \
-  --write-scope docs/** --proof "git diff --check" \
-  --strong-repair --repair-adapter codex_app_server --execute
-```
-
-The repair reuses the approval envelope when approval is required, reruns the
-same proof, and records redacted repair metrics in the durable host receipt.
-Scope violations, unavailable repair hosts, skipped proof, or a failed repair
-escalate without a retry loop.
-
-Native host proof commands run automatically after dispatch. Use
-`--no-run-proof` only when a reviewer will validate the receipt; the state then
-remains `verification_required`. Use `--require-approval` with both an approval
-receipt id and `--approval-receipt-file <json>` for unattended execution; an id
-alone never bypasses the approval gate.
-
-The local catalog records the OpenAI-compatible routes exposed by LM Studio:
-`GET /v1/models`, `POST /v1/responses`, `POST /v1/chat/completions`,
-`POST /v1/completions`, and `POST /v1/embeddings`. `--prefer-model devstral`
-selects the first `/v1/models` id containing `devstral`; use `--model <id>` to
-pin Qwen or any other exact local model id. This makes Qwen, Devstral, or
-another local model routable through the Companion/Orchestrator contract while
-keeping execution fail-closed: the selected candidate is a receipt-backed worker
-target, not an automatically launched process.
 
 For the open package without Snipara SaaS, add a local policy file:
 
@@ -1673,11 +1601,11 @@ Semantics:
 - `snipara-companion query --follow-recommendation` = execute the hosted recommended structural tool instead of only printing it; context retrieval defaults to a 30-second timeout and supports `--search-mode keyword|semantic|hybrid`, `--no-answer-pack`, `--no-auto-decompose`, and `--no-shared-context`
 - `snipara-companion workflow run --mode lite` = zero mandatory hosted calls for small known-file work
 - `snipara-companion workflow run --mode standard` = context query plus automatic `snipara_code_*` follow-up when Snipara recommends one
-- `snipara-companion workflow run` = AUTO by default; routes to lite, standard, full, or orchestrate from task intent and reports the selected Companion/memory/orchestrator setup
+- `snipara-companion workflow run` = AUTO by default; routes to lite, standard, full, or orchestrate from task intent and reports the selected Companion/memory setup
 - `snipara-companion workflow run --mode full` = budgeted durable bootstrap + optional session context + context query + automatic structural follow-up + hosted plan with quality diagnostics
 - `snipara-companion plan --write-plan-file ./plan.json` = convert hosted `snipara_plan` output into managed workflow JSON
 - `snipara-companion plan --start-workflow` or `workflow run --mode full --start-workflow-from-plan` = create local `.snipara/workflow/current.json` from a valid generated plan
-- `snipara-companion workflow run --mode orchestrate` = explicit hosted orchestrator flow for deeper multi-step exploration; use the Python `snipara-orchestrator` package for production gates
+- `snipara-companion workflow run --mode orchestrate` = the ORCHESTRATED workflow depth of Companion, for deeper multi-step exploration
 - `snipara-companion workflow run` = suggests Snipara Sandbox when the query calls for validation, execution, data transforms, or heavier FULL/orchestrated work
 - `snipara-companion status` = top-level agentic work status across local workflow state, git dirtiness, and Team Sync carryover
 - `snipara-companion source init|sync|status|snapshot|watch` = automatic local source activation for folders with or without Git metadata; writes `.snipara/source/latest.json`, previews document sync, and refreshes the local code overlay cache
@@ -1859,7 +1787,7 @@ Use this when the user's LLM has already produced a plan and Snipara should enfo
 5. Before risky code changes, routes/services/jobs work, or any "what is missing" conclusion, run `snipara-companion code impact --changed-files <files...> --diff-summary "<change>"`. For an important symbol, run `snipara-companion code symbol-card --qualified-name <symbol>`.
 6. After compaction, first run `snipara-companion workflow resume --include-session-context`, then rerun `workflow judgment` to inspect the persisted card and `workflow phase-start <phase_id>` before editing again.
 7. For execution/test/debug/finalization that benefits from repeatable isolation, use Snipara Sandbox MCP `execute_python` from the AI client or standalone `snipara-sandbox run`. After material runtime progress, capture a resume-ready checkpoint with `snipara-companion workflow runtime-checkpoint <phase_id> --summary "<state>" --rehydrate-file <state.json>`.
-8. For production gates or drift checks, hand off explicitly to `snipara-orchestrator`; companion should detect and suggest the package but must not spawn workers automatically.
+8. For scoped validation, use `snipara-sandbox validation run --scope` (Companion calls it directly); Companion must not spawn workers automatically.
 9. End every phase with `snipara-companion workflow phase-commit <phase_id> --summary "<outcome>" --evidence "passed:<proof>" --files <files...>` when the phase produced concrete verification evidence.
 10. End the whole task with `snipara-companion final-commit --summary "<final outcome>" --why "<rationale>" --evidence "passed:<proof>" --risk "<remaining risk>" --next-step "<recommended follow-up>" --files <files...>`.
 
@@ -1997,7 +1925,7 @@ Design rule:
 - hosted Snipara = source of truth for context, chunks, plans, memory, and review policy
 - use `companion` for daily coding ergonomics and auto-routing
 - use `orchestrate` only when the task is genuinely multi-step and exploration-heavy
-- use `snipara-orchestrator` only for proof-based validation, drift detection, and production gates
+- use `snipara-sandbox` (3.2 or later) for scoped, proof-based validation
 
 ### `snipara-companion cache clear`
 
@@ -2016,8 +1944,7 @@ snipara-companion cache clear
 ## Related Packages
 
 - `snipara-mcp` - core MCP client
-- `create-snipara` - onboarding for Hosted MCP + companion workflows, with optional Snipara Sandbox and explicit orchestrator add-on
-- `snipara-orchestrator` - production validation and drift checks
+- `create-snipara` - onboarding for Hosted MCP + companion workflows, with optional Snipara Sandbox
 - `snipara-openclaw-hooks` - OpenClaw-specific automation hooks
 
 ## License

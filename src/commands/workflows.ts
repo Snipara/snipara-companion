@@ -15021,11 +15021,16 @@ export async function recallCommand(options: {
   memoryView?: "current" | "history";
   asOf?: string;
   forTask?: boolean;
+  timeoutMs?: number;
   json?: boolean;
 }): Promise<void> {
   ensureConfigured();
 
-  const client = createClient(15000);
+  const client = createClient(
+    Number.isFinite(options.timeoutMs) && (options.timeoutMs ?? 0) > 0
+      ? (options.timeoutMs as number)
+      : 30000
+  );
   const result = await client.recallMemories(options.query, {
     ...(options.forTask ? { task: options.query } : {}),
     type: options.type,

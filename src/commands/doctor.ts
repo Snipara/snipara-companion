@@ -18,13 +18,24 @@ import {
 } from "../runtime/capability-status";
 import { inspectManagedToolchain } from "../runtime/managed-toolchain";
 
+export type DoctorCheckStatus = "pass" | "warn" | "fail";
+
+export interface DoctorCheck {
+  name: string;
+  status: DoctorCheckStatus;
+  detail: string;
+}
+
 export async function doctorCommand(
   options: { json?: boolean; deep?: boolean } = {}
 ): Promise<void> {
   const managed = inspectManagedToolchain();
   if (!options.deep || managed.status !== "not_configured") {
-    if (options.json) console.log(JSON.stringify(managed, null, 2));
-    else {
+    const checks = await runDoctorChecks(detectRuntimeEnvironment());
+    const version = readCompanionVersion();
+    if (options.json) {
+      console.log(JSON.stringify({ ...managed, companionVersion: version, checks }, null, 2));
+    } else {
       console.log(
         managed.status === "available"
           ? "Snipara local work is prepared."
@@ -34,6 +45,12 @@ export async function doctorCommand(
       );
       console.log(String(managed.detail));
       if (managed.nextAction) console.log(`Next: ${String(managed.nextAction)}`);
+      console.log("");
+      for (const check of checks) {
+        const label =
+          check.status === "pass" ? "[ok]" : check.status === "warn" ? "[warn]" : "[fail]";
+        console.log(`${label} ${check.name}: ${check.detail}`);
+      }
     }
     if (managed.status === "needs_attention") process.exitCode = 2;
     return;
@@ -61,6 +78,111 @@ export async function doctorCommand(
   }
 
   printDoctorReport(report, companionVersion, auth, toolCatalog);
+}
+
+function readCompanionVersion(): string | null {
+  return (
+    readPackageVersion(path.resolve(__dirname, "../package.json")) ??
+    readPackageVersion(path.resolve(__dirname, "../../package.json")) ??
+    null
+  );
+}
+
+/** Always-on findings. Every probe is bounded and reports failure as a finding; none throws. */
+export async function runDoctorChecks(report: RuntimeDetectionReport): Promise<DoctorCheck[]> {
+  const checks: DoctorCheck[] = [];
+  const version = readCompanionVersion();
+  checks.push({
+    name: "companion_version",
+    status: version ? "pass" : "warn",
+    detail: version ?? "version could not be read from package.json",
+  });
+  checks.push(
+    report.companion.configured
+      ? {
+          name: "project_configuration",
+          status: "pass",
+          detail: `found at ${report.companion.configPath}`,
+        }
+      : {
+          name: "project_configuration",
+          status: "warn",
+          detail: `not found (expected ${report.companion.configPath}); run npx -y snipara-companion@latest init`,
+        }
+  );
+  checks.push(await hostedEndpointCheck(report));
+  checks.push(sandboxCheck(report));
+  checks.push(dockerCheck(report));
+  return checks;
+}
+
+async function hostedEndpointCheck(report: RuntimeDetectionReport): Promise<DoctorCheck> {
+  const name = "hosted_endpoint";
+  if (!report.companion.configured) {
+    return { name, status: "warn", detail: "skipped: no project configuration" };
+  }
+  try {
+    const probe = await createClient(5000).probeConnection();
+    return probe.connected
+      ? { name, status: "pass", detail: probe.detail }
+      : { name, status: "fail", detail: probe.detail };
+  } catch (error) {
+    return { name, status: "fail", detail: `probe failed: ${formatErrorDetail(error)}` };
+  }
+}
+
+function sandboxCheck(report: RuntimeDetectionReport): DoctorCheck {
+  const name = "snipara_sandbox";
+  const command = report.runtime.command;
+  if (!report.runtime.cliAvailable || !command) {
+    return { name, status: "warn", detail: "snipara-sandbox not found on PATH" };
+  }
+  const version = report.runtime.cliVersion ?? report.runtime.version ?? "version unknown";
+  let help = "";
+  try {
+    help = execFileSync(command, ["validation", "run", "--help"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 5000,
+      env: diagnosticProbeEnvironment(),
+    });
+  } catch (error) {
+    const output = error as { stdout?: unknown; stderr?: unknown };
+    help = `${String(output.stdout ?? "")}${String(output.stderr ?? "")}`;
+  }
+  return help.includes("--scope")
+    ? {
+        name,
+        status: "pass",
+        detail: `${command} ${version}; validation run --scope available (3.2 or newer)`,
+      }
+    : {
+        name,
+        status: "warn",
+        detail: `${command} ${version}; validation run does not expose --scope (needs 3.2 or newer)`,
+      };
+}
+
+function dockerCheck(report: RuntimeDetectionReport): DoctorCheck {
+  const name = "docker";
+  if (!report.docker.available) {
+    return { name, status: "warn", detail: "docker CLI not found on PATH" };
+  }
+  try {
+    const version = execFileSync("docker", ["version", "--format", "{{.Server.Version}}"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5000,
+      env: diagnosticProbeEnvironment(),
+    }).trim();
+    return {
+      name,
+      status: "pass",
+      detail: `daemon answers${version ? ` (server ${version})` : ""}`,
+    };
+  } catch {
+    return { name, status: "warn", detail: "docker CLI found but the daemon did not answer" };
+  }
 }
 
 interface DoctorCompanionVersionReport {

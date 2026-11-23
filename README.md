@@ -13,7 +13,7 @@ resume with a clear next action after a new chat or a handoff.
 
 Local tasks and code impact need no Snipara account or model API key. Hosted
 Snipara adds sourced project context and shared memory when you connect it.
-Orchestrator adds optional execution and integration controls. Each can be
+Snipara Sandbox adds isolated repository checks with receipts. Each can be
 used independently.
 
 For a clear, bounded edit, work directly with your agent and run the relevant
@@ -50,7 +50,7 @@ checks, independent review and permission to integrate. Starting a task
 preserves another active workflow rather than replacing it.
 
 See the [five-step task journey](docs/TASK_JOURNEY.md) for recording outcomes,
-GitHub issue intake, evidence, closure and the optional Orchestrator bridge.
+GitHub issue intake, evidence and closure.
 
 ## Check what a change affects
 
@@ -107,7 +107,7 @@ npx -y create-snipara@latest doctor
 ```
 
 This path requires the supported Node.js and Python runtimes. It prepares
-Companion, Orchestrator and Sandbox without requiring a Snipara account.
+Companion and Sandbox without requiring a Snipara account.
 It does not install Docker, prepare dependency images or run tests. Keep the
 standalone Companion path above if you only need task tracking and impact.
 See [create-snipara](https://www.npmjs.com/package/create-snipara).
@@ -129,7 +129,7 @@ snipara-companion validation run --request request.json --scope customer-input:t
 Install Companion globally with `npm install -g snipara-companion` to use the
 short command form, or prefix it with `npx -y snipara-companion@latest`.
 Readiness is separate from a passing run. Scoped coordination requires a
-compatible Orchestrator, selected from the managed toolchain when available.
+Sandbox 3.2 or later, selected from the managed toolchain when available.
 Reused receipts require fresh verification; `--no-reuse` requests a fresh run.
 If the environment is unavailable, choose an explicit alternative instead of
 silently executing on the host.

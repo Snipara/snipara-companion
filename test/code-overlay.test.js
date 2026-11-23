@@ -1647,3 +1647,46 @@ test("impact resolves a target typed from a package folder", () => {
   assert.deepEqual(actual.tests, expected.tests);
   assert.deepEqual(actual.tests.files, ["apps/web/src/api/hooks/route.test.ts"]);
 });
+
+test("local Snipara state does not make the working tree dirty", () => {
+  const repo = makeTempRepo();
+  writeFileIn(repo, ".snipara/collaboration/state.json", "{}\n");
+  writeFileIn(repo, "packages/app/.snipara/notes/a.md", "x\n");
+  const clean = runCli(["code", "imports", "-q", "helper", "--json"], { cwd: repo });
+  assert.equal(clean.status, 0, clean.stderr);
+  const cleanSelection = JSON.parse(clean.stdout).sourceSelection;
+  assert.notEqual(cleanSelection.reason, "working_tree_dirty");
+  assert.equal(cleanSelection.dirtyFileCount, 0);
+
+  fs.appendFileSync(path.join(repo, "src/helper.ts"), "\nexport const dirty = true;\n", "utf8");
+  const dirty = runCli(["code", "imports", "-q", "helper", "--json"], { cwd: repo });
+  const dirtySelection = JSON.parse(dirty.stdout).sourceSelection;
+  assert.equal(dirtySelection.reason, "working_tree_dirty");
+  assert.deepEqual(dirtySelection.dirtyFilesSample, ["src/helper.ts"]);
+});
+
+test("impact links tests by name prefix and by a path string literal", () => {
+  const repo = makeTempRepo();
+  fs.writeFileSync(path.join(repo, "package.json"), "{}\n");
+  writeFileIn(repo, "src/runtime/widget-runner.ts");
+  writeFileIn(repo, "test/widget-runner.test.js", "\n");
+  writeFileIn(repo, "test/widget-runner-reuse.test.js", "\n");
+  writeFileIn(
+    repo,
+    "test/loader.test.js",
+    'const m = load(path.resolve(__dirname, "../src/runtime/widget-runner.ts"));\n'
+  );
+  writeFileIn(repo, "test/widget-runnerx.test.js", "\n");
+  writeFileIn(repo, "test/unrelated.test.js", 'load("../src/runtime/other.ts");\n');
+  const result = runCli(["impact", "src/runtime/widget-runner.ts", "--source", "local", "--json"], {
+    cwd: repo,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const tests = JSON.parse(result.stdout).tests;
+  assert.equal(tests.basis, "linked");
+  assert.deepEqual([...tests.files].sort(), [
+    "test/loader.test.js",
+    "test/widget-runner-reuse.test.js",
+    "test/widget-runner.test.js",
+  ]);
+});

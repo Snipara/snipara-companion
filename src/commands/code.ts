@@ -660,7 +660,7 @@ function readBaseSha(repoRoot: string, branch: string | null): string | null {
 
 function readGitStatus(repoRoot: string): string {
   try {
-    return execFileSync("git", ["status", "--porcelain"], {
+    return execFileSync("git", ["status", "--porcelain", "--untracked-files=all"], {
       cwd: repoRoot,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -680,17 +680,21 @@ function readAheadCount(repoRoot: string): number | null {
 }
 
 function parseDirtyFiles(status: string): string[] {
-  return status
-    .split(/\r?\n/)
-    .filter((line) => line.trim().length > 0)
-    .map((line) => {
-      const renamed = line.match(/^.. (.+) -> (.+)$/);
-      if (renamed) {
-        return normalizeRepoPath(renamed[2]);
-      }
-      return normalizeRepoPath(line.slice(3).trim());
-    })
-    .filter(Boolean);
+  return (
+    status
+      .split(/\r?\n/)
+      .filter((line) => line.trim().length > 0)
+      .map((line) => {
+        const renamed = line.match(/^.. (.+) -> (.+)$/);
+        if (renamed) {
+          return normalizeRepoPath(renamed[2]);
+        }
+        return normalizeRepoPath(line.slice(3).trim());
+      })
+      .filter(Boolean)
+      // Local Snipara state (`.snipara/` folders) is not part of the work being changed.
+      .filter((file) => !file.split("/").includes(".snipara"))
+  );
 }
 
 function languageForFile(filePath: string): LocalCodeOverlayFile["language"] | null {

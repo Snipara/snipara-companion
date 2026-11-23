@@ -164,7 +164,7 @@ export function conventionTests(repoRoot: string, targets: string[]): string[] {
     const stem = base.replace(/\.d\.ts$/, "").replace(/\.[^.]+$/, "");
     if (!stem || stem === "index" || isTestPath(target)) continue;
     const pattern = new RegExp(
-      `^(?:${escapeRegExp(stem)}\\.(?:test|spec)\\.[cm]?[jt]sx?|test_${escapeRegExp(stem)}\\.py|${escapeRegExp(stem)}_test\\.(?:py|go))$`
+      `^(?:${escapeRegExp(stem)}[-.](?:[^/]*\\.)?(?:test|spec)\\.[cm]?[jt]sx?|test_${escapeRegExp(stem)}\\.py|${escapeRegExp(stem)}_test\\.(?:py|go))$`
     );
     const root = nearestPackageRoot(repoRoot, target);
     if (!listings.has(root)) listings.set(root, listFilesUnder(repoRoot, root));
@@ -173,8 +173,53 @@ export function conventionTests(repoRoot: string, targets: string[]): string[] {
         pattern.test(path.posix.basename(candidate)) && !isWorkspaceStatePath(candidate)
     );
     found.push(...nearestByFolder(target, candidates));
+    found.push(...testsReferencing(repoRoot, root, target, listings.get(root) ?? []));
   }
-  return found;
+  return [...new Set(found)];
+}
+
+const REFERENCE_SCAN_MAX_FILES = 400;
+const REFERENCE_SCAN_MAX_BYTES = 64 * 1024;
+
+/**
+ * Test files of the target's package that name the target's path in a string literal, such as
+ * `path.resolve(__dirname, "../src/runtime/x.ts")`. They load the source by path, so no import edge
+ * links them. The scan stays inside the package: at most REFERENCE_SCAN_MAX_FILES files and the first
+ * REFERENCE_SCAN_MAX_BYTES bytes of each.
+ */
+function testsReferencing(
+  repoRoot: string,
+  packageRoot: string,
+  target: string,
+  listing: string[]
+): string[] {
+  const inPackage = packageRoot ? target.slice(packageRoot.length + 1) : target;
+  const spellings = [...new Set([inPackage, target])].filter((spelling) => spelling.includes("/"));
+  if (!spellings.length) return [];
+  const withoutExtension = (spelling: string): string => spelling.replace(/\.[^./]+$/, "");
+  const alternatives = spellings
+    .map((spelling) => `${escapeRegExp(withoutExtension(spelling))}(?:\\.[a-z]+)?`)
+    .join("|");
+  const pattern = new RegExp(`["'\`](?:\\.{1,2}/)*(?:${alternatives})["'\`]`);
+  const matches: string[] = [];
+  const candidates = listing
+    .filter((file) => file !== target && isTestPath(file) && !isWorkspaceStatePath(file))
+    .sort()
+    .slice(0, REFERENCE_SCAN_MAX_FILES);
+  for (const file of candidates) {
+    let descriptor: number | undefined;
+    try {
+      descriptor = fs.openSync(path.join(repoRoot, file), "r");
+      const buffer = Buffer.alloc(REFERENCE_SCAN_MAX_BYTES);
+      const read = fs.readSync(descriptor, buffer, 0, REFERENCE_SCAN_MAX_BYTES, 0);
+      if (pattern.test(buffer.toString("utf8", 0, read))) matches.push(file);
+    } catch {
+      // Unreadable or deleted: not linked.
+    } finally {
+      if (descriptor !== undefined) fs.closeSync(descriptor);
+    }
+  }
+  return matches;
 }
 
 /** Companion state folders hold copies of the repository; a test in one is not a test of it. */

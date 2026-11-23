@@ -94,9 +94,8 @@ blocks restoration.
 
 Workflow drift during asynchronous preparation is checked before state changes.
 This is not a cross-process lock or an atomic compare-and-swap guarantee.
-Controller/native-runtime injection, independently authenticated reviewers,
-complete objective acceptance and the consolidated evidence dossier remain
-separate contracts and qualification steps.
+Native-runtime injection, independently authenticated reviewers and complete
+objective acceptance remain separate contracts and qualification steps.
 
 ## English procedural questions and bounded recovery
 

@@ -11,7 +11,7 @@ snipara-companion workflow phase-start scope
 snipara-companion workflow status --json
 ```
 
-The existing generated JSON can be edited before start. Bugfix defaults to STANDARD coordination, feature and legacy to FULL. Record real source references, allowed files and repository-specific checks in each plan. No worker, service or Orchestrator is required by these templates. A workflow does not automatically execute its gate labels.
+The existing generated JSON can be edited before start. Bugfix defaults to STANDARD coordination, feature and legacy to FULL. Record real source references, allowed files and repository-specific checks in each plan. No worker or service is required by these templates. A workflow does not automatically execute its gate labels.
 
 ## Reading completion evidence
 
@@ -19,4 +19,4 @@ The existing generated JSON can be edited before start. Bugfix defaults to STAND
 
 ## Reproducing native continuation
 
-In the monorepo, use `scripts/validation/portable-methods.py --help`. Run with the Orchestrator development environment. Native execution requires `--execute-native` and an explicit fresh output directory. The campaign uses a synthetic fixture, existing host adapters, interruption and failing-proof controls, and equal frozen context in files-only/Companion arms. Saved workflow v2 state is read through the real local `workflow status` command. This tests local checkpoint rehydration, not hosted-memory resume or live-process migration. Outputs preserve failures, durations and observed usage; unknown measurements remain null. The benchmark script is repository validation tooling, not a new installed workflow engine.
+In the monorepo, use `scripts/validation/portable-methods.py --help`. The script imports the archived Orchestrator source in `archive/packages/agentic-orchestrator`; the product itself is retired. Native execution requires `--execute-native` and an explicit fresh output directory. The campaign uses a synthetic fixture, existing host adapters, interruption and failing-proof controls, and equal frozen context in files-only/Companion arms. Saved workflow v2 state is read through the real local `workflow status` command. This tests local checkpoint rehydration, not hosted-memory resume or live-process migration. Outputs preserve failures, durations and observed usage; unknown measurements remain null. The benchmark script is repository validation tooling, not a new installed workflow engine.

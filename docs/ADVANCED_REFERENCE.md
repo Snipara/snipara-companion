@@ -456,7 +456,6 @@ npx -y snipara-companion workflow phase-start audit
 npx -y snipara-companion lead-plan --task "ship auth hardening" --changed-files src/auth/session.ts --proof "pnpm test auth" --acceptance "auth tests pass"
 npx -y snipara-companion lead-plan --from-plan ./project-health-lead-plan.json --reconcile --changed-files src/auth/session.ts
 npx -y snipara-companion lead-plan --from-plan ./project-health-lead-plan.json --json | jq '.engineeringLeadPlan.executionReceipts'
-npx -y snipara-companion lead-plan --task "review controller progress" --from-controller .snipara/orchestrator/project-controllers/<controller-id>/state.json --json
 npx -y snipara-companion workflow phase-commit audit --summary "mapped auth impact"
 npx -y snipara-companion workflow producer-triage
 npx -y snipara-companion workflow decisions
@@ -471,14 +470,6 @@ npx -y snipara-companion workflow producer-report
 npx -y snipara-companion workflow producer-review --latest --outcome useful --reviewer alice
 npx -y snipara-companion handoff --summary "auth impact mapped" --next "run auth tests"
 ```
-
-`lead-plan --from-controller <snapshot>` adds a read-only `controllerProgress`
-section with task IDs, dependencies, reported status and a hash of the source
-bytes. The snapshot must describe the current workspace and a valid bounded
-DAG. Snapshots older than 30 minutes are labeled stale. This section remains
-`unverified_local_snapshot`: it neither imports execution authority nor marks
-Companion tasks complete. Check actual host proofs, candidate review and
-integration receipts before accepting the reported progress.
 
 For a stricter engineering workflow, add `--strict` to a completed
 `workflow task-commit` or `workflow phase-commit`. Strict phase closeout requires
@@ -502,13 +493,13 @@ verification hints.
 `workflow timeline` reads the append-only activity log at
 `.snipara/activity/timeline.jsonl`, including privacy-safe PostToolUse outcomes
 and file evidence when the Companion hook is installed. `workflow session` derives
-`.snipara/activity/session.json` for fast local resume and Orchestrator dogfood;
+`.snipara/activity/session.json` for fast local resume;
 Session Snapshot V0 includes latest activity, risk reasons, touched files, a
 next action, and advisory Intent Detection V0. Intent Detection V0 reports the
 inferred intent, confidence, reason-code signals, local evidence counts, and a
 suggested workflow mode. `workflow run` uses AUTO by default and that same
 Control Plane principle to choose lite, standard, full, or orchestrate. It
-reports an automatic setup card for Companion, hosted memory, Orchestrator,
+reports an automatic setup card for Companion, hosted memory,
 and policy-gated workers. Standalone `snipara-memory` remains an explicit
 application choice. Lite runs with zero
 mandatory hosted context calls; recall/context/code-impact are on-demand
@@ -665,7 +656,7 @@ snipara-companion workflow resume
 Resume work with decisions, failed attempts, evidence and remaining checks using
 `workflow resume`. From 4.0, JSON defaults to a compact overview; use
 `workflow resume --detail --json` for the full payload. Use `workflow checkpoint` to bind the current state explicitly.
-This works independently of Orchestrator. See [work continuity](./WORK_CONTINUITY.md)
+See [work continuity](./WORK_CONTINUITY.md)
 for drift states, offline behavior and evidence limits.
 
 The previous long README has moved to [docs/FULL_REFERENCE.md](./FULL_REFERENCE.md).
@@ -712,6 +703,6 @@ any captured rationale remains pending human review.
 Use `workflow scaffold --preset bugfix`, `--preset feature` or `--preset legacy`
 with a concrete `--goal`. Edit the generated plan, then use the existing
 `workflow start`, phase and resume commands. Completion declarations remain
-separate from checked Controller proof sources and Feature acceptance.
+separate from checked proof sources and Feature acceptance.
 See [portable workflows](portable-methods.md) for context bounds, legacy
 compatibility and the native continuation validation procedure.

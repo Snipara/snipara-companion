@@ -1545,6 +1545,13 @@ test("query help exposes follow recommendation flag", () => {
   assert.doesNotMatch(result.stdout, /--no-answer-pack/); // hidden compatibility flag
 });
 
+test("recall help exposes the timeout option with a 30 second default", () => {
+  const result = runCli(["recall", "--help"]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /--timeout-ms <number>/);
+  assert.match(result.stdout, /default:\s+"30000"/);
+});
+
 test("query still accepts the former --no-answer-pack flag", () => {
   const result = runCli(["query", "--no-answer-pack", "--help"]);
   assert.equal(result.status, 0);
