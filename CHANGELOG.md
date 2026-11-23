@@ -2,7 +2,7 @@
 
 Release notes for `snipara-companion`, newest first.
 
-## Unreleased
+## 9.2.0
 
 - `status`, `reality-check`, `run`, `review`, `final-commit`, team sync and the other dirty-file counts now ignore local Snipara state at any depth. A nested `<package>/.snipara/` folder (for example `packages/cli/.snipara/collaboration/`) no longer shows as "Dirty files: 1". One shared helper (`runtime/local-state-path`) filters any path with a `.snipara` segment and asks git to exclude it, so an untracked parent folder is not collapsed into one dirty entry.
 - `recall -q "<text>"` prints the query. The hosted compact answer omits it, so the line was empty; the requested query is now filled in.
@@ -199,7 +199,7 @@ Breaking: removes the Companion side of the frozen Orchestrator Controller.
 - Fix hosted workflow session creation by separating logical workflow identity from the server-issued session ID. Reuse persisted IDs for claims and release, scope mappings by project, actor and worktree, and skip hosted claims when session creation fails.
 - Cover session creation, repeated starts, distinct workflows/actors, refusal and lease release.
 
-## Unreleased
+## 9.2.0
 
 ## New In 3.7.3
 
