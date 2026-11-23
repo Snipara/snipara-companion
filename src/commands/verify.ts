@@ -1074,7 +1074,7 @@ export async function verifyCommand(options: VerifyCommandOptions): Promise<void
 export const VERIFICATION_DETAIL_RELATIVE_PATH = ".snipara/verify/latest.json";
 
 /** Writes the full plan, code impact included, and returns its repository-relative path. */
-function writeVerificationDetail(repoRoot: string, plan: VerificationPlan): string {
+export function writeVerificationDetail(repoRoot: string, plan: VerificationPlan): string {
   const file = path.join(repoRoot, VERIFICATION_DETAIL_RELATIVE_PATH);
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });

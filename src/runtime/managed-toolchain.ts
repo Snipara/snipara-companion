@@ -192,14 +192,14 @@ export function managedToolchainEnvironment(
 }
 
 /**
- * The managed façade supports this reviewed generation: Companion 8.x and Sandbox 3.4 or a later
+ * The managed façade supports this reviewed generation: Companion 9.x and Sandbox 3.5 or a later
  * 3.x. Orchestrator is retired: a bundle may still declare 2.1 or a later 2.x, and it is never run.
  */
 export function assertManagedToolchainCompatibility(toolchain: ManagedToolchainManifest): void {
   for (const [name, major, minimumMinor] of [
-    ["companion", 8, 0],
+    ["companion", 9, 0],
     ["orchestrator", 2, 1],
-    ["sandbox", 3, 4],
+    ["sandbox", 3, 5],
   ] as const) {
     const version = toolchain.components[name]?.version;
     if (version === undefined) continue;

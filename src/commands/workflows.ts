@@ -9,6 +9,7 @@
  * The many `build*` / `normalize*` helpers here are pure and unit-tested via
  * the re-exports in index.ts.
  */
+import { boundJson } from "../runtime/bounded-output";
 import * as fs from "fs";
 import { buildLocalModelCatalog, resolveWorkerCandidates } from "../runtime/local-worker-routing";
 import * as path from "path";
@@ -14696,6 +14697,8 @@ export async function sessionBootstrapCommand(options: {
   maxContextTokens?: number;
   includeSessionContext?: boolean;
   json?: boolean;
+  /** Print every field of every memory instead of the compact form. */
+  detail?: boolean;
 }): Promise<void> {
   if (!isConfigured()) {
     if (options.json) {
@@ -14724,7 +14727,11 @@ export async function sessionBootstrapCommand(options: {
         ? DEFAULT_SESSION_CONTEXT_TOKENS
         : 0;
   const client = createClient(15000);
-  const result = await client.getSessionMemories(options.maxCriticalTokens, resolvedContextTokens);
+  // Without an explicit budget the server answers with about 8,000 tokens; ask for the documented one.
+  const result = await client.getSessionMemories(
+    options.maxCriticalTokens ?? DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS,
+    resolvedContextTokens
+  );
   const bootstrapQuality = buildSessionBootstrapQuality(result, {
     expectedMaxTokens:
       (options.maxCriticalTokens ?? DEFAULT_FULL_WORKFLOW_CRITICAL_TOKENS) + resolvedContextTokens,
@@ -14738,7 +14745,13 @@ export async function sessionBootstrapCommand(options: {
 
   if (options.json) {
     printJson({
-      ...result,
+      ...((options.detail
+        ? result
+        : boundJson(result, {
+            maxItems: 100,
+            maxChars: 2000,
+            dropKeys: ["authority", "provenance", "owner", "bootstrap_decision_reasons"],
+          })) as typeof result),
       local_warm_snapshot: {
         stored_entries: warmSnapshot.storedEntries,
       },

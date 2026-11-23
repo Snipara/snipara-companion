@@ -2,6 +2,17 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 9.0.0
+
+Breaking: the commands that printed megabytes are compact by default, and `controller-bridge` is removed.
+
+- `brief --json` prints the impact card and the compact verification plan in place of the full results: about 26 KB on this repository, where it printed 14.7 MB. `--detail` prints the full results; they are also written under `.snipara/`.
+- `session-bootstrap` asks the server for the documented budget of 2,000 tokens when none is given; the server's own default returned about 8,000. `--json` drops the authority, provenance and owner blocks of each memory (`--detail` keeps them): 19 KB instead of 222 KB here.
+- `collaboration status --json` prints counts of the accumulated local resources by kind, the first files and the active leases, instead of the whole local state: 9 KB instead of 527 KB. `--detail` prints the full state.
+- `team-sync what-changed --json` bounds the hosted answer (first items of each list, cut strings, no authority blocks): 32 KB instead of 206 KB. `--detail` prints it whole.
+- Removed: the `controller-bridge export` and `controller-bridge project` commands and the `exportControllerBridge` and `projectControllerBridge` exports. They fed the Controller of the retired Orchestrator.
+- The managed local-work toolchain is Companion 9.x and Sandbox 3.5 or a later 3.x. Companion 8.x bundles are refused as `toolchain_version_incompatible`; reinstall with the current create-snipara.
+
 ## 8.0.0
 
 Breaking: scoped validation no longer goes through Orchestrator.

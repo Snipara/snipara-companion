@@ -144,8 +144,6 @@ import {
 } from "./commands/automations";
 import { agentReadinessAuditCommand } from "./commands/agent-readiness";
 import { leadPlanCommand } from "./commands/lead-plan";
-import { controllerBridgeExportCommand } from "./commands/controller-bridge";
-import { controllerBridgeProjectCommand } from "./commands/controller-bridge-project";
 import {
   createTaskIntake,
   readTaskIntake,
@@ -203,7 +201,6 @@ function formatSelectedTaskJourney(card: Parameters<typeof formatTaskJourneyCard
     ? `${String(taskPresentationToolchain.detail)}\nNext: ${String(taskPresentationToolchain.nextAction)}\n\n${text}`
     : text;
 }
-export { exportControllerBridge } from "./commands/controller-bridge";
 export {
   createTaskIntake,
   validateTaskIntake,
@@ -218,7 +215,6 @@ export {
   readRuntimeContextMap,
   validateRuntimeSourceContext,
 } from "./commands/runtime-source-context";
-export { projectControllerBridge } from "./commands/controller-bridge-project";
 import {
   featureInitCommand,
   featurePlanCommand,
@@ -1396,27 +1392,6 @@ taskJourney
       )
     );
   });
-
-const controllerBridge = program
-  .command("controller-bridge")
-  .description("Reviewed Companion to Controller bridge and evidence projection");
-controllerBridge
-  .command("export")
-  .requiredOption("--lead-plan-file <file>")
-  .requiredOption("--policy-file <file>")
-  .requiredOption("--reviewer-id <id>")
-  .requiredOption("--out-dir <directory>")
-  .option("--task-context-file <file>", "Explicit immutable map of loaded task context bodies")
-  .option("--dir <directory>")
-  .option("--json")
-  .action(controllerBridgeExportCommand);
-controllerBridge
-  .command("project")
-  .requiredOption("--bridge-file <file>")
-  .requiredOption("--controller-file <file>")
-  .option("--dir <directory>")
-  .option("--json")
-  .action(controllerBridgeProjectCommand);
 
 program
   .command("lead-plan")
@@ -2665,8 +2640,10 @@ program
   .option("--skip-impact", "Do not run companion code impact")
   .option("--skip-memory-health", "Do not call snipara_memory_health")
   .option("--json", "Print raw JSON")
+  .option("--detail", "With --json, print the full code impact and verification plan")
   .action(async (options) => {
     await projectIntelligenceBriefCommand({
+      detail: Boolean(options.detail),
       task: options.task,
       branch: options.branch,
       changedFiles: options.changedFiles,
@@ -2933,8 +2910,10 @@ intelligence
   .option("--skip-impact", "Do not run companion code impact")
   .option("--skip-memory-health", "Do not call snipara_memory_health")
   .option("--json", "Print raw JSON")
+  .option("--detail", "With --json, print the full code impact and verification plan")
   .action(async (options) => {
     await projectIntelligenceBriefCommand({
+      detail: Boolean(options.detail),
       task: options.task,
       branch: options.branch,
       changedFiles: options.changedFiles,
@@ -4172,8 +4151,10 @@ teamSync
     "Compatibility alias; hosted Team Sync still uses workflow resume for short-lived session carryover"
   )
   .option("--json", "Print raw JSON")
+  .option("--detail", "With --json, print the full hosted answer")
   .action(async (options) => {
     await teamSyncWhatChangedCommand({
+      detail: Boolean(options.detail),
       since: options.since,
       dir: options.dir,
       includeSessionContext: Boolean(options.includeSessionContext),
@@ -4449,8 +4430,10 @@ collaboration
   .option("--client <client>", "Client label", "snipara-companion")
   .option("-d, --dir <directory>", "Repository directory (default: current)")
   .option("--json", "Print raw JSON")
+  .option("--detail", "With --json, print the full local state and hosted answer")
   .action(async (options) => {
     await collaborationStatusCommand({
+      detail: Boolean(options.detail),
       actor: options.actor,
       actorId: options.actorId,
       actorType: options.actorType,
@@ -5410,6 +5393,7 @@ program
   .option("--max-context-tokens <number>", "Short-lived session context token budget")
   .option("--max-daily-tokens <number>", "Deprecated alias for --max-context-tokens")
   .option("--json", "Print raw JSON")
+  .option("--detail", "With --json, print every field of every memory")
   .action(async (options) => {
     const maxCriticalTokens =
       options.maxCriticalTokens !== undefined ? parseInt(options.maxCriticalTokens, 10) : undefined;
@@ -5426,6 +5410,7 @@ program
         options.includeSessionContext || options.maxContextTokens || options.maxDailyTokens
       ),
       json: options.json,
+      detail: Boolean(options.detail),
     });
   });
 

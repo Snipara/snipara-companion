@@ -8,6 +8,7 @@
  * and guard decisions (go / review / block). Local-only state is advisory —
  * only the hosted backend can prove what another machine is doing.
  */
+import { boundJson, countBy } from "../runtime/bounded-output";
 import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
 import { hookGitEnvironment, readStagedPaths } from "./hook-git";
 import { createHash } from "node:crypto";
@@ -197,6 +198,8 @@ export interface WorkflowCollaborationReceipt {
 }
 
 interface CollaborationCommandOptions {
+  /** With --json on status: print the full local state and hosted answer. */
+  detail?: boolean;
   summary?: string;
   files?: string[];
   resources?: string[];
@@ -718,9 +721,9 @@ export async function workflowCollaborationRelease(
   const targetSessionId = options.workSessionId
     ? options.workSessionId
     : options.workflowId
-    ? (state.workflowSessions?.[workflowSessionKey(context, options.workflowId)] ??
-      workflowWorkSessionId(options.workflowId))
-    : state.workSessionId;
+      ? (state.workflowSessions?.[workflowSessionKey(context, options.workflowId)] ??
+        workflowWorkSessionId(options.workflowId))
+      : state.workSessionId;
   const activeLeases = state.leases.filter(
     (lease) =>
       lease.status === "ACTIVE" &&
@@ -837,7 +840,9 @@ export async function collaborationGuardCommand(
   });
 
   if (guardFailed) {
-    console.error(`Collaboration guard failed (${profile}): ${evaluation?.decision ?? hosted.status}${hosted.error ? `: ${hosted.error}` : ""}; ${actionCards.map((card) => card.title).join("; ") || "hosted guard did not authorize this action"}`);
+    console.error(
+      `Collaboration guard failed (${profile}): ${evaluation?.decision ?? hosted.status}${hosted.error ? `: ${hosted.error}` : ""}; ${actionCards.map((card) => card.title).join("; ") || "hosted guard did not authorize this action"}`
+    );
     process.exitCode = 2;
   }
 
@@ -1007,11 +1012,28 @@ export async function collaborationStatusCommand(
     {
       action: "status",
       statePath: getCollaborationStatePath(context.rootDir),
-      state,
-      hosted,
+      state: options.json && !options.detail ? compactCollaborationState(state) : state,
+      hosted: options.json && !options.detail ? boundJson(hosted, { maxItems: 10 }) : hosted,
     },
     options.json
   );
+}
+
+/** The local state without its accumulated resource list: counts, the first files, active leases. */
+function compactCollaborationState(state: CollaborationLocalState): Record<string, unknown> {
+  const { resources, files, leases, ...rest } = state;
+  const active = leases.filter((lease) => lease.status === "ACTIVE");
+  return {
+    ...(boundJson(rest, { maxItems: 10 }) as Record<string, unknown>),
+    files: boundJson(files, { maxItems: 20 }),
+    resources: { count: resources.length, byKind: countBy(resources, "kind") },
+    leases: {
+      count: leases.length,
+      active: active.length,
+      activeLeases: boundJson(active, { maxItems: 20 }),
+    },
+    detail: "--detail prints the full local state",
+  };
 }
 
 export async function collaborationIdeStatusCommand(

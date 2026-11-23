@@ -11,14 +11,28 @@
 import { execFileSync } from "node:child_process";
 import chalk from "chalk";
 import { createClient } from "../api/client";
-import { resolveCodeGraphAutoSourceResult, type CodeGraphSourceSelection } from "./code";
+import {
+  resolveCodeGraphAutoSourceResult,
+  resolveRepoRoot,
+  type CodeGraphSourceSelection,
+} from "./code";
+import {
+  buildCodeImpactCard,
+  writeCodeImpactDetail,
+  type CodeImpactCard,
+} from "./code-impact-card";
 import {
   buildProjectJudgmentCard,
   formatProjectJudgmentCard,
   type ProjectIntelligenceJudgmentCard,
 } from "./judgment-card";
 import { buildSessionSnapshot, readSessionSnapshot, type SessionSnapshot } from "./activity";
-import { buildVerificationPlan, type VerificationPlan } from "./verify";
+import {
+  buildVerificationPlan,
+  compactVerificationPlan,
+  writeVerificationDetail,
+  type VerificationPlan,
+} from "./verify";
 import {
   evaluateProjectPolicyDecision,
   type ProjectPolicyDecision,
@@ -36,6 +50,8 @@ export interface ProjectIntelligenceBriefOptions {
   skipImpact?: boolean;
   skipMemoryHealth?: boolean;
   json?: boolean;
+  /** Print the full code impact and verification plan instead of their compact cards. */
+  detail?: boolean;
 }
 
 export interface ProjectIntelligenceBrief {
@@ -49,6 +65,8 @@ export interface ProjectIntelligenceBrief {
   resumeContext?: Record<string, unknown>;
   memoryHealth?: Record<string, unknown>;
   codeImpact?: Record<string, unknown>;
+  /** The compact card of `codeImpact`; what `--json` prints unless `--detail` is given. */
+  codeImpactCard?: CodeImpactCard;
   codeImpactSourceSelection?: CodeGraphSourceSelection;
   localSessionSnapshot?: SessionSnapshot;
   projectPolicyDecision?: ProjectPolicyDecision;
@@ -400,6 +418,11 @@ export async function buildProjectIntelligenceBrief(
       });
       brief.codeImpact = autoResult.result as Record<string, unknown>;
       brief.codeImpactSourceSelection = autoResult.sourceSelection;
+      const repoRoot = resolveRepoRoot(process.cwd());
+      brief.codeImpactCard = buildCodeImpactCard(autoResult, {
+        repoRoot,
+        detailPath: writeCodeImpactDetail(repoRoot, autoResult),
+      });
     } catch (error) {
       errors.push({
         surface: "code_impact",
@@ -576,13 +599,35 @@ function printCodeImpact(result: Record<string, unknown> | undefined): void {
   }
 }
 
+/**
+ * What an agent reads by default: the impact card and the compact verification plan in place of the
+ * full results, which run to megabytes on a real repository. The full results stay on disk.
+ */
+export function compactBriefForOutput(brief: ProjectIntelligenceBrief): Record<string, unknown> {
+  const { codeImpactCard, codeImpact, verificationPlan, ...rest } = brief;
+  const repoRoot = resolveRepoRoot(process.cwd());
+  return {
+    ...rest,
+    ...(codeImpactCard ? { codeImpact: codeImpactCard } : codeImpact ? { codeImpact } : {}),
+    ...(verificationPlan
+      ? {
+          verificationPlan: compactVerificationPlan(
+            verificationPlan,
+            codeImpactCard,
+            writeVerificationDetail(repoRoot, verificationPlan)
+          ),
+        }
+      : {}),
+  };
+}
+
 export async function projectIntelligenceBriefCommand(
   options: ProjectIntelligenceBriefOptions
 ): Promise<void> {
   const brief = await buildProjectIntelligenceBrief(options);
 
   if (options.json) {
-    console.log(JSON.stringify(brief, null, 2));
+    console.log(JSON.stringify(options.detail ? brief : compactBriefForOutput(brief), null, 2));
     return;
   }
 

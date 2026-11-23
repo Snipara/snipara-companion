@@ -83,63 +83,6 @@ The simplified Companion path supports literal/root/directory scopes and
 segment patterns `*`, `?`, `**`. Complex bracket/brace patterns with wildcards
 must be clarified into these scopes before work; the card explains the block.
 
-## Orchestrator alone
-
-Use `snipara-orchestrator task intake --goal ... --criterion ... --file ...
---verification ...`, then `task start --brief .snipara/task-intake.json`.
-`task show --format markdown` and `task resume --format markdown` display its
-five-step card over the existing Controller state. These commands do not call
-Companion, dispatch an agent, execute proofs or restart a stopped Controller.
-The next action points to the existing explicit Controller procedures.
-
-An existing execution authorization can be selected explicitly at task start
-with `--policy-file /absolute/path/policy.json`. Without it, the task stays in
-observation mode. The policy uses the existing Controller schema, including
-autonomy level, task risk, required proofs and finite budget; the brief or this
-guide supplies no authorization. Prepare the policy before capturing intake so
-the repository snapshot remains stable.
-
-```sh
-snipara-orchestrator task advance --id customer-input
-snipara-orchestrator task advance --id customer-input --execute --catalog-file workers.json
-```
-
-The first command only previews. The second reconciles the active plan through
-the existing executor. It may observe a run, start admissible work, or retry a
-failed proof within the stored limits. It never raises autonomy, resets budget,
-resumes stopped work, integrates, publishes or deploys. Worker selection and
-review-repair successor plans retain their existing Controller procedures.
-
-## Both tools, when useful
-
-The existing reviewed bridge remains the authority boundary. For tasks with
-loaded context, export exact bodies with an explicit mapping rather than
-replacing source references with claims of delivery:
-
-```json
-[{ "workPackageId": "customer:code", "phaseId": "code", "taskId": "code" }]
-```
-
-```sh
-snipara-companion workflow export-context --mapping-file mapping.json \
-  --output .snipara/runtime-context.json --json
-snipara-companion controller-bridge export --lead-plan-file lead.json \
-  --policy-file policy.json --reviewer-id reviewer --out-dir .snipara/bridge \
-  --task-context-file .snipara/runtime-context.json --json
-```
-
-The bridge binds the mapping file, exact UTF-8 context bytes, source receipts,
-policy and Git base. Orchestrator reconstructs the contract before admission.
-The original workflow/task identity is preserved; the explicit consumer mapping
-is separate. A changed body, source, scope, policy or candidate requires fresh
-validation. Legacy reference-only exports remain readable without new fields.
-
-`task decide` no longer reads a Controller candidate dossier: that call
-(`--refresh-dossier`, `--controller-id`, `--candidate-id`, `--orchestrator-bin`)
-left Companion with the frozen Orchestrator. `decide` reviews the recorded
-evidence and asks for the missing checks; it never authorizes integration,
-publication or deployment.
-
 ## Evidence and next action
 
 Text and `--json` render the same `snipara.task_journey.v1` model, including

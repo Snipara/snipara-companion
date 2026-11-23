@@ -8,6 +8,7 @@
  * checkpoint so the next session or agent can resume with full context. Hosted
  * calls enrich this state when configured.
  */
+import { boundJson } from "../runtime/bounded-output";
 import * as fs from "fs";
 import * as path from "path";
 import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
@@ -123,6 +124,8 @@ export interface TeamSyncHygieneAction {
 }
 
 interface TeamSyncCommandOptions {
+  /** With --json on what-changed: print the full hosted answer. */
+  detail?: boolean;
   id?: string;
   summary?: string;
   files?: string[];
@@ -1345,7 +1348,17 @@ export async function teamSyncWhatChangedCommand(options: TeamSyncCommandOptions
       since: since?.toISOString() ?? null,
       statePath: getTeamSyncStatePath(rootDir),
       summary,
-      hosted,
+      hosted:
+        options.json && !options.detail
+          ? boundJson(hosted, {
+              maxItems: 3,
+              maxChars: 300,
+              dropKeys: ["authority", "commands", "evidence", "policy"],
+            })
+          : hosted,
+      ...(options.json && !options.detail
+        ? { detail: "--detail prints the full hosted answer" }
+        : {}),
       compatibilityNotes: buildTeamSyncCompatibilityNotes("what-changed", options),
     },
     options.json
