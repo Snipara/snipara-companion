@@ -3,7 +3,6 @@ name: snipara-resume-work
 description: Resume an interrupted Snipara-managed task or handoff when checkpoint identity, source drift or evidence needs reconciliation. A dirty workspace alone does not trigger task resumption.
 metadata:
   version: "0.2.0"
-  stage: "internal-pilot"
 ---
 
 # Resume the intended task

@@ -3,7 +3,6 @@ name: snipara-fix-with-proof
 description: Resolve a repository bug when reproducing it, preserving its contract or binding test evidence needs care. Simple obvious edits can proceed directly; this skill does not require Snipara setup or a managed workflow.
 metadata:
   version: "0.2.0"
-  stage: "internal-pilot"
 ---
 
 # Fix the observed behavior

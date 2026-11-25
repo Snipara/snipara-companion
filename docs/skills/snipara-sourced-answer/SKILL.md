@@ -3,7 +3,6 @@ name: snipara-sourced-answer
 description: Resolve project questions requiring missing source evidence, historical decisions or reconciliation of conflicting status claims. Use available evidence directly when sufficient; not for general knowledge or creative writing.
 metadata:
   version: "0.2.0"
-  stage: "internal-pilot"
 ---
 
 # Answer with the necessary evidence

@@ -42,15 +42,27 @@ One URL serves both MCP eras; the opening request decides which applies.
   is one of these, otherwise `2025-11-25`.
 - **`2026-07-28`:** no handshake. Each request carries its version and client
   capabilities in `params._meta`, mirrored in `MCP-Protocol-Version`, `Mcp-Method`
-  and, for `tools/call`, `Mcp-Name`. `server/discover`, `tools/list` and `tools/call`
-  are served; lists carry `ttlMs` and `cacheScope: "private"`.
+  and, for `tools/call` and `resources/read`, `Mcp-Name`. `server/discover`,
+  `tools/list`, `tools/call` and the skill methods below are served; discovery, lists
+  and skills carry `ttlMs` and `cacheScope: "private"`.
 
 `Mcp-Session-Id` does not exist in `2026-07-28`: send `X-Snipara-Session-Id` or
-`correlation_context.session_id` to correlate retrievals. Skills, resources and
-prompts are not served.
+`correlation_context.session_id` to correlate retrievals. Prompts are not served.
 
 A web `Origin` must be the API host or listed in `CORS_ALLOWED_ORIGINS`; otherwise the
 request is refused with `403`. Requests without `Origin` are unaffected.
+
+### Skills
+
+On `2026-07-28` connections the server declares the
+[`io.modelcontextprotocol/skills`](https://modelcontextprotocol.io/extensions/skills/overview)
+extension and serves the four Companion skills as `skill://<name>/SKILL.md`, through
+`skills/list`, `skills/get`, `resources/list` and `resources/read`. They are the same for
+every project and need no specific scope. Clients decide whether to load them: Claude
+Code requires 2.1.331 or later and shows them as `/<server>:<name>`.
+
+The served copies live in `apps/mcp-server/src/mcp/skill_files/` and must stay identical
+to `packages/cli/docs/skills/`; `tests/test_mcp_skills.py` fails when they differ.
 
 > Important: do not configure an MCP client or session with `/api/mcp/...` or
 > `/v1/.../mcp`. Those are different REST contracts described below. The
@@ -78,7 +90,8 @@ The proxy forwards requests to backend REST endpoints:
 | Project | `POST /v1/:projectId/mcp`     |
 | Team    | `POST /v1/team/:teamSlug/mcp` |
 
-Team MCP requests only allow the `snipara_multi_project_query` tool. These
+Team MCP requests only allow the `snipara_multi_project_query` tool. They need
+the Team or Enterprise plan and cover at most 10 projects the key can read. These
 `/api/mcp/...` and `/v1/.../mcp` routes are retained for the web-app/client
 compatibility contract; they are not the route generated for Companion
 sessions.
