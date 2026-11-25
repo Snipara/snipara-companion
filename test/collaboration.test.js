@@ -707,6 +707,12 @@ test("collaboration guard can acknowledge review-only release warnings", () => {
   const blockedPayload = JSON.parse(blocked.stdout);
   assert.equal(blockedPayload.hosted.data.evaluation.decision, "REVIEW_REQUIRED");
   assert.equal(blockedPayload.enforcement.reviewOnlyAcknowledged, false);
+  // The hooks send stdout to /dev/null: stderr alone must say what was found and how to acknowledge it.
+  assert.match(
+    blocked.stderr,
+    /REVIEW_REQUIRED decision_consistency_review on .*: Change touches approved decision mem_1/
+  );
+  assert.match(blocked.stderr, /Review-only: after reading the above, rerun .*--ack-review-only/);
 
   const acknowledged = runCli(
     [
@@ -997,7 +1003,10 @@ test("collaboration hooks install plan writes blocking managed hooks", () => {
   assert.match(preCommitHook, /pnpm --filter snipara-companion exec tsx src\/index\.ts/);
   assert.match(preCommitHook, /snipara-companion "\$@"/);
   assert.match(preCommitHook, /collaboration claim --resource SURFACE:checkout-git-write/);
-  assert.match(preCommitHook, /collaboration claim .*--json >\/dev\/null \|\| \{.*collaboration claim.*exit/);
+  assert.match(
+    preCommitHook,
+    /collaboration claim .*--json >\/dev\/null \|\| \{.*collaboration claim.*exit/
+  );
   assert.match(prePushHook, /collaboration claim .*--json >\/dev\/null \|\| \{.*true/);
   assert.match(preCommitHook, /guard --profile pre-commit .*--resource SURFACE:checkout-git-write/);
   assert.match(preCommitHook, /--mode EXCLUSIVE --ttl-seconds 300/);
@@ -1062,7 +1071,8 @@ test("generated pre-commit guard precedes existing commands and reinstalls idemp
       },
     });
     assert.equal(result.status, failure ? 23 : 0, result.stderr);
-    if (failure) assert.match(result.stderr, new RegExp(`failed: collaboration ${failure} \\(exit 23\\)`));
+    if (failure)
+      assert.match(result.stderr, new RegExp(`failed: collaboration ${failure} \\(exit 23\\)`));
     assert.deepEqual(fs.readFileSync(logPath, "utf8").trim().split("\n"), expected);
   }
 });
@@ -1147,7 +1157,7 @@ test("collaboration ide-status prints compact local and hosted JSON for extensio
   assert.equal(payload.hosted.recentEvents.length, 1);
 });
 
-test("enforced pre-commit guard sends staged files only and explains rejection on stderr", t => {
+test("enforced pre-commit guard sends staged files only and explains rejection on stderr", (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-staged-guard-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.writeFileSync(path.join(dir, "package.json"), "{}");
@@ -1157,14 +1167,24 @@ test("enforced pre-commit guard sends staged files only and explains rejection o
     const result = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);
   }
-  const preload = writeHostedCollaborationPreload(dir), log = path.join(dir, "requests.jsonl");
-  const result = runCli(["collaboration", "guard", "--profile", "pre-commit", "--enforce", "--json"], {
-    cwd: dir, nodeArgs: ["-r", preload], env: hostedEnv({ SNIPARA_TEST_COLLAB_LOG: log }),
-  });
+  const preload = writeHostedCollaborationPreload(dir),
+    log = path.join(dir, "requests.jsonl");
+  const result = runCli(
+    ["collaboration", "guard", "--profile", "pre-commit", "--enforce", "--json"],
+    {
+      cwd: dir,
+      nodeArgs: ["-r", preload],
+      env: hostedEnv({ SNIPARA_TEST_COLLAB_LOG: log }),
+    }
+  );
   assert.equal(result.status, 2, result.stderr || result.stdout);
   assert.match(result.stderr, /Collaboration guard failed \(pre-commit\): BLOCKED/);
   assert.doesNotThrow(() => JSON.parse(result.stdout));
-  const request = fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse)
-    .find(item => item.path.endsWith("/collaboration/guard"));
+  const request = fs
+    .readFileSync(log, "utf8")
+    .trim()
+    .split("\n")
+    .map(JSON.parse)
+    .find((item) => item.path.endsWith("/collaboration/guard"));
   assert.deepEqual(request.body.files, ["staged doc.md"]);
 });

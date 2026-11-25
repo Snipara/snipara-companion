@@ -844,6 +844,9 @@ export async function collaborationGuardCommand(
     console.error(
       `Collaboration guard failed (${profile}): ${evaluation?.decision ?? hosted.status}${hosted.error ? `: ${hosted.error}` : ""}; ${actionCards.map((card) => card.title).join("; ") || "hosted guard did not authorize this action"}`
     );
+    for (const line of formatGuardFailureDetails(evaluation, profile)) {
+      console.error(line);
+    }
     process.exitCode = 2;
   }
 
@@ -2244,6 +2247,36 @@ function getCollaborationHeading(action: string): string {
     return "Collaboration watch";
   }
   return `Collaboration ${action}`;
+}
+
+const GUARD_FAILURE_DETAIL_LIMIT = 5;
+
+/** What a blocked hook must show: each finding, then how to acknowledge when it is review-only. */
+export function formatGuardFailureDetails(
+  evaluation: CollaborationGuardEvaluation | undefined,
+  profile: string
+): string[] {
+  if (!evaluation) {
+    return [];
+  }
+  const shown = evaluation.conflicts.slice(0, GUARD_FAILURE_DETAIL_LIMIT);
+  const lines = shown.map((conflict) => {
+    const reason = conflict.reason.replace(/[\s\p{Cc}]+/gu, " ").trim();
+    return `- ${conflict.decision} ${conflict.code} on ${formatResource(conflict.resource)}: ${reason}`;
+  });
+  if (evaluation.conflicts.length > shown.length) {
+    lines.push(`- ${evaluation.conflicts.length - shown.length} more finding(s)`);
+  }
+  if (lines.length > 0 && isReviewOnlyGuardEvaluation(evaluation)) {
+    const gitCommand =
+      profile === "pre-commit" ? "git commit" : profile === "pre-push" ? "git push" : undefined;
+    lines.push(
+      gitCommand
+        ? `Review-only: after reading the above, rerun with SNIPARA_COLLABORATION_GUARD_ACK_REVIEW_ONLY=1 ${gitCommand} ...`
+        : `Review-only: after reading the above, rerun snipara-companion collaboration guard --profile ${profile} --enforce --ack-review-only`
+    );
+  }
+  return lines;
 }
 
 export function buildCollaborationGuardActionCards(
