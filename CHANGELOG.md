@@ -2,6 +2,10 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 9.2.1
+
+- A blocked collaboration guard says what it found. Git hooks discard stdout, so only a generic title was visible; stderr now lists each finding with its resource and reason, up to five, and how to acknowledge it when every finding is review-only. Acknowledgement rules are unchanged.
+
 ## 9.2.0
 
 - `status`, `reality-check`, `run`, `review`, `final-commit`, team sync and the other dirty-file counts now ignore local Snipara state at any depth. A nested `<package>/.snipara/` folder (for example `packages/cli/.snipara/collaboration/`) no longer shows as "Dirty files: 1". One shared helper (`runtime/local-state-path`) filters any path with a `.snipara` segment and asks git to exclude it, so an untracked parent folder is not collapsed into one dirty entry.
