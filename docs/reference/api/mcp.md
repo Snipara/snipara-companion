@@ -34,6 +34,24 @@ JSON-RPC 2.0 request and calls tools through `method: "tools/call"`:
 Authenticate with `Authorization: Bearer <SNIPARA_API_KEY>` or
 `X-API-Key: <SNIPARA_API_KEY>`.
 
+### Protocol versions
+
+One URL serves both MCP eras; the opening request decides which applies.
+
+- **`2024-11-05` to `2025-11-25`:** `initialize` answers the requested version when it
+  is one of these, otherwise `2025-11-25`.
+- **`2026-07-28`:** no handshake. Each request carries its version and client
+  capabilities in `params._meta`, mirrored in `MCP-Protocol-Version`, `Mcp-Method`
+  and, for `tools/call`, `Mcp-Name`. `server/discover`, `tools/list` and `tools/call`
+  are served; lists carry `ttlMs` and `cacheScope: "private"`.
+
+`Mcp-Session-Id` does not exist in `2026-07-28`: send `X-Snipara-Session-Id` or
+`correlation_context.session_id` to correlate retrievals. Skills, resources and
+prompts are not served.
+
+A web `Origin` must be the API host or listed in `CORS_ALLOWED_ORIGINS`; otherwise the
+request is refused with `403`. Requests without `Origin` are unaffected.
+
 > Important: do not configure an MCP client or session with `/api/mcp/...` or
 > `/v1/.../mcp`. Those are different REST contracts described below. The
 > canonical direct agent route is `/mcp/{project_id_or_slug}`.
