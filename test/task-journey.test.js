@@ -359,11 +359,10 @@ test("oversized optional activity metadata does not fail local STANDARD task adm
 
 test("FULL coordination preserves saved workflow when its optional session snapshot is oversized", (t) => {
   const f = fixture(t);
-  fs.mkdirSync(path.join(f.cwd, ".snipara/activity"), { recursive: true });
-  fs.writeFileSync(
-    path.join(f.cwd, ".snipara/activity/timeline.jsonl"),
-    Buffer.alloc(5 * 1024 * 1024, 32)
-  );
+  // The timeline trims itself when written; a producer-loop folder past its entry cap cannot be.
+  const producerLoop = path.join(f.cwd, ".snipara/producer-loop");
+  fs.mkdirSync(producerLoop, { recursive: true });
+  for (let i = 0; i < 257; i++) fs.writeFileSync(path.join(producerLoop, `${i}.json`), "{}");
   fs.writeFileSync(
     path.join(f.cwd, ".snipara/full-plan.json"),
     JSON.stringify({

@@ -15,6 +15,8 @@ export interface EfficiencyThresholds {
 }
 export interface WorkflowEfficiencyOptions extends Partial<EfficiencyThresholds> {
   cwd?: string; sessionsDir?: string; rootThreadId?: string; since?: string;
+  /** Claude Code session to measure; defaults to CLAUDE_CODE_SESSION_ID when no Codex root is given. */
+  claudeSessionId?: string; claudeProjectsDir?: string;
   profile?: EfficiencyProfile; enforce?: boolean; json?: boolean;
 }
 export const WORKFLOW_EFFICIENCY_PROFILES: Record<EfficiencyProfile, EfficiencyThresholds> = {
@@ -31,7 +33,7 @@ interface Usage {
 export interface WorkflowEfficiencyReport {
   version: "snipara.workflow.efficiency.v1";
   status: "within_advisory_limits" | "limits_exceeded" | "incomplete" | "unavailable";
-  scope: { provider: "codex-local-session-tree"; since: string | null; sinceSource: string; observedAt: string;
+  scope: { provider: "codex-local-session-tree" | "claude-code-local-session"; since: string | null; sinceSource: string; observedAt: string;
     sessions: number; externalProviders: "excluded" };
   coverage: { status: "complete" | "partial" | "unavailable"; gaps: Record<string, number>; discoveredFiles: number;
     measuredFiles: number; duplicateResponses: number; conflictingResponses: number };
@@ -86,6 +88,181 @@ function usage(value: unknown): Usage | undefined {
   return { inputTokens: i, cachedInputTokens: c, uncachedInputTokens: i - c,
     outputTokens: o, reasoningOutputTokens: r, cacheWriteInputTokens: w };
 }
+/** Anthropic usage: input counts only what follows the last cache breakpoint, so the prompt is the sum of the three. */
+function claudeUsage(value: unknown): Usage | undefined {
+  const raw = object(value);
+  const input = raw.input_tokens, write = raw.cache_creation_input_tokens ?? 0, read = raw.cache_read_input_tokens ?? 0;
+  const output = raw.output_tokens, reasoning = object(raw.output_tokens_details).thinking_tokens ?? 0;
+  if (![input, write, read, output, reasoning].every(integer)) return undefined;
+  const i = input as number, w = write as number, c = read as number, o = output as number, r = reasoning as number;
+  if (r > o || !Number.isSafeInteger(i + w + c + o)) return undefined;
+  return { inputTokens: i + w + c, cachedInputTokens: c, uncachedInputTokens: i + w,
+    outputTokens: o, reasoningOutputTokens: r, cacheWriteInputTokens: w };
+}
+/** Streams the first `limit` bytes as lines; a line over the line limit is dropped and reported. Returns the bytes read. */
+async function readLines(handle: Awaited<ReturnType<typeof open>>, limit: number, gap: (code: string) => void,
+  onLine: (line: string, trailing: boolean) => void): Promise<number> {
+  const stream = handle.createReadStream({ start: 0, end: limit - 1, autoClose: false, encoding: "utf8", highWaterMark: 65536 });
+  let pending = "", dropping = false, bytes = 0;
+  for await (const chunk of stream) {
+    const value = String(chunk); bytes += Buffer.byteLength(value);
+    const parts = value.split("\n");
+    for (let index = 0; index < parts.length; index++) {
+      const part = parts[index];
+      if (!dropping) pending += part;
+      if (Buffer.byteLength(pending) > LIMITS.lineBytes) { gap("record_bytes_truncated"); pending = ""; dropping = true; }
+      if (index < parts.length - 1) {
+        if (!dropping) onLine(pending, false);
+        pending = ""; dropping = false;
+      }
+    }
+  }
+  if (pending && !dropping) onLine(pending, true);
+  return bytes;
+}
+/** The current workflow's creation time, the default start of the measured scope. */
+async function workflowScopeStart(cwd: string, gap: (code: string) => void): Promise<number | undefined> {
+  try {
+    const handle = await safeOpen(path.join(cwd, ".snipara", "workflow", "current.json"));
+    try {
+      const stat = await handle.stat();
+      if (stat.size > LIMITS.lineBytes) { gap("workflow_scope_oversized"); return undefined; }
+      const buffer = Buffer.alloc(stat.size);
+      let bytes = 0;
+      while (bytes < buffer.length) {
+        const read = await handle.read(buffer, bytes, buffer.length - bytes, bytes);
+        if (!read.bytesRead) break;
+        bytes += read.bytesRead;
+      }
+      const after = await handle.stat();
+      if (bytes !== stat.size || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || after.dev !== stat.dev || after.ino !== stat.ino) {
+        gap("workflow_scope_changed"); return undefined;
+      }
+      const start = timestamp(object(JSON.parse(buffer.toString("utf8"))).createdAt);
+      if (start === undefined) gap("workflow_scope_invalid");
+      return start;
+    } finally { await handle.close(); }
+  } catch (error) {
+    if (object(error).code !== "ENOENT") gap("workflow_scope_unreadable");
+    return undefined;
+  }
+}
+interface Measurement {
+  provider: WorkflowEfficiencyReport["scope"]["provider"]; available: boolean; responses: Map<string, Usage>;
+  gaps: Record<string, number>; gap: (code: string) => void; now: number; since: number | undefined; sinceSource: string;
+  sessions: number; discoveredFiles: number; measuredFiles: number; duplicateResponses: number; conflictingResponses: number;
+  caveats: string[];
+}
+function efficiencyReport(m: Measurement, profile: EfficiencyProfile, thresholds: EfficiencyThresholds, enforce?: boolean): WorkflowEfficiencyReport {
+  const totals: WorkflowEfficiencyReport["totals"] = { responses: m.responses.size,
+    inputTokens: 0, cachedInputTokens: 0, uncachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0,
+    cacheWriteInputTokens: 0, elapsedMinutes: m.since === undefined ? null : Math.max(0, (m.now - m.since) / 60000) };
+  for (const amount of m.responses.values()) for (const key of Object.keys(amount) as (keyof Usage)[]) {
+    if (!Number.isSafeInteger(totals[key] + amount[key])) m.gap("aggregate_overflow");
+    else totals[key] += amount[key];
+  }
+  const values: EfficiencyThresholds = { maxInputTokens: totals.inputTokens, maxResponses: totals.responses, maxUncachedInputTokens: totals.uncachedInputTokens,
+    maxOutputTokens: totals.outputTokens, maxElapsedMinutes: totals.elapsedMinutes ?? 0 };
+  const exceeded = (Object.keys(thresholds) as (keyof EfficiencyThresholds)[]).filter(key => values[key] > thresholds[key]);
+  const coverage = !m.available ? "unavailable" : Object.keys(m.gaps).length ? "partial" : "complete";
+  return {
+    version: "snipara.workflow.efficiency.v1",
+    status: coverage === "unavailable" ? "unavailable" : coverage === "partial" ? "incomplete" : exceeded.length ? "limits_exceeded" : "within_advisory_limits",
+    scope: { provider: m.provider, since: m.since === undefined ? null : new Date(m.since).toISOString(), sinceSource: m.sinceSource,
+      observedAt: new Date(m.now).toISOString(), sessions: m.sessions, externalProviders: "excluded" },
+    coverage: { status: coverage, gaps: m.gaps, discoveredFiles: m.discoveredFiles, measuredFiles: m.measuredFiles,
+      duplicateResponses: m.duplicateResponses, conflictingResponses: m.conflictingResponses },
+    totals, profile, thresholds, exceeded, mode: enforce ? "enforce-check" : "advisory", caveats: m.caveats };
+}
+
+const CLAUDE_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/;
+/** One Claude Code session: its transcript under ~/.claude/projects and its subagent transcripts. */
+async function measureClaudeCode(sessionId: string, options: WorkflowEfficiencyOptions, now: number,
+  since: number | undefined, sinceSource: string): Promise<Measurement> {
+  const gaps: Record<string, number> = {};
+  const gap = (code: string) => { gaps[code] = (gaps[code] ?? 0) + 1; };
+  const files: { file: string; root: boolean }[] = [];
+  let directory = path.resolve(options.claudeProjectsDir ?? path.join(os.homedir(), ".claude", "projects"));
+  if (!CLAUDE_SESSION_ID.test(sessionId)) gap("root_session_missing");
+  else try {
+    if ((await lstat(directory)).isSymbolicLink()) throw new Error("unsafe_root");
+    directory = await realpath(directory);
+    let entries = 0;
+    for await (const project of await opendir(directory)) {
+      if (++entries > LIMITS.entries) { gap("discovery_entry_limit"); break; }
+      if (!project.isDirectory()) continue;
+      const transcript = path.join(directory, project.name, `${sessionId}.jsonl`);
+      const subagents = path.join(directory, project.name, sessionId, "subagents");
+      try { if ((await lstat(transcript)).isFile()) files.push({ file: transcript, root: true }); } catch { /* not in this project */ }
+      try {
+        if (!(await lstat(subagents)).isDirectory()) continue;
+        for await (const entry of await opendir(subagents))
+          if (entry.isFile() && entry.name.endsWith(".jsonl")) files.push({ file: path.join(subagents, entry.name), root: false });
+      } catch { /* no subagents */ }
+      if (files.length > LIMITS.files) { gap("discovery_budget_limit"); files.length = LIMITS.files; break; }
+    }
+  } catch { gap("sessions_directory_unavailable"); }
+  if (!files.some(item => item.root)) gap("root_session_missing");
+  if (since === undefined) {
+    since = await workflowScopeStart(options.cwd ?? process.cwd(), gap);
+    if (since !== undefined) sinceSource = "current-workflow-createdAt";
+  }
+  const records: { id: string; time: number; amount: Usage }[] = [];
+  let rootStart: number | undefined, measuredFiles = 0, totalBytes = 0, sessions = 0;
+  for (const { file, root } of files) {
+    let withUsage = false;
+    const parseLine = (line: string, trailing: boolean) => {
+      if (!line.trim()) return;
+      let record: Data;
+      try {
+        const parsed: unknown = JSON.parse(line);
+        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) { gap("record_unknown"); return; }
+        record = object(parsed);
+      } catch { gap(trailing ? "trailing_partial_record" : "malformed_record"); return; }
+      if (record.type !== "assistant") return;
+      const message = object(record.message);
+      if (message.model === "<synthetic>") return;
+      const amount = claudeUsage(message.usage), time = timestamp(record.timestamp);
+      if (!amount || typeof message.id !== "string" || !message.id) { gap("usage_record_unknown"); return; }
+      withUsage = true;
+      if (time === undefined) { gap("usage_timestamp_unavailable"); return; }
+      if (root && (rootStart === undefined || time < rootStart)) rootStart = time;
+      records.push({ id: message.id, time, amount });
+    };
+    try {
+      await contained(file, directory);
+      const handle = await safeOpen(file);
+      try {
+        const size = (await handle.stat()).size;
+        const limit = Math.min(size, LIMITS.fileBytes, Math.max(0, LIMITS.totalBytes - totalBytes));
+        if (size > limit) gap("session_bytes_truncated");
+        if (!limit) continue;
+        measuredFiles++;
+        totalBytes += await readLines(handle, limit, gap, parseLine);
+      } finally { await handle.close(); }
+    } catch { gap("session_unreadable"); }
+    if (withUsage) sessions++;
+  }
+  if (since === undefined && rootStart !== undefined) { since = rootStart; sinceSource = "root-session-start"; }
+  if (since === undefined) gap("since_scope_missing");
+  if (since !== undefined && since > now) gap("since_scope_in_future");
+  // Claude Code writes a message once per content block: the last copy carries the final usage.
+  const responses = new Map<string, Usage>();
+  let duplicateResponses = 0;
+  for (const { id, time, amount } of records) {
+    if (since === undefined || time < since) continue;
+    if (time > now) { gap("usage_timestamp_in_future"); continue; }
+    if (responses.has(id)) duplicateResponses++;
+    responses.set(id, amount);
+  }
+  return { provider: "claude-code-local-session", available: sessions > 0, responses, gaps, gap, now, since, sinceSource,
+    sessions, discoveredFiles: files.length, measuredFiles, duplicateResponses, conflictingResponses: 0,
+    caveats: ["Coverage is limited to the local transcripts of this Claude Code session and its subagents; other sessions and external provider runs are excluded.",
+      "Input is the whole prompt: uncached input, cache writes and cache reads; cached input counts cache reads. Thinking is part of output. No monetary cost is inferred.",
+      "Elapsed minutes are wall time since the scope boundary, including idle time, not active CPU or model time.",
+      "Profiles are advisory. Enforce only fails this check; it does not stop Claude Code, providers or change Controller budgets.",
+      "Local transcripts are a point-in-time observation; unflushed or future usage is not measured."] };
+}
 
 export async function measureWorkflowEfficiency(options: WorkflowEfficiencyOptions = {}): Promise<WorkflowEfficiencyReport> {
   const profile = options.profile ?? "standard";
@@ -104,6 +281,10 @@ export async function measureWorkflowEfficiency(options: WorkflowEfficiencyOptio
   let since = timestamp(options.since), sinceSource = options.since === undefined ? "unavailable" : "explicit";
   if (options.since !== undefined && since === undefined) throw new Error("Efficiency since must be an ISO timestamp with timezone");
   const rootId = options.rootThreadId ?? process.env.CODEX_THREAD_ID;
+  const claudeSessionId = options.claudeSessionId ??
+    (rootId || options.sessionsDir ? undefined : process.env.CLAUDE_CODE_SESSION_ID);
+  if (claudeSessionId)
+    return efficiencyReport(await measureClaudeCode(claudeSessionId, options, now, since, sinceSource), profile, thresholds, options.enforce);
   if (!rootId) gap("root_thread_id_missing");
   let directory = path.resolve(options.sessionsDir ?? path.join(os.homedir(), ".codex", "sessions"));
   try {
@@ -168,34 +349,9 @@ export async function measureWorkflowEfficiency(options: WorkflowEfficiencyOptio
     if (new Set(selected.filter(session => session.id === id).map(session => session.parent)).size > 1) gap("session_parent_conflict");
   }
   if (since === undefined) {
-    try {
-      const handle = await safeOpen(path.join(options.cwd ?? process.cwd(), ".snipara", "workflow", "current.json"));
-      try {
-        const stat = await handle.stat();
-        if (stat.size > LIMITS.lineBytes) gap("workflow_scope_oversized");
-        else {
-          const buffer = Buffer.alloc(stat.size);
-          let bytes = 0;
-          while (bytes < buffer.length) {
-            const read = await handle.read(buffer, bytes, buffer.length - bytes, bytes);
-            if (!read.bytesRead) break;
-            bytes += read.bytesRead;
-          }
-          const after = await handle.stat();
-          if (bytes !== stat.size || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || after.dev !== stat.dev || after.ino !== stat.ino)
-            gap("workflow_scope_changed");
-          else {
-            const workflow = object(JSON.parse(buffer.toString("utf8")));
-            since = timestamp(workflow.createdAt);
-            if (since !== undefined) sinceSource = "current-workflow-createdAt";
-            else gap("workflow_scope_invalid");
-          }
-        }
-      } finally { await handle.close(); }
-    } catch (error) {
-      if (object(error).code !== "ENOENT") gap("workflow_scope_unreadable");
-    }
-    if (since === undefined) {
+    since = await workflowScopeStart(options.cwd ?? process.cwd(), gap);
+    if (since !== undefined) sinceSource = "current-workflow-createdAt";
+    else {
       since = roots.map(session => session.time).filter((value): value is number => value !== undefined).sort((a, b) => a - b)[0];
       if (since !== undefined) sinceSource = "root-session-start";
     }
@@ -245,51 +401,22 @@ export async function measureWorkflowEfficiency(options: WorkflowEfficiencyOptio
         if (size > limit) gap("session_bytes_truncated");
         if (!limit) continue;
         measuredFiles++;
-        const stream = handle.createReadStream({ start: 0, end: limit - 1, autoClose: false, encoding: "utf8", highWaterMark: 65536 });
-        let pending = "", dropping = false;
-        for await (const chunk of stream) {
-          const value = String(chunk); bodyBytes += Buffer.byteLength(value);
-          const parts = value.split("\n");
-          for (let index = 0; index < parts.length; index++) {
-            const part = parts[index];
-            if (!dropping) pending += part;
-            if (Buffer.byteLength(pending) > LIMITS.lineBytes) { gap("record_bytes_truncated"); pending = ""; dropping = true; }
-            if (index < parts.length - 1) {
-              if (!dropping) parseLine(pending);
-              pending = ""; dropping = false;
-            }
-          }
-        }
-        if (pending && !dropping) parseLine(pending, true);
+        bodyBytes += await readLines(handle, limit, gap, parseLine);
         const after = await handle.stat();
         if (after.size < session.size || (after.size === stat.size && after.mtimeMs !== stat.mtimeMs)) gap("session_changed_during_read");
       } finally { await handle.close(); }
     } catch { gap("session_unreadable"); }
   }
   for (const id of new Set(selected.map(session => session.id))) if (!supportedSessions.has(id)) gap("authoritative_usage_unavailable");
-  const totals: WorkflowEfficiencyReport["totals"] = { responses: responses.size,
-    inputTokens: 0, cachedInputTokens: 0, uncachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0,
-    cacheWriteInputTokens: 0, elapsedMinutes: since === undefined ? null : Math.max(0, (now - since) / 60000) };
-  for (const amount of responses.values()) for (const key of Object.keys(amount) as (keyof Usage)[]) {
-    if (!Number.isSafeInteger(totals[key] + amount[key])) gap("aggregate_overflow");
-    else totals[key] += amount[key];
-  }
-  const values: EfficiencyThresholds = { maxInputTokens: totals.inputTokens, maxResponses: totals.responses, maxUncachedInputTokens: totals.uncachedInputTokens,
-    maxOutputTokens: totals.outputTokens, maxElapsedMinutes: totals.elapsedMinutes ?? 0 };
-  const exceeded = (Object.keys(thresholds) as (keyof EfficiencyThresholds)[]).filter(key => values[key] > thresholds[key]);
-  const coverage = !selected.length || !supportedSessions.size ? "unavailable" : Object.keys(gaps).length ? "partial" : "complete";
-  return {
-    version: "snipara.workflow.efficiency.v1",
-    status: coverage === "unavailable" ? "unavailable" : coverage === "partial" ? "incomplete" : exceeded.length ? "limits_exceeded" : "within_advisory_limits",
-    scope: { provider: "codex-local-session-tree", since: since === undefined ? null : new Date(since).toISOString(), sinceSource,
-      observedAt: new Date(now).toISOString(), sessions: new Set(selected.map(session => session.id)).size, externalProviders: "excluded" },
-    coverage: { status: coverage, gaps, discoveredFiles, measuredFiles, duplicateResponses, conflictingResponses: conflicted.size },
-    totals, profile, thresholds, exceeded, mode: options.enforce ? "enforce-check" : "advisory",
+  return efficiencyReport({ provider: "codex-local-session-tree", available: selected.length > 0 && supportedSessions.size > 0,
+    responses, gaps, gap, now, since, sinceSource, sessions: new Set(selected.map(session => session.id)).size,
+    discoveredFiles, measuredFiles, duplicateResponses, conflictingResponses: conflicted.size,
     caveats: ["Coverage is limited to the discovered local Codex root session and linked descendants; external provider runs are excluded.",
       "Cached input is part of input; reasoning output is part of output. No monetary cost is inferred.",
       "Elapsed minutes are wall time since the scope boundary, including idle time, not active CPU or model time.",
       "Profiles are advisory. Enforce only fails this check; it does not stop Codex, providers or change Controller budgets.",
-      "Local logs are a point-in-time observation; undiscovered, unflushed or future usage is not measured."] };
+      "Local logs are a point-in-time observation; undiscovered, unflushed or future usage is not measured."] },
+  profile, thresholds, options.enforce);
 }
 
 export function renderWorkflowEfficiency(report: WorkflowEfficiencyReport, json = false): string {
@@ -298,7 +425,7 @@ export function renderWorkflowEfficiency(report: WorkflowEfficiencyReport, json 
     return efficiencyFailureReason(report);
   const t = report.totals;
   return [`Workflow efficiency: ${report.status} (${report.mode})`,
-    `Coverage: ${report.coverage.status}; ${report.scope.sessions} local Codex sessions; external providers excluded`,
+    `Coverage: ${report.coverage.status}; ${report.scope.sessions} local ${report.scope.provider === "claude-code-local-session" ? "Claude Code" : "Codex"} sessions; external providers excluded`,
     `Scope: ${report.scope.since ?? "unavailable"} (${report.scope.sinceSource})`,
     `Responses: ${t.responses}; input: ${t.inputTokens} (${t.cachedInputTokens} cached, ${t.uncachedInputTokens} uncached); output: ${t.outputTokens} (${t.reasoningOutputTokens} reasoning subset)`,
     `Wall time: ${t.elapsedMinutes === null ? "unavailable" : t.elapsedMinutes.toFixed(1)} minutes (includes idle time)`,

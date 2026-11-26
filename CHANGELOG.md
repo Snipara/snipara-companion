@@ -2,6 +2,15 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 9.3.0
+
+- The activity timeline stays within its 4 MB read limit: the next write keeps its newest 2 MB of whole lines. Past 4 MB, every workflow command printed `artifact_oversized` for `.snipara/activity/timeline.jsonl`.
+- The local collaboration state keeps the active leases and the newest 200 released or expired ones. Every commit and push added two for good.
+- The checkout lease no longer outlives the commit: a new `post-commit` hook releases the pre-commit lease, a failed commit releases it on exit, and `pre-push` releases its own. `collaboration release --claimed-for <reason>` releases the active leases claimed with that reason. Run `collaboration hooks install` again to get the new hooks.
+- Before an edit, Claude Code is warned when another session edited the same file in this checkout in the last 30 minutes. The warning never blocks.
+- `workflow efficiency` measures a Claude Code session and its subagents from their local transcripts (`CLAUDE_CODE_SESSION_ID` or `--claude-session-id`). A FULL `phase-commit` under Claude Code now stops on exceeded thresholds, as it does under Codex.
+- When the merged code impact risk is unknown, the card shows each source's score, and it drops the graph's `missing_tests` factor when it found linked tests.
+
 ## 9.2.1
 
 - A blocked collaboration guard says what it found. Git hooks discard stdout, so only a generic title was visible; stderr now lists each finding with its resource and reason, up to five, and how to acknowledge it when every finding is review-only. Acknowledgement rules are unchanged.

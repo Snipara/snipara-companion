@@ -356,7 +356,7 @@ export {
   workflowEfficiencyCommand,
 } from "./commands/workflow-efficiency";
 // These have no CLI side effects and are safe to import without running argv.
-export { resolveQueryFromToolInput } from "./commands/pre-tool";
+export { checkEditOverlap, resolveQueryFromToolInput } from "./commands/pre-tool";
 export { buildCommitResultMetadata, extractFilesFromToolInput } from "./commands/post-tool";
 export {
   captureStandaloneCommitWhy,
@@ -3011,9 +3011,14 @@ const workflow = program
 
 workflow
   .command("efficiency")
-  .description("Read aggregate local Codex task usage; advisory by default, no account or dispatch")
+  .description("Read aggregate local Codex or Claude Code task usage; advisory by default, no account or dispatch")
   .option("--root-thread-id <id>", "Root Codex chat id; defaults to CODEX_THREAD_ID")
   .option("--sessions-dir <directory>", "Local Codex session directory")
+  .option(
+    "--claude-session-id <id>",
+    "Claude Code session id; defaults to CLAUDE_CODE_SESSION_ID when no Codex root is set"
+  )
+  .option("--claude-projects-dir <directory>", "Local Claude Code projects directory")
   .option(
     "--since <timestamp>",
     "Count since ISO timestamp; defaults to workflow start, then root session start"
@@ -4414,6 +4419,7 @@ collaboration
   .command("release")
   .description("Release a collaboration lease")
   .option("--lease-id <leaseId>", "Lease id to release (defaults to latest active local lease)")
+  .option("--claimed-for <reason>", "Release every active local lease claimed with this reason (none: no-op)")
   .option("--all", "Release all active local leases")
   .option("--reason <reason>", "Release reason")
   .option("--actor <actor>", "Developer or agent display name")
@@ -4426,6 +4432,7 @@ collaboration
   .action(async (options) => {
     await collaborationReleaseCommand({
       leaseId: options.leaseId,
+      claimedFor: options.claimedFor,
       all: Boolean(options.all),
       reason: options.reason,
       actor: options.actor,

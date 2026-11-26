@@ -350,6 +350,22 @@ test("collaboration local state expires stale active leases on load", () => {
   assert.equal(loaded.leases[0].status, "EXPIRED");
 });
 
+test("collaboration local state keeps active leases and only the newest 200 released or expired", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-collaboration-prune-"));
+  const state = createEmptyCollaborationState();
+  const at = (minute) => new Date(Date.UTC(2026, 10, 25, 0, minute)).toISOString();
+  const lease = (id, status, minute) => ({ id, mode: "EXCLUSIVE", status, claimedAt: at(minute),
+    expiresAt: "2099-01-01T00:00:00.000Z", resources: [{ kind: "SURFACE", id: "checkout-git-write" }] });
+  state.leases = [lease("active_oldest", "ACTIVE", 0)];
+  for (let minute = 1; minute <= 300; minute++) state.leases.push(lease(`old_${minute}`, minute % 2 ? "RELEASED" : "EXPIRED", minute));
+  saveCollaborationState(state, dir);
+
+  const ids = loadCollaborationState(dir).leases.map((item) => item.id);
+  assert.equal(ids.length, 201);
+  assert.ok(ids.includes("active_oldest") && ids.includes("old_300") && ids.includes("old_101"));
+  assert.ok(!ids.includes("old_100"));
+});
+
 test("collaboration helpers derive route, package, schema, surface, and symbol resources", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-collaboration-resources-"));
   fs.mkdirSync(path.join(dir, "apps/web/src/app/api/projects/[projectId]/guard"), {
@@ -591,6 +607,30 @@ test("collaboration heartbeat and release preserve the lease owner identity", ()
     assert.equal(body.actorLabel, "Codex lease owner");
     assert.equal(body.sessionId, "session_1");
   }
+});
+
+test("collaboration release --claimed-for releases only the leases claimed with that reason", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "snipara-collaboration-claimed-for-"));
+  fs.writeFileSync(path.join(dir, "package.json"), "{}", "utf8");
+  const preloadPath = writeHostedCollaborationPreload(dir);
+  const logPath = path.join(dir, "collab-log.jsonl");
+  const state = createEmptyCollaborationState();
+  const lease = (id, reason) => ({ id, mode: "EXCLUSIVE", status: "ACTIVE", reason, claimedAt: new Date().toISOString(),
+    expiresAt: "2099-01-01T00:00:00.000Z", resources: [{ kind: "SURFACE", id: "checkout-git-write" }] });
+  state.leases = [lease("commit_1", "pre-commit git write"), lease("commit_2", "pre-commit git write"), lease("workflow_1", "Workflow start: plan")];
+  saveCollaborationState(state, dir);
+  const options = { cwd: dir, env: hostedEnv({ SNIPARA_TEST_COLLAB_LOG: logPath }), nodeArgs: ["-r", preloadPath] };
+
+  const released = runCli(["collaboration", "release", "--claimed-for", "pre-commit git write", "--json"], options);
+  assert.equal(released.status, 0, released.stderr || released.stdout);
+  const patched = fs.readFileSync(logPath, "utf8").trim().split("\n").map(JSON.parse)
+    .filter((entry) => entry.method === "PATCH").map((entry) => entry.path.split("/").pop()).sort();
+  assert.deepEqual(patched, ["commit_1", "commit_2"]);
+  const statuses = Object.fromEntries(loadCollaborationState(dir).leases.map((item) => [item.id, item.status]));
+  assert.deepEqual(statuses, { commit_1: "RELEASED", commit_2: "RELEASED", workflow_1: "ACTIVE" });
+
+  const none = runCli(["collaboration", "release", "--claimed-for", "pre-push git write", "--json"], options);
+  assert.equal(none.status, 0, none.stderr || none.stdout);
 });
 
 test("collaboration guard exits non-zero for hosted blocking conflicts", () => {
@@ -991,7 +1031,7 @@ test("collaboration hooks install plan writes blocking managed hooks", () => {
   assert.equal(result.mode, "blocking");
   assert.deepEqual(
     result.hooks.map((hook) => hook.hook),
-    ["pre-commit", "pre-push"]
+    ["pre-commit", "pre-push", "post-commit"]
   );
   assert.equal(
     result.hooks.every((hook) => hook.action === "created"),
@@ -1018,6 +1058,11 @@ test("collaboration hooks install plan writes blocking managed hooks", () => {
   assert.doesNotMatch(preCommitHook, /snipara-companion@latest/);
   assert.match(preCommitHook, /SNIPARA_COLLABORATION_GUARD=0/);
   assert.match(preCommitHook, /return 127/);
+  const postCommitHook = fs.readFileSync(path.join(dir, ".git", "hooks", "post-commit"), "utf8");
+  const release = (profile) => `collaboration release --claimed-for "${profile} git write"`;
+  assert.ok(postCommitHook.includes(release("pre-commit")));
+  assert.match(preCommitHook, /trap '.*-eq 0 \] \|\| snipara_companion_hook collaboration release --claimed-for "pre-commit git write"/);
+  assert.ok(prePushHook.includes(release("pre-push")));
 });
 
 test("generated pre-commit guard precedes existing commands and reinstalls idempotently", (t) => {
@@ -1054,7 +1099,7 @@ test("generated pre-commit guard precedes existing commands and reinstalls idemp
   );
   for (const [failure, expected] of [
     ["claim", ["claim"]],
-    ["guard", ["claim", "guard"]],
+    ["guard", ["claim", "guard", "release"]],
     ["", ["claim", "guard", "user"]],
   ]) {
     fs.writeFileSync(logPath, "");

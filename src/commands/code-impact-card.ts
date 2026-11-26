@@ -41,7 +41,8 @@ export interface CodeImpactCard {
   targets: string[];
   missingTargets: string[];
   coverage: { status: string; reasons: string[] };
-  risk: { level: string; score: number | null; reasons: string[] };
+  /** `sourceScores` appears when the merged risk is unknown but one source measured a score. */
+  risk: { level: string; score: number | null; reasons: string[]; sourceScores?: Record<string, number | null> };
   /** Files that import or call the targets directly. `count` is the total; `files` is capped. */
   dependents: { count: number; files: CodeImpactCardDependent[] };
   /** Files that reach the targets through other files, up to the traversal depth. */
@@ -314,13 +315,27 @@ function mergeDependents(
   );
 }
 
-function riskReasons(risk: UnknownRecord | null): string[] {
+/** `missing_tests` is the graph's view; it is dropped when the card itself found linked tests. */
+function riskReasons(risk: UnknownRecord | null, hasLinkedTests: boolean): string[] {
   const reasons = stringsOf(risk?.reasons);
   for (const factor of asArray(risk?.factors)) {
     const code = asRecord(factor)?.code;
     if (typeof code === "string") reasons.push(code);
   }
-  return [...new Set(reasons)].slice(0, 4);
+  return [...new Set(reasons)]
+    .filter((reason) => reason !== "missing_tests" || !hasLinkedTests)
+    .slice(0, 4);
+}
+
+/** The score each source gave when the merged risk has none, so an unknown risk still shows what was measured. */
+function knownSourceScores(risk: UnknownRecord | null): Record<string, number | null> | null {
+  const scores = asRecord(risk?.sourceScores);
+  if (!scores || typeof risk?.score === "number") return null;
+  const entries = Object.entries(scores).map(([source, score]): [string, number | null] => [
+    source,
+    typeof score === "number" ? score : null,
+  ]);
+  return entries.some(([, score]) => score !== null) ? Object.fromEntries(entries) : null;
 }
 
 function coverageOf(top: UnknownRecord, hostedOnly: boolean): CodeImpactCard["coverage"] {
@@ -391,6 +406,7 @@ export function buildCodeImpactCard(
   ].filter(exists);
   const tests = linkedTests.length ? linkedTests : transitive.filter(isTestPath).filter(exists);
   const risk = asRecord(top.risk);
+  const sourceScores = knownSourceScores(risk);
   const warningChars = options.warningChars ?? LIMITS.warningChars;
   const warnings = asArray(top.warnings)
     .map((warning) => formatWarning(warning, warningChars))
@@ -413,7 +429,8 @@ export function buildCodeImpactCard(
     risk: {
       level: typeof risk?.level === "string" ? risk.level : "unknown",
       score: typeof risk?.score === "number" ? risk.score : null,
-      reasons: riskReasons(risk),
+      reasons: riskReasons(risk, linkedTests.length > 0),
+      ...(sourceScores ? { sourceScores } : {}),
     },
     dependents: { count: dependents.length, files: dependents.slice(0, LIMITS.dependents) },
     transitiveDependents: {
@@ -479,7 +496,11 @@ export function printCodeImpactCard(
   const coverageReasons = card.coverage.reasons.length
     ? ` (${card.coverage.reasons.join(", ")})`
     : "";
-  const score = card.risk.score !== null ? ` score ${card.risk.score}` : "";
+  const measured = Object.entries(card.risk.sourceScores ?? {})
+    .map(([source, value]) => `${source} ${value ?? "not scored"}`)
+    .join(", ");
+  const score =
+    card.risk.score !== null ? ` score ${card.risk.score}` : measured ? ` (scores: ${measured})` : "";
   const riskReasons = card.risk.reasons.length ? ` (${card.risk.reasons.join(", ")})` : "";
   console.log(
     `Coverage: ${card.coverage.status}${coverageReasons}; risk: ${card.risk.level}${score}${riskReasons}`

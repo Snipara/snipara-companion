@@ -243,7 +243,37 @@ export function appendActivityEvent(input: AppendActivityInput): ActivityTimelin
   const timelinePath = getActivityTimelinePath(cwd);
   fs.mkdirSync(path.dirname(timelinePath), { recursive: true });
   fs.appendFileSync(timelinePath, `${JSON.stringify(event)}\n`, "utf8");
+  try {
+    if (fs.statSync(timelinePath).size > MAX_ACTIVITY_TIMELINE_BYTES) trimActivityTimeline(timelinePath);
+  } catch {
+    // The event is written; a timeline left oversized is reported by its reader.
+  }
   return event;
+}
+
+/** Keeps the newest whole lines, half the read limit, so the timeline never grows past what readers accept. */
+function trimActivityTimeline(timelinePath: string): void {
+  const fd = fs.openSync(timelinePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  let kept: Buffer;
+  try {
+    const { size } = fs.fstatSync(fd);
+    if (size <= MAX_ACTIVITY_TIMELINE_BYTES) return;
+    // One byte before the kept half, so a half that starts on a line boundary keeps its first line.
+    const tail = Buffer.alloc(MAX_ACTIVITY_TIMELINE_BYTES / 2 + 1);
+    let read = 0;
+    while (read < tail.length) {
+      const bytes = fs.readSync(fd, tail, read, tail.length - read, size - tail.length + read);
+      if (!bytes) break;
+      read += bytes;
+    }
+    const firstLineEnd = tail.subarray(0, read).indexOf(10);
+    kept = firstLineEnd < 0 ? Buffer.alloc(0) : tail.subarray(firstLineEnd + 1, read);
+  } finally {
+    fs.closeSync(fd);
+  }
+  const temp = `${timelinePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(temp, kept);
+  fs.renameSync(temp, timelinePath);
 }
 
 export function readActivityTimeline(

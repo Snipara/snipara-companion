@@ -7,6 +7,8 @@
  * Guard. Designed to be fast and fail-soft: when unconfigured or offline it
  * returns nothing rather than blocking the tool call.
  */
+import * as fs from "fs";
+import * as path from "path";
 import { createClient, type ContextQueryResult } from "../api/client";
 import { isConfigured, loadConfig } from "../config/store";
 import { createLocalQueryCache } from "../cache/query-cache";
@@ -266,6 +268,77 @@ function formatContextOutput(result: ContextQueryResult): string {
   return parts.length > 1 ? parts.join("\n") : "";
 }
 
+const EDIT_TOOLS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
+const EDIT_OVERLAP_WINDOW_MS = 30 * 60 * 1000;
+const EDIT_OVERLAP_MAX_FILES = 500;
+const EDIT_OVERLAP_RELATIVE_PATH = path.join(".snipara", "collaboration", "edits.json");
+
+/**
+ * Records which agent session last edited each file of this checkout, and warns when another session
+ * edited the same file within the last 30 minutes. Local and advisory: it never blocks the edit, and
+ * a separate worktree has its own record.
+ */
+export function checkEditOverlap(input: {
+  cwd: string;
+  tool?: string;
+  toolInput?: string;
+  sessionId?: string;
+  now?: Date;
+}): string | null {
+  if (!input.tool || !EDIT_TOOLS.has(input.tool) || !input.sessionId || !input.toolInput) {
+    return null;
+  }
+  let target: unknown;
+  try {
+    const parsed = JSON.parse(input.toolInput) as Record<string, unknown>;
+    target = parsed.file_path ?? parsed.notebook_path;
+  } catch {
+    return null;
+  }
+  if (typeof target !== "string" || !target) {
+    return null;
+  }
+  const root = path.resolve(input.cwd);
+  const relative = path.relative(root, path.resolve(root, target));
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    return null;
+  }
+  const file = relative.split(path.sep).join("/");
+  const recordPath = path.join(root, EDIT_OVERLAP_RELATIVE_PATH);
+  const now = (input.now ?? new Date()).getTime();
+  let edits: Record<string, { sessionId: string; at: string }> = {};
+  try {
+    const record = JSON.parse(fs.readFileSync(recordPath, "utf8")) as { files?: unknown };
+    if (record.files && typeof record.files === "object") {
+      edits = record.files as typeof edits;
+    }
+  } catch {
+    // No edit recorded yet, or an unreadable record: start a new one.
+  }
+  const previous = edits[file];
+  const ago = previous ? now - Date.parse(previous.at) : NaN;
+  const warning =
+    previous && previous.sessionId !== input.sessionId && ago >= 0 && ago <= EDIT_OVERLAP_WINDOW_MS
+      ? `Snipara: another agent session (${previous.sessionId.slice(0, 8)}) edited ${file} ` +
+        `${Math.round(ago / 60000)} min ago in this checkout. Check its changes before editing; ` +
+        "parallel sessions should each work in their own worktree."
+      : null;
+  edits[file] = { sessionId: input.sessionId, at: new Date(now).toISOString() };
+  const kept = Object.entries(edits)
+    .filter(([, edit]) => typeof edit?.at === "string" && now - Date.parse(edit.at) <= EDIT_OVERLAP_WINDOW_MS)
+    .sort(([, a], [, b]) => b.at.localeCompare(a.at))
+    .slice(0, EDIT_OVERLAP_MAX_FILES);
+  try {
+    fs.mkdirSync(path.dirname(recordPath), { recursive: true });
+    const temp = `${recordPath}.${process.pid}.tmp`;
+    fs.writeFileSync(temp, JSON.stringify({ files: Object.fromEntries(kept) }));
+    fs.renameSync(temp, recordPath);
+  } catch {
+    // Advisory record: a failed write only loses the next warning.
+  }
+  return warning;
+}
+
 /**
  * Pre-tool handler: Query Snipara for relevant context
  */
@@ -281,6 +354,16 @@ export async function preToolCommand(options: {
   if (!isConfigured()) {
     // Silently exit if not configured (don't break Claude workflow)
     process.exit(0);
+  }
+
+  const editOverlap = checkEditOverlap({
+    cwd: process.cwd(),
+    tool: options.tool,
+    toolInput: options.toolInput,
+    sessionId: process.env.SNIPARA_SESSION_ID,
+  });
+  if (editOverlap) {
+    console.log(editOverlap);
   }
 
   const {

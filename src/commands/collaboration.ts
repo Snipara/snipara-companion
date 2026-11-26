@@ -73,6 +73,8 @@ const HOSTED_GUARD_MAX_FILES = 450;
 const HOSTED_GUARD_MAX_RESOURCES = 850;
 const HOSTED_GUARD_MAX_SYMBOL_RESOURCES = 160;
 const REVIEW_ONLY_ACK_TTL_MS = 15 * 60 * 1000;
+const MAX_LOCAL_INACTIVE_LEASES = 200;
+type CollaborationGitHookName = "pre-commit" | "pre-push" | "post-commit";
 const HOOK_BLOCK_PREFIX = "snipara:collaboration-guard";
 const CHECKOUT_GIT_WRITE_RESOURCE: CollaborationResource = {
   kind: "SURFACE",
@@ -222,6 +224,7 @@ interface CollaborationCommandOptions {
   intervalSeconds?: string;
   maxFiles?: string;
   leaseId?: string;
+  claimedFor?: string;
   all?: boolean;
   once?: boolean;
   autoClaim?: boolean;
@@ -363,6 +366,7 @@ export function saveCollaborationState(
   rootDir = process.cwd()
 ): void {
   expireLocalLeases(state);
+  pruneInactiveLocalLeases(state);
   expireReviewOnlyAcknowledgements(state);
   const statePath = getCollaborationStatePath(rootDir);
   fs.mkdirSync(path.dirname(statePath), { recursive: true });
@@ -877,6 +881,7 @@ export function buildCollaborationHooksInstallPlan(
   const hooks = [
     installManagedCollaborationGitHook(repoRoot, "pre-commit", options),
     installManagedCollaborationGitHook(repoRoot, "pre-push", options),
+    installManagedCollaborationGitHook(repoRoot, "post-commit", options),
   ];
   return {
     repoRoot,
@@ -1873,6 +1878,24 @@ function collaborationHookBlockMarker(hookName: string, type: "start" | "end"): 
   return `# ${HOOK_BLOCK_PREFIX} ${hookName}:${type}`;
 }
 
+const COMPANION_HOOK_FUNCTION_LINES = [
+  "  snipara_companion_hook() {",
+  '    if [ -f "packages/cli/src/index.ts" ] && command -v pnpm >/dev/null 2>&1; then',
+  '      pnpm --filter snipara-companion exec tsx src/index.ts "$@"',
+  "    elif command -v snipara-companion >/dev/null 2>&1; then",
+  '      snipara-companion "$@"',
+  "    else",
+  '      echo "snipara-companion is required for the Snipara collaboration guard. Install it or set SNIPARA_COLLABORATION_GUARD=0 for an explicit emergency bypass." >&2',
+  "      return 127",
+  "    fi",
+  "  }",
+];
+
+/** Releases the leases that `profile`'s claim took, by their claim reason. */
+function collaborationHookReleaseCommand(profile: "pre-commit" | "pre-push"): string {
+  return `snipara_companion_hook collaboration release --claimed-for "${profile} git write" --reason "${profile} finished" --json >/dev/null 2>&1 || true`;
+}
+
 function buildCollaborationGitHookBlock(hookName: "pre-commit" | "pre-push"): string {
   const profile = hookName === "pre-push" ? "pre-push" : "pre-commit";
   return [
@@ -1884,17 +1907,14 @@ function buildCollaborationGitHookBlock(hookName: "pre-commit" | "pre-push"): st
     '  echo "Snipara collaboration guard bypassed by SNIPARA_COLLABORATION_GUARD=0" >&2',
     "else",
     '  export SNIPARA_WORKSPACE_DIR="${SNIPARA_WORKSPACE_DIR:-$PWD}"',
-    "  snipara_companion_hook() {",
-    '    if [ -f "packages/cli/src/index.ts" ] && command -v pnpm >/dev/null 2>&1; then',
-    '      pnpm --filter snipara-companion exec tsx src/index.ts "$@"',
-    "    elif command -v snipara-companion >/dev/null 2>&1; then",
-    '      snipara-companion "$@"',
-    "    else",
-    '      echo "snipara-companion is required for the Snipara collaboration guard. Install it or set SNIPARA_COLLABORATION_GUARD=0 for an explicit emergency bypass." >&2',
-    "      return 127",
-    "    fi",
-    "  }",
+    ...COMPANION_HOOK_FUNCTION_LINES,
     `  snipara_companion_hook collaboration claim --resource SURFACE:checkout-git-write --mode EXCLUSIVE --ttl-seconds 300 --reason "${profile} git write" --json >/dev/null || { snipara_claim_status=$?; echo "Snipara ${profile} failed: collaboration claim (exit $snipara_claim_status)." >&2; ${profile === "pre-commit" ? 'exit "$snipara_claim_status"' : "true"}; }`,
+    profile === "pre-commit"
+      ? "  # The post-commit hook releases the lease; a commit that fails releases it here, not at its expiry."
+      : "  # Git sends the push once this hook exits: release the lease then.",
+    profile === "pre-commit"
+      ? `  trap 'snipara_hook_status=$?; [ "$snipara_hook_status" -eq 0 ] || ${collaborationHookReleaseCommand(profile)}; exit "$snipara_hook_status"' EXIT`
+      : `  trap 'snipara_hook_status=$?; ${collaborationHookReleaseCommand(profile)}; exit "$snipara_hook_status"' EXIT`,
     "  snipara_companion_guard() {",
     `    snipara_companion_hook collaboration guard --profile ${profile} --action ${profile} --resource SURFACE:checkout-git-write --enforce "$@" --json >/dev/null`,
     "  }",
@@ -1917,8 +1937,21 @@ function buildCollaborationGitHookBlock(hookName: "pre-commit" | "pre-push"): st
   ].join("\n");
 }
 
+function buildCollaborationPostCommitHookBlock(): string {
+  return [
+    collaborationHookBlockMarker("post-commit", "start"),
+    "# Release the checkout lease the pre-commit hook claimed, so other sessions do not wait for its expiry.",
+    'if [ "${SNIPARA_COLLABORATION_GUARD:-1}" != "0" ]; then',
+    '  export SNIPARA_WORKSPACE_DIR="${SNIPARA_WORKSPACE_DIR:-$PWD}"',
+    ...COMPANION_HOOK_FUNCTION_LINES,
+    `  ${collaborationHookReleaseCommand("pre-commit")}`,
+    "fi",
+    collaborationHookBlockMarker("post-commit", "end"),
+  ].join("\n");
+}
+
 function mergeManagedCollaborationHookBlock(
-  hookName: "pre-commit" | "pre-push",
+  hookName: CollaborationGitHookName,
   currentContent: string | null,
   block: string
 ): string {
@@ -1963,7 +1996,7 @@ function resolveGitHooksDir(repoRoot: string): string {
 
 function installManagedCollaborationGitHook(
   repoRoot: string,
-  hookName: "pre-commit" | "pre-push",
+  hookName: CollaborationGitHookName,
   options: CollaborationHooksInstallOptions
 ): {
   hook: string;
@@ -1974,7 +2007,10 @@ function installManagedCollaborationGitHook(
   const hooksDir = resolveGitHooksDir(repoRoot);
   const hookPath = path.join(hooksDir, hookName);
   const currentContent = fs.existsSync(hookPath) ? fs.readFileSync(hookPath, "utf8") : null;
-  const block = buildCollaborationGitHookBlock(hookName);
+  const block =
+    hookName === "post-commit"
+      ? buildCollaborationPostCommitHookBlock()
+      : buildCollaborationGitHookBlock(hookName);
   const nextContent = mergeManagedCollaborationHookBlock(hookName, currentContent, block);
   const action =
     currentContent === null ? "created" : currentContent === nextContent ? "unchanged" : "updated";
@@ -2059,6 +2095,20 @@ function expireLocalLeases(state: CollaborationLocalState, now = new Date()): vo
   }
 }
 
+/** Every commit and push claims new leases: keep the active ones and only the newest released or expired. */
+function pruneInactiveLocalLeases(state: CollaborationLocalState): void {
+  const inactive = state.leases.filter((lease) => lease.status !== "ACTIVE");
+  if (inactive.length <= MAX_LOCAL_INACTIVE_LEASES) {
+    return;
+  }
+  const kept = new Set(
+    inactive
+      .sort((a, b) => (b.claimedAt ?? "").localeCompare(a.claimedAt ?? ""))
+      .slice(0, MAX_LOCAL_INACTIVE_LEASES)
+  );
+  state.leases = state.leases.filter((lease) => lease.status === "ACTIVE" || kept.has(lease));
+}
+
 function workflowSessionKey(context: ResolvedCollaborationContext, workflowId: string): string {
   return createHash("sha256")
     .update(
@@ -2089,6 +2139,12 @@ function resolveReleaseLeaseIds(
   const explicit = normalizeOptionalString(options.leaseId);
   if (explicit) {
     return [explicit];
+  }
+  const claimedFor = normalizeOptionalString(options.claimedFor);
+  if (claimedFor) {
+    return state.leases
+      .filter((lease) => lease.status === "ACTIVE" && lease.reason === claimedFor)
+      .map((lease) => lease.id);
   }
   if (options.all) {
     return state.leases.filter((lease) => lease.status === "ACTIVE").map((lease) => lease.id);

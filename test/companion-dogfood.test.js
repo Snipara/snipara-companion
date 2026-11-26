@@ -87,18 +87,19 @@ test("default text receipts stay under 2 KB and name the saved detail file", t =
   assert.ok(JSON.parse(full.stdout).workflow.phases.length === 2);
 });
 
-test("oversized optional activity warnings stay off JSON stdout", t => {
+test("an oversized activity timeline is trimmed by the next command instead of warning on every one", t => {
   const cwd = fixture(t);
   const activity = path.join(cwd, ".snipara/activity");
   fs.mkdirSync(activity, { recursive: true });
-  // Sparse file triggers the read bound without allocating a transcript fixture.
+  // Sparse file past the read bound without allocating a transcript fixture.
   const fd = fs.openSync(path.join(activity, "timeline.jsonl"), "w");
   fs.ftruncateSync(fd, 256 * 1024 * 1024);
   fs.closeSync(fd);
   const result = start(cwd);
   assert.equal(json(result).workflowId, "plan-id");
   assert.ok(Buffer.byteLength(result.stdout) < 2000);
-  assert.match(result.stderr, /activity|snapshot|oversized/i);
+  assert.doesNotMatch(result.stderr, /oversized/i);
+  assert.ok(fs.statSync(path.join(activity, "timeline.jsonl")).size <= 4 * 1024 * 1024);
 });
 
 function fullWorkflow(cwd) {

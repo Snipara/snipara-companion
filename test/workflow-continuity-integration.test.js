@@ -310,7 +310,9 @@ test("legacy task state and runtime metadata cannot bypass resume redaction", (t
 
 test("large optional history cannot turn a persisted task commit into a reported failure", (t) => {
   const f=fixture(t); f.start();
-  fs.writeFileSync(path.join(f.cwd,".snipara/activity/timeline.jsonl")," ".repeat(4*1024*1024+1));
+  // The timeline trims itself when written; an oversized team-sync session cannot be.
+  fs.mkdirSync(path.join(f.cwd,".snipara/team-sync"),{recursive:true});
+  fs.writeFileSync(path.join(f.cwd,".snipara/team-sync/session.json")," ".repeat(2*1024*1024+1));
   const result=f.run(["workflow","task-commit","code","edit","--summary","Task outcome saved", "--outcome","completed","--json"]);
   assert.equal(result.status,0,result.stderr);
   assert.match(result.stderr,/Supplemental session snapshot unavailable; workflow state was saved/);

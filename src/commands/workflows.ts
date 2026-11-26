@@ -14183,9 +14183,9 @@ export async function workflowPhaseCommitCommand(options: {
       enforce: true,
       since: state.createdAt,
     });
-    // Stop only on measured excess. Missing local usage records (for example a Claude
-    // Code session, which writes no Codex transcripts) cannot prove a breach, so they
-    // are reported on stderr and do not block the phase.
+    // Stop only on measured excess. Missing local usage records (no Codex root thread and
+    // no Claude Code session transcript) cannot prove a breach, so they are reported on
+    // stderr and do not block the phase.
     if (efficiency.report.exceeded.length > 0) {
       throw new Error(efficiencyFailureReason(efficiency.report));
     }

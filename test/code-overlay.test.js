@@ -1412,8 +1412,26 @@ test("impact card keeps hosted dependents and drops recommended tests that do no
     { file: "test/index.test.ts" },
   ]);
   assert.deepEqual(card.tests, { count: 1, files: ["test/index.test.ts"], basis: "linked" });
-  assert.deepEqual(card.risk, { level: "low", score: null, reasons: ["missing_tests"] });
+  assert.deepEqual(card.risk, { level: "low", score: null, reasons: [] });
   assert.equal(card.coverage.status, "indexed");
+});
+
+test("an unknown hybrid risk card shows the score the local overlay measured", () => {
+  const repo = makeTempRepo();
+  const card = buildCodeImpactCard(
+    {
+      title: "Code impact",
+      sourceSelection: { selected: "hybrid_graph", reason: "working_tree_dirty" },
+      result: {
+        changed_files: ["src/helper.ts"],
+        risk: { level: "unknown", status: "incomplete", score: null, reasons: ["hosted_coverage_incomplete"],
+          factors: [{ code: "missing_tests" }], sourceScores: { local_overlay: 74, hosted_graph: null } },
+      },
+    },
+    { repoRoot: repo, detailPath: ".snipara/code-impact/latest.json" }
+  );
+  assert.deepEqual(card.risk, { level: "unknown", score: null, reasons: ["hosted_coverage_incomplete", "missing_tests"],
+    sourceScores: { local_overlay: 74, hosted_graph: null } });
 });
 
 test("the file cap drops the files farthest from the target, not the target's neighbours", () => {

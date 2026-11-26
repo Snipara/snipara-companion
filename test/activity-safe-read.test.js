@@ -50,6 +50,17 @@ test("oversized timeline and JSON supplements report unavailable instead of read
   assert.throws(() => buildSessionSnapshot({ cwd: f.cwd }), /bounded read limit/);
 });
 
+test("appending to an oversized timeline keeps its newest whole events within the read limit", (t) => {
+  const f = fixture(t); const timeline = f.target(".snipara/activity/timeline.jsonl");
+  const old = JSON.stringify({ timestamp: "2026-01-01T00:00:00.000Z", title: "Old", pad: "x".repeat(1000) });
+  fs.writeFileSync(timeline, `${old}\n`.repeat(5000));
+  appendActivityEvent({ cwd: f.cwd, source: "workflow", kind: "task-commit", title: "Newest" });
+  assert.ok(fs.statSync(timeline).size <= 2 * 1024 * 1024);
+  const events = readActivityTimeline({ cwd: f.cwd });
+  assert.equal(events[0].title, "Newest");
+  assert.ok(events.length > 1000 && events.slice(1).every((event) => event.title === "Old"));
+});
+
 test("invalid JSON and timeline events are explicit unavailable supplements", (t) => {
   const f = fixture(t); const timeline = f.target(".snipara/activity/timeline.jsonl");
   fs.writeFileSync(timeline, "{not-json}\n");

@@ -161,3 +161,46 @@ test("cached standing context counts toward total input and enforced text is one
   assert.match(message, /maxInputTokens exceeded/);
   assert.match(message, /cached=999999/);
 });
+
+test("a Claude Code session and its subagents are measured from their local transcripts", async t => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "snipara-efficiency-claude-"));
+  t.after(() => fs.rm(cwd, { recursive: true, force: true }));
+  const projects = path.join(cwd, "projects"), session = "3c7e20e1-a539-407b-bdb1-f2056d52afc6";
+  const write = async (file, records) => {
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, records.map(record => JSON.stringify(record)).join("\n") + "\n");
+  };
+  const tokens = (input, write, read, output, thinking = 0) => ({ input_tokens: input, cache_creation_input_tokens: write,
+    cache_read_input_tokens: read, output_tokens: output, output_tokens_details: { thinking_tokens: thinking } });
+  const assistant = (id, usage, time = after, model = "claude-opus-5-5") => ({ type: "assistant", timestamp: time, message: { id, model, usage } });
+  await write(path.join(projects, "-repo", `${session}.jsonl`), [
+    { type: "user", timestamp: before, message: { role: "user", content: "PRIVATE_PROMPT" } },
+    assistant("old", tokens(1, 1, 1, 1), before),
+    assistant("m1", tokens(2, 100, 1000, 50, 10)),
+    assistant("m1", tokens(2, 100, 1000, 50, 10)),
+    assistant("synthetic", tokens(0, 0, 0, 0), after, "<synthetic>"),
+  ]);
+  await write(path.join(projects, "-repo", session, "subagents", "agent-1.jsonl"), [assistant("m2", tokens(3, 0, 500, 20))]);
+  await write(path.join(projects, "-other", "other-session-0001.jsonl"), [assistant("x", tokens(999999, 0, 0, 1))]);
+  const options = { cwd, claudeSessionId: session, claudeProjectsDir: projects, since, maxElapsedMinutes: Number.MAX_SAFE_INTEGER };
+  const result = await workflowEfficiencyCommand({ ...options, enforce: true });
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.report.scope.provider, "claude-code-local-session");
+  assert.equal(result.report.coverage.status, "complete");
+  assert.equal(result.report.scope.sessions, 2);
+  assert.equal(result.report.totals.responses, 2);
+  assert.equal(result.report.totals.inputTokens, 1605);
+  assert.equal(result.report.totals.cachedInputTokens, 1500);
+  assert.equal(result.report.totals.uncachedInputTokens, 105);
+  assert.equal(result.report.totals.cacheWriteInputTokens, 100);
+  assert.equal(result.report.totals.outputTokens, 70);
+  assert.equal(result.report.totals.reasoningOutputTokens, 10);
+  assert.equal(result.report.coverage.duplicateResponses, 1);
+  assert.match(renderWorkflowEfficiency(result.report), /2 local Claude Code sessions/);
+  assert.doesNotMatch(renderWorkflowEfficiency(result.report, true), /PRIVATE|other-session/);
+
+  const missing = await workflowEfficiencyCommand({ ...options, claudeSessionId: "missing-session-id", enforce: true });
+  assert.equal(missing.report.coverage.status, "unavailable");
+  assert.equal(missing.report.coverage.gaps.root_session_missing, 1);
+  assert.equal(missing.exitCode, 1);
+});
