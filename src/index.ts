@@ -3011,7 +3011,9 @@ const workflow = program
 
 workflow
   .command("efficiency")
-  .description("Read aggregate local Codex or Claude Code task usage; advisory by default, no account or dispatch")
+  .description(
+    "Read aggregate local Codex or Claude Code task usage; advisory by default, no account or dispatch"
+  )
   .option("--root-thread-id <id>", "Root Codex chat id; defaults to CODEX_THREAD_ID")
   .option("--sessions-dir <directory>", "Local Codex session directory")
   .option(
@@ -3397,12 +3399,17 @@ workflow
   .argument("<phaseId>", "Workflow phase id")
   .option("--detail", "Print full detail; default is a compact receipt with artifact paths")
   .option("--json", "Print only JSON on stdout; diagnostics go to stderr")
+  .option(
+    "--accept-efficiency-excess",
+    "FULL workflows: open the phase in this thread although its total input passed the limit (the user decided to go on here)"
+  )
   .action(async (phaseId, options) => {
     await workflowPhaseStartCommand({
       phaseId,
       detail: Boolean(options.detail),
       json: options.json,
       brief: options.brief,
+      acceptEfficiencyExcess: options.acceptEfficiencyExcess === true,
     });
   });
 
@@ -3414,6 +3421,10 @@ workflow
   .option("--agent <agent>", "Override the Agent Context identity for this task")
   .option("--agent-context-manifest <file>", "Override the Agent Context manifest path")
   .option("--skip-agent-context", "Disable Agent Context dogfooding for this task")
+  .option(
+    "--accept-efficiency-excess",
+    "FULL workflows: open the task's phase in this thread although its total input passed the limit"
+  )
   .option("--json", "Print raw JSON")
   .action(async (phaseId, taskId, options) => {
     await workflowTaskStartCommand({
@@ -3423,6 +3434,7 @@ workflow
       manifest: options.agentContextManifest,
       skipAgentContext: Boolean(options.skipAgentContext),
       json: options.json,
+      acceptEfficiencyExcess: options.acceptEfficiencyExcess === true,
     });
   });
 
@@ -4402,7 +4414,9 @@ collaboration
   .description("Install blocking Git hooks that run the hosted collaboration guard")
   .addCommand(
     new Command("install")
-      .description("Install managed collaboration hooks: the pre-commit and pre-push guards and the post-commit lease release")
+      .description(
+        "Install managed collaboration hooks: the pre-commit and pre-push guards and the post-commit lease release"
+      )
       .option("-d, --dir <directory>", "Repository directory (default: current)")
       .option("--dry-run", "Preview hook writes without changing files")
       .option("--json", "Print raw JSON")
@@ -4419,7 +4433,10 @@ collaboration
   .command("release")
   .description("Release a collaboration lease")
   .option("--lease-id <leaseId>", "Lease id to release (defaults to latest active local lease)")
-  .option("--claimed-for <reason>", "Release every active local lease claimed with this reason (none: no-op)")
+  .option(
+    "--claimed-for <reason>",
+    "Release every active local lease claimed with this reason (none: no-op)"
+  )
   .option("--all", "Release all active local leases")
   .option("--reason <reason>", "Release reason")
   .option("--actor <actor>", "Developer or agent display name")

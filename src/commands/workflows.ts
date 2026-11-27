@@ -12673,14 +12673,53 @@ async function printPhaseStartReceipt(
   printWorkflowReceipt(state, "phase-start", { ...payload, ...result }, options, phase.id);
 }
 
+function enforcesWorkflowEfficiency(state: ManagedWorkflowState): boolean {
+  return (
+    state.coordination?.mode === "full" ||
+    state.coordination?.mode === "orchestrate" ||
+    (!state.coordination && inferWorkflowCoordinationMode({ planFile: state.planFile }) === "full")
+  );
+}
+
+/**
+ * The phase-commit of a long host session records its checkpoint even when the cached-inclusive
+ * input passed its limit. The stop that goes with it is here: this thread does not open another
+ * phase unless the user decided otherwise. A fresh thread measures its own usage and passes.
+ */
+async function assertEfficiencyAllowsNextPhase(
+  state: ManagedWorkflowState,
+  accepted: boolean
+): Promise<void> {
+  if (!enforcesWorkflowEfficiency(state)) return;
+  const { report } = await workflowEfficiencyCommand({
+    profile: "full",
+    enforce: true,
+    since: state.createdAt,
+  });
+  // A partial measurement is a lower bound: what it counted already passed the limit.
+  if (!report.exceeded.includes("maxInputTokens")) return;
+  const figures = `input=${report.totals.inputTokens} (cached=${report.totals.cachedInputTokens}), responses=${report.totals.responses}`;
+  if (accepted) {
+    console.error(
+      `Workflow efficiency excess accepted for this phase: maxInputTokens; ${figures}.`
+    );
+    return;
+  }
+  throw new Error(
+    `Workflow efficiency stopped: maxInputTokens exceeded; ${figures}. Report the figures to the user and continue in a fresh thread (workflow resume), or pass --accept-efficiency-excess if they decided to go on here.`
+  );
+}
+
 export async function workflowPhaseStartCommand(options: {
   phaseId: string;
   json?: boolean;
   detail?: boolean;
   brief?: boolean;
+  acceptEfficiencyExcess?: boolean;
 }): Promise<void> {
   const state = readRequiredWorkflowState();
   const phase = findWorkflowPhase(state, options.phaseId);
+  await assertEfficiencyAllowsNextPhase(state, options.acceptEfficiencyExcess === true);
   const gate = phaseDependenciesReady(state, phase);
   if (!gate.ready)
     throw new Error(`Phase '${phase.id}' is waiting on dependencies: ${gate.blockedBy.join(", ")}`);
@@ -12696,6 +12735,7 @@ export async function workflowPhaseStartCommand(options: {
         detail: options.detail,
         compactReceipt: true,
         brief: options.brief,
+        efficiencyChecked: true,
       });
     }
     const context = loadedWorkflowTaskContext(state, phase, active);
@@ -12753,9 +12793,15 @@ export async function workflowTaskStartCommand(options: {
   detail?: boolean;
   compactReceipt?: boolean;
   brief?: boolean;
+  acceptEfficiencyExcess?: boolean;
+  /** Set by phase-start, which already applied the stop. */
+  efficiencyChecked?: boolean;
 }): Promise<void> {
   const state = readRequiredWorkflowState();
   const phase = findWorkflowPhase(state, options.phaseId);
+  // Starting a task of a phase that is not open yet opens it: same stop as phase-start.
+  if (!options.efficiencyChecked && phase.status !== "in_progress")
+    await assertEfficiencyAllowsNextPhase(state, options.acceptEfficiencyExcess === true);
   const phaseGate = phaseDependenciesReady(state, phase);
   if (!phaseGate.ready) {
     throw new Error(
@@ -14173,11 +14219,7 @@ export async function workflowPhaseCommitCommand(options: {
   memoryMisled?: string[];
 }): Promise<void> {
   const state = readRequiredWorkflowState();
-  if (
-    state.coordination?.mode === "full" ||
-    state.coordination?.mode === "orchestrate" ||
-    (!state.coordination && inferWorkflowCoordinationMode({ planFile: state.planFile }) === "full")
-  ) {
+  if (enforcesWorkflowEfficiency(state)) {
     const efficiency = await workflowEfficiencyCommand({
       profile: "full",
       enforce: true,
@@ -14186,8 +14228,19 @@ export async function workflowPhaseCommitCommand(options: {
     // Stop only on measured excess. Missing local usage records (no Codex root thread and
     // no Claude Code session transcript) cannot prove a breach, so they are reported on
     // stderr and do not block the phase.
+    // Total input counts the cached context every response re-reads: in a long host session
+    // it passes the limit after a few responses whatever the workflow did. Refusing the
+    // checkpoint does not shrink that context, so the phase is recorded and the stop moves
+    // to the next phase-start (see assertEfficiencyAllowsNextPhase).
+    const blocking = efficiency.report.exceeded.filter((key) => key !== "maxInputTokens");
+    if (blocking.length > 0) {
+      throw new Error(efficiencyFailureReason({ ...efficiency.report, exceeded: blocking }));
+    }
     if (efficiency.report.exceeded.length > 0) {
-      throw new Error(efficiencyFailureReason(efficiency.report));
+      const totals = efficiency.report.totals;
+      console.error(
+        `Workflow efficiency stop condition: maxInputTokens exceeded; input=${totals.inputTokens} (cached=${totals.cachedInputTokens}), responses=${totals.responses}. The phase is recorded as a checkpoint. Report these figures to the user and continue in a fresh thread; the next phase-start is refused in this one without --accept-efficiency-excess.`
+      );
     }
     if (efficiency.report.coverage.status !== "complete") {
       console.error(

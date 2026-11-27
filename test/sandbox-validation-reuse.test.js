@@ -490,4 +490,13 @@ test("requirements identity rejects invalid types, names, unknown fields and ove
     })
   );
   assert.match(expectedSandboxScope(f.request, "lot"), /^[a-f0-9]{64}$/);
+  // Snapshot exclusions are accepted and leave the scope identity alone.
+  fs.writeFileSync(f.request, JSON.stringify(request));
+  const plain = expectedSandboxScope(f.request, "lot");
+  fs.writeFileSync(f.request, JSON.stringify({ ...request, exclude: ["assets/big", "setup.exe"] }));
+  assert.equal(expectedSandboxScope(f.request, "lot"), plain);
+  for (const exclude of [["../x"], ["/abs"], ["."], [""], [1], "assets", Array(65).fill("a")]) {
+    fs.writeFileSync(f.request, JSON.stringify({ ...request, exclude }));
+    assert.throws(() => expectedSandboxScope(f.request, "lot"), /Invalid exclude list/);
+  }
 });

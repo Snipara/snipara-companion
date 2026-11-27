@@ -2,6 +2,11 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 9.3.2
+
+- A FULL `phase-commit` can record its checkpoint in a long host session. Total input counts the cached context each response re-reads, so a session with a large context passed the 2,000,000 limit after a few responses (seen: 18.9M input, 18.6M of it cached, 78 responses) and the phase could not be recorded at all. The phase is now recorded and stderr states the stop condition; the next `phase-start` (or `task-start` of a phase not yet open) is refused in that thread unless `--accept-efficiency-excess` is passed, and a fresh thread goes on. Uncached input, responses, output and elapsed time still refuse the commit. `workflow efficiency --enforce` is unchanged.
+- A scoped validation request may carry the Sandbox's new `exclude` list (paths left out of the snapshot); it was refused as an unknown field.
+
 ## 9.3.1
 
 - `collaboration hooks install --help` names the post-commit hook that releases the checkout lease, which the command has written since 9.3.0.
