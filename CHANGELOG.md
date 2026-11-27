@@ -2,6 +2,10 @@
 
 Release notes for `snipara-companion`, newest first.
 
+## 9.3.1
+
+- `collaboration hooks install --help` names the post-commit hook that releases the checkout lease, which the command has written since 9.3.0.
+
 ## 9.3.0
 
 - The activity timeline stays within its 4 MB read limit: the next write keeps its newest 2 MB of whole lines. Past 4 MB, every workflow command printed `artifact_oversized` for `.snipara/activity/timeline.jsonl`.

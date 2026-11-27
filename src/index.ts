@@ -4402,7 +4402,7 @@ collaboration
   .description("Install blocking Git hooks that run the hosted collaboration guard")
   .addCommand(
     new Command("install")
-      .description("Install managed pre-commit and pre-push collaboration guard hooks")
+      .description("Install managed collaboration hooks: the pre-commit and pre-push guards and the post-commit lease release")
       .option("-d, --dir <directory>", "Repository directory (default: current)")
       .option("--dry-run", "Preview hook writes without changing files")
       .option("--json", "Print raw JSON")
